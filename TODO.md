@@ -63,7 +63,7 @@
 - [ ] 结构化日志与指标（[存档 §17.1–§17.2](docs/review/chatgpt-2026-10-13.md)）— 验收：规定字段齐全；不依赖单一指标
 - [ ] 故障恢复（[存档 §17.3](docs/review/chatgpt-2026-10-13.md)）— 验收：服务端/客户端重启后按期望状态恢复
 - [ ] 备份与恢复（[存档 §17.4](docs/review/chatgpt-2026-10-13.md)）— 验收：一致性备份；恢复后协调到期望状态
-- [ ] 测试体系：单元 + 集成 12 项 + 跨平台 + 安全（[存档 §18](docs/review/chatgpt-2026-10-13.md)）— 验收：全部通过并入 CI
+- [ ] 测试体系：单元 + 集成 12 项 + 跨平台 + 安全（[存档 §18](docs/review/chatgpt-2026-10-13.md)）— 验收：全部通过并入 CI ⚠️ 现状：CI（`.github/workflows/ci.yml`）跑 `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace`（72 项，含 axum oneshot 集成测试），矩阵 ubuntu/windows（§15 支持的 Agent 平台）；存档 §18 的 12 项集成测试依赖 WireGuard/特权环境，随对应条目落地；安全测试（§18.4）部分覆盖（邀请 Token/私钥路径已有断言）
 - [ ] Diagnostics 页面 12 项检查（[存档 §12.7](docs/review/chatgpt-2026-10-13.md)）— 验收：能区分隧道/路由/转发/Alias 故障层
 - [ ] 安装流程与自启动（[存档 §19 Phase 5](docs/review/chatgpt-2026-10-13.md)）— 验收：新用户从空 VPS 完成部署
 - [ ] 第一版最终验收逐条核对（[存档 §22](docs/review/chatgpt-2026-10-13.md)）— 验收：五组验收全绿后方可谈发布
