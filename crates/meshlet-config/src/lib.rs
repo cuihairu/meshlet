@@ -25,6 +25,7 @@ struct RawServerConfig {
     database_path: Option<String>,
     overlay_cidr: Option<String>,
     cookie_secure: Option<bool>,
+    console_dir: Option<String>,
 }
 
 /// Server 配置。
@@ -35,6 +36,8 @@ pub struct ServerConfig {
     pub overlay_cidr: Ipv4Cidr,
     /// 会话 Cookie 的 `Secure` 属性。生产环境（HTTPS 反代终止 TLS）必须为 true。
     pub cookie_secure: bool,
+    /// Web 控制台静态文件目录（`console/dist`）。缺省不托管控制台。
+    pub console_dir: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -44,6 +47,7 @@ impl Default for ServerConfig {
             database_path: "meshlet.db".into(),
             overlay_cidr: DEFAULT_OVERLAY_CIDR.parse().expect("valid default cidr"),
             cookie_secure: false,
+            console_dir: None,
         }
     }
 }
@@ -64,6 +68,7 @@ impl ServerConfig {
             database_path: raw.database_path.unwrap_or(default.database_path),
             overlay_cidr,
             cookie_secure: raw.cookie_secure.unwrap_or(default.cookie_secure),
+            console_dir: raw.console_dir.or(default.console_dir),
         })
     }
 }
@@ -138,6 +143,13 @@ overlay_cidr = "172.30.0.0/16"
         assert!(!ServerConfig::default().cookie_secure);
         let c = ServerConfig::from_toml("cookie_secure = true").unwrap();
         assert!(c.cookie_secure);
+    }
+
+    #[test]
+    fn console_dir_defaults_none_and_parses() {
+        assert!(ServerConfig::default().console_dir.is_none());
+        let c = ServerConfig::from_toml("console_dir = \"console/dist\"").unwrap();
+        assert_eq!(c.console_dir.as_deref(), Some("console/dist"));
     }
 
     #[test]

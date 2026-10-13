@@ -25,5 +25,6 @@ rustc-ice-*.txt
 
 # Node / VitePress
 node_modules/
+console/dist/
 docs/.vitepress/cache/
 docs/.vitepress/dist/

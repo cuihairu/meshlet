@@ -130,6 +130,12 @@ pub fn router(state: SharedAppState) -> Router {
         .with_state(state)
 }
 
+/// 构建带控制台静态托管的完整路由：`console_dir`（通常是 `console/dist`）
+/// 作为非 `/api` 路径的回落文件服务（`/api/v1/*` 路由优先级不受影响）。
+pub fn router_with_console(state: SharedAppState, console_dir: &str) -> Router {
+    router(state).fallback_service(tower_http::services::ServeDir::new(console_dir))
+}
+
 impl IntoResponse for service::ServiceError {
     fn into_response(self) -> Response {
         let status = match &self {

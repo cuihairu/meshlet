@@ -35,3 +35,23 @@ jobs:
 
       - name: Test workspace
         run: cargo test --workspace
+
+  console:
+    name: console build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install dependencies
+        working-directory: console
+        run: npm ci
+
+      - name: Type check and build
+        working-directory: console
+        run: npm run build

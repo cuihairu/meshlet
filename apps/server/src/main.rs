@@ -44,7 +44,12 @@ async fn main() {
         meshlet_server::auth::AuthStore::new(pool),
         config.cookie_secure,
     ));
-    axum::serve(listener, meshlet_server::router(state))
-        .await
-        .expect("server error");
+    let app = match config.console_dir.as_deref() {
+        Some(dir) => {
+            info!(console_dir = dir, "serving console static files");
+            meshlet_server::router_with_console(state, dir)
+        }
+        None => meshlet_server::router(state),
+    };
+    axum::serve(listener, app).await.expect("server error");
 }

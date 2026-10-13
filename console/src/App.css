@@ -1,0 +1,144 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color-scheme: light dark;
+  --border: #d8d3c8;
+  --accent: #c97b2e;
+  --muted: #6b7280;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 1rem 3rem;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.user {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  color: var(--muted);
+}
+
+.auth {
+  max-width: 22rem;
+  margin: 4rem auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.auth h1 {
+  font-size: 1.25rem;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+input,
+button {
+  font: inherit;
+}
+
+input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+button[type='submit'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+button.link {
+  border: none;
+  color: var(--muted);
+  text-decoration: underline;
+  padding: 0;
+}
+
+.inline {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+  flex-wrap: wrap;
+  margin-top: 0.75rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.875rem;
+}
+
+.detail {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 2px solid var(--border);
+}
+
+.detail h2 {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.error {
+  color: #b91c1c;
+  font-size: 0.875rem;
+}
+
+.token-box {
+  padding: 0.75rem;
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+  margin: 0.5rem 0;
+  word-break: break-all;
+}
+
+.fingerprint {
+  font-size: 0.8rem;
+}
