@@ -44,14 +44,14 @@
 
 - [ ] LAN Route 模型与网关配置（[存档 §8.1](docs/review/chatgpt-2026-10-13.md)）— 验收：发布 CIDR 后远端可访问
 - [ ] 返回路径双模式（真实双向 / 受控 SNAT），UI 显示所采用模式（[存档 §8.2](docs/review/chatgpt-2026-10-13.md)）— 验收：SNAT 模式 LAN 响应可返回 Overlay
-- [ ] 路由冲突不静默（[存档 §8.3](docs/review/chatgpt-2026-10-13.md)）— 验收：同网段冲突提示配 Alias；不覆盖已有路由
+- [ ] 路由冲突不静默（[存档 §8.3](docs/review/chatgpt-2026-10-13.md)）— 验收：同网段冲突提示配 Alias；不覆盖已有路由 ⚠️ 现状：冲突检测已就位（`lan_route_conflicts` 等，见「CIDR 冲突检测六项」条）；**发布路由时的冲突拒绝/提示行为需服务层**（随 Phase 2/3 落地）
 - [ ] SNAT 纪律（[存档 §7.4](docs/review/chatgpt-2026-10-13.md)）— 验收：Overlay 设备间保留原始源地址
-- [ ] MTU 可配置 + 诊断（[存档 §7.5](docs/review/chatgpt-2026-10-13.md)）— 验收：大包问题可解释
+- [ ] MTU 可配置 + 诊断（[存档 §7.5](docs/review/chatgpt-2026-10-13.md)）— 验收：大包问题可解释 ⚠️ 现状：`TunnelConfig.mtu: Option<u32>` 已就位（meshlet-network）；**诊断能力（区分隧道/路由/转发/Alias 故障层）待 Diagnostics 条目**（Phase 5）
 - [ ] Windows 路由处理（[存档 §15.3](docs/review/chatgpt-2026-10-13.md)）— 验收：权限不足提示明确；失败可清理
 
 ## Phase 4 · Alias Routing
 
-- [ ] Alias 模型与等长前缀映射（[存档 §9.2](docs/review/chatgpt-2026-10-13.md)）— 验收：六项转换前检查全过；非等长被拒
+- [x] Alias 模型与等长前缀映射（[存档 §9.2](docs/review/chatgpt-2026-10-13.md)）— 验收：六项转换前检查全过；非等长被拒 ✅ 等长前缀约束 + 一对一 `translate` + 同前缀拒绝（`alias_requires_equal_prefix_length`、`alias_rejects_identity_mapping`，meshlet-domain）；六项转换前检查全部实现并有测试（conflict.rs，见「CIDR 冲突检测六项」条）
 - [ ] 网关侧 DNAT/SNAT 实施（[存档 §9.4–§9.5](docs/review/chatgpt-2026-10-13.md)）— 验收：双重叠 LAN 各自可达；默认 SNAT 限制 UI 可见
 - [ ] NAT 规则所有权与清理（[存档 §12.6](docs/review/chatgpt-2026-10-13.md)）— 验收：删除 Alias 同步清理路由与 NAT；失败不报成功
 - [ ] Alias 协议边界声明（[存档 §9.6](docs/review/chatgpt-2026-10-13.md)）— 验收：文档明示不保证广播/组播/二层发现
