@@ -13,7 +13,7 @@
 基于自有 VPS 的自托管私人虚拟网络 —— Rust + WireGuard。
 
 > [!NOTE]
-> 早期设计阶段：仓库尚无实现代码。文档站当前内容是一份外部设计基线的结构化分析，保留完整溯源。
+> 早期设计阶段：Phase 0 已完成（分析、ADR、文档），Phase 1 进行中（控制平面 + 迁移已落地）。文档站当前内容是一份外部设计基线的结构化分析，保留完整溯源。
 
 ## 产品定义（规划中）
 
@@ -35,7 +35,7 @@
 
 ## 状态
 
-设计草案。已识别三个需优先验证的高风险点：VPS 中继下的 WireGuard 路由、重叠网段的 Alias DNAT/SNAT、Windows/Linux 网络配置与安全回滚。
+Phase 0 完成（分析、ADR、文档）；Phase 1 进行中：域 crate（CIDR/IPAM/冲突检测/实体/邀请）、控制平面服务（网络/邀请/设备加入 API）与核心实体 SQLite migrations（状态暂存内存），79 项测试全绿。三个待验证高风险点：VPS 中继下的 WireGuard 路由、重叠网段的 Alias DNAT/SNAT、Windows/Linux 网络配置与安全回滚。
 
 ## 许可证
 

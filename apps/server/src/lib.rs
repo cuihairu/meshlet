@@ -4,6 +4,7 @@
 //! 状态/网络/邀请/设备加入（[ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)）。
 
 pub mod service;
+pub mod store;
 
 use axum::extract::State;
 use axum::http::StatusCode;
