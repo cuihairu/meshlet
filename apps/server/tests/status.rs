@@ -5,9 +5,21 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt; // oneshot
 
+async fn bare_router() -> axum::Router {
+    let pool = meshlet_server::store::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
+        meshlet_server::service::SharedState::default(),
+        meshlet_server::auth::AuthStore::new(pool),
+        false,
+    ));
+    meshlet_server::router(state)
+}
+
 #[tokio::test]
 async fn status_endpoint_returns_ok_envelope() {
-    let app = meshlet_server::router(meshlet_server::service::SharedState::default());
+    let app = bare_router().await;
     let res = app
         .oneshot(
             Request::builder()
@@ -27,7 +39,7 @@ async fn status_endpoint_returns_ok_envelope() {
 
 #[tokio::test]
 async fn unknown_route_is_404_not_500() {
-    let app = meshlet_server::router(meshlet_server::service::SharedState::default());
+    let app = bare_router().await;
     let res = app
         .oneshot(
             Request::builder()

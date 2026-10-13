@@ -32,7 +32,7 @@
 
 ## Phase 2 · Web 控制台
 
-- [ ] 用户认证与管理授权（[存档 §11.4](docs/review/chatgpt-2026-10-13.md)）— 验收：全部管理 API 需认证；哈希/限流/Cookie 安全属性/CSRF 就位
+- [x] 用户认证与管理授权（[存档 §11.4](docs/review/chatgpt-2026-10-13.md)）— 验收：全部管理 API 需认证；哈希/限流/Cookie 安全属性/CSRF 就位 ✅ 全部管理端点挂 `AuthenticatedUser`（Cookie 会话）+ 写请求 `CsrfHeader` 提取器（`apps/server/src/auth.rs`，集成测试 12 项 `auth_console.rs`）：Argon2id 哈希（32MiB/2轮/4并行，域层 9 tests）；登录限流（每 email 15 分钟 5 次失败→429，成功清零，未知账号恒时校验）；Cookie HttpOnly+SameSite=Strict+Max-Age=12h+Path=/api/v1（`Secure` 配置位）；CSRF 双防线；**无默认管理员密码**（空库 bootstrap 一次性，409 关闭）；enroll/status 保持公开；会话/用户持久化 SQLite（migration 002 sessions 表）；审计事件随「审计日志」条目
 - [x] 邀请 Token 安全（[存档 §11.3](docs/review/chatgpt-2026-10-13.md)）— 验收：只存摘要；过期/撤销/一次性可测；日志无 Token ✅ 安全随机 Token（32B→64hex）+ SHA-256 摘要存储（`meshlet-domain/src/invites.rs`）；过期/撤销/次数上限/并发单胜全部单测；Debug 形态不含原始 Token（摘要之外不落地）
 - [ ] React 控制台：Network/Device/邀请/撤销/配置版本页面（[存档 §12](docs/review/chatgpt-2026-10-13.md)）— 验收：不手工改库即可完成基本管理
 - [ ] 在线状态判定（握手+心跳+上报）（[存档 §12.4](docs/review/chatgpt-2026-10-13.md)）— 验收：状态标注数据来源与更新时间

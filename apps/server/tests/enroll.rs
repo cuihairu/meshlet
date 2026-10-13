@@ -2,7 +2,8 @@
 //!
 //! 端到端路径：创建网络 → 生成邀请（一次性 Token，只存摘要）→
 //! 设备用公钥加入（私钥不出客户端）→ 分配虚拟 IP → 设备列表可见。
-//! 每个测试持有独立 router 实例（独立内存状态），请求间状态共享。
+//! 每个测试持有独立 router 实例（独立内存状态 + 独立 SQLite），请求间状态共享。
+//! 管理端点经 bootstrap 会话 Cookie + CSRF 头访问（§11.4）；/enroll 保持公开。
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -12,8 +13,52 @@ use tower::ServiceExt; // oneshot
 
 const OVERLAY: &str = "10.240.0.0/16";
 
-async fn app() -> Router {
-    meshlet_server::router(meshlet_server::service::SharedState::default())
+/// 测试上下文：router + 管理会话 Cookie。Clone 后共享同一底层状态。
+#[derive(Clone)]
+struct Ctx {
+    app: Router,
+    cookie: String,
+}
+
+async fn app() -> Ctx {
+    let pool = meshlet_server::store::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
+        meshlet_server::service::SharedState::default(),
+        meshlet_server::auth::AuthStore::new(pool),
+        false,
+    ));
+    let app = meshlet_server::router(state);
+
+    // 空库 bootstrap 首个管理员，取会话 Cookie。
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "email": "admin@test.local",
+                        "password": "bootstrap-password-123",
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED, "bootstrap must succeed");
+    let cookie = res
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .expect("session cookie")
+        .to_string();
+    Ctx { app, cookie }
 }
 
 async fn res_body(res: axum::response::Response) -> serde_json::Value {
@@ -22,16 +67,19 @@ async fn res_body(res: axum::response::Response) -> serde_json::Value {
 }
 
 async fn json_post(
-    app: Router,
+    ctx: Ctx,
     uri: &str,
     body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {
-    let res = app
+    let res = ctx
+        .app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(uri)
                 .header("content-type", "application/json")
+                .header("cookie", &ctx.cookie)
+                .header("x-requested-with", "XMLHttpRequest")
                 .body(Body::from(serde_json::to_string(&body).unwrap()))
                 .unwrap(),
         )
@@ -40,20 +88,30 @@ async fn json_post(
     (res.status(), res_body(res).await)
 }
 
-async fn json_get(app: Router, uri: &str) -> (StatusCode, serde_json::Value) {
-    let res = app
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+async fn json_get(ctx: Ctx, uri: &str) -> (StatusCode, serde_json::Value) {
+    let res = ctx
+        .app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header("cookie", &ctx.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     (res.status(), res_body(res).await)
 }
 
-async fn json_delete(app: Router, uri: &str) -> StatusCode {
-    let res = app
+async fn json_delete(ctx: Ctx, uri: &str) -> StatusCode {
+    let res = ctx
+        .app
         .oneshot(
             Request::builder()
                 .method("DELETE")
                 .uri(uri)
+                .header("cookie", &ctx.cookie)
+                .header("x-requested-with", "XMLHttpRequest")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -62,9 +120,9 @@ async fn json_delete(app: Router, uri: &str) -> StatusCode {
     res.status()
 }
 
-async fn create_network(app: Router, name: &str) -> (StatusCode, serde_json::Value) {
+async fn create_network(ctx: Ctx, name: &str) -> (StatusCode, serde_json::Value) {
     json_post(
-        app,
+        ctx,
         "/api/v1/networks",
         serde_json::json!({ "name": name, "overlay_cidr": OVERLAY }),
     )
@@ -72,22 +130,22 @@ async fn create_network(app: Router, name: &str) -> (StatusCode, serde_json::Val
 }
 
 async fn create_invite(
-    app: Router,
+    ctx: Ctx,
     network_id: &str,
     body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {
-    json_post(app, &format!("/api/v1/networks/{network_id}/invites"), body).await
+    json_post(ctx, &format!("/api/v1/networks/{network_id}/invites"), body).await
 }
 
 async fn enroll(
-    app: Router,
+    ctx: Ctx,
     token: &str,
     device_name: &str,
     public_key: &str,
     platform: &str,
 ) -> (StatusCode, serde_json::Value) {
     json_post(
-        app,
+        ctx,
         "/api/v1/enroll",
         serde_json::json!({
             "invite_token": token,
@@ -246,6 +304,8 @@ async fn enroll_rejects_private_key_field() {
     let token = invite["token"].as_str().unwrap().to_string();
 
     let res = app
+        .app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")

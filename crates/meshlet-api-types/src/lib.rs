@@ -14,6 +14,7 @@ pub enum ErrorCode {
     NotFound,
     Conflict,
     ValidationFailed,
+    TooManyRequests,
     ApplyFailed,
     Internal,
 }
@@ -66,6 +67,15 @@ pub struct RevisionRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn too_many_requests_code_serializes_snake_case() {
+        let e = ErrorResponse::new(ErrorCode::TooManyRequests, "login rate limit exceeded");
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["error"]["code"], "too_many_requests");
+        let parsed: ErrorResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, e);
+    }
 
     #[test]
     fn error_response_matches_openapi_shape() {

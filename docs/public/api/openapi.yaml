@@ -9,6 +9,8 @@ info:
     apply_status (ADR-009).
 servers:
   - url: /api/v1
+security:
+  - sessionCookie: []
 tags:
   - name: auth
   - name: networks
@@ -17,10 +19,34 @@ tags:
   - name: aliases
   - name: status
 paths:
+  /auth/bootstrap:
+    post:
+      security: []
+      tags: [auth]
+      summary: Create the first admin (empty database only; closes with 409 afterwards)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 12 }
+      responses:
+        "201":
+          description: Admin created, session cookie set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
   /auth/login:
     post:
+      security: []
       tags: [auth]
-      summary: Login (rate limited)
+      summary: Login (rate limited, 5 failed attempts per email per 15 min)
       requestBody:
         required: true
         content:
@@ -36,13 +62,18 @@ paths:
           description: Session cookie set
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/User" }
+              schema: { $ref: "#/components/schemas/Session" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "429": { $ref: "#/components/responses/Error" }
+        "429":
+          description: Too many failed attempts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /auth/logout:
     post:
+      security: []
       tags: [auth]
-      summary: Logout
+      summary: Logout (revokes the session cookie if present)
       responses:
         "204": { description: No content }
   /auth/me:
@@ -172,6 +203,7 @@ paths:
   # Agent-facing: no console session required. Private key never leaves the client (§11.2).
   /enroll:
     post:
+      security: []
       tags: [devices]
       summary: Enroll a device with an invite token (public key only)
       description: >
@@ -360,6 +392,7 @@ paths:
         "204": { description: No content }
   /system/status:
     get:
+      security: []
       tags: [status]
       summary: Server status (implemented in apps/server spike)
       responses:
@@ -415,6 +448,15 @@ paths:
               schema: { $ref: "#/components/schemas/ConfigRevision" }
         "404": { $ref: "#/components/responses/NotFound" }
 components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: meshlet_session
+      description: >
+        Console session cookie (HttpOnly, SameSite=Strict, Path=/api/v1).
+        Mutating management requests must additionally send
+        X-Requested-With: XMLHttpRequest (CSRF guard).
   parameters:
     NetworkId: { name: network_id, in: path, required: true, schema: { type: string } }
     DeviceId: { name: device_id, in: path, required: true, schema: { type: string } }
@@ -462,9 +504,15 @@ components:
           properties:
             code:
               type: string
-              enum: [unauthorized, forbidden, not_found, conflict, validation_failed, apply_failed, internal]
+              enum: [unauthorized, forbidden, not_found, conflict, validation_failed, too_many_requests, apply_failed, internal]
             message: { type: string }
             details: { type: object, additionalProperties: true }
+    Session:
+      type: object
+      required: [user_id, email]
+      properties:
+        user_id: { type: string }
+        email: { type: string, format: email }
     User:
       type: object
       properties:

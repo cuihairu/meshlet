@@ -1,9 +1,8 @@
 //! meshlet-server：控制平面服务。
 //!
-//! 暴露状态/网络/邀请/设备加入路由（契约见
+//! 暴露状态/网络/邀请/设备加入/控制台认证路由（契约见
 //! [api-contract.md](../../docs/architecture/api-contract.md)）。
-//! 持久化（SQLite/SQLx）随「核心实体 migrations」条目接入；
-//! 当前状态存于内存（`MeshState`）。
+//! 状态：Mesh 数据暂存内存（`MeshState`）；用户/会话持久化 SQLite（migrations 001/002）。
 
 use meshlet_config::ServerConfig;
 use tracing::info;
@@ -31,7 +30,20 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .unwrap_or_else(|e| panic!("bind {}: {e}", config.bind));
-    let state = meshlet_server::service::SharedState::default();
+
+    let database_url = if config.database_path.starts_with("sqlite:") {
+        config.database_path.clone()
+    } else {
+        format!("sqlite:{}", config.database_path)
+    };
+    let pool = meshlet_server::store::connect(&database_url)
+        .await
+        .unwrap_or_else(|e| panic!("database {}: {e}", config.database_path));
+    let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
+        meshlet_server::service::SharedState::default(),
+        meshlet_server::auth::AuthStore::new(pool),
+        config.cookie_secure,
+    ));
     axum::serve(listener, meshlet_server::router(state))
         .await
         .expect("server error");

@@ -56,6 +56,7 @@ async fn migrations_create_all_core_tables() {
         "invitations",
         "lan_routes",
         "networks",
+        "sessions",
         "users",
     ] {
         assert!(
@@ -194,6 +195,41 @@ async fn foreign_keys_reject_orphan_device() {
 }
 
 #[tokio::test]
+async fn sessions_store_digest_only_with_unique_hash() {
+    let pool = db().await;
+    let cols = columns(&pool, "sessions").await;
+    assert!(cols.contains(&"token_hash".to_string()), "{cols:?}");
+    assert!(
+        !cols.contains(&"token".to_string()) && !cols.contains(&"session_token".to_string()),
+        "sessions must not store the raw token"
+    );
+
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, created_at)
+         VALUES ('u-1', 'a@b.c', 'h', 't')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at)
+         VALUES ('th-1', 'u-1', 't', 't2')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at)
+             VALUES ('th-1', 'u-1', 't', 't2')"
+        )
+        .execute(&pool)
+        .await,
+        Err(Database(e)) if e.is_unique_violation()
+    ));
+}
+
+#[tokio::test]
 async fn config_revisions_are_keyed_by_network_and_revision() {
     let pool = db().await;
     sqlx::query(
@@ -224,5 +260,5 @@ async fn migrations_are_idempotent_across_reopens() {
     // 迁移必须可重复应用（重启不破坏库）。
     let pool = db().await;
     meshlet_server::store::MIGRATIONS.run(&pool).await.unwrap();
-    assert_eq!(tables(&pool).await.len(), 9);
+    assert_eq!(tables(&pool).await.len(), 10);
 }

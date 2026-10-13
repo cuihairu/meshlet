@@ -7,12 +7,14 @@
 //! [ADR-006](../../docs/decisions/adr-006-alias-prefix-nat.md) /
 //! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)。
 
+pub mod auth;
 pub mod cidr;
 pub mod conflict;
 pub mod entities;
 pub mod invites;
 pub mod ipam;
 pub mod peer_routes;
+pub mod tokens;
 
 pub use cidr::{CidrError, Ipv4Cidr};
 pub use conflict::{

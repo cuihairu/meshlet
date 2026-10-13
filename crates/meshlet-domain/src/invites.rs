@@ -13,35 +13,8 @@
 //! 时间戳为 ISO-8601 UTC（`Z`）字符串，同格式下字典序即时间序。
 
 use crate::entities::{InviteId, NetworkId, Timestamp};
-use sha2::{Digest, Sha256};
 
-/// Token 熵长度（字节）：32 字节 = 256 bit，hex 编码后 64 字符。
-pub const TOKEN_BYTES: usize = 32;
-
-/// 生成安全随机邀请 Token（64 个 hex 字符）。
-pub fn generate_token() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; TOKEN_BYTES];
-    rand::rng().fill_bytes(&mut bytes);
-    to_hex(&bytes)
-}
-
-/// Token 的安全摘要（SHA-256 hex）。服务端只保存此值。
-pub fn token_hash(raw_token: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(raw_token.as_bytes());
-    to_hex(&hasher.finalize())
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
+pub use crate::tokens::{generate_token, token_hash, TOKEN_BYTES};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InviteError {

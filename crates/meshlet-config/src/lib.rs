@@ -24,6 +24,7 @@ struct RawServerConfig {
     bind: Option<String>,
     database_path: Option<String>,
     overlay_cidr: Option<String>,
+    cookie_secure: Option<bool>,
 }
 
 /// Server 配置。
@@ -32,6 +33,8 @@ pub struct ServerConfig {
     pub bind: String,
     pub database_path: String,
     pub overlay_cidr: Ipv4Cidr,
+    /// 会话 Cookie 的 `Secure` 属性。生产环境（HTTPS 反代终止 TLS）必须为 true。
+    pub cookie_secure: bool,
 }
 
 impl Default for ServerConfig {
@@ -40,6 +43,7 @@ impl Default for ServerConfig {
             bind: "127.0.0.1:8080".into(),
             database_path: "meshlet.db".into(),
             overlay_cidr: DEFAULT_OVERLAY_CIDR.parse().expect("valid default cidr"),
+            cookie_secure: false,
         }
     }
 }
@@ -59,6 +63,7 @@ impl ServerConfig {
             bind: raw.bind.unwrap_or(default.bind),
             database_path: raw.database_path.unwrap_or(default.database_path),
             overlay_cidr,
+            cookie_secure: raw.cookie_secure.unwrap_or(default.cookie_secure),
         })
     }
 }
@@ -125,6 +130,14 @@ overlay_cidr = "172.30.0.0/16"
         assert_eq!(c.bind, "0.0.0.0:9443");
         assert_eq!(c.database_path, "/var/lib/meshlet/control.db");
         assert_eq!(c.overlay_cidr.to_string(), "172.30.0.0/16"); // 可配置，非协议常量
+    }
+
+    #[test]
+    fn cookie_secure_defaults_false_and_parses() {
+        // 本地开发默认 http（127.0.0.1）；生产部署在 HTTPS 反代后置 true（§11.4）。
+        assert!(!ServerConfig::default().cookie_secure);
+        let c = ServerConfig::from_toml("cookie_secure = true").unwrap();
+        assert!(c.cookie_secure);
     }
 
     #[test]
