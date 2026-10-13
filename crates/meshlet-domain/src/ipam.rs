@@ -58,7 +58,10 @@ impl Ipam {
                 return Ok(Ipv4Addr::from(candidate));
             }
         }
-        Err(IpamError::Exhausted(self.pool, self.pool.usable_addresses()))
+        Err(IpamError::Exhausted(
+            self.pool,
+            self.pool.usable_addresses(),
+        ))
     }
 
     /// 分配指定地址（固定 IP 场景）。
@@ -96,10 +99,19 @@ mod tests {
     #[test]
     fn first_client_gets_second_usable_address() {
         // ADR-004：hub=10.240.0.1，第一个客户端=10.240.0.2。
-        let mut ipam = Ipam::new("10.240.0.0/16".parse().unwrap(), "10.240.0.1".parse().unwrap())
-            .unwrap();
-        assert_eq!(ipam.allocate().unwrap(), "10.240.0.2".parse::<Ipv4Addr>().unwrap());
-        assert_eq!(ipam.allocate().unwrap(), "10.240.0.3".parse::<Ipv4Addr>().unwrap());
+        let mut ipam = Ipam::new(
+            "10.240.0.0/16".parse().unwrap(),
+            "10.240.0.1".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            ipam.allocate().unwrap(),
+            "10.240.0.2".parse::<Ipv4Addr>().unwrap()
+        );
+        assert_eq!(
+            ipam.allocate().unwrap(),
+            "10.240.0.3".parse::<Ipv4Addr>().unwrap()
+        );
     }
 
     #[test]
@@ -115,8 +127,11 @@ mod tests {
 
     #[test]
     fn allocation_never_duplicates() {
-        let mut ipam = Ipam::new("10.240.0.0/24".parse().unwrap(), "10.240.0.1".parse().unwrap())
-            .unwrap();
+        let mut ipam = Ipam::new(
+            "10.240.0.0/24".parse().unwrap(),
+            "10.240.0.1".parse().unwrap(),
+        )
+        .unwrap();
         let mut seen = HashSet::new();
         for _ in 0..253 {
             let ip = ipam.allocate().unwrap();
@@ -128,9 +143,12 @@ mod tests {
     #[test]
     fn exhaustion_reports_pool() {
         // /30：2 个可用，hub 占 1，仅剩 1 个可分配。
-        let mut ipam = Ipam::new("10.0.0.0/30".parse().unwrap(), "10.0.0.1".parse().unwrap())
-            .unwrap();
-        assert_eq!(ipam.allocate().unwrap(), "10.0.0.2".parse::<Ipv4Addr>().unwrap());
+        let mut ipam =
+            Ipam::new("10.0.0.0/30".parse().unwrap(), "10.0.0.1".parse().unwrap()).unwrap();
+        assert_eq!(
+            ipam.allocate().unwrap(),
+            "10.0.0.2".parse::<Ipv4Addr>().unwrap()
+        );
         assert!(matches!(ipam.allocate(), Err(IpamError::Exhausted(_, 2))));
     }
 
@@ -150,9 +168,10 @@ mod tests {
 
     #[test]
     fn specific_allocation_bounds() {
-        let mut ipam = Ipam::new("10.0.0.0/24".parse().unwrap(), "10.0.0.1".parse().unwrap())
+        let mut ipam =
+            Ipam::new("10.0.0.0/24".parse().unwrap(), "10.0.0.1".parse().unwrap()).unwrap();
+        ipam.allocate_specific("10.0.0.50".parse().unwrap())
             .unwrap();
-        ipam.allocate_specific("10.0.0.50".parse().unwrap()).unwrap();
         assert!(matches!(
             ipam.allocate_specific("10.0.0.50".parse().unwrap()),
             Err(IpamError::AlreadyTaken(_))
@@ -173,8 +192,11 @@ mod tests {
 
     #[test]
     fn release_allows_specific_reuse() {
-        let mut ipam = Ipam::new("10.240.0.0/24".parse().unwrap(), "10.240.0.1".parse().unwrap())
-            .unwrap();
+        let mut ipam = Ipam::new(
+            "10.240.0.0/24".parse().unwrap(),
+            "10.240.0.1".parse().unwrap(),
+        )
+        .unwrap();
         let a = ipam.allocate().unwrap(); // .2
         ipam.release(a);
         assert!(!ipam.is_taken(a));

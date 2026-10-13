@@ -44,11 +44,17 @@ pub struct ApplyResult {
 
 impl ApplyResult {
     pub fn ok() -> Self {
-        Self { applied: true, error: None }
+        Self {
+            applied: true,
+            error: None,
+        }
     }
 
     pub fn failed(message: impl Into<String>) -> Self {
-        Self { applied: false, error: Some(message.into()) }
+        Self {
+            applied: false,
+            error: Some(message.into()),
+        }
     }
 }
 
@@ -82,15 +88,30 @@ pub enum NetworkError {
 }
 
 /// 统一网络后端抽象：inspect → apply → rollback。
+///
+/// 原生 async fn 在 trait 里无法声明 `Send` 边界；这里改用 RPITIT + `Send`
+/// （Rust 1.75+），使未来能在 axum handler / `spawn_blocking` 间安全传递，
+/// 不引入 `async-trait` 宏依赖。
 pub trait NetworkBackend {
-    async fn inspect(&self) -> Result<NetworkSnapshot, NetworkError>;
+    fn inspect<'s>(
+        &'s self,
+    ) -> impl std::future::Future<Output = Result<NetworkSnapshot, NetworkError>> + Send + 's;
 
-    async fn apply_tunnel(&self, config: TunnelConfig) -> Result<ApplyResult, NetworkError>;
+    fn apply_tunnel<'s>(
+        &'s self,
+        config: TunnelConfig,
+    ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
-    async fn apply_routes(&self, routes: Vec<RouteConfig>) -> Result<ApplyResult, NetworkError>;
+    fn apply_routes<'s>(
+        &'s self,
+        routes: Vec<RouteConfig>,
+    ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
     /// 回滚只允许触碰 Meshlet 自有对象（§10.3）。
-    async fn rollback(&self, revision: ConfigRevisionRef) -> Result<ApplyResult, NetworkError>;
+    fn rollback<'s>(
+        &'s self,
+        revision: ConfigRevisionRef,
+    ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 }
 
 #[cfg(test)]
@@ -115,11 +136,17 @@ mod tests {
             Ok(ApplyResult::ok())
         }
 
-        async fn apply_routes(&self, _routes: Vec<RouteConfig>) -> Result<ApplyResult, NetworkError> {
+        async fn apply_routes(
+            &self,
+            _routes: Vec<RouteConfig>,
+        ) -> Result<ApplyResult, NetworkError> {
             Ok(ApplyResult::ok())
         }
 
-        async fn rollback(&self, _revision: ConfigRevisionRef) -> Result<ApplyResult, NetworkError> {
+        async fn rollback(
+            &self,
+            _revision: ConfigRevisionRef,
+        ) -> Result<ApplyResult, NetworkError> {
             Ok(ApplyResult::failed("nothing to roll back"))
         }
     }
@@ -134,7 +161,10 @@ mod tests {
         assert_eq!(snap.peer_count, 2);
 
         let result = DummyBackend
-            .rollback(ConfigRevisionRef { network_id: "n".into(), revision: 1 })
+            .rollback(ConfigRevisionRef {
+                network_id: "n".into(),
+                revision: 1,
+            })
             .await
             .unwrap();
         assert!(!result.applied);

@@ -21,8 +21,7 @@ async fn main() {
         Some(path) => {
             let raw = std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read config {path}: {e}"));
-            ServerConfig::from_toml(&raw)
-                .unwrap_or_else(|e| panic!("invalid config {path}: {e}"))
+            ServerConfig::from_toml(&raw).unwrap_or_else(|e| panic!("invalid config {path}: {e}"))
         }
         None => ServerConfig::default(),
     };

@@ -19,10 +19,10 @@ pub use conflict::{
     lan_route_conflicts, overlay_alias_overlap, Conflict, ConflictCode, ConflictKind, RouteSource,
 };
 pub use entities::{
-    AliasError, AliasMapping, ApplyStatus, ConfigRevision, DesiredStateStatus, Device,
-    DeviceError, DeviceKey, DeviceRegistry, DeviceId, DeviceStatus, InviteId, LanRoute, Network,
-    NetworkId, NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError, RouteMode,
-    Timestamp, TranslationMode, UserId,
+    AliasError, AliasMapping, ApplyStatus, ConfigRevision, DesiredStateStatus, Device, DeviceError,
+    DeviceId, DeviceKey, DeviceRegistry, DeviceStatus, InviteId, LanRoute, Network, NetworkId,
+    NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError, RouteMode, Timestamp,
+    TranslationMode, UserId,
 };
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};

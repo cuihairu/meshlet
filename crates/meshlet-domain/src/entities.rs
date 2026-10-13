@@ -344,7 +344,11 @@ impl DeviceRegistry {
     }
 
     pub fn add(&mut self, device: Device) -> Result<(), RegistryError> {
-        if self.devices.iter().any(|d| d.virtual_ipv4 == device.virtual_ipv4) {
+        if self
+            .devices
+            .iter()
+            .any(|d| d.virtual_ipv4 == device.virtual_ipv4)
+        {
             return Err(RegistryError::DuplicateVirtualIp(device.virtual_ipv4));
         }
         if self.devices.iter().any(|d| d.name == device.name) {
@@ -406,7 +410,10 @@ mod tests {
         assert_eq!(d.status, DeviceStatus::Revoked);
         assert_eq!(d.revoked_at.as_deref(), Some(T1));
         assert!(!d.is_active());
-        assert!(matches!(d.revoke(T0.into()), Err(DeviceError::AlreadyRevoked(_))));
+        assert!(matches!(
+            d.revoke(T0.into()),
+            Err(DeviceError::AlreadyRevoked(_))
+        ));
     }
 
     #[test]
@@ -437,7 +444,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             err,
-            AliasError::PrefixLengthMismatch { alias: 24, target: 16 }
+            AliasError::PrefixLengthMismatch {
+                alias: 24,
+                target: 16
+            }
         ));
     }
 
@@ -485,7 +495,10 @@ mod tests {
             (RollbackPending, RolledBack),
         ];
         for (from, to) in legal {
-            assert!(from.can_transition_to(to), "{from:?} -> {to:?} should be legal");
+            assert!(
+                from.can_transition_to(to),
+                "{from:?} -> {to:?} should be legal"
+            );
         }
         let illegal = [
             (Pending, Applied),
@@ -498,7 +511,10 @@ mod tests {
             (Applied, Pending),
         ];
         for (from, to) in illegal {
-            assert!(!from.can_transition_to(to), "{from:?} -> {to:?} should be illegal");
+            assert!(
+                !from.can_transition_to(to),
+                "{from:?} -> {to:?} should be illegal"
+            );
         }
     }
 

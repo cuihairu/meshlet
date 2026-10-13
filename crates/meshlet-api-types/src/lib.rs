@@ -108,7 +108,10 @@ mod tests {
 
     #[test]
     fn page_envelope_roundtrip() {
-        let p = Page { items: vec![1, 2, 3], total: 42 };
+        let p = Page {
+            items: vec![1, 2, 3],
+            total: 42,
+        };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["total"], 42);
         assert_eq!(json["items"].as_array().unwrap().len(), 3);

@@ -142,7 +142,10 @@ pub fn lan_route_conflicts(routes: &[LanRoute]) -> Vec<Conflict> {
                     kind: ConflictKind::ServerKnown,
                     detail: format!(
                         "route {} via {} overlaps route {} via {}",
-                        a.destination_cidr, a.gateway_device_id, b.destination_cidr, b.gateway_device_id
+                        a.destination_cidr,
+                        a.gateway_device_id,
+                        b.destination_cidr,
+                        b.gateway_device_id
                     ),
                 });
             }
@@ -177,7 +180,11 @@ pub fn check_network(
 ) -> Vec<Conflict> {
     let mut out = Vec::new();
     out.extend(overlay_alias_overlap(overlay, aliases));
-    out.extend(against_existing_routes(overlay, server_routes, client_routes));
+    out.extend(against_existing_routes(
+        overlay,
+        server_routes,
+        client_routes,
+    ));
     out.extend(alias_alias_overlap(aliases));
     out.extend(lan_route_conflicts(routes));
     for alias in aliases {
@@ -192,7 +199,7 @@ pub fn check_network(
 mod tests {
     use super::*;
     use crate::entities::{
-        AliasMappingId, DesiredStateStatus, LanRouteId, NetworkId, DeviceId, ReturnPathMode,
+        AliasMappingId, DesiredStateStatus, DeviceId, LanRouteId, NetworkId, ReturnPathMode,
         RouteMode, TranslationMode,
     };
 
@@ -248,7 +255,10 @@ mod tests {
         // 客户端未上报：一条 Unverifiable 警告，非阻断。
         let out = against_existing_routes(candidate, &server, None);
         assert_eq!(out.len(), 2);
-        let unver = out.iter().find(|c| c.kind == ConflictKind::Unverifiable).unwrap();
+        let unver = out
+            .iter()
+            .find(|c| c.kind == ConflictKind::Unverifiable)
+            .unwrap();
         assert!(!unver.is_blocking());
         assert!(unver.detail.contains("cannot confirm"));
 
@@ -304,14 +314,14 @@ mod tests {
             &[a_bad.clone(), a_ok.clone()],
             &[r1.clone(), r2],
             &["10.240.16.0/20".parse().unwrap()], // 服务端已有路由与 overlay 重叠
-            None,                                // 客户端未上报
+            None,                                 // 客户端未上报
         );
         let codes: Vec<_> = out.iter().map(|c| c.code).collect();
         assert!(codes.contains(&ConflictCode::OverlayAliasOverlap));
         assert!(codes.contains(&ConflictCode::OverlayExistingRouteOverlap));
         assert!(codes.contains(&ConflictCode::LanRouteConflict));
         assert!(codes.contains(&ConflictCode::ClientRouteOverlap)); // Unverifiable 警告
-        // 无一 ClientLocal（客户端未上报数据），且存在非阻断项。
+                                                                    // 无一 ClientLocal（客户端未上报数据），且存在非阻断项。
         assert!(out.iter().all(|c| c.kind != ConflictKind::ClientLocal));
         assert!(out.iter().any(|c| !c.is_blocking()));
         // 清洁场景：服务端无冲突、客户端已上报且干净 → 无任何冲突。

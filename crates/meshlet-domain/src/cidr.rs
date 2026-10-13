@@ -45,7 +45,10 @@ impl Ipv4Cidr {
         if raw != masked {
             return Err(CidrError::HostBitsSet { addr, prefix });
         }
-        Ok(Self { network: masked, prefix })
+        Ok(Self {
+            network: masked,
+            prefix,
+        })
     }
 
     pub fn network(&self) -> Ipv4Addr {
@@ -152,9 +155,18 @@ mod tests {
 
     #[test]
     fn rejects_bad_notation() {
-        assert!(matches!("10.240.0.0".parse::<Ipv4Cidr>(), Err(CidrError::Notation(_))));
-        assert!(matches!("10.240.0/16".parse::<Ipv4Cidr>(), Err(CidrError::Notation(_))));
-        assert!(matches!("10.240.0.0/x".parse::<Ipv4Cidr>(), Err(CidrError::Notation(_))));
+        assert!(matches!(
+            "10.240.0.0".parse::<Ipv4Cidr>(),
+            Err(CidrError::Notation(_))
+        ));
+        assert!(matches!(
+            "10.240.0/16".parse::<Ipv4Cidr>(),
+            Err(CidrError::Notation(_))
+        ));
+        assert!(matches!(
+            "10.240.0.0/x".parse::<Ipv4Cidr>(),
+            Err(CidrError::Notation(_))
+        ));
     }
 
     #[test]
@@ -179,7 +191,10 @@ mod tests {
         assert_eq!(c.mask(), "255.255.255.0".parse::<Ipv4Addr>().unwrap());
         let zero = cidr("0.0.0.0/0");
         assert_eq!(zero.mask(), "0.0.0.0".parse::<Ipv4Addr>().unwrap());
-        assert_eq!(zero.broadcast(), "255.255.255.255".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(
+            zero.broadcast(),
+            "255.255.255.255".parse::<Ipv4Addr>().unwrap()
+        );
     }
 
     #[test]

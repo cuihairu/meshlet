@@ -44,5 +44,8 @@ async fn unknown_route_is_404_not_500() {
 async fn status_payload_matches_contract_type() {
     let s = meshlet_server::system_status();
     let json = serde_json::to_value(&s).unwrap();
-    assert_eq!(json, serde_json::json!({ "status": "ok", "version": s.version }));
+    assert_eq!(
+        json,
+        serde_json::json!({ "status": "ok", "version": s.version })
+    );
 }
