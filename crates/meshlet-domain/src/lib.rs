@@ -1,7 +1,8 @@
 //! meshlet-domain：核心领域层。
 //!
 //! 覆盖 [存档 §5–§6](../../docs/review/chatgpt-2026-10-13.md) 的实体约束、
-//! Overlay IPAM 与 CIDR 冲突检测。设计决策见
+//! Overlay IPAM 与 CIDR 冲突检测，以及 [§11.3](../../docs/review/chatgpt-2026-10-13.md)
+//! 的邀请 Token 安全。设计决策见
 //! [ADR-004](../../docs/decisions/adr-004-overlay-ipam.md) /
 //! [ADR-006](../../docs/decisions/adr-006-alias-prefix-nat.md) /
 //! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)。
@@ -9,6 +10,7 @@
 pub mod cidr;
 pub mod conflict;
 pub mod entities;
+pub mod invites;
 pub mod ipam;
 
 pub use cidr::{CidrError, Ipv4Cidr};
@@ -18,10 +20,11 @@ pub use conflict::{
 };
 pub use entities::{
     AliasError, AliasMapping, ApplyStatus, ConfigRevision, DesiredStateStatus, Device,
-    DeviceError, DeviceKey, DeviceRegistry, DeviceStatus, LanRoute, Network, NetworkId, NetworkStatus,
-    Platform, RegistryError, ReturnPathMode, RevisionError, RouteMode, Timestamp, TranslationMode,
-    UserId,
+    DeviceError, DeviceKey, DeviceRegistry, DeviceId, DeviceStatus, InviteId, LanRoute, Network,
+    NetworkId, NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError, RouteMode,
+    Timestamp, TranslationMode, UserId,
 };
+pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};
 
 #[cfg(test)]

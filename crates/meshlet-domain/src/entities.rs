@@ -28,6 +28,7 @@ string_id!(DeviceId, "设备标识。");
 string_id!(LanRouteId, "LAN 路由标识。");
 string_id!(AliasMappingId, "Alias 映射标识。");
 string_id!(UserId, "控制台用户标识。");
+string_id!(InviteId, "邀请标识。");
 
 // ---------------------------------------------------------------------------
 // Network
