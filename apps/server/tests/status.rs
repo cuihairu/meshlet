@@ -7,7 +7,7 @@ use tower::ServiceExt; // oneshot
 
 #[tokio::test]
 async fn status_endpoint_returns_ok_envelope() {
-    let app = meshlet_server::router();
+    let app = meshlet_server::router(meshlet_server::service::SharedState::default());
     let res = app
         .oneshot(
             Request::builder()
@@ -27,7 +27,7 @@ async fn status_endpoint_returns_ok_envelope() {
 
 #[tokio::test]
 async fn unknown_route_is_404_not_500() {
-    let app = meshlet_server::router();
+    let app = meshlet_server::router(meshlet_server::service::SharedState::default());
     let res = app
         .oneshot(
             Request::builder()

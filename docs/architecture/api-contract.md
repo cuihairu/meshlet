@@ -29,6 +29,8 @@
 | GET/PATCH/DELETE | `/api/v1/networks/{network_id}` | 网络详情 / 更新 / 删除 |
 | GET | `/api/v1/networks/{network_id}/devices` | 设备列表 |
 | POST | `/api/v1/networks/{network_id}/invites` | 生成一次性邀请（ADR-010） |
+| DELETE | `/api/v1/networks/{network_id}/invites/{invite_id}` | 撤销邀请（ADR-010） |
+| POST | `/api/v1/enroll` | 设备加入（邀请 Token + 公钥；私钥不出客户端，§11.2） |
 | GET/PATCH/DELETE | `/api/v1/networks/{network_id}/devices/{device_id}` | 设备详情 / 更新 / 删除 |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/rotate-key` | 密钥轮换 |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5） |
@@ -44,4 +46,4 @@
 
 ## 已核验的最小实现
 
-`apps/server`（Phase 1 spike）已实现 `GET /api/v1/system/status`，测试见 `apps/server/tests/status.rs`；其余端点随 Phase 1/2 落地。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`；测试见 `apps/server/tests/{status,enroll}.rs`。控制平面状态当前存于内存（`MeshState`），持久化（SQLx/SQLite）随「核心实体 migrations」条目接入。认证/控制台端点（`/api/v1/auth/*`）随 Phase 2 落地。

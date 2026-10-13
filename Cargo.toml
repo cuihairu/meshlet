@@ -28,6 +28,7 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 sha2 = "0.10"
 rand = "0.9"
+chrono = "0.4"
 
 meshlet-domain = { path = "crates/meshlet-domain" }
 meshlet-api-types = { path = "crates/meshlet-api-types" }

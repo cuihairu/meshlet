@@ -1,8 +1,9 @@
-//! meshlet-server：控制平面服务（Phase 1 spike）。
+//! meshlet-server：控制平面服务。
 //!
-//! 当前仅暴露 `GET /api/v1/system/status`，用于核验
-//! tokio/axum/serde/tracing 选型（[ADR 对应存档 §4.1](../../docs/decisions/adr-002-vps-hub-relay.md)）。
-//! 持久化（SQLite/SQLx）随「核心实体 migrations」条目接入。
+//! 暴露状态/网络/邀请/设备加入路由（契约见
+//! [api-contract.md](../../docs/architecture/api-contract.md)）。
+//! 持久化（SQLite/SQLx）随「核心实体 migrations」条目接入；
+//! 当前状态存于内存（`MeshState`）。
 
 use meshlet_config::ServerConfig;
 use tracing::info;
@@ -30,7 +31,8 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .unwrap_or_else(|e| panic!("bind {}: {e}", config.bind));
-    axum::serve(listener, meshlet_server::router())
+    let state = meshlet_server::service::SharedState::default();
+    axum::serve(listener, meshlet_server::router(state))
         .await
         .expect("server error");
 }

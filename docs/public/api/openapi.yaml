@@ -134,27 +134,65 @@ paths:
     post:
       tags: [devices]
       summary: Create one-time enrollment invite (token stored as digest, ADR-010)
+      description: >
+        The raw token is returned only in this response; the server stores the
+        SHA-256 digest (§11.3). Invites support expiry, revocation and a use-count
+        limit, and are never logged.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [expires_in]
               properties:
-                expires_in: { type: string, description: e.g. "24h" }
-                max_uses: { type: integer, minimum: 1, maximum: 1, default: 1 }
+                expires_at: { type: string, format: date-time, description: Optional expiry, e.g. "2026-11-01T00:00:00Z" }
+                max_uses: { type: integer, minimum: 1, default: 1 }
       responses:
         "201":
           description: Created; token shown once
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  id: { type: string }
-                  token: { type: string, description: Only returned here, never stored plaintext }
-                  expires_at: { type: string, format: date-time }
+              schema: { $ref: "#/components/schemas/Invite" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /networks/{network_id}/invites/{invite_id}:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { name: invite_id, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [devices]
+      summary: Revoke an invite (stops further enrollment, §11.3)
+      responses:
+        "204": { description: Revoked }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  # Agent-facing: no console session required. Private key never leaves the client (§11.2).
+  /enroll:
+    post:
+      tags: [devices]
+      summary: Enroll a device with an invite token (public key only)
+      description: >
+        The server validates and consumes the invite, allocates a virtual IP
+        (ADR-004) and records the public key. Requests must not carry private key
+        material — unknown fields are rejected with 422.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Enroll" }
+      responses:
+        "201":
+          description: Device created; virtual IP assigned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /networks/{network_id}/devices/{device_id}:
     parameters:
       - { $ref: "#/components/parameters/NetworkId" }
@@ -461,6 +499,8 @@ components:
         network_id: { type: string }
         name: { type: string }
         virtual_ipv4: { type: string, format: ipv4 }
+        public_key: { type: string, description: WireGuard public key registered on the server }
+        fingerprint: { type: string, description: SHA-256 of the public key; the server never stores private key material (§11.2) }
         platform: { type: string, enum: [linux, windows] }
         status: { type: string, enum: [pending, active, revoked] }
         last_seen_at: { type: string, format: date-time, nullable: true }
@@ -472,6 +512,30 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Device" }
         total: { type: integer }
+    Invite:
+      type: object
+      required: [invite_id, token]
+      properties:
+        invite_id: { type: string }
+        token: { type: string, description: 64 hex chars; only returned here, never stored plaintext (§11.3) }
+        expires_at: { type: string, format: date-time }
+    Enroll:
+      type: object
+      required: [invite_token, device_name, public_key, platform]
+      additionalProperties: false
+      properties:
+        invite_token: { type: string }
+        device_name: { type: string, minLength: 1 }
+        public_key: { type: string, minLength: 1 }
+        platform: { type: string, enum: [linux, windows] }
+    EnrollResponse:
+      type: object
+      required: [device_id, network_id, virtual_ipv4, fingerprint]
+      properties:
+        device_id: { type: string }
+        network_id: { type: string }
+        virtual_ipv4: { type: string, format: ipv4 }
+        fingerprint: { type: string, description: SHA-256 of the public key }
     LanRoute:
       type: object
       properties:

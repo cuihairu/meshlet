@@ -12,7 +12,9 @@
 Self-hosted private networking on your own VPS — Rust + WireGuard.
 
 > [!NOTE]
-> Early design stage: this repository has no implementation code yet. The docs currently hold a structured analysis of an external design baseline, kept as an evidence trail.
+> Early stage: the Rust workspace and a minimal control-plane server exist (network,
+> invite and device-enrollment API over in-memory state). WireGuard transport is not
+> wired yet — see [TODO](TODO.md) for tracked items and acceptance criteria.
 
 ## What it is (planned)
 
@@ -34,7 +36,7 @@ Not in scope for v1: public relay networks, P2P/NAT hole punching, L2 bridging, 
 
 ## Status
 
-Design draft. Three high-risk areas identified for early validation: WireGuard routing under VPS relay, alias DNAT/SNAT for overlapping subnets, and Windows/Linux network config with safe rollback.
+Phase 0 done (analysis, ADRs, docs). Phase 1 in progress: domain crates (CIDR/IPAM/conflict/entities/invites) and a control-plane server with network/invite/enrollment API over in-memory state, 62 tests green. Three high-risk areas remain for validation: WireGuard routing under VPS relay, alias DNAT/SNAT for overlapping subnets, and Windows/Linux network config with safe rollback.
 
 ## License
 
