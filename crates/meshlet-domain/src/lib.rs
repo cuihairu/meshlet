@@ -12,6 +12,7 @@ pub mod conflict;
 pub mod entities;
 pub mod invites;
 pub mod ipam;
+pub mod peer_routes;
 
 pub use cidr::{CidrError, Ipv4Cidr};
 pub use conflict::{

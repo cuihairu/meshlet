@@ -93,3 +93,23 @@ pending → applying → applied
 ```
 
 红线：控制台不得把数据库写入成功当作网络配置已生效。
+
+## Peer AllowedIPs 推导（§7.2）
+
+实现：`crates/meshlet-domain/src/peer_routes.rs`（纯函数 + 单测）。
+
+原则：AllowedIPs 与目标路由一致，**不得全量指隧道**。第一版默认只路由三类网段：
+
+| 视角 | AllowedIPs |
+|---|---|
+| VPS 侧某设备 Peer | 本机 Overlay `/32` + 该设备已发布（`Applied`）的 LAN 目标网段 + 对应 Alias 网段 |
+| 客户端 → VPS Peer | 整个 Overlay + **其他**设备已发布的 LAN + Alias（自己发布的本地网段不回灌隧道，避免环路） |
+
+约束：
+
+- 只有 `Applied` 状态的 LAN Route / Alias Mapping 进 AllowedIPs；`Pending` / `Failed` 不进。
+- Alias 只有在对应 LAN Route 已发布时才进。
+- 设备虚拟 IP 必须在 Overlay 内（`PeerRouteError::DeviceOutsideOverlay`）。
+- 结果去重 + 确定性排序（网络地址、前缀长度）。
+- VPS 为每个设备创建独立 Peer（`hub_device_peers`）。
+
