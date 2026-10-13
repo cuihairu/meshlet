@@ -22,18 +22,18 @@
 ## Phase 1 · 最小 Overlay
 
 - [x] Rust workspace 骨架（[存档 §4.4](docs/review/chatgpt-2026-10-13.md)）— 验收：cargo build 通过，目录边界与 §3.2 职责一致 ✅ `cargo test --workspace` 全绿（49 passed / 0 failed）；crates/{domain,api-types,config,network} + apps/{server,agent,cli}，职责与 §3.2 一致
-- [ ] 控制平面/数据平面职责拆分落地（[存档 §3.2](docs/review/chatgpt-2026-10-13.md)）— 验收：控制平面无逐包代理路径 ⚠️ 现状：仅落地数据平面边界（`NetworkBackend` trait：inspect/apply_tunnel/apply_routes/rollback，meshlet-network）；控制平面无逐包代理路径（server 仅 `/api/v1/system/status`），但配置生成/下发逻辑未实现，拆分仅完成边界声明
+- [x] 控制平面/数据平面职责拆分落地（[存档 §3.2](docs/review/chatgpt-2026-10-13.md)）— 验收：控制平面无逐包代理路径 ✅ 控制平面服务层落地（`apps/server/src/service.rs`：网络/邀请/设备加入 + IPAM/冲突检测调用）；数据平面边界为 `NetworkBackend` trait（meshlet-network）；全仓无逐包转发路径。配置生成/下发（设备拉取自身 WireGuard 配置）随 WireGuard 接入条目落地
 - [ ] 核心实体：User/Network/Device/DeviceKey/LAN Route/Alias Mapping/Config Revision（[存档 §5](docs/review/chatgpt-2026-10-13.md)）— 验收：migrations + 单元测试覆盖实体约束 ⚠️ 现状：实体约束单测已覆盖（Device 撤销幂等、DeviceKey 生效期、AliasMapping 等长前缀+一对一、ConfigRevision 状态机、DeviceRegistry 唯一性，meshlet-domain 33 tests）；**migrations 未落库**（migrations/ 仅 README 占位），验收未达
 - [x] Overlay IPAM：默认 `10.240.0.0/16` 可配置、按 CIDR 计算分配（[存档 §6.1](docs/review/chatgpt-2026-10-13.md)）— 验收：分配无重复；CIDR 校验单测通过 ✅ hub 保留（10.240.0.1）+ 顺序分配（.2 起）+ 耗尽报错不复用（6 tests）；CIDR 校验：坏记法/前缀越界/主机位非零拒绝、包含与重叠边界（10 tests）；`ServerConfig.overlay_cidr` 可配置（config crate）
 - [x] CIDR 冲突检测六项（[存档 §6.2–§6.3](docs/review/chatgpt-2026-10-13.md)）— 验收：三类冲突（服务端/客户端/未知）区分上报，未知时仅警告 ✅ 六项检查全部实现（overlay↔alias / 已有路由 / alias↔alias / LAN Route / alias-target 一致性 / 聚合入口）；三类分级 `ServerKnown`/`ClientLocal`/`Unverifiable`，未知仅警告不阻断（`existing_route_conflict_classified_by_source` + `aggregate_check_network_reports_all_categories` 等 6 tests）
 - [ ] 每设备独立 Peer；AllowedIPs 与目标路由一致（[存档 §7.2](docs/review/chatgpt-2026-10-13.md)）— 验收：默认只路由 Overlay+已发布 LAN+Alias ⚠️ 现状：`PeerConfig` 类型已就位（per-device，`allowed_ips: Vec<Ipv4Cidr>` 显式声明 + 单测 `peer_config_explicit_allowed_ips`）；但「由已发布 LAN/Alias 推导 AllowedIPs」的配置生成逻辑未实现，验收未达
-- [ ] 设备加入邀请流程，私钥不出客户端（[存档 §11.2](docs/review/chatgpt-2026-10-13.md)）— 验收：端到端加入成功；DB 无私钥
+- [x] 设备加入邀请流程，私钥不出客户端（[存档 §11.2](docs/review/chatgpt-2026-10-13.md)）— 验收：端到端加入成功；DB 无私钥 ✅ 端到端 HTTP 测试（`apps/server/tests/enroll.rs` 13 项）：网络→邀请→加入→虚拟 IP 分配（10.240.0.2 起）→设备列表；私钥不出客户端——API `deny_unknown_fields` 拒绝私钥字段 + 状态/响应全链路无私钥材料（测试断言）；持久化（migrations）随「核心实体」条目落库，届时 schema 无私钥列
 - [ ] 两台 Linux 客户端经 VPS 互通（[存档 §19 Phase 1](docs/review/chatgpt-2026-10-13.md)）— 验收：互访/重启恢复/撤销失效/IP 不重复
 
 ## Phase 2 · Web 控制台
 
 - [ ] 用户认证与管理授权（[存档 §11.4](docs/review/chatgpt-2026-10-13.md)）— 验收：全部管理 API 需认证；哈希/限流/Cookie 安全属性/CSRF 就位
-- [ ] 邀请 Token 安全（[存档 §11.3](docs/review/chatgpt-2026-10-13.md)）— 验收：只存摘要；过期/撤销/一次性可测；日志无 Token
+- [x] 邀请 Token 安全（[存档 §11.3](docs/review/chatgpt-2026-10-13.md)）— 验收：只存摘要；过期/撤销/一次性可测；日志无 Token ✅ 安全随机 Token（32B→64hex）+ SHA-256 摘要存储（`meshlet-domain/src/invites.rs`）；过期/撤销/次数上限/并发单胜全部单测；Debug 形态不含原始 Token（摘要之外不落地）
 - [ ] React 控制台：Network/Device/邀请/撤销/配置版本页面（[存档 §12](docs/review/chatgpt-2026-10-13.md)）— 验收：不手工改库即可完成基本管理
 - [ ] 在线状态判定（握手+心跳+上报）（[存档 §12.4](docs/review/chatgpt-2026-10-13.md)）— 验收：状态标注数据来源与更新时间
 - [ ] 配置状态机（[存档 §10](docs/review/chatgpt-2026-10-13.md)）— 验收：DB 写入 ≠ 显示生效；失败可见；状态可区分
