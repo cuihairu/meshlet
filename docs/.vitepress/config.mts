@@ -13,6 +13,8 @@ export default defineConfig({
     siteTitle: 'Meshlet',
     nav: [
       { text: '分析', link: '/analysis/', activeMatch: '/analysis/' },
+      { text: '架构', link: '/architecture/domain-model', activeMatch: '/architecture/' },
+      { text: '决策', link: '/decisions/', activeMatch: '/decisions/' },
       { text: '存档', link: '/review/chatgpt-2026-10-13', activeMatch: '/review/' },
       { text: 'GitHub', link: 'https://github.com/cuihairu/meshlet' }
     ],
@@ -28,6 +30,34 @@ export default defineConfig({
             { text: '配置状态机与安全', link: '/analysis/config-security' },
             { text: 'Agent、跨平台与可观测性', link: '/analysis/agent-platform' },
             { text: '实施路线', link: '/analysis/roadmap' }
+          ]
+        }
+      ],
+      '/architecture/': [
+        {
+          text: '架构文档',
+          items: [
+            { text: '领域模型', link: '/architecture/domain-model' },
+            { text: 'API 契约', link: '/architecture/api-contract' },
+            { text: '平台差异清单', link: '/architecture/platform-notes' }
+          ]
+        }
+      ],
+      '/decisions/': [
+        {
+          text: '架构决策记录',
+          items: [
+            { text: '总览', link: '/decisions/' },
+            { text: 'ADR-001 WireGuard 隧道基础', link: '/decisions/adr-001-wireguard-transport' },
+            { text: 'ADR-002 VPS 中心中继', link: '/decisions/adr-002-vps-hub-relay' },
+            { text: 'ADR-003 SQLite 控制平面', link: '/decisions/adr-003-sqlite-control-plane' },
+            { text: 'ADR-004 Overlay IPAM', link: '/decisions/adr-004-overlay-ipam' },
+            { text: 'ADR-005 LAN 返回路径', link: '/decisions/adr-005-lan-return-path' },
+            { text: 'ADR-006 Alias 前缀 NAT', link: '/decisions/adr-006-alias-prefix-nat' },
+            { text: 'ADR-007 Linux 网络后端', link: '/decisions/adr-007-linux-network-backend' },
+            { text: 'ADR-008 Windows 网络后端', link: '/decisions/adr-008-windows-network-backend' },
+            { text: 'ADR-009 配置版本与回滚', link: '/decisions/adr-009-config-revision-rollback' },
+            { text: 'ADR-010 认证与注册安全', link: '/decisions/adr-010-console-auth-enrollment' }
           ]
         }
       ],

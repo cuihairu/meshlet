@@ -1,0 +1,533 @@
+openapi: 3.1.0
+info:
+  title: Meshlet API
+  version: 0.1.0-draft
+  description: >
+    Meshlet management API draft (Phase 0). Source of truth for the contract is
+    docs/architecture/api-contract.md. Status codes and error codes follow the
+    unified error structure. Config-mutating responses carry revision_id and
+    apply_status (ADR-009).
+servers:
+  - url: /api/v1
+tags:
+  - name: auth
+  - name: networks
+  - name: devices
+  - name: routes
+  - name: aliases
+  - name: status
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Login (rate limited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Session cookie set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/Error" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Logout
+      responses:
+        "204": { description: No content }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Current user
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /networks:
+    get:
+      tags: [networks]
+      summary: List networks (paginated)
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NetworkList" }
+    post:
+      tags: [networks]
+      summary: Create network (CIDR validated, immutable after creation)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NetworkCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Network" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /networks/{network_id}:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [networks]
+      summary: Network detail
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Network" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [networks]
+      summary: Update network (name only in v1; CIDR immutable)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Network" }
+    delete:
+      tags: [networks]
+      summary: Delete network
+      responses:
+        "204": { description: No content }
+  /networks/{network_id}/devices:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [devices]
+      summary: List devices
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceList" }
+  /networks/{network_id}/invites:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    post:
+      tags: [devices]
+      summary: Create one-time enrollment invite (token stored as digest, ADR-010)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expires_in]
+              properties:
+                expires_in: { type: string, description: e.g. "24h" }
+                max_uses: { type: integer, minimum: 1, maximum: 1, default: 1 }
+      responses:
+        "201":
+          description: Created; token shown once
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  token: { type: string, description: Only returned here, never stored plaintext }
+                  expires_at: { type: string, format: date-time }
+  /networks/{network_id}/devices/{device_id}:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/DeviceId" }
+    get:
+      tags: [devices]
+      summary: Device detail
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+    patch:
+      tags: [devices]
+      summary: Update device (rename)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+    delete:
+      tags: [devices]
+      summary: Delete device
+      responses:
+        "204": { description: No content }
+  /networks/{network_id}/devices/{device_id}/rotate-key:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/DeviceId" }
+    post:
+      tags: [devices]
+      summary: Rotate device key (verifiable completion state)
+      responses:
+        "202":
+          description: Accepted; carries revision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevisionRef" }
+  /networks/{network_id}/devices/{device_id}/revoke:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/DeviceId" }
+    post:
+      tags: [devices]
+      summary: Revoke device (full chain, section 11.5)
+      responses:
+        "202":
+          description: Accepted; carries revision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevisionRef" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /networks/{network_id}/routes:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [routes]
+      summary: List LAN routes
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LanRoute" }
+    post:
+      tags: [routes]
+      summary: Publish LAN route (return-path mode required, ADR-005)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LanRouteCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LanRoute" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /networks/{network_id}/routes/{route_id}:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/RouteId" }
+    get:
+      tags: [routes]
+      summary: Route detail
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LanRoute" }
+    patch:
+      tags: [routes]
+      summary: Update route (e.g. return-path mode)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LanRoute" }
+    delete:
+      tags: [routes]
+      summary: Delete route
+      responses:
+        "204": { description: No content }
+  /networks/{network_id}/aliases:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [aliases]
+      summary: List aliases
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AliasMapping" }
+    post:
+      tags: [aliases]
+      summary: Create alias (equal prefix length enforced, ADR-006)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AliasCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AliasMapping" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /networks/{network_id}/aliases/{alias_id}:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/AliasId" }
+    get:
+      tags: [aliases]
+      summary: Alias detail
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AliasMapping" }
+    patch:
+      tags: [aliases]
+      summary: Update alias
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AliasMapping" }
+    delete:
+      tags: [aliases]
+      summary: Delete alias (route and NAT rules cleaned up synchronously)
+      responses:
+        "204": { description: No content }
+  /system/status:
+    get:
+      tags: [status]
+      summary: Server status (implemented in apps/server spike)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemStatus" }
+  /networks/{network_id}/status:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [status]
+      summary: Network status
+      responses:
+        "200": { description: OK }
+  /networks/{network_id}/diagnostics:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [status]
+      summary: Latest diagnostics results (12 checks, section 12.7)
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [status]
+      summary: Trigger diagnostics run
+      responses:
+        "202": { description: Accepted }
+  /networks/{network_id}/config-revisions:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [status]
+      summary: List config revisions
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ConfigRevision" }
+  /networks/{network_id}/config-revisions/{revision}:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { name: revision, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    get:
+      tags: [status]
+      summary: Config revision detail (apply_status)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConfigRevision" }
+        "404": { $ref: "#/components/responses/NotFound" }
+components:
+  parameters:
+    NetworkId: { name: network_id, in: path, required: true, schema: { type: string } }
+    DeviceId: { name: device_id, in: path, required: true, schema: { type: string } }
+    RouteId: { name: route_id, in: path, required: true, schema: { type: string } }
+    AliasId: { name: alias_id, in: path, required: true, schema: { type: string } }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Conflict (e.g. CIDR overlap)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: Validation failed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [unauthorized, forbidden, not_found, conflict, validation_failed, apply_failed, internal]
+            message: { type: string }
+            details: { type: object, additionalProperties: true }
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+    Network:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        overlay_ipv4_cidr: { type: string, examples: ["10.240.0.0/16"] }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    NetworkCreate:
+      type: object
+      required: [name, overlay_ipv4_cidr]
+      properties:
+        name: { type: string }
+        overlay_ipv4_cidr: { type: string, examples: ["10.240.0.0/16"] }
+    NetworkList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Network" }
+        total: { type: integer }
+    Device:
+      type: object
+      properties:
+        id: { type: string }
+        network_id: { type: string }
+        name: { type: string }
+        virtual_ipv4: { type: string, format: ipv4 }
+        platform: { type: string, enum: [linux, windows] }
+        status: { type: string, enum: [pending, active, revoked] }
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+    DeviceList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Device" }
+        total: { type: integer }
+    LanRoute:
+      type: object
+      properties:
+        id: { type: string }
+        network_id: { type: string }
+        gateway_device_id: { type: string }
+        destination_cidr: { type: string }
+        route_mode: { type: string, enum: [direct, alias] }
+        return_path_mode: { type: string, enum: [dual_route, controlled_snat] }
+        status: { type: string, enum: [pending, applied, failed] }
+    LanRouteCreate:
+      type: object
+      required: [gateway_device_id, destination_cidr, return_path_mode]
+      properties:
+        gateway_device_id: { type: string }
+        destination_cidr: { type: string }
+        route_mode: { type: string, enum: [direct, alias], default: direct }
+        return_path_mode: { type: string, enum: [dual_route, controlled_snat] }
+    AliasMapping:
+      type: object
+      properties:
+        id: { type: string }
+        network_id: { type: string }
+        lan_route_id: { type: string }
+        alias_cidr: { type: string }
+        target_cidr: { type: string }
+        translation_mode: { type: string, enum: [dnat_only, dnat_snat] }
+        status: { type: string, enum: [pending, applied, failed] }
+    AliasCreate:
+      type: object
+      required: [lan_route_id, alias_cidr]
+      properties:
+        lan_route_id: { type: string }
+        alias_cidr: { type: string, description: Must have same prefix length as target route CIDR }
+        translation_mode: { type: string, enum: [dnat_only, dnat_snat], default: dnat_snat }
+    ConfigRevision:
+      type: object
+      properties:
+        id: { type: string }
+        network_id: { type: string }
+        revision: { type: integer }
+        desired_config_hash: { type: string }
+        apply_status:
+          type: string
+          enum: [pending, applying, applied, failed, rollback_pending, rolled_back]
+        created_at: { type: string, format: date-time }
+        applied_at: { type: string, format: date-time, nullable: true }
+        error_summary: { type: string, nullable: true }
+    RevisionRef:
+      type: object
+      properties:
+        revision_id: { type: string }
+        apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
+    SystemStatus:
+      type: object
+      required: [status, version]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string }

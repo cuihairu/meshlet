@@ -6,14 +6,18 @@
 
 ## Phase 0 · 架构审查与原型
 
-- [ ] 锁定第一版边界与排除项（[存档 §1.3](docs/review/chatgpt-2026-10-13.md)）— 验收：边界清单进入 docs 并经用户确认
-- [ ] 确认单 VPS 部署形态，排除 K8s/微服务/消息队列（[存档 §3.3](docs/review/chatgpt-2026-10-13.md)）— 验收：部署形态写入 ADR-002
-- [ ] 技术选型核验：Rust/Tokio/Axum/Serde/SQLx/SQLite/Tracing（[存档 §4.1](docs/review/chatgpt-2026-10-13.md)）— 验收：选型写入 ADR 并通过最小 spike
-- [ ] WireGuard 中心转发原型：A→B、B→A、未授权不可达、撤销后失效（[存档 §7.3](docs/review/chatgpt-2026-10-13.md)）— 验收：四项真实集成测试通过
-- [ ] Alias DNAT/SNAT 原型：等长前缀映射 + 受控 SNAT 返回路径（[存档 §9.2–§9.5](docs/review/chatgpt-2026-10-13.md)）— 验收：双 `192.168.1.0/24` 经不同 Alias 访问成功
-- [ ] Windows/Linux 配置管理差异调研（[存档 §15.2–§15.3](docs/review/chatgpt-2026-10-13.md)）— 验收：差异清单 + ADR-007/008
-- [ ] 建立 ADR-001~010（[存档 §21](docs/review/chatgpt-2026-10-13.md)）— 验收：10 份 ADR 入库，含背景/方案/取舍/风险
-- [ ] 领域模型与 API 契约初稿（[存档 §5、§13](docs/review/chatgpt-2026-10-13.md)）— 验收：实体关系图 + OpenAPI 初稿评审通过
+- [ ] 锁定第一版边界与排除项（[存档 §1.3](docs/review/chatgpt-2026-10-13.md)）— 验收：边界清单进入 docs 并经用户确认（清单已就绪：[docs/analysis/scope.md](docs/analysis/scope.md)；**待用户一句确认**）
+- [x] 确认单 VPS 部署形态，排除 K8s/微服务/消息队列（[存档 §3.3](docs/review/chatgpt-2026-10-13.md)）— 验收：部署形态写入 ADR-002 ✅ [ADR-002](docs/decisions/adr-002-vps-hub-relay.md)
+- [ ] 技术选型核验：Rust/Tokio/Axum/Serde/SQLx/SQLite/Tracing（[存档 §4.1](docs/review/chatgpt-2026-10-13.md)）— 验收：选型写入 ADR 并通过最小 spike（ADR 已入库；spike 已验证 tokio/axum/serde/toml/tracing 编译+运行，**sqlx/SQLite 待持久化落地时验证**）
+- [ ] WireGuard 中心转发原型：A→B、B→A、未授权不可达、撤销后失效（[存档 §7.3](docs/review/chatgpt-2026-10-13.md)）— 验收：四项真实集成测试通过 ⛔ **卡点：开发环境无 root/CAP_NET_ADMIN，user namespace 禁用（uid_map 拒写），`wg` 未安装**；需 root 环境或特权 CI runner（ADR-007 已记录该前提）
+- [ ] Alias DNAT/SNAT 原型：等长前缀映射 + 受控 SNAT 返回路径（[存档 §9.2–§9.5](docs/review/chatgpt-2026-10-13.md)）— 验收：双 `192.168.1.0/24` 经不同 Alias 访问成功 ⛔ **卡点同上（nftables/NET_ADMIN/netns 不可用）**；可先落等长前缀映射的纯逻辑单测（见 meshlet-domain）
+- [x] Windows/Linux 配置管理差异调研（[存档 §15.2–§15.3](docs/review/chatgpt-2026-10-13.md)）— 验收：差异清单 + ADR-007/008 ✅ [platform-notes](docs/architecture/platform-notes.md)、[ADR-007](docs/decisions/adr-007-linux-network-backend.md)、[ADR-008](docs/decisions/adr-008-windows-network-backend.md)
+- [x] 建立 ADR-001~010（[存档 §21](docs/review/chatgpt-2026-10-13.md)）— 验收：10 份 ADR 入库，含背景/方案/取舍/风险 ✅ [docs/decisions/](docs/decisions/index.md)
+- [ ] 领域模型与 API 契约初稿（[存档 §5、§13](docs/review/chatgpt-2026-10-13.md)）— 验收：实体关系图 + OpenAPI 初稿评审通过（初稿就绪：[domain-model](docs/architecture/domain-model.md) + [api-contract](docs/architecture/api-contract.md) + [openapi.yaml](docs/public/api/openapi.yaml)；**待用户评审**）
+
+## 仓库事务
+
+- [ ] License 徽章与许可证一致性 — README 徽章按实际 LICENSE 挂 **Apache-2.0**；**待用户确认是否换 MIT**（许可证变更属用户拍板事项，不代改；确认换则同步改 LICENSE 文件与两份 README 徽章）
 
 ## Phase 1 · 最小 Overlay
 
