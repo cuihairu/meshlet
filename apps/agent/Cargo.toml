@@ -1,0 +1,9 @@
+[package]
+name = "meshlet-agent"
+description = "Meshlet device agent (Phase 1: config bootstrap only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meshlet-config = { workspace = true }

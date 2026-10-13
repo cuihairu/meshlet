@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/meshlet-domain",
+    "crates/meshlet-api-types",
+    "crates/meshlet-config",
+    "crates/meshlet-network",
+    "apps/server",
+    "apps/agent",
+    "apps/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+meshlet-domain = { path = "crates/meshlet-domain" }
+meshlet-api-types = { path = "crates/meshlet-api-types" }
+meshlet-config = { path = "crates/meshlet-config" }
+meshlet-network = { path = "crates/meshlet-network" }
+
+[profile.release]
+lto = "thin"

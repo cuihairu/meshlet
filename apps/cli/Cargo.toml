@@ -1,0 +1,6 @@
+[package]
+name = "meshlet-cli"
+description = "Meshlet CLI (Phase 1 stub)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true

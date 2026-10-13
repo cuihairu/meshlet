@@ -1,0 +1,12 @@
+[package]
+name = "meshlet-config"
+description = "Meshlet TOML configuration loading and validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meshlet-domain = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }

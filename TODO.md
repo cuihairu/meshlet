@@ -8,7 +8,7 @@
 
 - [ ] 锁定第一版边界与排除项（[存档 §1.3](docs/review/chatgpt-2026-10-13.md)）— 验收：边界清单进入 docs 并经用户确认（清单已就绪：[docs/analysis/scope.md](docs/analysis/scope.md)；**待用户一句确认**）
 - [x] 确认单 VPS 部署形态，排除 K8s/微服务/消息队列（[存档 §3.3](docs/review/chatgpt-2026-10-13.md)）— 验收：部署形态写入 ADR-002 ✅ [ADR-002](docs/decisions/adr-002-vps-hub-relay.md)
-- [ ] 技术选型核验：Rust/Tokio/Axum/Serde/SQLx/SQLite/Tracing（[存档 §4.1](docs/review/chatgpt-2026-10-13.md)）— 验收：选型写入 ADR 并通过最小 spike（ADR 已入库；spike 已验证 tokio/axum/serde/toml/tracing 编译+运行，**sqlx/SQLite 待持久化落地时验证**）
+- [x] 技术选型核验：Rust/Tokio/Axum/Serde/SQLx/SQLite/Tracing（[存档 §4.1](docs/review/chatgpt-2026-10-13.md)）— 验收：选型写入 ADR 并通过最小 spike ✅ ADR-001/005/006 已入库；workspace spike 通过：`cargo test --workspace` 全绿（49 passed），tokio/axum/serde/toml/tracing 编译+运行+集成测试（axum oneshot）验证；**sqlx/SQLite 待持久化落地时验证**
 - [ ] WireGuard 中心转发原型：A→B、B→A、未授权不可达、撤销后失效（[存档 §7.3](docs/review/chatgpt-2026-10-13.md)）— 验收：四项真实集成测试通过 ⛔ **卡点：开发环境无 root/CAP_NET_ADMIN，user namespace 禁用（uid_map 拒写），`wg` 未安装**；需 root 环境或特权 CI runner（ADR-007 已记录该前提）
 - [ ] Alias DNAT/SNAT 原型：等长前缀映射 + 受控 SNAT 返回路径（[存档 §9.2–§9.5](docs/review/chatgpt-2026-10-13.md)）— 验收：双 `192.168.1.0/24` 经不同 Alias 访问成功 ⛔ **卡点同上（nftables/NET_ADMIN/netns 不可用）**；可先落等长前缀映射的纯逻辑单测（见 meshlet-domain）
 - [x] Windows/Linux 配置管理差异调研（[存档 §15.2–§15.3](docs/review/chatgpt-2026-10-13.md)）— 验收：差异清单 + ADR-007/008 ✅ [platform-notes](docs/architecture/platform-notes.md)、[ADR-007](docs/decisions/adr-007-linux-network-backend.md)、[ADR-008](docs/decisions/adr-008-windows-network-backend.md)
@@ -21,12 +21,12 @@
 
 ## Phase 1 · 最小 Overlay
 
-- [ ] Rust workspace 骨架（[存档 §4.4](docs/review/chatgpt-2026-10-13.md)）— 验收：cargo build 通过，目录边界与 §3.2 职责一致
-- [ ] 控制平面/数据平面职责拆分落地（[存档 §3.2](docs/review/chatgpt-2026-10-13.md)）— 验收：控制平面无逐包代理路径
-- [ ] 核心实体：User/Network/Device/DeviceKey/LAN Route/Alias Mapping/Config Revision（[存档 §5](docs/review/chatgpt-2026-10-13.md)）— 验收：migrations + 单元测试覆盖实体约束
-- [ ] Overlay IPAM：默认 `10.240.0.0/16` 可配置、按 CIDR 计算分配（[存档 §6.1](docs/review/chatgpt-2026-10-13.md)）— 验收：分配无重复；CIDR 校验单测通过
-- [ ] CIDR 冲突检测六项（[存档 §6.2–§6.3](docs/review/chatgpt-2026-10-13.md)）— 验收：三类冲突（服务端/客户端/未知）区分上报，未知时仅警告
-- [ ] 每设备独立 Peer；AllowedIPs 与目标路由一致（[存档 §7.2](docs/review/chatgpt-2026-10-13.md)）— 验收：默认只路由 Overlay+已发布 LAN+Alias
+- [x] Rust workspace 骨架（[存档 §4.4](docs/review/chatgpt-2026-10-13.md)）— 验收：cargo build 通过，目录边界与 §3.2 职责一致 ✅ `cargo test --workspace` 全绿（49 passed / 0 failed）；crates/{domain,api-types,config,network} + apps/{server,agent,cli}，职责与 §3.2 一致
+- [ ] 控制平面/数据平面职责拆分落地（[存档 §3.2](docs/review/chatgpt-2026-10-13.md)）— 验收：控制平面无逐包代理路径 ⚠️ 现状：仅落地数据平面边界（`NetworkBackend` trait：inspect/apply_tunnel/apply_routes/rollback，meshlet-network）；控制平面无逐包代理路径（server 仅 `/api/v1/system/status`），但配置生成/下发逻辑未实现，拆分仅完成边界声明
+- [ ] 核心实体：User/Network/Device/DeviceKey/LAN Route/Alias Mapping/Config Revision（[存档 §5](docs/review/chatgpt-2026-10-13.md)）— 验收：migrations + 单元测试覆盖实体约束 ⚠️ 现状：实体约束单测已覆盖（Device 撤销幂等、DeviceKey 生效期、AliasMapping 等长前缀+一对一、ConfigRevision 状态机、DeviceRegistry 唯一性，meshlet-domain 33 tests）；**migrations 未落库**（migrations/ 仅 README 占位），验收未达
+- [x] Overlay IPAM：默认 `10.240.0.0/16` 可配置、按 CIDR 计算分配（[存档 §6.1](docs/review/chatgpt-2026-10-13.md)）— 验收：分配无重复；CIDR 校验单测通过 ✅ hub 保留（10.240.0.1）+ 顺序分配（.2 起）+ 耗尽报错不复用（6 tests）；CIDR 校验：坏记法/前缀越界/主机位非零拒绝、包含与重叠边界（10 tests）；`ServerConfig.overlay_cidr` 可配置（config crate）
+- [x] CIDR 冲突检测六项（[存档 §6.2–§6.3](docs/review/chatgpt-2026-10-13.md)）— 验收：三类冲突（服务端/客户端/未知）区分上报，未知时仅警告 ✅ 六项检查全部实现（overlay↔alias / 已有路由 / alias↔alias / LAN Route / alias-target 一致性 / 聚合入口）；三类分级 `ServerKnown`/`ClientLocal`/`Unverifiable`，未知仅警告不阻断（`existing_route_conflict_classified_by_source` + `aggregate_check_network_reports_all_categories` 等 6 tests）
+- [ ] 每设备独立 Peer；AllowedIPs 与目标路由一致（[存档 §7.2](docs/review/chatgpt-2026-10-13.md)）— 验收：默认只路由 Overlay+已发布 LAN+Alias ⚠️ 现状：`PeerConfig` 类型已就位（per-device，`allowed_ips: Vec<Ipv4Cidr>` 显式声明 + 单测 `peer_config_explicit_allowed_ips`）；但「由已发布 LAN/Alias 推导 AllowedIPs」的配置生成逻辑未实现，验收未达
 - [ ] 设备加入邀请流程，私钥不出客户端（[存档 §11.2](docs/review/chatgpt-2026-10-13.md)）— 验收：端到端加入成功；DB 无私钥
 - [ ] 两台 Linux 客户端经 VPS 互通（[存档 §19 Phase 1](docs/review/chatgpt-2026-10-13.md)）— 验收：互访/重启恢复/撤销失效/IP 不重复
 
