@@ -116,12 +116,13 @@ pending → applying → applied
 ```
 
 实现：`crates/meshlet-domain/src/config_state.rs`（`ConfigLedger` 簿记 +
-`ConfigApplyBackend` 注入后端 + `desired_config_hash` 确定性哈希——只覆盖
-overlay/hub/Active 设备，路由与 Alias 纳入后扩展；纯函数 + 15 项单测）。
+`ConfigApplyBackend` 注入后端 + `desired_config_hash` 确定性哈希——覆盖
+overlay/hub/Active 设备/全部 LAN 路由（标签 `meshlet-desired-v2`，顺序不敏感），
+Alias 纳入后扩展；纯函数 + 16 项单测）。
 语义（§10.2–§10.4）：
 
-- 每次期望配置变更（建网络、设备加入）先 `record` 新修订：初始 `pending`，
-  此时**只完成了 DB 写入，尚未生效**；
+- 每次期望配置变更（建网络、设备加入、撤销设备、路由增删）先 `record`
+  新修订：初始 `pending`，此时**只完成了 DB 写入，尚未生效**；
 - `apply`：`pending → applying → applied | failed`；已 `applied` 幂等重放，
   不再调用 backend（重复执行不破坏网络）；失败**含结果不确定**一律落
   `failed` + `error_summary`（不假装成功）；对 `failed` 原地重试非法，

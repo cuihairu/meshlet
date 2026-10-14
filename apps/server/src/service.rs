@@ -7,8 +7,8 @@
 
 use meshlet_api_types::ErrorResponse;
 use meshlet_domain::{
-    generate_token, Device, DeviceId, DeviceRegistry, Invite, Ipam, Ipv4Cidr, Network, Platform,
-    RegistryError, Timestamp,
+    generate_token, DesiredStateStatus, Device, DeviceId, DeviceRegistry, Invite, Ipam, Ipv4Cidr,
+    LanRoute, LanRouteId, Network, Platform, RegistryError, ReturnPathMode, RouteMode, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -103,6 +103,39 @@ pub struct EnrollResponse {
     pub apply_status: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateRouteRequest {
+    /// 网关设备（必须是本网络的 Active 设备，ADR-005）。
+    pub gateway_device_id: String,
+    pub destination_cidr: String,
+    /// `direct`（缺省）或 `alias`。
+    pub route_mode: Option<String>,
+    /// `dual_route` 或 `controlled_snat`（必选，ADR-005）。
+    pub return_path_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteView {
+    pub id: String,
+    pub network_id: String,
+    pub gateway_device_id: String,
+    pub destination_cidr: String,
+    pub route_mode: String,
+    pub return_path_mode: String,
+    /// `pending` / `applied` / `failed`（路由自身的期望态）。
+    pub status: String,
+    /// 本次变更生成的期望配置修订号（ADR-009）。
+    pub revision_id: u64,
+    pub apply_status: String,
+}
+
+/// 修订引用（撤销设备等操作返回；契约 `RevisionRef`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RevisionRef {
+    pub revision_id: u64,
+    pub apply_status: String,
+}
+
 // ---------------------------------------------------------------------------
 // 服务错误 → API 错误码
 // ---------------------------------------------------------------------------
@@ -117,6 +150,8 @@ pub enum ServiceError {
     DeviceNotFound(String),
     #[error("revision {0} not found")]
     RevisionNotFound(String),
+    #[error("route {0} not found")]
+    RouteNotFound(String),
     #[error("invalid invite token")]
     InvalidInviteToken,
     #[error("{0}")]
@@ -136,6 +171,7 @@ impl ServiceError {
             ServiceError::NetworkNotFound(_)
             | ServiceError::InviteNotFound(_)
             | ServiceError::DeviceNotFound(_)
+            | ServiceError::RouteNotFound(_)
             | ServiceError::RevisionNotFound(_) => {
                 ErrorResponse::new(meshlet_api_types::ErrorCode::NotFound, self.to_string())
             }
@@ -195,6 +231,10 @@ pub struct MeshState {
     invites: HashMap<String, Invite>,
     ipams: HashMap<String, Ipam>,
     registry: DeviceRegistry,
+    /// LAN 路由（Phase 3 控制面：增删先落状态，应用待 backend，ADR-005）。
+    pub(crate) lan_routes: HashMap<String, Vec<LanRoute>>,
+    /// 路由 id 序列（全局单调，删除不复用）。
+    route_seq: u64,
     /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
     presence_thresholds: meshlet_domain::PresenceThresholds,
     /// 期望配置修订簿记（ADR-009 状态机，§10）。
@@ -208,6 +248,8 @@ impl MeshState {
             invites: HashMap::new(),
             ipams: HashMap::new(),
             registry: DeviceRegistry::new(),
+            lan_routes: HashMap::new(),
+            route_seq: 0,
             presence_thresholds,
             ledger: meshlet_domain::ConfigLedger::new(),
         }
@@ -241,7 +283,12 @@ fn record_revision(state: &mut MeshState, network_id: &str) -> Result<u64, Servi
         .filter(|d| d.network_id.to_string() == network_id)
         .cloned()
         .collect();
-    let hash = meshlet_domain::desired_config_hash(&overlay, ipam.hub_address(), &devices);
+    let routes = state
+        .lan_routes
+        .get(network_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let hash = meshlet_domain::desired_config_hash(&overlay, ipam.hub_address(), &devices, routes);
     Ok(state.ledger.record(
         &meshlet_domain::NetworkId(network_id.to_string()),
         hash,
@@ -483,6 +530,219 @@ pub fn list_devices(state: &MeshState, network_id: &str) -> Result<Vec<DeviceVie
         .filter(|d| d.network_id.to_string() == network_id)
         .map(|d| to_device_view(d, &now, &state.presence_thresholds))
         .collect())
+}
+
+/// 发布一条 LAN 路由（ADR-005）。路由属于期望配置：创建即记录新修订（§10.1）。
+pub fn create_route(
+    state: &mut MeshState,
+    network_id: &str,
+    req: CreateRouteRequest,
+) -> Result<RouteView, ServiceError> {
+    state.network(network_id)?;
+    let destination: Ipv4Cidr = req
+        .destination_cidr
+        .parse()
+        .map_err(|e| ServiceError::InvalidCidr(format!("{}: {e}", req.destination_cidr)))?;
+    let route_mode = match req.route_mode.as_deref() {
+        None | Some("direct") => RouteMode::Direct,
+        Some("alias") => RouteMode::Alias,
+        Some(other) => {
+            return Err(ServiceError::InvalidInput(format!(
+                "route_mode must be \"direct\" or \"alias\", got {other:?}"
+            )));
+        }
+    };
+    let return_path_mode = ReturnPathMode::parse(&req.return_path_mode).ok_or_else(|| {
+        ServiceError::InvalidInput(format!(
+            "return_path_mode must be \"dual_route\" or \"controlled_snat\", got {:?}",
+            req.return_path_mode
+        ))
+    })?;
+
+    // overlay 自身/其子网不是 LAN 目的（它们走 overlay 内部转发）。
+    let overlay = state.network(network_id)?.overlay_cidr;
+    if destination.overlaps(&overlay) {
+        return Err(ServiceError::Conflict(format!(
+            "destination {destination} overlaps overlay {overlay}"
+        )));
+    }
+    // 同网络目的网段互斥（重叠即冲突，不做超集合并）。
+    if state
+        .lan_routes
+        .get(network_id)
+        .map(|routes| {
+            routes
+                .iter()
+                .any(|r| r.destination_cidr.overlaps(&destination))
+        })
+        .unwrap_or(false)
+    {
+        return Err(ServiceError::Conflict(format!(
+            "destination {destination} overlaps an existing route in network {network_id}"
+        )));
+    }
+
+    // 网关必须是本网络的 Active 设备。
+    let gateway = DeviceId(req.gateway_device_id.clone());
+    let device = state
+        .registry
+        .find_by_id(&gateway)
+        .ok_or_else(|| ServiceError::DeviceNotFound(req.gateway_device_id.clone()))?;
+    if device.network_id.to_string() != network_id {
+        return Err(ServiceError::DeviceNotFound(req.gateway_device_id));
+    }
+    if !device.is_active() {
+        return Err(ServiceError::Conflict(format!(
+            "gateway device {} is not active",
+            device.id
+        )));
+    }
+
+    state.route_seq += 1;
+    let route = LanRoute {
+        id: LanRouteId(format!("rt-{}", state.route_seq)),
+        network_id: meshlet_domain::NetworkId(network_id.to_string()),
+        gateway_device_id: gateway,
+        destination_cidr: destination,
+        route_mode,
+        return_path_mode,
+        status: DesiredStateStatus::Pending,
+        created_at: now(),
+    };
+    state
+        .lan_routes
+        .entry(network_id.to_string())
+        .or_default()
+        .push(route.clone());
+    let revision_id = record_revision(state, network_id)?;
+    Ok(to_route_view(state, network_id, &route, revision_id))
+}
+
+pub fn list_routes(state: &MeshState, network_id: &str) -> Result<Vec<RouteView>, ServiceError> {
+    state.network(network_id)?;
+    let (revision_id, apply_status) = current_revision_ref(state, network_id);
+    Ok(state
+        .lan_routes
+        .get(network_id)
+        .map(|routes| {
+            routes
+                .iter()
+                .map(|r| RouteView {
+                    id: r.id.to_string(),
+                    network_id: r.network_id.to_string(),
+                    gateway_device_id: r.gateway_device_id.to_string(),
+                    destination_cidr: r.destination_cidr.to_string(),
+                    route_mode: r.route_mode.as_str().to_string(),
+                    return_path_mode: r.return_path_mode.as_str().to_string(),
+                    status: r.status.as_str().to_string(),
+                    revision_id,
+                    apply_status: apply_status.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+pub fn get_route(
+    state: &MeshState,
+    network_id: &str,
+    route_id: &str,
+) -> Result<RouteView, ServiceError> {
+    state.network(network_id)?;
+    let route = state
+        .lan_routes
+        .get(network_id)
+        .and_then(|routes| routes.iter().find(|r| r.id.to_string() == route_id))
+        .ok_or_else(|| {
+            ServiceError::RouteNotFound(format!("{route_id} in network {network_id}"))
+        })?;
+    let (revision_id, apply_status) = current_revision_ref(state, network_id);
+    Ok(RouteView {
+        id: route.id.to_string(),
+        network_id: route.network_id.to_string(),
+        gateway_device_id: route.gateway_device_id.to_string(),
+        destination_cidr: route.destination_cidr.to_string(),
+        route_mode: route.route_mode.as_str().to_string(),
+        return_path_mode: route.return_path_mode.as_str().to_string(),
+        status: route.status.as_str().to_string(),
+        revision_id,
+        apply_status,
+    })
+}
+
+/// 删除一条 LAN 路由。删除也是期望配置变更：记录新修订。
+pub fn delete_route(
+    state: &mut MeshState,
+    network_id: &str,
+    route_id: &str,
+) -> Result<(), ServiceError> {
+    state.network(network_id)?;
+    let routes = state.lan_routes.get_mut(network_id).ok_or_else(|| {
+        ServiceError::RouteNotFound(format!("{route_id} in network {network_id}"))
+    })?;
+    let before = routes.len();
+    routes.retain(|r| r.id.to_string() != route_id);
+    if routes.len() == before {
+        return Err(ServiceError::RouteNotFound(format!(
+            "{route_id} in network {network_id}"
+        )));
+    }
+    record_revision(state, network_id)?;
+    Ok(())
+}
+
+/// 撤销设备（peer 撤销，§11.5 控制面部分）：状态转 `Revoked`（下线）并记录
+/// 新修订——被撤销设备不入期望配置哈希。agent 凭证失效由 handler 在锁外完成。
+pub fn revoke_device(
+    state: &mut MeshState,
+    network_id: &str,
+    device_id: &str,
+) -> Result<RevisionRef, ServiceError> {
+    state.network(network_id)?;
+    let device = state
+        .registry
+        .find_by_id_mut(&DeviceId(device_id.to_string()))
+        .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
+    if device.network_id.to_string() != network_id {
+        return Err(ServiceError::DeviceNotFound(device_id.to_string()));
+    }
+    device
+        .revoke(now())
+        .map_err(|e| ServiceError::Conflict(e.to_string()))?;
+    let revision_id = record_revision(state, network_id)?;
+    Ok(RevisionRef {
+        revision_id,
+        apply_status: meshlet_domain::ApplyStatus::Pending.as_str().to_string(),
+    })
+}
+
+/// 网络当前修订引用（网络视图语义复用：无修订时 0/`none`）。
+fn current_revision_ref(state: &MeshState, network_id: &str) -> (u64, String) {
+    state
+        .ledger
+        .current(&meshlet_domain::NetworkId(network_id.to_string()))
+        .map(|r| (r.revision, r.apply_status.as_str().to_string()))
+        .unwrap_or((0, "none".to_string()))
+}
+
+fn to_route_view(
+    state: &MeshState,
+    network_id: &str,
+    route: &LanRoute,
+    revision_id: u64,
+) -> RouteView {
+    let (_, apply_status) = current_revision_ref(state, network_id);
+    RouteView {
+        id: route.id.to_string(),
+        network_id: route.network_id.to_string(),
+        gateway_device_id: route.gateway_device_id.to_string(),
+        destination_cidr: route.destination_cidr.to_string(),
+        route_mode: route.route_mode.as_str().to_string(),
+        return_path_mode: route.return_path_mode.as_str().to_string(),
+        status: route.status.as_str().to_string(),
+        revision_id,
+        apply_status,
+    }
 }
 
 // ---------------------------------------------------------------------------

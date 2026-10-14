@@ -26,9 +26,9 @@ pub use conflict::{
 };
 pub use entities::{
     AliasError, AliasMapping, ApplyStatus, ConfigRevision, DesiredStateStatus, Device, DeviceError,
-    DeviceId, DeviceKey, DeviceRegistry, DeviceStatus, InviteId, LanRoute, Network, NetworkId,
-    NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError, RouteMode, Timestamp,
-    TranslationMode, UserId,
+    DeviceId, DeviceKey, DeviceRegistry, DeviceStatus, InviteId, LanRoute, LanRouteId, Network,
+    NetworkId, NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError, RouteMode,
+    Timestamp, TranslationMode, UserId,
 };
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};

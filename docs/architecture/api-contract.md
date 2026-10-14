@@ -141,7 +141,7 @@
 - **回滚**只针对 `failed` 版本，且只删除/恢复 Meshlet 自有对象，
   **不得清空系统路由**（ADR-007、§10.3）；已生效版本的撤销走前滚新版本；
 - 状态机与哈希实现于 `meshlet-domain/src/config_state.rs`（`ConfigLedger` /
-  `ConfigApplyBackend` / `desired_config_hash`，纯函数 + 15 项单测）；
+  `ConfigApplyBackend` / `desired_config_hash`（覆盖 overlay/hub/Active 设备/LAN 路由，标签 `meshlet-desired-v2`），纯函数 + 16 项单测）；
   SQLite `config_revisions` 表字段与之逐列对齐（migration 001），
   持久化接线与控制平面其余内存状态（网络/设备）同批处理。
 
@@ -149,4 +149,4 @@
 
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions}.rs`。控制平面 Mesh 状态（含配置修订簿记）当前存于内存（`MeshState`）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,device_revoke}.rs`。控制平面 Mesh 状态（含配置修订簿记）当前存于内存（`MeshState`）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）。

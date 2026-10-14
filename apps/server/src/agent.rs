@@ -77,6 +77,22 @@ impl AgentTokenStore {
             .await?;
         Ok(())
     }
+
+    /// 撤销某设备的全部 agent 凭证（设备撤销链路，§11.5）：返回失效的凭证数。
+    pub async fn revoke_for_device(
+        &self,
+        device_id: &DeviceId,
+        at: &Timestamp,
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE agent_tokens SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL",
+        )
+        .bind(at.as_str())
+        .bind(&device_id.0)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
 }
 
 /// 解析 `Authorization: Bearer <token>`（scheme 大小写不敏感）。

@@ -25,7 +25,8 @@ use serde::Serialize;
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service::{
-    create_invite, create_network, enroll, list_devices, list_networks, revoke_invite,
+    create_invite, create_network, create_route, delete_route, enroll, get_route, list_devices,
+    list_networks, list_routes, revoke_device, revoke_invite,
 };
 
 /// `GET /api/v1/system/status` 响应（契约见 docs/architecture/api-contract.md）。
@@ -98,6 +99,68 @@ async fn list_devices_handler(
     Ok(Json(list_devices(&guard, &network_id)?))
 }
 
+async fn create_route_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(_user): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path(network_id): axum::extract::Path<String>,
+    Json(req): Json<service::CreateRouteRequest>,
+) -> Result<(StatusCode, Json<service::RouteView>), service::ServiceError> {
+    let mut guard = state.mesh.lock().unwrap();
+    Ok((
+        StatusCode::CREATED,
+        Json(create_route(&mut guard, &network_id, req)?),
+    ))
+}
+
+async fn list_routes_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    axum::extract::Path(network_id): axum::extract::Path<String>,
+) -> Result<Json<Vec<service::RouteView>>, service::ServiceError> {
+    let guard = state.mesh.lock().unwrap();
+    Ok(Json(list_routes(&guard, &network_id)?))
+}
+
+async fn get_route_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    axum::extract::Path((network_id, route_id)): axum::extract::Path<(String, String)>,
+) -> Result<Json<service::RouteView>, service::ServiceError> {
+    let guard = state.mesh.lock().unwrap();
+    Ok(Json(get_route(&guard, &network_id, &route_id)?))
+}
+
+async fn delete_route_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(_user): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path((network_id, route_id)): axum::extract::Path<(String, String)>,
+) -> Result<StatusCode, service::ServiceError> {
+    let mut guard = state.mesh.lock().unwrap();
+    delete_route(&mut guard, &network_id, &route_id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn revoke_device_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(_user): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path((network_id, device_id)): axum::extract::Path<(String, String)>,
+) -> Result<(StatusCode, Json<service::RevisionRef>), service::ServiceError> {
+    // 先完成撤销 + 修订簿记（内存操作），再在锁外失效 agent 凭证。
+    let rev = {
+        let mut guard = state.mesh.lock().unwrap();
+        revoke_device(&mut guard, &network_id, &device_id)?
+    };
+    state
+        .agent_tokens
+        .revoke_for_device(&meshlet_domain::DeviceId(device_id), &crate::service::now())
+        .await
+        .map_err(|e| service::ServiceError::Internal(e.to_string()))?;
+    Ok((StatusCode::ACCEPTED, Json(rev)))
+}
+
 async fn enroll_handler(
     State(state): State<SharedAppState>,
     Json(req): Json<service::EnrollRequest>,
@@ -137,6 +200,18 @@ pub fn router(state: SharedAppState) -> Router {
             post(create_invite_handler),
         )
         .route(
+            "/api/v1/networks/{network_id}/routes",
+            post(create_route_handler).get(list_routes_handler),
+        )
+        .route(
+            "/api/v1/networks/{network_id}/routes/{route_id}",
+            get(get_route_handler).delete(delete_route_handler),
+        )
+        .route(
+            "/api/v1/networks/{network_id}/devices/{device_id}/revoke",
+            post(revoke_device_handler),
+        )
+        .route(
             "/api/v1/networks/{network_id}/invites/{invite_id}",
             delete(revoke_invite_handler),
         )
@@ -160,6 +235,7 @@ impl IntoResponse for service::ServiceError {
             service::ServiceError::NetworkNotFound(_)
             | service::ServiceError::InviteNotFound(_)
             | service::ServiceError::DeviceNotFound(_)
+            | service::ServiceError::RouteNotFound(_)
             | service::ServiceError::RevisionNotFound(_)
             | service::ServiceError::InvalidInviteToken => StatusCode::NOT_FOUND,
             service::ServiceError::InvalidCidr(_) | service::ServiceError::InvalidInput(_) => {

@@ -292,6 +292,53 @@ impl ApplyStatus {
     }
 }
 
+impl RouteMode {
+    /// API/控制台展示用小写蛇形标识（契约字段 `route_mode`）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RouteMode::Direct => "direct",
+            RouteMode::Alias => "alias",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "direct" => Some(RouteMode::Direct),
+            "alias" => Some(RouteMode::Alias),
+            _ => None,
+        }
+    }
+}
+
+impl ReturnPathMode {
+    /// API/控制台展示用小写蛇形标识（契约字段 `return_path_mode`）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReturnPathMode::DualRoute => "dual_route",
+            ReturnPathMode::ControlledSnat => "controlled_snat",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "dual_route" => Some(ReturnPathMode::DualRoute),
+            "controlled_snat" => Some(ReturnPathMode::ControlledSnat),
+            _ => None,
+        }
+    }
+}
+
+impl DesiredStateStatus {
+    /// API/控制台展示用小写蛇形标识（契约字段 `status`）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DesiredStateStatus::Pending => "pending",
+            DesiredStateStatus::Applied => "applied",
+            DesiredStateStatus::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigRevision {
     pub network_id: NetworkId,

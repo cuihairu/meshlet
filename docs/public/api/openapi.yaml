@@ -792,6 +792,7 @@ components:
         last_seen_at: { type: string, format: date-time }
     LanRoute:
       type: object
+      required: [id, network_id, gateway_device_id, destination_cidr, route_mode, return_path_mode, status, revision_id, apply_status]
       properties:
         id: { type: string }
         network_id: { type: string }
@@ -799,7 +800,9 @@ components:
         destination_cidr: { type: string }
         route_mode: { type: string, enum: [direct, alias] }
         return_path_mode: { type: string, enum: [dual_route, controlled_snat] }
-        status: { type: string, enum: [pending, applied, failed] }
+        status: { type: string, enum: [pending, applied, failed], description: The route's own desired-state status }
+        revision_id: { type: integer, description: Config revision recorded by this change (ADR-009) }
+        apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
     LanRouteCreate:
       type: object
       required: [gateway_device_id, destination_cidr, return_path_mode]
@@ -839,8 +842,9 @@ components:
         error_summary: { type: string, nullable: true }
     RevisionRef:
       type: object
+      required: [revision_id, apply_status]
       properties:
-        revision_id: { type: string }
+        revision_id: { type: integer, description: Monotonic per-network revision number (ADR-009) }
         apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
     SystemStatus:
       type: object

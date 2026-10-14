@@ -74,7 +74,7 @@
 > 背景：曾设想把这套控制并入 cockpit 的 agent，但重启 agent 会断网、不可接受；meshlet 独立部署后集成才成立，因此需要可被外部系统调用的控制面。
 
 - [x] 外部机器凭据（API Token），而非只有浏览器会话登录 — 验收：外部系统可长期调用；token 可撤销、最小权限、审计归属明确；与既有 session auth 并存且不削弱 CSRF 防护（2026-10-14 完成：`mlt_` Bearer 与 Cookie 会话并存，`read`/`write` scope（write 隐含 read，读 token 写操作 403），属主可撤销即失效、`last_used_at` 节流审计，写请求统一要求 CSRF 头；migration 004 摘要存储；测试 `apps/server/tests/api_token.rs` 8 项 + migrations 1 项，workspace 176 绿）
-- [ ] 控制面端点补齐（设备上/下线、路由增删、peer 撤销、配置下发）— 验收：与 `docs/public/api/openapi.yaml` 逐条一致，逐端点集成测试；**先核验现状**——现有 `/auth/*`、`/networks`、`/networks/{id}/devices`、`/networks/{id}/invites` 已实现，只补缺口不重复造
+- [x] 控制面端点补齐（设备上/下线、路由增删、peer 撤销、配置下发）— 验收：与 `docs/public/api/openapi.yaml` 逐条一致，逐端点集成测试；**先核验现状**——现有 `/auth/*`、`/networks`、`/networks/{id}/devices`、`/networks/{id}/invites` 已实现，只补缺口不重复造（2026-10-14 完成：核验后缺口为路由增删与 peer 撤销——设备上/下线=心跳+presence（2bc0083）、配置下发=revisions apply/rollback（9e39f94）已在先前落地；新增 `GET/POST /networks/{id}/routes`、`GET/DELETE /networks/{id}/routes/{route_id}`、`POST /networks/{id}/devices/{device_id}/revoke`（202+RevisionRef、agent 凭证即失效、被撤销设备出配置哈希）；路由纳入 `desired_config_hash`（`meshlet-desired-v2`）；测试 `routes.rs` 8 项 + `device_revoke.rs` 6 项 + 域层 1 项，workspace 191 绿；网络/设备 PATCH、rotate-key、aliases、diagnostics 属后续 Phase，未在本单范围）
 - [ ] 路由优化方案（含取舍与实测依据）— 验收：进 docs，写清当前实现瓶颈、候选方案对比、选定理由；结论须能被复现的命令验证
 - [ ] 性能方案与基准（吞吐 / 延迟 / 并发连接数 / 内存）— 验收：给出可复现 bench 命令与实测数字进 docs，附优化前后对照
 

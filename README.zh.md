@@ -35,7 +35,7 @@
 
 ## 状态
 
-Phase 0 完成（分析、ADR、文档）；Phase 1 进行中：域 crate（CIDR/IPAM/冲突检测/实体/邀请）、控制平面服务（网络/邀请/设备加入 API）、控制台认证（Argon2id、会话、限流、CSRF）、SQLite migrations、React 控制台（server 经 console_dir 静态托管）、带数据来源标注的在线状态判定，以及「DB 写入 ≠ 生效、失败可见」的配置修订状态机与外部机器凭据（`mlt_` API Token，read/write scope、可撤销、审计归属），176 项测试全绿。三个待验证高风险点：VPS 中继下的 WireGuard 路由、重叠网段的 Alias DNAT/SNAT、Windows/Linux 网络配置与安全回滚。
+Phase 0 完成（分析、ADR、文档）；Phase 1 进行中：域 crate（CIDR/IPAM/冲突检测/实体/邀请）、控制平面服务（网络/邀请/设备加入 API）、控制台认证（Argon2id、会话、限流、CSRF）、SQLite migrations、React 控制台（server 经 console_dir 静态托管）、带数据来源标注的在线状态判定，以及「DB 写入 ≠ 生效、失败可见」的配置修订状态机、外部机器凭据（`mlt_` API Token，read/write scope、可撤销、审计归属）、LAN 路由增删与设备撤销端点，191 项测试全绿。三个待验证高风险点：VPS 中继下的 WireGuard 路由、重叠网段的 Alias DNAT/SNAT、Windows/Linux 网络配置与安全回滚。
 
 ## 许可证
 
