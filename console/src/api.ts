@@ -8,6 +8,23 @@ export interface Network {
   overlay_cidr: string;
   status: string;
   created_at: string;
+  /** Number of the latest recorded config revision (0 = none yet). */
+  revision_id: number;
+  /** pending | applying | applied | failed | rollback_pending | rolled_back. */
+  apply_status: string;
+}
+
+export interface ConfigRevision {
+  network_id: string;
+  revision: number;
+  desired_config_hash: string;
+  /** pending | applying | applied | failed | rollback_pending | rolled_back. */
+  apply_status: string;
+  created_at: string;
+  /** Set only after a successful apply; null otherwise. */
+  applied_at: string | null;
+  /** Failure diagnostics (null on success) — a failed apply returns 200, not an error. */
+  error_summary: string | null;
 }
 
 export interface Device {
@@ -89,4 +106,16 @@ export const api = {
     request<InviteCreated>('POST', `/networks/${networkId}/invites`, { max_uses: maxUses }),
   revokeInvite: (networkId: string, inviteId: string) =>
     request<void>('DELETE', `/networks/${networkId}/invites/${inviteId}`),
+  listRevisions: (networkId: string) =>
+    request<ConfigRevision[]>('GET', `/networks/${networkId}/config-revisions`),
+  applyRevision: (networkId: string, revision: number) =>
+    request<ConfigRevision>(
+      'POST',
+      `/networks/${networkId}/config-revisions/${revision}/apply`,
+    ),
+  rollbackRevision: (networkId: string, revision: number) =>
+    request<ConfigRevision>(
+      'POST',
+      `/networks/${networkId}/config-revisions/${revision}/rollback`,
+    ),
 };

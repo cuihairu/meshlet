@@ -142,3 +142,28 @@ td {
 .fingerprint {
   font-size: 0.8rem;
 }
+
+.status {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.status-applied {
+  color: #15803d;
+}
+
+.status-failed,
+.status-rollback_pending {
+  color: #b91c1c;
+}
+
+.status-rolled_back {
+  color: var(--muted);
+}
+
+.hash {
+  font-size: 0.8rem;
+}

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError, type Network, type SessionUser } from './api';
+import {
+  api,
+  ApiError,
+  type ConfigRevision,
+  type Network,
+  type SessionUser,
+} from './api';
 import './App.css';
 
 type AuthState =
@@ -244,8 +250,15 @@ function NetworkDetail({ network, onClose }: { network: Network; onClose: () => 
           Close
         </button>
       </h2>
+      <p className="muted">
+        Current config revision {network.revision_id} ·{' '}
+        <span className={`status status-${network.apply_status}`}>
+          {network.apply_status}
+        </span>
+      </p>
       <DevicesSection networkId={network.id} />
       <InvitesSection networkId={network.id} />
+      <RevisionsSection networkId={network.id} />
     </section>
   );
 }
@@ -379,6 +392,109 @@ function InvitesSection({ networkId }: { networkId: string }) {
           Create invite
         </button>
       </div>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+function RevisionsSection({ networkId }: { networkId: string }) {
+  const [revisions, setRevisions] = useState<ConfigRevision[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+
+  const load = useCallback(() => {
+    api
+      .listRevisions(networkId)
+      // The API returns ascending order; the console shows the newest first.
+      .then((rows) => setRevisions([...rows].reverse()))
+      .catch(() => setRevisions([]));
+  }, [networkId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const act = async (action: 'apply' | 'rollback', revision: number) => {
+    setBusy(revision);
+    setError(null);
+    try {
+      if (action === 'apply') await api.applyRevision(networkId, revision);
+      else await api.rollbackRevision(networkId, revision);
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
+    } finally {
+      setBusy(null);
+      load();
+    }
+  };
+
+  return (
+    <div>
+      <h3>Config revisions</h3>
+      <p className="muted">
+        A new revision is recorded for every config change (network, device join,
+        route, revoke). A database write is not an apply: the status below is
+        the verdict. Apply targets the current desired config; rollback is only
+        for failed revisions.
+      </p>
+      {revisions === null ? (
+        <p className="muted">Loading…</p>
+      ) : revisions.length === 0 ? (
+        <p className="muted">No config revisions yet.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Revision</th>
+              <th>Created</th>
+              <th>Status</th>
+              <th>Desired config hash</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {revisions.map((r) => (
+              <tr key={r.revision}>
+                <td>#{r.revision}</td>
+                <td>{formatTime(r.created_at)}</td>
+                <td>
+                  <span className={`status status-${r.apply_status}`}>
+                    {r.apply_status}
+                  </span>
+                  {r.error_summary && (
+                    <span className="muted"> · {r.error_summary}</span>
+                  )}
+                </td>
+                <td>
+                  <code className="hash">{r.desired_config_hash.slice(0, 16)}…</code>
+                </td>
+                <td>
+                  {r.revision === revisions[0].revision && (
+                    <button
+                      type="button"
+                      disabled={busy === r.revision}
+                      onClick={() => act('apply', r.revision)}
+                    >
+                      Apply
+                    </button>
+                  )}
+                  {(r.apply_status === 'failed' ||
+                    r.apply_status === 'rollback_pending') && (
+                    <button
+                      type="button"
+                      className="link"
+                      disabled={busy === r.revision}
+                      onClick={() => act('rollback', r.revision)}
+                    >
+                      Rollback
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
       {error && <p className="error">{error}</p>}
     </div>
   );
