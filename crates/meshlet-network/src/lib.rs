@@ -6,6 +6,11 @@
 //!
 //! 注意：使用原生 `async fn` trait（Rust 1.75+）。原生 async trait 暂不支持
 //! `dyn` 分发；如后续需要对象安全，再评估 `async-trait`（存档 §15.1 已预留该决策点）。
+//!
+//! [nat](nat) 模块是纯**计划**层（§9.4–§9.5）：从 Alias 映射确定性推导网关侧
+//! NAT 规则；执行随数据面接线（ADR-007）。
+
+pub mod nat;
 
 use meshlet_domain::Ipv4Cidr;
 
