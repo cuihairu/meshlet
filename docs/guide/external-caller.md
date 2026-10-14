@@ -127,7 +127,7 @@ meshlet 提供的是**修订号**而非乐观锁。
 | `POST /api/v1/networks` | 建网络（新 overlay） |
 | `POST /api/v1/enroll`（经邀请） | 设备加入 → 新修订 |
 | `POST` / `DELETE /networks/{id}/routes[/{route_id}]` | LAN 路由增删 → 新修订 |
-| `POST /networks/{id}/devices/{device_id}/revoke` | 设备撤销 → 状态 revoked + agent 凭证**立即失效** + 新修订 |
+| `POST /networks/{id}/devices/{device_id}/revoke` | 设备撤销 → 状态 revoked + agent 凭证**立即失效** + 其已发布 LAN 路由**一并移除** + 新修订 |
 | `POST /networks/{id}/config-revisions/{n}/apply` | 把期望配置应用到实际环境 |
 | `POST /networks/{id}/config-revisions/{n}/rollback` | 回滚 failed 版本 |
 

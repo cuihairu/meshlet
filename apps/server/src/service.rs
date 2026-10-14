@@ -699,16 +699,24 @@ pub fn revoke_device(
     device_id: &str,
 ) -> Result<RevisionRef, ServiceError> {
     state.network(network_id)?;
-    let device = state
-        .registry
-        .find_by_id_mut(&DeviceId(device_id.to_string()))
-        .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
-    if device.network_id.to_string() != network_id {
-        return Err(ServiceError::DeviceNotFound(device_id.to_string()));
+    let revoked_id = {
+        let device = state
+            .registry
+            .find_by_id_mut(&DeviceId(device_id.to_string()))
+            .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
+        if device.network_id.to_string() != network_id {
+            return Err(ServiceError::DeviceNotFound(device_id.to_string()));
+        }
+        device
+            .revoke(now())
+            .map_err(|e| ServiceError::Conflict(e.to_string()))?;
+        device.id.clone()
+    };
+    // §11.5：撤销必须移除该设备发布的 LAN 路由，避免期望配置里留下指向
+    // 已撤销 Peer 的路由（AllowedIPs 推导会把它当成远端网段继续下发）。
+    if let Some(routes) = state.lan_routes.get_mut(network_id) {
+        routes.retain(|r| r.gateway_device_id != revoked_id);
     }
-    device
-        .revoke(now())
-        .map_err(|e| ServiceError::Conflict(e.to_string()))?;
     let revision_id = record_revision(state, network_id)?;
     Ok(RevisionRef {
         revision_id,

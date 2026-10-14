@@ -263,3 +263,64 @@ async fn revoke_requires_write_credentials_and_csrf() {
     .await;
     assert_eq!(st, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn revoke_removes_the_revoked_device_published_routes() {
+    // §11.5：撤销设备的已发布路由必须一并移除（不能给 AllowedIPs 推导留下
+    // 指向已撤销 Peer 的网段）；其他设备的路由不受影响。
+    let c = ctx().await;
+    let (network_id, device_a, _agent_a) = net_with_device(&c, "home").await;
+
+    // 第二台设备（同一网络，独立邀请）。
+    let (_, invite_b) = json_post(
+        &c,
+        &format!("/api/v1/networks/{network_id}/invites"),
+        json!({}),
+    )
+    .await;
+    assert!(
+        invite_b["token"].as_str().unwrap().len() > 32,
+        "invite token material"
+    );
+    let (st, device_b_resp) = json_post(
+        &c,
+        "/api/v1/enroll",
+        json!({
+            "invite_token": invite_b["token"].as_str().unwrap(),
+            "device_name": "dev-away",
+            "public_key": "pub-key-away",
+            "platform": "linux",
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let device_b = device_b_resp["device_id"].as_str().unwrap().to_string();
+
+    // 各发布一条路由。
+    let routes_uri = format!("/api/v1/networks/{network_id}/routes");
+    for (gateway, dst) in [(&device_a, "192.168.1.0/24"), (&device_b, "192.168.2.0/24")] {
+        let (st, _) = json_post(
+            &c,
+            &routes_uri,
+            json!({
+                "gateway_device_id": gateway,
+                "destination_cidr": dst,
+                "return_path_mode": "dual_route",
+            }),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "gateway={gateway}");
+    }
+
+    // 撤销设备 A。
+    let (st, rev) = json_post(&c, &revoke_uri(&network_id, &device_a), json!({})).await;
+    assert_eq!(st, StatusCode::ACCEPTED);
+    assert_eq!(rev["revision_id"], 6, "net=1, enroll×2, route×2 → revoke=6");
+
+    // A 的路由被移除；B 的路由原样保留。
+    let (_, list) = json_get(&c, &routes_uri).await;
+    let routes = list.as_array().unwrap();
+    assert_eq!(routes.len(), 1, "only the surviving route remains");
+    assert_eq!(routes[0]["gateway_device_id"], device_b.as_str());
+    assert_eq!(routes[0]["destination_cidr"], "192.168.2.0/24");
+}

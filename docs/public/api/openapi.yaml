@@ -350,6 +350,10 @@ paths:
     post:
       tags: [devices]
       summary: Revoke device (full chain, section 11.5)
+      description: >
+        Marks the device revoked (immediately invalidates its agent token) and
+        removes the LAN routes it published from the desired config, recording
+        a new revision. Idempotent: revoking an already-revoked device is 409.
       responses:
         "202":
           description: Accepted; carries revision
