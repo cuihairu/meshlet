@@ -49,6 +49,7 @@ async fn migrations_create_all_core_tables() {
     let got = tables(&pool).await;
     for expected in [
         "agent_tokens",
+        "api_tokens",
         "alias_mappings",
         "audit_events",
         "config_revisions",
@@ -312,5 +313,77 @@ async fn migrations_are_idempotent_across_reopens() {
     // 迁移必须可重复应用（重启不破坏库）。
     let pool = db().await;
     meshlet_server::store::MIGRATIONS.run(&pool).await.unwrap();
-    assert_eq!(tables(&pool).await.len(), 11);
+    assert_eq!(tables(&pool).await.len(), 12);
+}
+
+#[tokio::test]
+async fn api_tokens_store_digest_only_with_scopes() {
+    let pool = db().await;
+    let cols = columns(&pool, "api_tokens").await;
+    assert_eq!(
+        cols,
+        vec![
+            "id",
+            "token_hash",
+            "user_id",
+            "name",
+            "scopes",
+            "created_at",
+            "last_used_at",
+            "revoked_at"
+        ]
+    );
+    // 无原始 Token 列：只存摘要，原始 Token 仅创建响应返回一次。
+    assert!(
+        !cols.contains(&"token".to_string()) && !cols.contains(&"raw_token".to_string()),
+        "api_tokens must not store the raw token: {cols:?}"
+    );
+
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, created_at)
+                 VALUES ('u-1', 'a@b.c', 'x', 't')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    async fn insert(pool: &sqlx::SqlitePool, id: &str, hash: &str, scopes: &str) {
+        sqlx::query(
+            "INSERT INTO api_tokens (id, token_hash, user_id, name, scopes, created_at)
+                     VALUES (?, ?, 'u-1', 'n', ?, 't')",
+        )
+        .bind(id)
+        .bind(hash)
+        .bind(scopes)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    insert(&pool, "tok-1", "at-1", "read").await;
+    // token_hash 唯一（不同 id 也不行）。
+    assert!(matches!(
+        sqlx::query("INSERT INTO api_tokens (id, token_hash, user_id, name, scopes, created_at)
+                     VALUES ('tok-2', 'at-1', 'u-1', 'n', 'write', 't')")
+            .execute(&pool)
+            .await,
+        Err(Database(e)) if e.is_unique_violation()
+    ));
+    // id 唯一。
+    assert!(matches!(
+        sqlx::query("INSERT INTO api_tokens (id, token_hash, user_id, name, scopes, created_at)
+                     VALUES ('tok-1', 'at-2', 'u-1', 'n', 'read', 't')")
+            .execute(&pool)
+            .await,
+        Err(Database(e)) if e.is_unique_violation()
+    ));
+    // 撤销态由 revoked_at 承载（可撤销）。
+    sqlx::query("UPDATE api_tokens SET revoked_at = 't2' WHERE id = 'tok-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT revoked_at, last_used_at FROM api_tokens WHERE id = 'tok-1'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row.unwrap(), (Some("t2".into()), None));
 }

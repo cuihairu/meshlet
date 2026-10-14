@@ -12,7 +12,8 @@ async fn bare_router() -> axum::Router {
     let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
         meshlet_server::service::SharedState::default(),
         meshlet_server::auth::AuthStore::new(pool.clone()),
-        meshlet_server::agent::AgentTokenStore::new(pool),
+        meshlet_server::agent::AgentTokenStore::new(pool.clone()),
+        meshlet_server::api_token::ApiTokenStore::new(pool),
         false,
     ));
     meshlet_server::router(state)

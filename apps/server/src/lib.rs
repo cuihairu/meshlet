@@ -4,11 +4,13 @@
 //! 状态/网络/邀请/设备加入/控制台认证（[ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)）。
 //!
 //! 路由分层：
-//! - 公开：`/system/status`、`/enroll`（自带邀请 Token 鉴权）、`/auth/*`；
-//! - 管理（handler 挂 `AuthenticatedUser` 会话提取器 + 写请求 `CsrfHeader`）：
-//!   `/networks*`、`/networks/{id}/invites*`、`/networks/{id}/devices`。
+//! - 公开：`/system/status`、`/enroll`（自带邀请 Token 鉴权）、`/auth/bootstrap|login`；
+//! - 管理（`AuthenticatedUser`：Cookie 会话或 `mlt_` API Token；写请求另挂
+//!   `WriteUser` + `CsrfHeader`）：`/auth/tokens*`、`/networks*`、
+//!   `/networks/{id}/invites*`、`/networks/{id}/devices`、`/networks/{id}/revisions*`。
 
 pub mod agent;
+pub mod api_token;
 pub mod auth;
 pub mod revision;
 pub mod service;
@@ -21,7 +23,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
-use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState};
+use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service::{
     create_invite, create_network, enroll, list_devices, list_networks, revoke_invite,
 };
@@ -46,7 +48,7 @@ async fn status_handler() -> Json<SystemStatus> {
 
 async fn create_network_handler(
     State(state): State<SharedAppState>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    WriteUser(_user): WriteUser,
     CsrfHeader: CsrfHeader,
     Json(req): Json<service::CreateNetworkRequest>,
 ) -> Result<(StatusCode, Json<service::NetworkView>), service::ServiceError> {
@@ -64,7 +66,7 @@ async fn list_networks_handler(
 
 async fn create_invite_handler(
     State(state): State<SharedAppState>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    WriteUser(_user): WriteUser,
     CsrfHeader: CsrfHeader,
     axum::extract::Path(network_id): axum::extract::Path<String>,
     Json(req): Json<service::CreateInviteRequest>,
@@ -78,7 +80,7 @@ async fn create_invite_handler(
 
 async fn revoke_invite_handler(
     State(state): State<SharedAppState>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    WriteUser(_user): WriteUser,
     CsrfHeader: CsrfHeader,
     axum::extract::Path((network_id, invite_id)): axum::extract::Path<(String, String)>,
 ) -> Result<StatusCode, service::ServiceError> {
@@ -118,6 +120,7 @@ async fn enroll_handler(
 /// 构建完整路由。
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
+        .merge(api_token::routes())
         .merge(revision::routes())
         .route("/api/v1/system/status", get(status_handler))
         .route("/api/v1/enroll", post(enroll_handler))

@@ -11,6 +11,7 @@ servers:
   - url: /api/v1
 security:
   - sessionCookie: []
+  - apiToken: []
 tags:
   - name: auth
   - name: networks
@@ -87,6 +88,52 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/tokens:
+    post:
+      tags: [auth]
+      summary: Issue an API token for external systems (raw token returned once)
+      description: >
+        Machine credential for long-lived API callers (e.g. cockpit). The raw
+        token (mlt_ + 64 hex) is returned exactly once; the server stores only
+        the SHA-256 digest. Mutating request: still requires the CSRF header
+        X-Requested-With: XMLHttpRequest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiTokenCreate" }
+      responses:
+        "201":
+          description: Token created; raw token appears only in this response
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiTokenCreated" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    get:
+      tags: [auth]
+      summary: List the caller's API tokens (never includes token material)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ApiToken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/tokens/{token_id}:
+    delete:
+      tags: [auth]
+      summary: Revoke an API token (takes effect immediately; owner only)
+      parameters:
+        - { name: token_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /networks:
     get:
       tags: [networks]
@@ -537,6 +584,17 @@ components:
       description: >
         Bearer <agent_token> — the agent's control-plane credential issued at
         enrollment. Only returned once; the server stores the SHA-256 digest.
+    apiToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: >
+        Bearer mlt_... — API token issued via POST /auth/tokens for external
+        systems. Scopes: "read" (read endpoints only) or "write" (read+write).
+        Revocable by its owner; the server stores only the SHA-256 digest and
+        records throttled last_used_at for audit attribution. Valid only on the
+        management API, never on /agent/heartbeat. Mutating requests must still
+        send X-Requested-With: XMLHttpRequest (same CSRF guard as sessions).
   parameters:
     NetworkId: { name: network_id, in: path, required: true, schema: { type: string } }
     DeviceId: { name: device_id, in: path, required: true, schema: { type: string } }
@@ -598,6 +656,34 @@ components:
       properties:
         id: { type: string }
         email: { type: string, format: email }
+    ApiTokenCreate:
+      type: object
+      required: [name, scopes]
+      properties:
+        name: { type: string, maxLength: 128, description: Human-readable label (e.g. cockpit, ci-pipeline) }
+        scopes: { type: string, enum: [read, write], description: "write implies read" }
+    ApiTokenCreated:
+      type: object
+      required: [id, token, name, scopes, created_at]
+      properties:
+        id: { type: string }
+        token:
+          type: string
+          description: Raw token (mlt_ + 64 hex); returned exactly once, never stored in plaintext
+        name: { type: string }
+        scopes: { type: string, enum: [read, write] }
+        created_at: { type: string, format: date-time }
+    ApiToken:
+      type: object
+      description: Token view; carries no token material (digest-only storage)
+      required: [id, name, scopes, created_at]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        scopes: { type: string, enum: [read, write] }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true, description: Throttled to 60s resolution }
+        revoked_at: { type: string, format: date-time, nullable: true }
     Network:
       type: object
       properties:

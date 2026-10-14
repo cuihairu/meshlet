@@ -2,8 +2,10 @@
 //! （[存档 §11.4](../../docs/review/chatgpt-2026-10-13.md)、
 //! [ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)）。
 //!
-//! - 管理 API（网络/邀请/设备）handler 一律挂 `AuthenticatedUser`（Cookie 会话）
-//!   与写请求的 `CsrfHeader` 提取器；提取器只在命中路由后求值，未知路径保持 404；
+//! - 管理 API（网络/邀请/设备）handler 一律挂 `AuthenticatedUser`（Cookie 会话
+//!   或 `mlt_` API Token Bearer，见 api_token.rs）与写请求的 `CsrfHeader` +
+//!   `WriteUser`（会话恒放行；token 需 `write` scope）提取器；提取器只在命中
+//!   路由后求值，未知路径保持 404；
 //! - `/api/v1/enroll` 与 `/api/v1/system/status` 保持公开（enroll 自带邀请 Token 鉴权）；
 //! - Cookie：HttpOnly + SameSite=Strict + Max-Age=会话 TTL；`Secure` 由配置决定
 //!   （生产部署在 HTTPS 反代后置 true）；
@@ -38,12 +40,13 @@ pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// 内容为 Argon2id PHC 格式的无效哈希——校验必然失败，但耗时与真哈希一致。
 const DUMMY_HASH: &str = "$argon2id$v=19$m=32768,t=2,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-/// 应用状态：内存 Mesh 状态 + SQLite 用户/会话/agent 凭证 + 登录限流器。
+/// 应用状态：内存 Mesh 状态 + SQLite 用户/会话/agent/API token + 登录限流器。
 #[derive(Clone)]
 pub struct AppState {
     pub mesh: service::SharedState,
     pub auth: AuthStore,
     pub agent_tokens: crate::agent::AgentTokenStore,
+    pub api_tokens: crate::api_token::ApiTokenStore,
     pub login_limiter: Arc<RateLimiter>,
     pub cookie_secure: bool,
 }
@@ -55,12 +58,14 @@ impl AppState {
         mesh: service::SharedState,
         auth: AuthStore,
         agent_tokens: crate::agent::AgentTokenStore,
+        api_tokens: crate::api_token::ApiTokenStore,
         cookie_secure: bool,
     ) -> Self {
         Self {
             mesh,
             auth,
             agent_tokens,
+            api_tokens,
             login_limiter: Arc::new(RateLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
             cookie_secure,
         }
@@ -199,6 +204,8 @@ impl AuthStore {
 pub enum AuthApiError {
     Unauthorized,
     ForbiddenCsrf,
+    ForbiddenScopes,
+    NotFound(String),
     InvalidInput(String),
     AlreadyBootstrapped,
     RateLimited,
@@ -218,6 +225,12 @@ impl IntoResponse for AuthApiError {
                 ErrorCode::Forbidden,
                 "mutating console requests must set X-Requested-With".into(),
             ),
+            AuthApiError::ForbiddenScopes => (
+                StatusCode::FORBIDDEN,
+                ErrorCode::Forbidden,
+                "api token lacks write scope".into(),
+            ),
+            AuthApiError::NotFound(m) => (StatusCode::NOT_FOUND, ErrorCode::NotFound, m),
             AuthApiError::InvalidInput(m) => {
                 (StatusCode::BAD_REQUEST, ErrorCode::ValidationFailed, m)
             }
@@ -284,7 +297,50 @@ fn clear_cookie_header(secure: bool) -> HeaderMap {
 // 提取器（只在匹配到的路由上运行；未知路径仍走 404 fallback）
 // ---------------------------------------------------------------------------
 
-/// 管理 API 认证提取器：Cookie 会话无效一律 401。
+/// 认证结果：浏览器会话（恒全部权限）或 API Token（携带 scope）。
+enum Credentials {
+    Session(UserId),
+    ApiToken(UserId, crate::api_token::TokenScope),
+}
+
+impl Credentials {
+    fn user_id(&self) -> UserId {
+        match self {
+            Credentials::Session(id) => id.clone(),
+            Credentials::ApiToken(id, _) => id.clone(),
+        }
+    }
+}
+
+/// 会话优先、Bearer 兜底的统一认证（仅供管理 API 提取器使用）。
+///
+/// 会话头存在但无效 → 401（不回退到 Bearer，避免静默降级）；
+/// 无会话头 → 接受 `Authorization: Bearer mlt_…`（API Token 与 agent token 是
+/// 两个独立边界：agent token 不在 api_tokens 表中，反之亦然）。
+async fn authenticate(
+    state: &SharedAppState,
+    parts: &mut Parts,
+) -> Result<Credentials, AuthApiError> {
+    if let Some(token) = session_token_from_headers(&parts.headers) {
+        let now: Timestamp = service::now();
+        return match state.auth.validate_session(&token, &now).await {
+            Ok(Some(user_id)) => Ok(Credentials::Session(user_id)),
+            Ok(None) => Err(AuthApiError::Unauthorized),
+            Err(e) => Err(AuthApiError::Internal(e.to_string())),
+        };
+    }
+    if let Some(raw) = crate::agent::bearer_token_from_headers(&parts.headers) {
+        let now: Timestamp = service::now();
+        return match state.api_tokens.validate(&raw, &now).await {
+            Ok(Some((user_id, scope))) => Ok(Credentials::ApiToken(user_id, scope)),
+            Ok(None) => Err(AuthApiError::Unauthorized),
+            Err(e) => Err(AuthApiError::Internal(e.to_string())),
+        };
+    }
+    Err(AuthApiError::Unauthorized)
+}
+
+/// 管理 API 认证提取器：Cookie 会话或 API Token Bearer，无效一律 401。
 ///
 /// 不用全局 middleware——middleware 会作用于 fallback，把未知路径变成 401；
 /// 提取器只在命中路由后求值，404 语义保持。
@@ -298,14 +354,32 @@ impl FromRequestParts<SharedAppState> for AuthenticatedUser {
         parts: &mut Parts,
         state: &SharedAppState,
     ) -> Result<Self, Self::Rejection> {
-        let Some(token) = session_token_from_headers(&parts.headers) else {
-            return Err(AuthApiError::Unauthorized);
-        };
-        let now: Timestamp = service::now();
-        match state.auth.validate_session(&token, &now).await {
-            Ok(Some(user_id)) => Ok(AuthenticatedUser(user_id)),
-            Ok(None) => Err(AuthApiError::Unauthorized),
-            Err(e) => Err(AuthApiError::Internal(e.to_string())),
+        Ok(AuthenticatedUser(
+            authenticate(state, parts).await?.user_id(),
+        ))
+    }
+}
+
+/// 写端点提取器：会话恒放行；API Token 必须持 `write` scope，否则 403。
+#[derive(Debug, Clone)]
+pub struct WriteUser(pub UserId);
+
+impl FromRequestParts<SharedAppState> for WriteUser {
+    type Rejection = AuthApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &SharedAppState,
+    ) -> Result<Self, Self::Rejection> {
+        match authenticate(state, parts).await? {
+            Credentials::Session(user_id) => Ok(WriteUser(user_id)),
+            Credentials::ApiToken(user_id, scope) => {
+                if scope.allows(crate::api_token::TokenScope::Write) {
+                    Ok(WriteUser(user_id))
+                } else {
+                    Err(AuthApiError::ForbiddenScopes)
+                }
+            }
         }
     }
 }

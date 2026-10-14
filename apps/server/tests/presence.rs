@@ -37,7 +37,8 @@ async fn app(thresholds: PresenceThresholds) -> Ctx {
     let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
         mesh,
         meshlet_server::auth::AuthStore::new(pool.clone()),
-        meshlet_server::agent::AgentTokenStore::new(pool),
+        meshlet_server::agent::AgentTokenStore::new(pool.clone()),
+        meshlet_server::api_token::ApiTokenStore::new(pool),
         false,
     ));
     let app = meshlet_server::router(state);

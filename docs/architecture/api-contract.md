@@ -26,6 +26,9 @@
 | POST | `/api/v1/auth/login` | 登录（限流：每 email 15 分钟 5 次失败，ADR-010） |
 | POST | `/api/v1/auth/logout` | 登出（撤销会话） |
 | GET | `/api/v1/auth/me` | 当前用户 |
+| POST | `/api/v1/auth/tokens` | 签发 API Token（外部机器凭据；原始 Token 仅此一次返回）🔒 |
+| GET | `/api/v1/auth/tokens` | 当前用户的 Token 列表（不含任何 Token 材料）🔒 |
+| DELETE | `/api/v1/auth/tokens/{token_id}` | 撤销 API Token（即失效；仅属主可撤）🔒 |
 | GET/POST | `/api/v1/networks` | 网络列表 / 创建（CIDR 验证，ADR-004）🔒 |
 | GET/PATCH/DELETE | `/api/v1/networks/{network_id}` | 网络详情 / 更新 / 删除 🔒 |
 | GET | `/api/v1/networks/{network_id}/devices` | 设备列表 🔒 |
@@ -64,6 +67,30 @@
   `/api/v1/agent/heartbeat`（Bearer `agent_token`）不属于管理 API；agent_token
   由加入时签发、原始 Token 仅返回一次，服务端只存 SHA-256 摘要（`agent_tokens`
   表，migration 003）——agent 凭证与控制台会话是两条互不交叉的认证边界（§13.7）。
+
+### API Token（外部机器凭据，已实现）
+
+外部系统（如 cockpit）可长期调用管理 API，不必依赖浏览器会话：
+
+- **签发**：已认证用户 `POST /api/v1/auth/tokens`（同样要求 CSRF 头），
+  请求 `{"name": "cockpit", "scopes": "read" | "write"}`；响应 `201` 携带
+  `{"id", "token", "name", "scopes", "created_at"}`——原始 Token
+  （`mlt_` 前缀 + 64 hex）**仅此一次返回**，服务端只存 SHA-256 摘要
+  （`api_tokens` 表，migration 004）；
+- **调用**：`Authorization: Bearer mlt_…` 请求头。管理端点（🔒）接受
+  Cookie 会话或 API Token；请求带会话 Cookie 时按会话校验（无效一律 401，
+  不回退到 Bearer），无会话头时按 Bearer 校验；
+- **最小权限**：`read` 可调所有读端点；`write` 可调读写端点并隐含 `read`。
+  scope 不足的写请求 → `403 forbidden`；
+- **CSRF 防线不削弱**：管理端「写」请求（含 Token 调用方）仍必须携带
+  `X-Requested-With: XMLHttpRequest`，否则 `403 forbidden`——与 Cookie 会话
+  完全同一防线（Bearer 本不可被浏览器跨站伪造，此处为语义统一与纵深防御）；
+- **可撤销 + 审计归属**：Token 归属创建者（`user_id`），`last_used_at`
+  节流记录使用时刻（60s 内不重复写）；`DELETE /api/v1/auth/tokens/{token_id}`
+  撤销后立即失效（`401`），撤销后的 Token 仍留在列表中并带 `revoked_at`；
+  列表/撤销仅限属主，未知或不属于自己的 id → `404 not_found`；
+- **边界分离**：API Token 只对管理 API 有效；`/api/v1/agent/heartbeat`
+  仍只认 agent_token，反之 agent_token 也过不了管理 API 认证（§13.7）。
 
 ## 在线状态判定（已实现）
 
@@ -122,4 +149,4 @@
 
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`；管理端点已挂会话认证 + CSRF 提取器，agent 端点挂 Bearer 提取器。测试见 `apps/server/tests/{status,enroll,auth_console,migrations,presence,revisions}.rs`。控制平面 Mesh 状态（含配置修订簿记）当前存于内存（`MeshState`）；用户/会话/agent 凭证持久化 SQLite（migrations 001/002/003）。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions}.rs`。控制平面 Mesh 状态（含配置修订簿记）当前存于内存（`MeshState`）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）。

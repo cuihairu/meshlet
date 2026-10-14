@@ -20,7 +20,7 @@ use axum::{Json, Router};
 use meshlet_domain::{ConfigApplyBackend, ConfigRevision};
 use serde::Serialize;
 
-use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState};
+use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service::{self, ServiceError};
 
 /// 配置版本视图（`GET /config-revisions`、版本详情、apply/rollback 响应）。
@@ -140,7 +140,7 @@ pub async fn get_revision_handler(
 /// 但状态为 `failed` 且 `error_summary` 说明原因（失败可见，不伪装成功）。
 pub async fn apply_revision_handler(
     State(state): State<SharedAppState>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    WriteUser(_user): WriteUser,
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
@@ -163,7 +163,7 @@ pub async fn apply_revision_handler(
 /// 回滚只允许动 Meshlet 自有对象（ADR-007），不得清空系统路由（§10.3）。
 pub async fn rollback_revision_handler(
     State(state): State<SharedAppState>,
-    AuthenticatedUser(_user): AuthenticatedUser,
+    WriteUser(_user): WriteUser,
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {

@@ -48,7 +48,8 @@ async fn main() {
             meshlet_server::service::MeshState::new(presence_thresholds),
         )),
         meshlet_server::auth::AuthStore::new(pool.clone()),
-        meshlet_server::agent::AgentTokenStore::new(pool),
+        meshlet_server::agent::AgentTokenStore::new(pool.clone()),
+        meshlet_server::api_token::ApiTokenStore::new(pool),
         config.cookie_secure,
     ));
     let app = match config.console_dir.as_deref() {
