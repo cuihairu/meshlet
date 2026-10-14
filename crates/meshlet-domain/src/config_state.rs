@@ -280,6 +280,39 @@ impl ConfigLedger {
         Ok(self.get(network_id, revision).cloned().unwrap())
     }
 
+    /// 装载持久化的修订（§17.3 启动重建）：按网络分组、版本号升序灌入，
+    /// 版本序列与 DB 逐字一致——后续 [`Self::record`] 从最后一条继续递增，
+    /// 不重号。调用方（boot）应保证同一网络内版本号无重复。
+    pub fn restore(&mut self, revisions: Vec<ConfigRevision>) {
+        let mut grouped: HashMap<NetworkId, Vec<ConfigRevision>> = HashMap::new();
+        for r in revisions {
+            grouped.entry(r.network_id.clone()).or_default().push(r);
+        }
+        for (network_id, mut rs) in grouped {
+            rs.sort_by_key(|r| r.revision);
+            self.revisions.insert(network_id, rs);
+        }
+    }
+
+    /// §10.3 中断收敛（§17.3 重启恢复）：进程重启后，停在 `Applying` 的修订
+    /// 结果不可知——一律落 `Failed` 并记录中断诊断，**不得假装成功**。
+    /// `RollbackPending` 保留（回滚未确认、可重试）；`Applied`/`RolledBack`
+    /// 是终态，不动。返回被收敛修订的身份，供调用方回写持久层。
+    pub fn interrupt_applying(&mut self, error_summary: &str) -> Vec<(NetworkId, u64)> {
+        let mut converged = Vec::new();
+        for (network_id, revisions) in self.revisions.iter_mut() {
+            for r in revisions.iter_mut() {
+                if r.apply_status == ApplyStatus::Applying
+                    && r.transition(ApplyStatus::Failed).is_ok()
+                {
+                    r.error_summary = Some(error_summary.to_string());
+                    converged.push((network_id.clone(), r.revision));
+                }
+            }
+        }
+        converged
+    }
+
     fn get_mut(&mut self, network_id: &NetworkId, revision: u64) -> Option<&mut ConfigRevision> {
         self.revisions
             .get_mut(network_id)
@@ -616,6 +649,71 @@ mod tests {
         assert_eq!(backend.applied, vec![("net-a".into(), 2)]);
         // 恰好一次回滚调用，目标就是失败修订本身——不是 rev1、不是 net-b。
         assert_eq!(backend.rolled_back, vec![("net-a".into(), 2)]);
+    }
+
+    #[test]
+    fn restore_replays_revisions_and_continues_numbering() {
+        // §17.3 启动重建：持久化的修订逐字灌回，后续 record 接续递增不重号。
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        let r1 = ConfigRevision::new(id.clone(), 1, "h1".into(), T0.into());
+        let mut r2 = ConfigRevision::new(id.clone(), 2, "h2".into(), T1.into());
+        r2.apply_status = ApplyStatus::Applied;
+        r2.applied_at = Some(T2.into());
+        l.restore(vec![r2.clone(), r1.clone()]); // 乱序输入也按版本号归位
+        assert_eq!(l.revisions(&id), &[r1, r2]);
+        assert_eq!(l.current(&id).unwrap().desired_config_hash, "h2");
+        // 重启后新变更：版本号从 3 续起。
+        assert_eq!(l.record(&id, "h3".into(), T2.into()), 3);
+    }
+
+    #[test]
+    fn interrupted_applying_lands_failed_with_summary() {
+        // §10.3：停在 applying 的修订结果不可知 → 落 failed + 中断诊断。
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        let mk = |rev: u64, status: ApplyStatus| {
+            let mut r = ConfigRevision::new(id.clone(), rev, format!("h{rev}"), T0.into());
+            r.apply_status = status;
+            r
+        };
+        l.restore(vec![
+            mk(1, ApplyStatus::Applied),
+            mk(2, ApplyStatus::Applying),
+            mk(3, ApplyStatus::RollbackPending),
+        ]);
+        let converged = l.interrupt_applying("interrupted: process restarted while applying");
+        assert_eq!(converged, vec![(id.clone(), 2)]);
+        assert_eq!(
+            l.get(&id, 2).unwrap().apply_status,
+            ApplyStatus::Failed,
+            "uncertain outcome must not pretend success"
+        );
+        assert_eq!(
+            l.get(&id, 2).unwrap().error_summary.as_deref(),
+            Some("interrupted: process restarted while applying")
+        );
+        // 终态与回滚未确认态不受影响。
+        assert_eq!(l.get(&id, 1).unwrap().apply_status, ApplyStatus::Applied);
+        assert_eq!(
+            l.get(&id, 3).unwrap().apply_status,
+            ApplyStatus::RollbackPending
+        );
+        // 幂等：再次收敛不再命中任何修订。
+        assert!(l.interrupt_applying("again").is_empty());
+    }
+
+    #[test]
+    fn interrupted_applying_can_be_rolled_back_after_restart() {
+        // 收敛后的 failed 修订仍是合法回滚入口（rollback 重试语义不变）。
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        let mut r = ConfigRevision::new(id.clone(), 1, "h".into(), T0.into());
+        r.apply_status = ApplyStatus::Applying;
+        l.restore(vec![r]);
+        l.interrupt_applying("interrupted");
+        let r = l.rollback(&id, 1, &mut OkBackend).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::RolledBack);
     }
 
     #[test]

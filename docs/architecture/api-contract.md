@@ -117,8 +117,9 @@
   WireGuard 内核集成即可采集；
 - 窗口可配置：`presence_agent_window_secs`（默认 300）/
   `presence_handshake_window_secs`（默认 120）；
-- 设备未持久化到 SQLite 前，证据时间戳仅存于内存 `MeshState`
-  （schema 列已就位：migration 003）。
+- 证据时间戳随心跳写入 SQLite（`devices.last_handshake_at` /
+  `last_report_at`，migration 003），重启后按保守判定恢复——无新鲜证据
+  不虚构 `online`（§17.3，`recovery.rs::presence_is_conservative_after_restart`）。
 
 ## 配置版本与应用状态（已实现）
 
@@ -146,12 +147,16 @@
 - **回滚**只针对 `failed` 版本，且只删除/恢复 Meshlet 自有对象，
   **不得清空系统路由**（ADR-007、§10.3）；已生效版本的撤销走前滚新版本；
 - 状态机与哈希实现于 `meshlet-domain/src/config_state.rs`（`ConfigLedger` /
-  `ConfigApplyBackend` / `desired_config_hash`（覆盖 overlay/hub/Active 设备/LAN 路由，标签 `meshlet-desired-v2`），纯函数 + 16 项单测）；
+  `ConfigApplyBackend` / `desired_config_hash`（覆盖 overlay/hub/Active 设备/LAN 路由，标签 `meshlet-desired-v2`），纯函数 + 22 项单测，含 `restore`/`interrupt_applying` 重启恢复路径）；
   SQLite `config_revisions` 表字段与之逐列对齐（migration 001），
-  持久化接线与控制平面其余内存状态（网络/设备）同批处理。
+  写路径已接线：期望状态每次变更（网络/设备/路由/邀请/修订）在内存变更后
+  同步落库（`persist` 模块，§17.3）；停机重启后从 DB 重建 `MeshState`
+  （IPAM 已分配集合、路由 id 序列、修订序列与 apply 状态逐字段恢复），
+  停在 `applying` 的修订启动时按 §10.3 收敛为 `failed`（error_summary
+  点名进程中断），`rollback_pending` 原样保留可重试。
 
 
 
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,device_revoke,audit,observability}.rs`。控制平面 Mesh 状态（含配置修订簿记）当前存于内存（`MeshState`）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,device_revoke,audit,observability,recovery}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。

@@ -18,7 +18,11 @@ pub const MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations
 
 /// 打开数据库并应用全部 migration。`url` 如 `sqlite:/var/lib/meshlet/meshlet.db`。
 pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
+    use std::str::FromStr as _;
     let in_memory = url.contains(":memory:");
+    // 首次启动在全新主机上必须能建库文件（sqlx 默认 create_if_missing=false，
+    // 不开这个开关会报 SQLITE_CANTOPEN）；内存库无此需求。
+    let options = sqlx::sqlite::SqliteConnectOptions::from_str(url)?.create_if_missing(!in_memory);
     let pool = SqlitePoolOptions::new()
         .max_connections(if in_memory {
             1
@@ -46,7 +50,7 @@ pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
                 Ok(())
             })
         })
-        .connect(url)
+        .connect_with(options)
         .await?;
     MIGRATIONS.run(&pool).await?;
     Ok(pool)

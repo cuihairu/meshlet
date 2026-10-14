@@ -56,6 +56,9 @@ pub struct AppState {
     pub apply_backend: crate::revision::BackendFactory,
     /// 运行指标（§17.2）：进程内计数 + 抓取时现算量规；`GET /api/v1/system/metrics`。
     pub metrics: crate::metrics::Metrics,
+    /// Mesh 持久化互斥（§17.3）：变更 + 落库在同一个互斥段内完成，任何并发
+    /// 交错都不会让旧行快照覆盖新行（请求路径 DB 镜像的写序保证）。
+    pub persist: Arc<tokio::sync::Mutex<()>>,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -80,6 +83,7 @@ impl AppState {
             cookie_secure,
             apply_backend: crate::revision::unconfigured_backend_factory(),
             metrics: crate::metrics::Metrics::new(),
+            persist: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 

@@ -159,6 +159,7 @@ pub async fn apply_revision_handler(
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
+    let _persist = state.persist.lock().await;
     let mut backend = (state.apply_backend)();
     let applied = {
         let mut guard = state.mesh.lock().unwrap();
@@ -173,6 +174,10 @@ pub async fn apply_revision_handler(
             )
             .map_err(ServiceError::from_ledger)?
     };
+    // 应用结论（applied/failed 均含）落库：重启后状态不回退（§17.3）。
+    crate::persist::update_revision_status(state.auth.pool(), &applied)
+        .await
+        .map_err(crate::persist::internal)?;
     // 应用失败必留痕（§16.5）；结果以 apply_status 为准（`applied` 即成功，
     // 其余一律按失败留痕），不凭响应码判断。
     let view = to_revision_view(&applied);
@@ -236,6 +241,7 @@ pub async fn rollback_revision_handler(
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
+    let _persist = state.persist.lock().await;
     let mut backend = (state.apply_backend)();
     let rolled = {
         let mut guard = state.mesh.lock().unwrap();
@@ -245,6 +251,10 @@ pub async fn rollback_revision_handler(
             .rollback(&network_id_of(&network_id), revision, backend.as_mut())
             .map_err(ServiceError::from_ledger)?
     };
+    // 回滚结论落库（`rolled_back` / 未确认的 `rollback_pending` 都如实持久化）。
+    crate::persist::update_revision_status(state.auth.pool(), &rolled)
+        .await
+        .map_err(crate::persist::internal)?;
     // 回滚失败同样留痕（§16.5）：无 backend 的回滚停在 `rollback_pending`
     //（明确未完成）——除 `rolled_back` 外一律按失败留痕。
     let view = to_revision_view(&rolled);

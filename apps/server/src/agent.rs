@@ -196,7 +196,10 @@ pub async fn heartbeat_handler(
         }
     }
     let now: Timestamp = service::now();
-    let (presence, network_id) = {
+    // 心跳证据时间戳同样落库（§17.3）：重启后 presence 按原证据判定，
+    // 不虚构在线（§12.4）。
+    let _persist = state.persist.lock().await;
+    let (presence, network_id, device) = {
         let mut guard = state.mesh.lock().unwrap();
         let presence = service::record_agent_report(
             &mut guard,
@@ -208,13 +211,17 @@ pub async fn heartbeat_handler(
             service::ServiceError::DeviceNotFound(id) => AgentApiError::NotFound(id),
             other => AgentApiError::Internal(other.to_string()),
         })?;
-        let network_id = guard
+        let device = guard
             .registry
             .find_by_id(&device_id)
-            .map(|d| d.network_id.to_string())
-            .unwrap_or_default();
-        (presence, network_id)
+            .expect("report just recorded")
+            .clone();
+        let network_id = device.network_id.to_string();
+        (presence, network_id, device)
     };
+    crate::persist::update_device_presence(state.auth.pool(), &device)
+        .await
+        .map_err(|e| AgentApiError::Internal(e.to_string()))?;
     // 指标（§17.2 agent 心跳计数）+ 结构化日志（§17.1：device 组件事件）。
     state.metrics.record_agent_heartbeat();
     crate::op_log!(

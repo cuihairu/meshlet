@@ -2,7 +2,8 @@
 //!
 //! 暴露状态/网络/邀请/设备加入/控制台认证路由（契约见
 //! [api-contract.md](../../docs/architecture/api-contract.md)）。
-//! 状态：Mesh 数据暂存内存（`MeshState`）；用户/会话持久化 SQLite（migrations 001/002）。
+//! 状态：Mesh 数据运行期存于内存（`MeshState`），每次变更镜像 SQLite，
+//! 启动时从 DB 重建（§17.3 故障恢复）；用户/会话持久化 SQLite。
 
 use meshlet_config::ServerConfig;
 use tracing::info;
@@ -48,10 +49,22 @@ async fn main() {
         agent_window: std::time::Duration::from_secs(config.presence_agent_window_secs),
         handshake_window: std::time::Duration::from_secs(config.presence_handshake_window_secs),
     };
+    // §17.3 故障恢复：启动从 DB 重建期望状态（网络/设备/路由/邀请/修订），
+    // 停在 applying 的修订收敛为 failed（§10.3 不假装成功）。
+    let boot = meshlet_server::persist::load(&pool, presence_thresholds)
+        .await
+        .unwrap_or_else(|e| panic!("rebuild mesh state from {}: {e}", config.database_path));
+    info!(
+        networks = boot.summary.networks,
+        devices = boot.summary.devices,
+        routes = boot.summary.routes,
+        invites = boot.summary.invites,
+        revisions = boot.summary.revisions,
+        interrupted_applying = boot.interrupted.len(),
+        "mesh state rebuilt from database"
+    );
     let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
-        std::sync::Arc::new(std::sync::Mutex::new(
-            meshlet_server::service::MeshState::new(presence_thresholds),
-        )),
+        std::sync::Arc::new(std::sync::Mutex::new(boot.mesh)),
         meshlet_server::auth::AuthStore::new(pool.clone()),
         meshlet_server::agent::AgentTokenStore::new(pool.clone()),
         meshlet_server::api_token::ApiTokenStore::new(pool),

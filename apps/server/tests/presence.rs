@@ -245,6 +245,7 @@ async fn handshake_only_evidence_is_tunnel_only_not_online() {
     // §12.4：最近有 WireGuard 握手 ≠ 设备全部网络功能正常。
     // 上报窗口收紧到 0：心跳到达的当下上报仍新鲜（delta=0）；1 秒后上报过期，
     // 而握手读数仍在窗口内 → tunnel_only（确定性：秒级时间戳截距 delta>=1 > 0）。
+    // 握手读数取自当前时刻（相对时间，不受挂钟日期影响）。
     let ctx = app(PresenceThresholds {
         agent_window: Duration::ZERO,
         handshake_window: Duration::from_secs(300),
@@ -254,7 +255,7 @@ async fn handshake_only_evidence_is_tunnel_only_not_online() {
     let (status, body) = heartbeat(
         ctx.clone(),
         &ctx.agent_token,
-        serde_json::json!({ "last_handshake_at": "2026-10-14T11:59:59Z" }),
+        serde_json::json!({ "last_handshake_at": meshlet_server::service::now() }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

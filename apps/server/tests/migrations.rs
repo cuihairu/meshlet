@@ -313,7 +313,10 @@ async fn migrations_are_idempotent_across_reopens() {
     // 迁移必须可重复应用（重启不破坏库）。
     let pool = db().await;
     meshlet_server::store::MIGRATIONS.run(&pool).await.unwrap();
-    assert_eq!(tables(&pool).await.len(), 12);
+    // 005 新增 mesh_meta（route_seq 等单调计数，§17.3）。
+    let tables = tables(&pool).await;
+    assert_eq!(tables.len(), 13);
+    assert!(tables.contains(&"mesh_meta".to_string()), "{tables:?}");
 }
 
 #[tokio::test]

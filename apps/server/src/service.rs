@@ -2,8 +2,9 @@
 //! [ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)）：
 //! 网络/邀请/设备加入的内存实现 + HTTP DTO。
 //!
-//! 持久化（SQLx migrations）落地前，状态存于 `Mutex<MeshState>`；
-//! 邀请兑换等关键路径全程持锁，闭合 §11.3 的并发竞态。
+//! 状态存于 `Mutex<MeshState>`（请求路径的唯一事实源）；每次变更由 handler
+//! 同步镜像到 SQLite（[`crate::persist`]，§17.3），启动时从 DB 重建。邀请
+//! 兑换等关键路径全程持锁，闭合 §11.3 的并发竞态。
 
 use meshlet_api_types::ErrorResponse;
 use meshlet_domain::{
@@ -274,6 +275,104 @@ impl MeshState {
         self.networks
             .get(id)
             .ok_or_else(|| ServiceError::NetworkNotFound(id.to_string()))
+    }
+
+    // -- 持久化支撑（§17.3）---------------------------------------------------
+    // 写路径：handler 在锁内完成状态变更后，经这些只读访问器取出需要落库的
+    // 行（克隆），锁外写 SQLite。启动路径：`restore_*` 把 DB 行灌回状态。
+
+    /// 网络行（持久化/重建共用；不存在返回 `None`）。
+    pub(crate) fn network_row(&self, id: &str) -> Option<&Network> {
+        self.networks.get(id)
+    }
+
+    /// 邀请行（按 Token 摘要定位；enroll 兑换后据此回写 `used_count`）。
+    pub(crate) fn invite_by_hash(&self, token_hash: &str) -> Option<&Invite> {
+        self.invites.get(token_hash)
+    }
+
+    /// 全部邀请（启动重建）。
+    pub(crate) fn invites(&self) -> impl Iterator<Item = &Invite> {
+        self.invites.values()
+    }
+
+    /// 当前路由 id 序列（持久化到 `mesh_meta`，重启不归零、不重号）。
+    pub(crate) fn route_seq(&self) -> u64 {
+        self.route_seq
+    }
+
+    /// 启动重建（§17.3）：灌回一个网络与其 IPAM（hub 重算，地址逐一保留——
+    /// 已撤销设备的虚拟 IP 同样占用，与运行期语义一致）。
+    pub(crate) fn restore_network(&mut self, network: Network) -> Result<(), ServiceError> {
+        let hub = network
+            .overlay_cidr
+            .iter_usable()
+            .next()
+            .expect("overlay has at least one usable address");
+        let ipam = Ipam::new(network.overlay_cidr, hub)
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        let id = network.id.to_string();
+        self.networks.insert(id.clone(), network);
+        self.ipams.insert(id, ipam);
+        Ok(())
+    }
+
+    /// 启动重建：灌回一台设备（IPAM 保留其虚拟 IP，注册表查重如常）。
+    pub(crate) fn restore_device(&mut self, device: Device) -> Result<(), ServiceError> {
+        let ipam = self
+            .ipams
+            .get_mut(&device.network_id.to_string())
+            .ok_or_else(|| ServiceError::Internal("ipam missing for restore".to_string()))?;
+        ipam.allocate_specific(device.virtual_ipv4)
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        self.registry.add(device).map_err(ServiceError::from)
+    }
+
+    /// 启动重建：灌回一条 LAN 路由。
+    pub(crate) fn restore_route(&mut self, route: LanRoute) {
+        self.lan_routes
+            .entry(route.network_id.to_string())
+            .or_default()
+            .push(route);
+    }
+
+    /// 启动重建：灌回一份邀请（摘要索引；撤销/耗尽状态如常保留）。
+    pub(crate) fn restore_invite(&mut self, invite: Invite) {
+        self.invites.insert(invite.token_hash.clone(), invite);
+    }
+
+    /// 启动重建：恢复路由 id 序列（删除过的 id 不复用）。
+    pub(crate) fn set_route_seq(&mut self, seq: u64) {
+        self.route_seq = seq;
+    }
+
+    // -- 启动摘要计数（BootState 日志/测试断言用） ----------------------------
+
+    pub(crate) fn network_count(&self) -> usize {
+        self.networks.len()
+    }
+
+    pub(crate) fn device_count(&self) -> usize {
+        self.registry.devices().len()
+    }
+
+    pub(crate) fn route_count(&self) -> usize {
+        self.lan_routes.values().map(Vec::len).sum()
+    }
+
+    pub(crate) fn invite_count(&self) -> usize {
+        self.invites.len()
+    }
+
+    pub(crate) fn revision_count(&self) -> usize {
+        self.networks
+            .keys()
+            .map(|id| {
+                self.ledger
+                    .revisions(&meshlet_domain::NetworkId(id.clone()))
+                    .len()
+            })
+            .sum()
     }
 }
 
