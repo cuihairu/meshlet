@@ -1,0 +1,557 @@
+//! 配置状态机与版本簿记（[存档 §10](../../docs/review/chatgpt-2026-10-13.md)、
+//! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)）。
+//!
+//! 「数据库写入成功 ≠ WireGuard/路由/NAT 已生效」（§10.1）：期望配置的每次
+//! 变更先生成新的 [`ConfigRevision`]（`Pending`，只代表 DB 已写入），再由
+//! backend 显式应用到实际环境后才算 `Applied`；应用失败必须把错误写入修订
+//! 记录（`Failed` + `error_summary`），**结果不确定时同样进入失败态、不得
+//! 假装成功**（§10.3）。控制台以应用状态为准，不以 DB 写入为准。
+//!
+//! 应用幂等（§10.3）：同一版本重复应用结果一致——已 `Applied` 的修订直接返回，
+//! 不再调用 backend；失败版本不允许原地重试（重试 = 以相同哈希记录新修订，
+//! 保持状态机严格）；回滚只针对 `Failed` 修订（`Applied` 的撤销走前滚新版本）。
+
+use crate::cidr::Ipv4Cidr;
+use crate::entities::{
+    ApplyStatus, ConfigRevision, Device, DeviceStatus, NetworkId, RevisionError, Timestamp,
+};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+
+// ---------------------------------------------------------------------------
+// 期望配置哈希
+// ---------------------------------------------------------------------------
+
+/// 期望配置哈希（ADR-009 `desired_config_hash`）：对 overlay 网段、hub 地址与
+/// 全部 **Active** 设备的确定性序列化取 SHA-256。设备顺序不敏感（按虚拟 IP
+/// 排序）；`Pending`/`Revoked` 设备不入配置故不参与哈希。路由/Alias 纳入
+/// 期望配置后（Phase 3/4）序列化行相应扩展。
+pub fn desired_config_hash(overlay_cidr: &Ipv4Cidr, hub: Ipv4Addr, devices: &[Device]) -> String {
+    let mut lines = vec![
+        "meshlet-desired-v1".to_string(),
+        format!("overlay={overlay_cidr}"),
+        format!("hub={hub}"),
+    ];
+    let mut active: Vec<&Device> = devices
+        .iter()
+        .filter(|d| d.status == DeviceStatus::Active)
+        .collect();
+    active.sort_by_key(|d| d.virtual_ipv4);
+    for d in active {
+        lines.push(format!(
+            "device name={} vip={} pubkey={}",
+            d.name, d.virtual_ipv4, d.public_key
+        ));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(lines.join("\n").as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// 应用后端
+// ---------------------------------------------------------------------------
+
+/// 把期望配置应用到实际网络环境的后端（WireGuard/路由/NAT 的 OS 侧执行者）。
+///
+/// 实现纪律（§10.3、ADR-007）：
+/// - 幂等：重复应用同一版本不得破坏网络；
+/// - 结果不确定（如 applying 中途失联、无法确认接口状态）也必须返回 `Err`，
+///   **不得返回 `Ok` 假装成功**；
+/// - 只操作 Meshlet 自有对象，不得清空系统路由。
+pub trait ConfigApplyBackend {
+    fn apply(&mut self, revision: &ConfigRevision) -> Result<(), String>;
+    /// 回滚一个 `Failed` 修订：只删除/恢复 Meshlet 自有对象。
+    fn rollback(&mut self, revision: &ConfigRevision) -> Result<(), String>;
+}
+
+// ---------------------------------------------------------------------------
+// 版本簿记
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LedgerError {
+    #[error("revision {revision} not found in network {network_id}")]
+    RevisionNotFound { network_id: String, revision: u64 },
+    #[error(transparent)]
+    IllegalTransition(#[from] RevisionError),
+}
+
+/// 每网络配置修订簿记（ADR-009）：版本号网络内严格单调递增（§10.4 的版本
+/// 顺序——同一网络的配置修改串行化即由「先记录修订、再应用修订」保证）。
+#[derive(Debug, Default)]
+pub struct ConfigLedger {
+    revisions: HashMap<NetworkId, Vec<ConfigRevision>>,
+}
+
+impl ConfigLedger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 记录一次期望配置变更：版本号 = 该网络上一版本 + 1，初始状态
+    /// `Pending`（此时只完成了 DB 写入，**尚未生效**）。
+    pub fn record(
+        &mut self,
+        network_id: &NetworkId,
+        desired_config_hash: String,
+        now: Timestamp,
+    ) -> u64 {
+        let revisions = self.revisions.entry(network_id.clone()).or_default();
+        let revision = revisions.last().map(|r| r.revision + 1).unwrap_or(1);
+        revisions.push(ConfigRevision::new(
+            network_id.clone(),
+            revision,
+            desired_config_hash,
+            now,
+        ));
+        revision
+    }
+
+    /// 某网络的全部修订（按版本号升序；未知网络返回空切片）。
+    pub fn revisions(&self, network_id: &NetworkId) -> &[ConfigRevision] {
+        self.revisions
+            .get(network_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// 单个修订。
+    pub fn get(&self, network_id: &NetworkId, revision: u64) -> Option<&ConfigRevision> {
+        self.revisions(network_id)
+            .iter()
+            .find(|r| r.revision == revision)
+    }
+
+    /// 当前期望修订 = 最新一个未回滚的修订（控制台以此为准，§10.1）。
+    pub fn current(&self, network_id: &NetworkId) -> Option<&ConfigRevision> {
+        self.revisions(network_id)
+            .iter()
+            .rev()
+            .find(|r| r.apply_status != ApplyStatus::RolledBack)
+    }
+
+    /// 应用一个修订：`pending → applying → applied | failed`。
+    ///
+    /// - 已 `Applied`：幂等返回，**不再调用 backend**（§10.3 重复应用不破坏
+    ///   网络）；
+    /// - backend 失败（含结果不确定）：进入 `Failed` 并记录 `error_summary`，
+    ///   返回更新后的修订——调用方必须向控制台暴露该失败，不得吞掉；
+    /// - 其余非法跃迁（如对 `Failed` 原地重试）返回
+    ///   [`LedgerError::IllegalTransition`]，重试路径是记录新修订。
+    pub fn apply(
+        &mut self,
+        network_id: &NetworkId,
+        revision: u64,
+        backend: &mut dyn ConfigApplyBackend,
+        now: Timestamp,
+    ) -> Result<ConfigRevision, LedgerError> {
+        // 先做只读判定：未知修订 / 已生效版本的幂等重放都不需要可变借用。
+        match self.get(network_id, revision) {
+            None => {
+                return Err(LedgerError::RevisionNotFound {
+                    network_id: network_id.to_string(),
+                    revision,
+                })
+            }
+            Some(r) if r.apply_status == ApplyStatus::Applied => return Ok(r.clone()),
+            Some(_) => {}
+        }
+        let r = self.get_mut(network_id, revision).unwrap();
+        r.transition(ApplyStatus::Applying)?;
+        match backend.apply(r) {
+            Ok(()) => {
+                r.transition(ApplyStatus::Applied)?;
+                r.applied_at = Some(now);
+                r.error_summary = None;
+            }
+            Err(summary) => {
+                // 失败（含不确定结果）显式落态：error_summary 可诊断（§12.2）。
+                r.transition(ApplyStatus::Failed)?;
+                r.error_summary = Some(summary);
+            }
+        }
+        Ok(self.get(network_id, revision).cloned().unwrap())
+    }
+
+    /// 回滚一个 `Failed` 修订：`failed → rollback_pending → rolled_back`。
+    /// 回滚动作同样交给 backend；上次回滚未确认（`RollbackPending`）允许重试，
+    /// 已 `RolledBack` 的修订幂等返回。回滚成功后当前期望修订自然回落到更早
+    /// 的未回滚修订（见 [`Self::current`]）。
+    pub fn rollback(
+        &mut self,
+        network_id: &NetworkId,
+        revision: u64,
+        backend: &mut dyn ConfigApplyBackend,
+    ) -> Result<ConfigRevision, LedgerError> {
+        // 先做只读判定：未知修订 / 幂等重放 / 非法跃迁都不需要可变借用。
+        match self.get(network_id, revision) {
+            None => {
+                return Err(LedgerError::RevisionNotFound {
+                    network_id: network_id.to_string(),
+                    revision,
+                })
+            }
+            Some(r) => match r.apply_status {
+                ApplyStatus::RolledBack => return Ok(r.clone()), // 幂等
+                // Failed 正常进入回滚；RollbackPending 是上次回滚未确认的重试入口。
+                ApplyStatus::Failed | ApplyStatus::RollbackPending => {}
+                other => {
+                    return Err(LedgerError::IllegalTransition(
+                        RevisionError::IllegalTransition {
+                            from: other,
+                            to: ApplyStatus::RollbackPending,
+                        },
+                    ))
+                }
+            },
+        }
+        let r = self.get_mut(network_id, revision).unwrap();
+        if r.apply_status == ApplyStatus::Failed {
+            r.transition(ApplyStatus::RollbackPending)?;
+        }
+        match backend.rollback(r) {
+            Ok(()) => {
+                r.transition(ApplyStatus::RolledBack)?;
+            }
+            Err(err) => {
+                // 回滚失败：留在 RollbackPending（明确未完成），保留原失败
+                // 诊断并追加回滚错误——状态可区分，失败可见。
+                let mut msg = r.error_summary.take().unwrap_or_default();
+                if !msg.is_empty() {
+                    msg.push_str("; ");
+                }
+                msg.push_str("rollback failed: ");
+                msg.push_str(&err);
+                r.error_summary = Some(msg);
+            }
+        }
+        Ok(self.get(network_id, revision).cloned().unwrap())
+    }
+
+    fn get_mut(&mut self, network_id: &NetworkId, revision: u64) -> Option<&mut ConfigRevision> {
+        self.revisions
+            .get_mut(network_id)
+            .and_then(|rs| rs.iter_mut().find(|r| r.revision == revision))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const T0: &str = "2026-10-14T08:00:00Z";
+    const T1: &str = "2026-10-14T08:01:00Z";
+    const T2: &str = "2026-10-14T08:02:00Z";
+
+    fn net(id: &str) -> NetworkId {
+        NetworkId(id.into())
+    }
+
+    struct OkBackend;
+
+    impl ConfigApplyBackend for OkBackend {
+        fn apply(&mut self, _r: &ConfigRevision) -> Result<(), String> {
+            Ok(())
+        }
+        fn rollback(&mut self, _r: &ConfigRevision) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct BrokenBackend {
+        apply_error: String,
+        rollback_error: String,
+    }
+
+    impl BrokenBackend {
+        fn new(apply_error: &str, rollback_error: &str) -> Self {
+            Self {
+                apply_error: apply_error.into(),
+                rollback_error: rollback_error.into(),
+            }
+        }
+    }
+
+    impl ConfigApplyBackend for BrokenBackend {
+        fn apply(&mut self, _r: &ConfigRevision) -> Result<(), String> {
+            Err(self.apply_error.clone())
+        }
+        fn rollback(&mut self, _r: &ConfigRevision) -> Result<(), String> {
+            Err(self.rollback_error.clone())
+        }
+    }
+
+    struct CountingBackend {
+        calls: u32,
+    }
+
+    impl ConfigApplyBackend for CountingBackend {
+        fn apply(&mut self, _r: &ConfigRevision) -> Result<(), String> {
+            self.calls += 1;
+            Ok(())
+        }
+        fn rollback(&mut self, _r: &ConfigRevision) -> Result<(), String> {
+            self.calls += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn revisions_are_monotonic_per_network_and_independent_across_networks() {
+        let mut l = ConfigLedger::new();
+        let (a, b) = (net("net-a"), net("net-b"));
+        assert_eq!(l.record(&a, "h1".into(), T0.into()), 1);
+        assert_eq!(l.record(&a, "h2".into(), T0.into()), 2);
+        // 另一网络独立计数（§10.4 版本顺序按网络隔离）。
+        assert_eq!(l.record(&b, "h1".into(), T0.into()), 1);
+        assert_eq!(l.current(&a).unwrap().revision, 2);
+        assert_eq!(l.get(&a, 1).unwrap().desired_config_hash, "h1");
+        assert_eq!(l.get(&b, 1).unwrap().desired_config_hash, "h1");
+    }
+
+    #[test]
+    fn recorded_revision_is_pending_without_applied_at_or_error() {
+        // 验收基线：DB 写入 ≠ 显示生效——新修订不得宣称 Applied。
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let r = l.current(&id).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::Pending);
+        assert!(r.applied_at.is_none());
+        assert!(r.error_summary.is_none());
+    }
+
+    #[test]
+    fn apply_success_transitions_to_applied_and_sets_applied_at() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let r = l.apply(&id, 1, &mut OkBackend, T1.into()).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::Applied);
+        assert_eq!(r.applied_at.as_deref(), Some(T1));
+        assert!(r.error_summary.is_none());
+    }
+
+    #[test]
+    fn apply_failure_is_visible_in_failed_state_with_verbatim_summary() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let mut backend = BrokenBackend::new("wg setconf exit 1: line 3 invalid", "unused");
+        let r = l.apply(&id, 1, &mut backend, T1.into()).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::Failed);
+        assert!(r.applied_at.is_none());
+        assert_eq!(
+            r.error_summary.as_deref(),
+            Some("wg setconf exit 1: line 3 invalid")
+        );
+    }
+
+    #[test]
+    fn uncertain_backend_outcome_lands_in_failed_not_applied() {
+        // §10.3：结果不确定时进入明确的失败状态，不得假装成功。
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let mut backend =
+            BrokenBackend::new("result unknown: connection lost while applying", "unused");
+        let r = l.apply(&id, 1, &mut backend, T1.into()).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::Failed);
+        assert_eq!(
+            r.error_summary.as_deref(),
+            Some("result unknown: connection lost while applying")
+        );
+    }
+
+    #[test]
+    fn reapplying_applied_revision_is_idempotent_and_skips_backend() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let mut backend = CountingBackend { calls: 0 };
+        let first = l.apply(&id, 1, &mut backend, T1.into()).unwrap();
+        assert_eq!(first.apply_status, ApplyStatus::Applied);
+        // 重放同一版本：不再调用 backend，applied_at 不变。
+        let second = l.apply(&id, 1, &mut backend, T2.into()).unwrap();
+        assert_eq!(backend.calls, 1);
+        assert_eq!(second.apply_status, ApplyStatus::Applied);
+        assert_eq!(second.applied_at.as_deref(), Some(T1));
+    }
+
+    #[test]
+    fn reapplying_failed_revision_is_rejected_new_revision_is_the_retry_path() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let mut backend = BrokenBackend::new("boom", "unused");
+        l.apply(&id, 1, &mut backend, T1.into()).unwrap();
+        // 原地重试被状态机拒绝……
+        let err = l.apply(&id, 1, &mut backend, T2.into()).unwrap_err();
+        assert!(matches!(err, LedgerError::IllegalTransition(_)));
+        // ……重试 = 以相同哈希记录新修订。
+        let rev2 = l.record(&id, "h".into(), T2.into());
+        assert_eq!(rev2, 2);
+        assert_eq!(l.current(&id).unwrap().apply_status, ApplyStatus::Pending);
+    }
+
+    #[test]
+    fn apply_of_unknown_revision_is_not_found() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        let err = l.apply(&id, 7, &mut OkBackend, T1.into()).unwrap_err();
+        assert_eq!(
+            err,
+            LedgerError::RevisionNotFound {
+                network_id: "net-1".into(),
+                revision: 7
+            }
+        );
+    }
+
+    #[test]
+    fn failed_revision_can_be_rolled_back_and_current_falls_back() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h1".into(), T0.into());
+        l.record(&id, "h2".into(), T0.into());
+        let mut backend = BrokenBackend::new("boom", "unused");
+        l.apply(&id, 2, &mut backend, T1.into()).unwrap();
+        let r = l.rollback(&id, 2, &mut OkBackend).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::RolledBack);
+        // 回滚后当前期望回落到更早的未回滚修订。
+        assert_eq!(l.current(&id).unwrap().revision, 1);
+        assert_eq!(l.current(&id).unwrap().apply_status, ApplyStatus::Pending);
+    }
+
+    #[test]
+    fn rollback_is_restricted_to_failed_revisions() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        // Pending 不允许回滚（Applied 的撤销走前滚新版本，ADR-009）。
+        let err = l.rollback(&id, 1, &mut OkBackend).unwrap_err();
+        assert!(matches!(err, LedgerError::IllegalTransition(_)));
+        // Applied 是终态，同样不允许回滚。
+        l.apply(&id, 1, &mut OkBackend, T1.into()).unwrap();
+        let err = l.rollback(&id, 1, &mut OkBackend).unwrap_err();
+        assert!(matches!(err, LedgerError::IllegalTransition(_)));
+    }
+
+    #[test]
+    fn failed_rollback_stays_rollback_pending_with_combined_summary_and_can_retry() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let mut broken = BrokenBackend::new("apply boom", "interface meshlet0 missing");
+        l.apply(&id, 1, &mut broken, T1.into()).unwrap();
+        // 回滚失败：留在 RollbackPending，诊断合并（原失败 + 回滚错误）。
+        let r = l.rollback(&id, 1, &mut broken).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::RollbackPending);
+        let summary = r.error_summary.as_deref().unwrap();
+        assert!(summary.contains("apply boom"));
+        assert!(summary.contains("rollback failed: interface meshlet0 missing"));
+        // 重试回滚成功 → RolledBack。
+        let r = l.rollback(&id, 1, &mut OkBackend).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::RolledBack);
+    }
+
+    #[test]
+    fn rolling_back_a_rolled_back_revision_is_idempotent() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let mut broken = BrokenBackend::new("boom", "unused");
+        l.apply(&id, 1, &mut broken, T1.into()).unwrap();
+        l.rollback(&id, 1, &mut OkBackend).unwrap();
+        // 幂等：不报错、状态不变、不调用 backend。
+        let mut backend = CountingBackend { calls: 0 };
+        let r = l.rollback(&id, 1, &mut backend).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::RolledBack);
+        assert_eq!(backend.calls, 0);
+    }
+
+    #[test]
+    fn fully_rolled_back_network_has_no_current_revision() {
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h".into(), T0.into());
+        let mut broken = BrokenBackend::new("boom", "unused");
+        l.apply(&id, 1, &mut broken, T1.into()).unwrap();
+        l.rollback(&id, 1, &mut OkBackend).unwrap();
+        assert!(l.current(&id).is_none());
+    }
+
+    // -- desired_config_hash ------------------------------------------------
+
+    fn device(name: &str, ip: &str, status: DeviceStatus) -> Device {
+        Device {
+            id: crate::entities::DeviceId(name.into()),
+            network_id: net("net-1"),
+            name: name.into(),
+            virtual_ipv4: ip.parse().unwrap(),
+            public_key: format!("pub-{name}"),
+            platform: crate::entities::Platform::Linux,
+            status,
+            last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
+            created_at: T0.into(),
+            revoked_at: None,
+        }
+    }
+
+    #[test]
+    fn desired_config_hash_is_deterministic_and_device_order_insensitive() {
+        let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
+        let hub: Ipv4Addr = "10.240.0.1".parse().unwrap();
+        let d1 = device("alpha", "10.240.0.2", DeviceStatus::Active);
+        let d2 = device("beta", "10.240.0.3", DeviceStatus::Active);
+        let h1 = desired_config_hash(&overlay, hub, &[d1.clone(), d2.clone()]);
+        let h2 = desired_config_hash(&overlay, hub, &[d2, d1]);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64); // SHA-256 hex
+    }
+
+    #[test]
+    fn desired_config_hash_tracks_active_config_only() {
+        let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
+        let hub: Ipv4Addr = "10.240.0.1".parse().unwrap();
+        let alpha = device("alpha", "10.240.0.2", DeviceStatus::Active);
+        let base = desired_config_hash(&overlay, hub, std::slice::from_ref(&alpha));
+
+        // 新设备加入 → 哈希变化。
+        let beta = device("beta", "10.240.0.3", DeviceStatus::Active);
+        assert_ne!(
+            desired_config_hash(&overlay, hub, &[alpha.clone(), beta]),
+            base
+        );
+
+        // 改名 → 哈希变化（期望配置含设备名）。
+        let mut renamed = alpha.clone();
+        renamed.name = "alpha-2".into();
+        assert_ne!(desired_config_hash(&overlay, hub, &[renamed]), base);
+
+        // 撤销（Revoked）→ 与无任何设备时一致（不入配置）。
+        let mut revoked = alpha.clone();
+        revoked.status = DeviceStatus::Revoked;
+        assert_eq!(
+            desired_config_hash(&overlay, hub, &[revoked]),
+            desired_config_hash(&overlay, hub, &[])
+        );
+
+        // overlay 或 hub 变化 → 哈希变化。
+        let other_overlay: Ipv4Cidr = "172.30.0.0/16".parse().unwrap();
+        assert_ne!(
+            desired_config_hash(&other_overlay, hub, std::slice::from_ref(&alpha)),
+            base
+        );
+        let other_hub: Ipv4Addr = "10.240.0.254".parse().unwrap();
+        assert_ne!(desired_config_hash(&overlay, other_hub, &[alpha]), base);
+    }
+}

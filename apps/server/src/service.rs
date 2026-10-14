@@ -31,6 +31,11 @@ pub struct NetworkView {
     pub overlay_cidr: String,
     pub status: String,
     pub created_at: String,
+    /// 当前期望修订号（ADR-009：配置修改类响应必须携带版本与应用状态）。
+    pub revision_id: u64,
+    /// 当前修订的应用状态：`pending`/`applying`/`applied`/`failed`/
+    /// `rollback_pending`/`rolled_back`（ADR-009 状态机）。
+    pub apply_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +97,10 @@ pub struct EnrollResponse {
     pub fingerprint: String,
     /// Agent API 凭证（Bearer）：**仅此一次**返回，服务端只存 SHA-256 摘要。
     pub agent_token: String,
+    /// 本次变更生成的期望配置修订号（ADR-009）。
+    pub revision_id: u64,
+    /// 该修订的应用状态（新修订恒为 `pending`——DB 写入 ≠ 生效）。
+    pub apply_status: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +115,8 @@ pub enum ServiceError {
     InviteNotFound(String),
     #[error("device {0} not found")]
     DeviceNotFound(String),
+    #[error("revision {0} not found")]
+    RevisionNotFound(String),
     #[error("invalid invite token")]
     InvalidInviteToken,
     #[error("{0}")]
@@ -124,7 +135,8 @@ impl ServiceError {
         match self {
             ServiceError::NetworkNotFound(_)
             | ServiceError::InviteNotFound(_)
-            | ServiceError::DeviceNotFound(_) => {
+            | ServiceError::DeviceNotFound(_)
+            | ServiceError::RevisionNotFound(_) => {
                 ErrorResponse::new(meshlet_api_types::ErrorCode::NotFound, self.to_string())
             }
             ServiceError::InvalidInviteToken => ErrorResponse::new(
@@ -158,6 +170,21 @@ impl From<RegistryError> for ServiceError {
     }
 }
 
+impl ServiceError {
+    /// 版本簿记错误 → API 错误（未知修订 404；非法跃迁 409，§10.4 乐观并发）。
+    pub fn from_ledger(e: meshlet_domain::LedgerError) -> Self {
+        match e {
+            meshlet_domain::LedgerError::RevisionNotFound {
+                network_id,
+                revision,
+            } => ServiceError::RevisionNotFound(format!("{revision} in network {network_id}")),
+            meshlet_domain::LedgerError::IllegalTransition(err) => {
+                ServiceError::Conflict(err.to_string())
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 状态
 // ---------------------------------------------------------------------------
@@ -170,6 +197,8 @@ pub struct MeshState {
     registry: DeviceRegistry,
     /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
     presence_thresholds: meshlet_domain::PresenceThresholds,
+    /// 期望配置修订簿记（ADR-009 状态机，§10）。
+    pub(crate) ledger: meshlet_domain::ConfigLedger,
 }
 
 impl MeshState {
@@ -180,6 +209,7 @@ impl MeshState {
             ipams: HashMap::new(),
             registry: DeviceRegistry::new(),
             presence_thresholds,
+            ledger: meshlet_domain::ConfigLedger::new(),
         }
     }
 
@@ -188,6 +218,35 @@ impl MeshState {
             .get(id)
             .ok_or_else(|| ServiceError::NetworkNotFound(id.to_string()))
     }
+}
+
+/// 网络存在性校验（供其他模块复用；网络不存在 → 404）。
+pub fn require_network(state: &MeshState, network_id: &str) -> Result<(), ServiceError> {
+    state.network(network_id).map(|_| ())
+}
+
+/// 记录一次期望配置修订（§10.1/§10.4）：对当前网络配置取哈希并写入簿记，
+/// 版本号网络内单调递增，初始状态 `Pending`——此时只完成了 DB 写入，
+/// **尚未**应用到实际网络环境。
+fn record_revision(state: &mut MeshState, network_id: &str) -> Result<u64, ServiceError> {
+    let overlay = state.network(network_id)?.overlay_cidr;
+    let ipam = state
+        .ipams
+        .get(network_id)
+        .ok_or_else(|| ServiceError::Internal("ipam missing".to_string()))?;
+    let devices: Vec<Device> = state
+        .registry
+        .devices()
+        .iter()
+        .filter(|d| d.network_id.to_string() == network_id)
+        .cloned()
+        .collect();
+    let hash = meshlet_domain::desired_config_hash(&overlay, ipam.hub_address(), &devices);
+    Ok(state.ledger.record(
+        &meshlet_domain::NetworkId(network_id.to_string()),
+        hash,
+        now(),
+    ))
 }
 
 impl Default for MeshState {
@@ -234,11 +293,17 @@ pub fn create_network(
     let ipam = Ipam::new(overlay, hub).map_err(|e| ServiceError::Internal(e.to_string()))?;
     state.networks.insert(id.clone(), network);
     state.ipams.insert(id.clone(), ipam);
-    Ok(to_network_view(state.network(&id).unwrap()))
+    // 记录初始期望配置修订（§10.1：DB 写入 ≠ 生效，初始修订为 Pending）。
+    record_revision(state, &id)?;
+    Ok(to_network_view(state, state.network(&id).unwrap()))
 }
 
 pub fn list_networks(state: &MeshState) -> Vec<NetworkView> {
-    state.networks.values().map(to_network_view).collect()
+    state
+        .networks
+        .values()
+        .map(|n| to_network_view(state, n))
+        .collect()
 }
 
 pub fn create_invite(
@@ -349,6 +414,8 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         revoked_at: None,
     };
     state.registry.add(device.clone())?;
+    // 新设备改变期望配置：记录新修订（版本号网络内递增，§10.4）。
+    let revision_id = record_revision(state, &network_id)?;
 
     // 指纹 = 公钥 SHA-256；服务端不存任何私钥侧材料。
     let fingerprint = fingerprint_of(&req.public_key);
@@ -358,6 +425,8 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         virtual_ipv4: virtual_ip,
         fingerprint,
         agent_token: String::new(), // 由 handler 用 AgentTokenStore 签发后回填
+        revision_id,
+        apply_status: meshlet_domain::ApplyStatus::Pending.as_str().to_string(),
     })
 }
 
@@ -431,7 +500,11 @@ fn fingerprint_of(public_key: &str) -> String {
         .collect()
 }
 
-fn to_network_view(n: &Network) -> NetworkView {
+fn to_network_view(state: &MeshState, n: &Network) -> NetworkView {
+    // 当前期望修订 = 最新一个未回滚的修订（ADR-009：显示以应用状态为准）。
+    let current = state
+        .ledger
+        .current(&meshlet_domain::NetworkId(n.id.0.clone()));
     NetworkView {
         id: n.id.to_string(),
         name: n.name.clone(),
@@ -442,6 +515,10 @@ fn to_network_view(n: &Network) -> NetworkView {
         }
         .to_string(),
         created_at: n.created_at.clone(),
+        revision_id: current.map(|r| r.revision).unwrap_or(0),
+        apply_status: current
+            .map(|r| r.apply_status.as_str().to_string())
+            .unwrap_or_else(|| "none".to_string()),
     }
 }
 

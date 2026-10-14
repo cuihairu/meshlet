@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod cidr;
+pub mod config_state;
 pub mod conflict;
 pub mod entities;
 pub mod invites;
@@ -18,6 +19,7 @@ pub mod presence;
 pub mod tokens;
 
 pub use cidr::{CidrError, Ipv4Cidr};
+pub use config_state::{desired_config_hash, ConfigApplyBackend, ConfigLedger, LedgerError};
 pub use conflict::{
     against_existing_routes, alias_alias_overlap, alias_target_mismatch, check_network,
     lan_route_conflicts, overlay_alias_overlap, Conflict, ConflictCode, ConflictKind, RouteSource,

@@ -10,6 +10,7 @@
 
 pub mod agent;
 pub mod auth;
+pub mod revision;
 pub mod service;
 pub mod store;
 
@@ -117,6 +118,7 @@ async fn enroll_handler(
 /// 构建完整路由。
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
+        .merge(revision::routes())
         .route("/api/v1/system/status", get(status_handler))
         .route("/api/v1/enroll", post(enroll_handler))
         .route("/api/v1/auth/bootstrap", post(auth::bootstrap_handler))
@@ -155,6 +157,7 @@ impl IntoResponse for service::ServiceError {
             service::ServiceError::NetworkNotFound(_)
             | service::ServiceError::InviteNotFound(_)
             | service::ServiceError::DeviceNotFound(_)
+            | service::ServiceError::RevisionNotFound(_)
             | service::ServiceError::InvalidInviteToken => StatusCode::NOT_FOUND,
             service::ServiceError::InvalidCidr(_) | service::ServiceError::InvalidInput(_) => {
                 StatusCode::BAD_REQUEST

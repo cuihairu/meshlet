@@ -478,6 +478,48 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ConfigRevision" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /networks/{network_id}/config-revisions/{revision}/apply:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { name: revision, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    post:
+      tags: [status]
+      summary: Apply this revision to the actual network environment
+      description: >
+        Returns the revision view; apply_status is the verdict. The response is 200
+        even when the apply failed — failures stay visible as failed + error_summary
+        (§10.1/§10.3: an uncertain outcome is also failed, never faked success).
+        Re-applying an already applied revision is idempotent and does not invoke the
+        backend again; re-applying a failed revision is 409 — record a new revision
+        instead (§10.4).
+      responses:
+        "200":
+          description: OK (check apply_status in the body)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConfigRevision" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /networks/{network_id}/config-revisions/{revision}/rollback:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { name: revision, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    post:
+      tags: [status]
+      summary: Roll back a failed revision (Meshlet-owned objects only, ADR-007)
+      description: >
+        Only failed (or an interrupted rollback_pending) revisions can be rolled
+        back; applied revisions are undone by recording a new forward revision.
+        If the rollback cannot be confirmed the revision stays rollback_pending
+        with a combined error_summary. Never wipes system routes (§10.3).
+      responses:
+        "200":
+          description: OK (check apply_status in the body)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConfigRevision" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 components:
   securitySchemes:
     sessionCookie:
@@ -561,16 +603,19 @@ components:
       properties:
         id: { type: string }
         name: { type: string }
-        overlay_ipv4_cidr: { type: string, examples: ["10.240.0.0/16"] }
+        overlay_cidr: { type: string, examples: ["10.240.0.0/16"] }
         status: { type: string }
         created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        revision_id:
+          type: integer
+          description: Current desired config revision (ADR-009 — mutating responses carry revision_id + apply_status)
+        apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
     NetworkCreate:
       type: object
-      required: [name, overlay_ipv4_cidr]
+      required: [name, overlay_cidr]
       properties:
         name: { type: string }
-        overlay_ipv4_cidr: { type: string, examples: ["10.240.0.0/16"] }
+        overlay_cidr: { type: string, examples: ["10.240.0.0/16"] }
     NetworkList:
       type: object
       properties:
@@ -640,6 +685,10 @@ components:
           description: >
             64 hex chars; the agent's Bearer credential for /agent/heartbeat.
             Returned only here, only once — the server stores the SHA-256 digest.
+        revision_id:
+          type: integer
+          description: Config revision produced by this enrollment (ADR-009)
+        apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
     Heartbeat:
       type: object
       additionalProperties: false
@@ -693,7 +742,6 @@ components:
     ConfigRevision:
       type: object
       properties:
-        id: { type: string }
         network_id: { type: string }
         revision: { type: integer }
         desired_config_hash: { type: string }

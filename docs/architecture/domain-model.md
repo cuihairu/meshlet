@@ -103,7 +103,7 @@ erDiagram
 
 | 字段 | 说明 |
 |---|---|
-| `id` / `network_id` / `revision` | network 内单调递增 |
+| `network_id` / `revision` | 复合主键，network 内单调递增（§10.4 版本顺序） |
 | `desired_config_hash` | 期望态哈希，幂等与重启恢复依据（ADR-009） |
 | `apply_status` | `pending` / `applying` / `applied` / `failed` / `rollback_pending` / `rolled_back` |
 | `created_at` / `applied_at` / `error_summary` | 时间与失败信息 |
@@ -114,6 +114,21 @@ erDiagram
 pending → applying → applied
                 └──→ failed → rollback_pending → rolled_back
 ```
+
+实现：`crates/meshlet-domain/src/config_state.rs`（`ConfigLedger` 簿记 +
+`ConfigApplyBackend` 注入后端 + `desired_config_hash` 确定性哈希——只覆盖
+overlay/hub/Active 设备，路由与 Alias 纳入后扩展；纯函数 + 15 项单测）。
+语义（§10.2–§10.4）：
+
+- 每次期望配置变更（建网络、设备加入）先 `record` 新修订：初始 `pending`，
+  此时**只完成了 DB 写入，尚未生效**；
+- `apply`：`pending → applying → applied | failed`；已 `applied` 幂等重放，
+  不再调用 backend（重复执行不破坏网络）；失败**含结果不确定**一律落
+  `failed` + `error_summary`（不假装成功）；对 `failed` 原地重试非法，
+  重试路径是记录新修订；
+- `rollback`：只针对 `failed`（或未确认的 `rollback_pending`），只动 Meshlet
+  自有对象（ADR-007）；回滚未确认则留在 `rollback_pending`，诊断合并保留；
+- `current` = 最新未回滚修订，控制台与列表响应以它为准。
 
 红线：控制台不得把数据库写入成功当作网络配置已生效。
 

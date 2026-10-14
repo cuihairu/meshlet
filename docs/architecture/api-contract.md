@@ -45,6 +45,8 @@
 | GET/POST | `/api/v1/networks/{network_id}/diagnostics` | 诊断结果 / 触发诊断（§12.7 十二项检查）🔒 |
 | GET | `/api/v1/networks/{network_id}/config-revisions` | 配置版本列表 🔒 |
 | GET | `/api/v1/networks/{network_id}/config-revisions/{revision}` | 版本详情（含 apply_status）🔒 |
+| POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/apply` | 应用指定版本到实际环境（响应即该版本视图）🔒 |
+| POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/rollback` | 回滚失败版本（仅删除/恢复 Meshlet 自有对象，ADR-007）🔒 |
 
 ## 认证与 CSRF（已实现）
 
@@ -86,6 +88,38 @@
 - 设备未持久化到 SQLite 前，证据时间戳仅存于内存 `MeshState`
   （schema 列已就位：migration 003）。
 
+## 配置版本与应用状态（已实现）
+
+「数据库写入成功 ≠ WireGuard/路由/NAT 已生效」（§10.1）：期望配置的每次变更
+（建网络、设备加入等）只生成新的配置修订，初始状态 `pending`；只有把配置
+应用到实际网络环境成功后才是 `applied`。控制台与外部调用方以 `apply_status`
+为准，不以 DB 写入为准。
+
+| `apply_status` | 含义 | `applied_at` | `error_summary` |
+|---|---|---|---|
+| `pending` | 已记录期望配置，尚未应用 | `null` | `null` |
+| `applying` | 应用进行中（同步 API 内短暂出现） | `null` | `null` |
+| `applied` | 已生效 | 应用时刻 | `null` |
+| `failed` | 应用失败，含**结果不确定**（§10.3：不确定时进入明确失败态，不假装成功） | `null` | 失败诊断 |
+| `rollback_pending` | 回滚发起但未能确认 | `null` | 应用失败 + 回滚失败诊断 |
+| `rolled_back` | 已回滚（当前期望回落至更早版本） | `null` | 原失败诊断 |
+
+- **失败可见**：apply 失败返回 `200` + 该修订视图（`apply_status: "failed"`
+  与 `error_summary`），错误同时在版本详情与列表中可见；命令本身不吞失败；
+- **幂等**：对已 `applied` 的版本重复 apply 直接返回该版本视图，**不再调用
+  backend**（重复执行不破坏网络，§10.3）；
+- **并发顺序（§10.4）**：修订号在同一网络内单调递增，配置修改由「先记录修订、
+  再应用修订」串行化；对 `failed` 版本原地重试返回 `409 conflict`
+  ——重试路径是记录新修订（版本号递增）；
+- **回滚**只针对 `failed` 版本，且只删除/恢复 Meshlet 自有对象，
+  **不得清空系统路由**（ADR-007、§10.3）；已生效版本的撤销走前滚新版本；
+- 状态机与哈希实现于 `meshlet-domain/src/config_state.rs`（`ConfigLedger` /
+  `ConfigApplyBackend` / `desired_config_hash`，纯函数 + 15 项单测）；
+  SQLite `config_revisions` 表字段与之逐列对齐（migration 001），
+  持久化接线与控制平面其余内存状态（网络/设备）同批处理。
+
+
+
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`POST /api/v1/agent/heartbeat`；管理端点已挂会话认证 + CSRF 提取器，agent 端点挂 Bearer 提取器。测试见 `apps/server/tests/{status,enroll,auth_console,migrations,presence}.rs`。控制平面 Mesh 状态当前存于内存（`MeshState`）；用户/会话/agent 凭证持久化 SQLite（migrations 001/002/003）。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`；管理端点已挂会话认证 + CSRF 提取器，agent 端点挂 Bearer 提取器。测试见 `apps/server/tests/{status,enroll,auth_console,migrations,presence,revisions}.rs`。控制平面 Mesh 状态（含配置修订簿记）当前存于内存（`MeshState`）；用户/会话/agent 凭证持久化 SQLite（migrations 001/002/003）。

@@ -278,6 +278,18 @@ impl ApplyStatus {
                 | (RollbackPending, RolledBack)
         )
     }
+
+    /// API/控制台展示用小写蛇形标识（契约字段 `apply_status`）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApplyStatus::Pending => "pending",
+            ApplyStatus::Applying => "applying",
+            ApplyStatus::Applied => "applied",
+            ApplyStatus::Failed => "failed",
+            ApplyStatus::RollbackPending => "rollback_pending",
+            ApplyStatus::RolledBack => "rolled_back",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
