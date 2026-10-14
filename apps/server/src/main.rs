@@ -9,7 +9,12 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() {
+    // 结构化日志（§17.1）：JSON 行输出，八字段（time/component/operation/
+    // network_id/device_id/config_revision/error_category/result）为顶层键，
+    // 由 telemetry 模块的 op_log! 与 request_log 中间件统一发出。
     tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "meshlet_server=info,tower_http=info".into()),

@@ -54,6 +54,8 @@ pub struct AppState {
     /// 配置应用/回滚 backend 工厂（§10.3 幂等、§10.4 回滚边界）；默认数据面
     /// 未接入（显式失败），测试可注入计数 backend 验证幂等与串行化。
     pub apply_backend: crate::revision::BackendFactory,
+    /// 运行指标（§17.2）：进程内计数 + 抓取时现算量规；`GET /api/v1/system/metrics`。
+    pub metrics: crate::metrics::Metrics,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -77,12 +79,19 @@ impl AppState {
             login_limiter: Arc::new(RateLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
             cookie_secure,
             apply_backend: crate::revision::unconfigured_backend_factory(),
+            metrics: crate::metrics::Metrics::new(),
         }
     }
 
     /// 注入自定义配置应用 backend（数据面接入 / 集成测试）。
     pub fn with_apply_backend(mut self, factory: crate::revision::BackendFactory) -> Self {
         self.apply_backend = factory;
+        self
+    }
+
+    /// 注入指标注册表（集成测试断言计数用；生产走 `AppState::new` 默认值）。
+    pub fn with_metrics(mut self, metrics: crate::metrics::Metrics) -> Self {
+        self.metrics = metrics;
         self
     }
 }
@@ -510,6 +519,16 @@ pub async fn bootstrap_handler(
         None,
     )
     .await?;
+    crate::op_log!(
+        info,
+        "auth",
+        "bootstrap",
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok((
         StatusCode::CREATED,
         headers,
@@ -550,6 +569,16 @@ pub async fn login_handler(
             Some(serde_json::json!({ "email": req.email, "reason": "unknown_user" })),
         )
         .await?;
+        crate::op_log!(
+            warn,
+            "auth",
+            "login",
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::ErrorCategory::Unauthorized.as_str(),
+            crate::telemetry::RESULT_ERROR
+        );
         return Err(AuthApiError::Unauthorized);
     };
     let user_id = record.id.clone();
@@ -563,6 +592,16 @@ pub async fn login_handler(
             Some(serde_json::json!({ "email": email, "reason": "bad_password" })),
         )
         .await?;
+        crate::op_log!(
+            warn,
+            "auth",
+            "login",
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::ErrorCategory::Unauthorized.as_str(),
+            crate::telemetry::RESULT_ERROR
+        );
         return Err(AuthApiError::Unauthorized);
     }
     state.login_limiter.reset(&key);
@@ -576,6 +615,16 @@ pub async fn login_handler(
         None,
     )
     .await?;
+    crate::op_log!(
+        info,
+        "auth",
+        "login",
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok((
         StatusCode::OK,
         headers,
@@ -615,6 +664,16 @@ pub async fn logout_handler(
         {
             return e.into_response();
         }
+        crate::op_log!(
+            info,
+            "auth",
+            "logout",
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::NOT_APPLICABLE,
+            crate::telemetry::ErrorCategory::None.as_str(),
+            crate::telemetry::RESULT_OK
+        );
     }
     (
         StatusCode::NO_CONTENT,

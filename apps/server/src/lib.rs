@@ -13,9 +13,11 @@ pub mod agent;
 pub mod api_token;
 pub mod audit;
 pub mod auth;
+pub mod metrics;
 pub mod revision;
 pub mod service;
 pub mod store;
+pub mod telemetry;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -67,6 +69,16 @@ async fn create_network_handler(
         None,
     )
     .await?;
+    crate::op_log!(
+        info,
+        "network",
+        "create_network",
+        &view.id,
+        crate::telemetry::NOT_APPLICABLE,
+        &view.revision_id.to_string(),
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok((StatusCode::CREATED, Json(view)))
 }
 
@@ -102,6 +114,16 @@ async fn create_invite_handler(
         })),
     )
     .await?;
+    crate::op_log!(
+        info,
+        "network",
+        "create_invite",
+        &network_id,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
@@ -124,6 +146,16 @@ async fn revoke_invite_handler(
         Some(serde_json::json!({ "network_id": network_id })),
     )
     .await?;
+    crate::op_log!(
+        info,
+        "network",
+        "revoke_invite",
+        &network_id,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -145,7 +177,26 @@ async fn create_route_handler(
 ) -> Result<(StatusCode, Json<service::RouteView>), service::ServiceError> {
     let view = {
         let mut guard = state.mesh.lock().unwrap();
-        create_route(&mut guard, &network_id, req)?
+        match create_route(&mut guard, &network_id, req) {
+            Ok(view) => view,
+            Err(e) => {
+                // 路由冲突单独计数（§17.2「路由冲突数」）；错误类别随领域事件留痕。
+                if matches!(e, service::ServiceError::RouteConflict(_)) {
+                    record_route_conflict(&state);
+                }
+                crate::op_log!(
+                    warn,
+                    "route",
+                    "create_route",
+                    &network_id,
+                    crate::telemetry::NOT_APPLICABLE,
+                    crate::telemetry::NOT_APPLICABLE,
+                    crate::telemetry::ErrorCategory::from(&e).as_str(),
+                    crate::telemetry::RESULT_ERROR
+                );
+                return Err(e);
+            }
+        }
     };
     crate::audit::record_or_fail(
         &state,
@@ -156,7 +207,23 @@ async fn create_route_handler(
         Some(serde_json::json!({ "network_id": network_id })),
     )
     .await?;
+    crate::op_log!(
+        info,
+        "route",
+        "create_route",
+        &network_id,
+        crate::telemetry::NOT_APPLICABLE,
+        &view.revision_id.to_string(),
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok((StatusCode::CREATED, Json(view)))
+}
+
+/// 路由冲突拒绝（§17.2「路由冲突数」指标）：仅计「目的网段重叠」类冲突
+/// （`ServiceError::RouteConflict`）；设备未激活等其它 409 不计。
+fn record_route_conflict(state: &SharedAppState) {
+    state.metrics.record_route_conflict();
 }
 
 async fn list_routes_handler(
@@ -196,6 +263,16 @@ async fn delete_route_handler(
         Some(serde_json::json!({ "network_id": network_id })),
     )
     .await?;
+    crate::op_log!(
+        info,
+        "route",
+        "delete_route",
+        &network_id,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -227,6 +304,16 @@ async fn revoke_device_handler(
         Some(serde_json::json!({ "network_id": network_id })),
     )
     .await?;
+    crate::op_log!(
+        info,
+        "device",
+        "revoke_device",
+        &network_id,
+        &device_id,
+        &rev.revision_id.to_string(),
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok((StatusCode::ACCEPTED, Json(rev)))
 }
 
@@ -257,6 +344,16 @@ async fn enroll_handler(
         Some(serde_json::json!({ "network_id": resp.network_id })),
     )
     .await?;
+    crate::op_log!(
+        info,
+        "device",
+        "enroll",
+        &resp.network_id,
+        &resp.device_id,
+        &resp.revision_id.to_string(),
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
@@ -265,6 +362,7 @@ pub fn router(state: SharedAppState) -> Router {
     Router::new()
         .merge(api_token::routes())
         .merge(audit::routes())
+        .merge(metrics::routes())
         .merge(revision::routes())
         .route("/api/v1/system/status", get(status_handler))
         .route("/api/v1/enroll", post(enroll_handler))
@@ -301,6 +399,11 @@ pub fn router(state: SharedAppState) -> Router {
             get(list_devices_handler),
         )
         .route("/api/v1/agent/heartbeat", post(agent::heartbeat_handler))
+        // 访问日志（§17.1）+ HTTP 指标计数（§17.2）：路由模板级，不跨静态回落。
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            telemetry::request_log,
+        ))
         .with_state(state)
 }
 
@@ -322,7 +425,9 @@ impl IntoResponse for service::ServiceError {
             service::ServiceError::InvalidCidr(_) | service::ServiceError::InvalidInput(_) => {
                 StatusCode::BAD_REQUEST
             }
-            service::ServiceError::Conflict(_) => StatusCode::CONFLICT,
+            service::ServiceError::Conflict(_) | service::ServiceError::RouteConflict(_) => {
+                StatusCode::CONFLICT
+            }
             service::ServiceError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self.into_response())).into_response()

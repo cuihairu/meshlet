@@ -101,7 +101,7 @@ pub struct Presence {
 
 /// 判定新鲜度：`now - ts <= window` 为新鲜（含边界；未来时间戳视为新鲜，
 /// 容忍轻微的时钟偏移）。无法解析的时间戳按「不存在」保守处理。
-fn fresh(ts: &str, now: &str, window: Duration) -> bool {
+pub fn fresh(ts: &str, now: &str, window: Duration) -> bool {
     match (parse(ts), parse(now)) {
         (Some(ts), Some(now)) => now
             .signed_duration_since(ts)

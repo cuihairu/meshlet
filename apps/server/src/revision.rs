@@ -176,7 +176,8 @@ pub async fn apply_revision_handler(
     // 应用失败必留痕（§16.5）；结果以 apply_status 为准（`applied` 即成功，
     // 其余一律按失败留痕），不凭响应码判断。
     let view = to_revision_view(&applied);
-    let (action, detail) = if view.apply_status != "applied" {
+    let applied_ok = view.apply_status == "applied";
+    let (action, detail) = if !applied_ok {
         (
             "revision.apply_failed",
             serde_json::json!({
@@ -199,6 +200,31 @@ pub async fn apply_revision_handler(
         Some(detail),
     )
     .await?;
+    // 指标（§17.2 配置应用成功率/失败数）：以状态机结论计数，不凭响应码。
+    state.metrics.record_config_apply(applied_ok);
+    if applied_ok {
+        crate::op_log!(
+            info,
+            "revision",
+            "apply_revision",
+            &network_id,
+            crate::telemetry::NOT_APPLICABLE,
+            &revision.to_string(),
+            crate::telemetry::ErrorCategory::None.as_str(),
+            crate::telemetry::RESULT_OK
+        );
+    } else {
+        crate::op_log!(
+            warn,
+            "revision",
+            "apply_revision",
+            &network_id,
+            crate::telemetry::NOT_APPLICABLE,
+            &revision.to_string(),
+            crate::telemetry::ErrorCategory::Internal.as_str(),
+            crate::telemetry::RESULT_ERROR
+        );
+    }
     Ok(Json(view))
 }
 
@@ -222,7 +248,8 @@ pub async fn rollback_revision_handler(
     // 回滚失败同样留痕（§16.5）：无 backend 的回滚停在 `rollback_pending`
     //（明确未完成）——除 `rolled_back` 外一律按失败留痕。
     let view = to_revision_view(&rolled);
-    let (action, detail) = if view.apply_status != "rolled_back" {
+    let rolled_back = view.apply_status == "rolled_back";
+    let (action, detail) = if !rolled_back {
         (
             "revision.rollback_failed",
             serde_json::json!({
@@ -245,5 +272,30 @@ pub async fn rollback_revision_handler(
         Some(detail),
     )
     .await?;
+    // 指标（§17.2 回滚结果）：`rolled_back` 计成功，`rollback_pending` 计未确认。
+    state.metrics.record_config_rollback(rolled_back);
+    if rolled_back {
+        crate::op_log!(
+            info,
+            "revision",
+            "rollback_revision",
+            &network_id,
+            crate::telemetry::NOT_APPLICABLE,
+            &revision.to_string(),
+            crate::telemetry::ErrorCategory::None.as_str(),
+            crate::telemetry::RESULT_OK
+        );
+    } else {
+        crate::op_log!(
+            warn,
+            "revision",
+            "rollback_revision",
+            &network_id,
+            crate::telemetry::NOT_APPLICABLE,
+            &revision.to_string(),
+            crate::telemetry::ErrorCategory::Internal.as_str(),
+            crate::telemetry::RESULT_ERROR
+        );
+    }
     Ok(Json(view))
 }

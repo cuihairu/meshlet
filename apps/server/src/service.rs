@@ -160,6 +160,11 @@ pub enum ServiceError {
     InvalidInput(String),
     #[error("{0}")]
     Conflict(String),
+    /// 路由冲突（§17.2「路由冲突数」指标口径）：仅「目的网段与 overlay 或
+    /// 既有 LAN 路由重叠」时使用——与设备未激活等其它 409 区分，保证指标
+    /// 不把非冲突的拒绝计进来。
+    #[error("{0}")]
+    RouteConflict(String),
     #[error("{0}")]
     Internal(String),
 }
@@ -183,7 +188,7 @@ impl ServiceError {
                 meshlet_api_types::ErrorCode::ValidationFailed,
                 self.to_string(),
             ),
-            ServiceError::Conflict(_) => {
+            ServiceError::Conflict(_) | ServiceError::RouteConflict(_) => {
                 ErrorResponse::new(meshlet_api_types::ErrorCode::Conflict, self.to_string())
             }
             ServiceError::Internal(_) => {
@@ -239,7 +244,8 @@ pub struct MeshState {
     /// 邀请按 Token 摘要索引（§11.3：兑换时以摘要定位，不暴露原始 Token）。
     invites: HashMap<String, Invite>,
     ipams: HashMap<String, Ipam>,
-    registry: DeviceRegistry,
+    /// 设备注册表（`pub(crate)`：agent 心跳需读设备网络归属）。
+    pub(crate) registry: DeviceRegistry,
     /// LAN 路由（Phase 3 控制面：增删先落状态，应用待 backend，ADR-005）。
     pub(crate) lan_routes: HashMap<String, Vec<LanRoute>>,
     /// 路由 id 序列（全局单调，删除不复用）。
@@ -541,6 +547,51 @@ pub fn list_devices(state: &MeshState, network_id: &str) -> Result<Vec<DeviceVie
         .collect())
 }
 
+/// 数据面证据量规快照（§17.2 指标 1/2/3/7 的数据源）：抓取时从 `MeshState`
+/// **现算**，不存静态值。调用方持 mesh 锁；渲染（字符串拼接）在锁外做。
+///
+/// 「近期握手」= 握手落在 `handshake_window` 内（隧道证据，与「在线」的
+/// agent 上报证据是两条独立来源——单看任一都会误判，见
+/// `docs/architecture/observability.md` 组合判读）。
+pub fn gauge_snapshot(state: &MeshState) -> crate::metrics::GaugeSnapshot {
+    let now: Timestamp = now();
+    let mut devices_online = 0u64;
+    let mut devices_active = 0u64;
+    let mut devices_with_recent_handshake = 0u64;
+    let mut last_handshake_ts: i64 = 0;
+    for device in state.registry.devices() {
+        if device.is_active() {
+            devices_active += 1;
+        }
+        let presence = evaluate_presence(device, &now, &state.presence_thresholds);
+        if presence.state == meshlet_domain::presence::PresenceState::Online {
+            devices_online += 1;
+        }
+        if let Some(ts) = device.last_handshake_at.as_deref() {
+            if meshlet_domain::presence::fresh(ts, &now, state.presence_thresholds.handshake_window)
+            {
+                devices_with_recent_handshake += 1;
+            }
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+                last_handshake_ts = last_handshake_ts.max(dt.timestamp());
+            }
+        }
+    }
+    crate::metrics::GaugeSnapshot {
+        devices_online,
+        devices_active,
+        devices_with_recent_handshake,
+        last_handshake_timestamp_seconds: last_handshake_ts,
+        // 接口状态（§17.2 第 7 项）：至少一台设备有近期握手证据即视为数据面
+        // 接口在；主机侧接口读数待数据面 backend 落地后并入（agent 侧证据
+        // 先到）。
+        interface_up: u8::from(devices_with_recent_handshake > 0),
+        // Alias 应用状态（§17.2 第 8 项）：Phase 4 未落地，无 Alias 映射可
+        // 应用——恒 0 表示「无东西可应用」，**不是**「健康」。
+        alias_apply_status: 0,
+    }
+}
+
 /// 发布一条 LAN 路由（ADR-005）。路由属于期望配置：创建即记录新修订（§10.1）。
 pub fn create_route(
     state: &mut MeshState,
@@ -571,7 +622,7 @@ pub fn create_route(
     // overlay 自身/其子网不是 LAN 目的（它们走 overlay 内部转发）。
     let overlay = state.network(network_id)?.overlay_cidr;
     if destination.overlaps(&overlay) {
-        return Err(ServiceError::Conflict(format!(
+        return Err(ServiceError::RouteConflict(format!(
             "destination {destination} overlaps overlay {overlay}"
         )));
     }
@@ -586,7 +637,7 @@ pub fn create_route(
         })
         .unwrap_or(false)
     {
-        return Err(ServiceError::Conflict(format!(
+        return Err(ServiceError::RouteConflict(format!(
             "destination {destination} overlaps an existing route in network {network_id}"
         )));
     }

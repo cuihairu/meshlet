@@ -196,9 +196,9 @@ pub async fn heartbeat_handler(
         }
     }
     let now: Timestamp = service::now();
-    let presence = {
+    let (presence, network_id) = {
         let mut guard = state.mesh.lock().unwrap();
-        service::record_agent_report(
+        let presence = service::record_agent_report(
             &mut guard,
             &device_id,
             req.last_handshake_at.clone(),
@@ -207,8 +207,26 @@ pub async fn heartbeat_handler(
         .map_err(|e| match e {
             service::ServiceError::DeviceNotFound(id) => AgentApiError::NotFound(id),
             other => AgentApiError::Internal(other.to_string()),
-        })?
+        })?;
+        let network_id = guard
+            .registry
+            .find_by_id(&device_id)
+            .map(|d| d.network_id.to_string())
+            .unwrap_or_default();
+        (presence, network_id)
     };
+    // 指标（§17.2 agent 心跳计数）+ 结构化日志（§17.1：device 组件事件）。
+    state.metrics.record_agent_heartbeat();
+    crate::op_log!(
+        info,
+        "agent",
+        "heartbeat",
+        &network_id,
+        &device_id.0,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
     Ok(Json(HeartbeatResponse {
         online_state: presence.state.as_str().to_string(),
         presence_source: presence.source.as_str().to_string(),

@@ -155,6 +155,33 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuditPage" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /system/metrics:
+    get:
+      tags: [system]
+      summary: Runtime metrics (Prometheus text format)
+      description: >
+        Operational metrics (§17.2): control-plane counters (config apply
+        success/failure, rollback results, route conflicts, agent heartbeats,
+        HTTP requests by route and status class, response bytes) and
+        data-plane evidence gauges computed at scrape time from mesh state
+        (devices online, active peers, last handshake time, interface state,
+        alias apply status). Never judge end-to-end network health from a
+        single metric — combine control-plane and data-plane sources (see
+        docs/architecture/observability.md). Management-plane authentication
+        required: session cookie or read-scope API token.
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # TYPE meshlet_config_apply_total counter
+                meshlet_config_apply_total{result="applied"} 3
+                meshlet_config_apply_total{result="failed"} 1
+                meshlet_devices_online 2
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /networks:
     get:
       tags: [networks]

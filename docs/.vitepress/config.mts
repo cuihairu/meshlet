@@ -40,6 +40,7 @@ export default defineConfig({
           items: [
             { text: '领域模型', link: '/architecture/domain-model' },
             { text: 'API 契约', link: '/architecture/api-contract' },
+            { text: '可观测性', link: '/architecture/observability' },
             { text: '平台差异清单', link: '/architecture/platform-notes' },
             { text: '路由优化方案', link: '/architecture/routing-optimization' },
             { text: '性能方案与基准', link: '/architecture/performance' }
