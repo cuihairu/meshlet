@@ -79,6 +79,7 @@ export default defineConfig({
         {
           text: '指南',
           items: [
+            { text: '安装指南', link: '/guide/install' },
             { text: '外部调用方指南', link: '/guide/external-caller' }
           ]
         }

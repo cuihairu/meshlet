@@ -1,0 +1,53 @@
+# meshlet-server systemd unit（安装指南：docs/guide/install.md）。
+#
+# 控制面只需要：读 /etc/meshlet、写 /var/lib/meshlet、监听 `bind` 端口。
+# 默认 bind = 127.0.0.1:8080（非特权端口，经 HTTPS 反代对外），因此权限
+# 清零（CapabilityBoundingSet= 空）；若直接绑 <1024 端口需自行加
+# CAP_NET_BIND_SERVICE 并调整本文件。
+#
+# 安装：cp deploy/systemd/meshlet-server.service /etc/systemd/system/
+# 然后 systemctl daemon-reload && systemctl enable --now meshlet-server
+
+[Unit]
+Description=Meshlet control plane server
+Documentation=https://github.com/cuihairu/meshlet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meshlet
+Group=meshlet
+ExecStart=/usr/local/bin/meshlet-server /etc/meshlet/meshlet.toml
+WorkingDirectory=/var/lib/meshlet
+StateDirectory=meshlet
+Restart=on-failure
+RestartSec=2s
+
+# --- 硬化：控制面无任何特权需求 ---
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/meshlet
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

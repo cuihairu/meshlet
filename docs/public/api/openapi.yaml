@@ -518,6 +518,15 @@ paths:
     post:
       tags: [aliases]
       summary: Create alias (equal prefix length enforced, ADR-006)
+      description: >
+        Protocol boundary (archive §9.6): an alias covers the IPv4/IPv6
+        unicast routing layer only. Broadcast, multicast and L2-discovery
+        protocols (ARP/NDP, mDNS, DHCP broadcast domains) are NOT carried
+        across an alias — it is not an L2 bridge and not an application
+        proxy. Applications that embed their own IP inside the protocol
+        payload may break under translation, and controlled_snat rewrites
+        the source IP seen on the LAN. The first release does not claim
+        full protocol transparency.
       requestBody:
         required: true
         content:

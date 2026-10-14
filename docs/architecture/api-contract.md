@@ -41,7 +41,7 @@
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5）🔒 |
 | GET/POST | `/api/v1/networks/{network_id}/routes` | LAN Route 列表 / 创建（含返回路径模式，ADR-005）；与 overlay/既有路由重叠 → `409 conflict` 且**消息点名冲突对端**（既有路由 id + 网段），拒绝发生在任何状态变更前——既有路由绝不被覆盖，客户端应提示改用 Alias 等长前缀映射（§8.3 不静默）🔒 |
 | GET/PATCH/DELETE | `/api/v1/networks/{network_id}/routes/{route_id}` | 详情 / 更新 / 删除 🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/aliases` | Alias 列表 / 创建（等长前缀校验，ADR-006）🔒 |
+| GET/POST | `/api/v1/networks/{network_id}/aliases` | Alias 列表 / 创建（等长前缀校验，ADR-006）；**协议边界**：只覆盖 IP 单播路由层——广播/组播/二层发现（ARP/NDP、mDNS、DHCP 广播域）不跨 Alias 透传，协议负载内嵌 IP 的应用可能失效（§9.6，详见 [ADR-006](../decisions/adr-006-alias-prefix-nat.md)）🔒 |
 | GET/PATCH/DELETE | `/api/v1/networks/{network_id}/aliases/{alias_id}` | 详情 / 更新 / 删除（删除同步清理 NAT）🔒 |
 | GET | `/api/v1/system/status` | 服务端状态（公开） |
 | GET | `/api/v1/networks/{network_id}/status` | 网络状态 🔒 |

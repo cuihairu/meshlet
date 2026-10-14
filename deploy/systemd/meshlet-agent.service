@@ -1,0 +1,48 @@
+# meshlet-agent systemd unit 模板（安装指南：docs/guide/install.md）。
+#
+# 现状（2026-10-15）：agent 数据面（WireGuard 接口/路由/NAT）尚未实装
+# （ADR-007：待 CAP_NET_ADMIN 特权环境接入；见 TODO「WireGuard 中心转发
+# 原型」条）。本 unit 是**模板**——硬化项就位、CAP_NET_ADMIN 显式授权，
+# 待数据面落地后即可启用；提前 enable 会因骨架二进制退出而反复重启。
+#
+# sysctl（如 net.ipv4.ip_forward）不由 agent 写 /proc/sys（单元层已锁
+# ProtectKernelTunables）：网关转发开关走 /etc/sysctl.d/（见安装指南）。
+
+[Unit]
+Description=Meshlet device agent
+Documentation=https://github.com/cuihairu/meshlet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meshlet-agent
+Group=meshlet-agent
+ExecStart=/usr/local/bin/meshlet-agent /etc/meshlet/agent.toml
+WorkingDirectory=/var/lib/meshlet-agent
+StateDirectory=meshlet-agent
+Restart=on-failure
+RestartSec=5s
+
+# --- 硬化：数据面只需 CAP_NET_ADMIN，别的一概不给 ---
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/meshlet-agent
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
