@@ -437,7 +437,7 @@ fn spy() -> (Arc<Mutex<Calls>>, revision::BackendFactory) {
     let calls = Arc::new(Mutex::new(Calls::default()));
     let factory: revision::BackendFactory = {
         let calls = Arc::clone(&calls);
-        Arc::new(move || {
+        Arc::new(move |_, _| {
             Box::new(SpyBackend {
                 calls: Arc::clone(&calls),
             })
@@ -497,7 +497,7 @@ fn failing_factory() -> (Arc<Mutex<Calls>>, revision::BackendFactory) {
     let calls = Arc::new(Mutex::new(Calls::default()));
     let factory: revision::BackendFactory = {
         let calls = Arc::clone(&calls);
-        Arc::new(move || {
+        Arc::new(move |_, _| {
             Box::new(FailingApplySpy {
                 calls: Arc::clone(&calls),
             })

@@ -326,6 +326,11 @@ impl MeshState {
         self.networks.get(id)
     }
 
+    /// 网络 hub 地址（IPAM 首地址；数据面接线用，不存在返回 `None`）。
+    pub(crate) fn hub_address(&self, id: &str) -> Option<std::net::Ipv4Addr> {
+        self.ipams.get(id).map(|ipam| ipam.hub_address())
+    }
+
     /// 邀请行（按 Token 摘要定位；enroll 兑换后据此回写 `used_count`）。
     pub(crate) fn invite_by_hash(&self, token_hash: &str) -> Option<&Invite> {
         self.invites.get(token_hash)

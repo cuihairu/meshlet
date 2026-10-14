@@ -520,7 +520,10 @@ async fn fresh_handshake_and_agent_report_flip_the_checks() {
 
 #[tokio::test]
 async fn gateway_online_and_revision_state_drive_route_checks() {
-    let c = ctx_with_backend(Arc::new(|| Box::new(OkBackend))).await;
+    let c = ctx_with_backend(Arc::new(|_, _| {
+        Box::new(OkBackend) as Box<dyn meshlet_domain::ConfigApplyBackend + Send>
+    }))
+    .await;
     let (network_id, _device_id, token) = net_with_device(&c).await;
     heartbeat(&c, &token, &now_stamp()).await; // 网关 agent 上报新鲜 → online
     let (st, route) = json_post(

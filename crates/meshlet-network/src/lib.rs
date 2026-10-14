@@ -1,8 +1,9 @@
 //! meshlet-network：`NetworkBackend` 统一抽象（[存档 §15.1](../../docs/review/chatgpt-2026-10-13.md)、
 //! [ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
 //!
-//! 第一版只定义抽象与数据结构；Linux 实现需要 NET_ADMIN + 网络命名空间
-//! （当前开发沙箱不可用，见 TODO 卡点），Windows 实现按 ADR-008 后续接入。
+//! Linux 实现在 [linux](linux) 模块（受控执行 `ip` / `wg` / `iptables` 命令，
+//! ADR-007 的降级路径先行落地，通路已在 netns 集成测试中真机验证）；
+//! Windows 实现按 ADR-008 后续接入。
 //!
 //! 注意：使用原生 `async fn` trait（Rust 1.75+）。原生 async trait 暂不支持
 //! `dyn` 分发；如后续需要对象安全，再评估 `async-trait`（存档 §15.1 已预留该决策点）。
@@ -11,6 +12,9 @@
 //! NAT 规则；执行随数据面接线（ADR-007）。
 
 pub mod nat;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
 
 use meshlet_domain::Ipv4Cidr;
 
@@ -28,9 +32,14 @@ pub struct TunnelConfig {
     /// 接口名（Linux）或隧道名（Windows）。
     pub name: String,
     pub address: std::net::Ipv4Addr,
+    /// 接口地址前缀长度（Linux 侧 `ip address replace <addr>/<prefix>`）。
+    pub address_prefix: u8,
     pub listen_port: Option<u16>,
     pub peers: Vec<PeerConfig>,
     pub mtu: Option<u32>,
+    /// 私钥（base64）。`None` = 保留接口现有私钥（幂等重应用）；
+    /// `Some` = 以 `wg set <if> private-key` 显式设置。
+    pub private_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +47,8 @@ pub struct RouteConfig {
     pub destination: Ipv4Cidr,
     /// 下一跳接口名。
     pub interface: String,
+    /// 下一跳网关地址（对端设备虚拟 IP）；`None` = 直连路由。
+    pub gateway: Option<std::net::Ipv4Addr>,
 }
 
 /// 应用结果：**applied=false 时必须携带错误说明**，不得假装成功（§10.3）。
@@ -112,6 +123,22 @@ pub trait NetworkBackend {
         routes: Vec<RouteConfig>,
     ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
+    /// 在网关侧下发 NAT 规则（计划层 [nat::NatRule] 渲染执行）。规则携带
+    /// `meshlet alias {id}` 所有权注释（§12.6），[NetworkBackend::remove_nat]
+    /// 按注释精确移除。
+    fn apply_nat<'s>(
+        &'s self,
+        rules: Vec<nat::NatRule>,
+        gateway_lan_addr: std::net::Ipv4Addr,
+    ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
+
+    /// 按所有权注释移除属于 `owner`（如 `meshlet alias al-1`）的 NAT 规则；
+    /// 只触碰携带该注释的规则，绝不改写用户已有规则（ADR-007）。
+    fn remove_nat<'s>(
+        &'s self,
+        owner: &'s str,
+    ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
+
     /// 回滚只允许触碰 Meshlet 自有对象（§10.3）。
     fn rollback<'s>(
         &'s self,
@@ -145,6 +172,18 @@ mod tests {
             &self,
             _routes: Vec<RouteConfig>,
         ) -> Result<ApplyResult, NetworkError> {
+            Ok(ApplyResult::ok())
+        }
+
+        async fn apply_nat(
+            &self,
+            _rules: Vec<nat::NatRule>,
+            _gateway_lan_addr: std::net::Ipv4Addr,
+        ) -> Result<ApplyResult, NetworkError> {
+            Ok(ApplyResult::ok())
+        }
+
+        async fn remove_nat(&self, _owner: &str) -> Result<ApplyResult, NetworkError> {
             Ok(ApplyResult::ok())
         }
 

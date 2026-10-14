@@ -5,10 +5,12 @@
 //! 只有 backend 成功把配置应用到实际网络环境后才转为 `Applied`。应用失败
 //! （**含结果不确定**）进入 `Failed` 并保留可诊断的 `error_summary`。
 //!
-//! 本进程当前没有数据面 backend——WireGuard/路由/NAT 的 OS 侧执行需要
-//! CAP_NET_ADMIN（环境卡点见 TODO.md），因此显式 apply 会确定性失败并留下
-//! 清晰错误：失败可见、状态可区分，正是「配置状态机」条目的验收口径。接入
-//! 数据面 daemon 后替换 [`UnconfiguredBackend`]，API 语义不变。
+//! 数据面接线（ADR-007）：`[dataplane] enabled = true` 时 apply 走
+//! [`HubDataPlaneBackend`]——按当前期望配置快照在本机执行 WireGuard/路由
+//! （Linux [`meshlet_network::linux::LinuxNetworkBackend`]）。默认（未配置或
+//! `enabled = false`）仍是 [`UnconfiguredBackend`] 显式失败：失败可见、状态
+//! 可区分，升级不悄悄接管内核。网关侧 NAT（ADR-006）在网关设备上执行，随
+//! agent 数据面交付（server 只下 hub 侧转发面）。
 //!
 //! 并发语义（§10.4）：修订版本号网络内单调递增，同一网络的配置修改由
 //! 「先记录修订、再应用修订」串行化；非法跃迁（如对失败修订原地重试）返回
@@ -17,12 +19,17 @@
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use meshlet_domain::{ConfigApplyBackend, ConfigRevision};
+use meshlet_config::DataPlaneConfig;
+use meshlet_domain::{
+    AliasMapping, ConfigApplyBackend, ConfigRevision, DeviceStatus, Ipv4Cidr, NetworkId, RouteMode,
+};
+use meshlet_network::linux::LinuxNetworkBackend;
+use meshlet_network::{PeerConfig, RouteConfig, TunnelConfig};
 use serde::Serialize;
 use std::sync::Arc;
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
-use crate::service::{self, ServiceError};
+use crate::service::{self, MeshState, ServiceError};
 
 /// 配置版本视图（`GET /config-revisions`、版本详情、apply/rollback 响应）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -75,18 +82,221 @@ impl ConfigApplyBackend for UnconfiguredBackend {
     }
 }
 
-/// 构造一次应用/回滚 backend 的工厂。
+/// 构造一次应用/回滚 backend 的工厂：按指定网络的当前期望配置取快照。
 ///
 /// 每次请求构造独立实例（领域 trait 是 `&mut self`），但**必须在网络级互斥内
 /// 调用**——§10.4 的「同一网络的配置修改串行化」由此保证：并发 apply 不会拿到
-/// 各自的后端实例交叉改写 WireGuard Peer / 路由 / NAT。生产用
-/// [`unconfigured_backend_factory`]；集成测试注入计数 backend，在 API 层验证
-/// 幂等与回滚边界（§10.3 验收）。
-pub type BackendFactory = Arc<dyn Fn() -> Box<dyn ConfigApplyBackend + Send> + Send + Sync>;
+/// 各自的后端实例交叉改写 WireGuard Peer / 路由 / NAT。生产由 `[dataplane]`
+/// 配置决定 [`hub_backend_factory`] 或 [`unconfigured_backend_factory`]；集成
+/// 测试注入计数 backend，在 API 层验证幂等与回滚边界（§10.3 验收）。
+pub type BackendFactory =
+    Arc<dyn Fn(&MeshState, &str) -> Box<dyn ConfigApplyBackend + Send> + Send + Sync>;
 
 /// 默认工厂：数据面未接入，显式失败。
 pub fn unconfigured_backend_factory() -> BackendFactory {
-    Arc::new(|| Box::new(UnconfiguredBackend))
+    Arc::new(|_, _| Box::new(UnconfiguredBackend))
+}
+
+// ---------------------------------------------------------------------------
+// Hub 数据面 backend（ADR-007 接线）
+// ---------------------------------------------------------------------------
+
+/// 一次应用的 hub 侧期望快照（从 [MeshState] 对账翻译，§10.1）。
+struct HubPlan {
+    tunnel: TunnelConfig,
+    routes: Vec<RouteConfig>,
+}
+
+/// hub 数据面 backend：把网络当前期望配置真实下发到本机内核。
+///
+/// - apply = `apply_tunnel`（接口/地址/私钥/端口/peer 对账）+ `apply_routes`
+///   （LAN/Alias 路由、ip_forward、FORWARD 放行），两步都成功才算成功（§10.3
+///   失败不报成功）；
+/// - rollback = Linux 后端的 Meshlet 自有对象清理（§10.3）；
+/// - 网关侧 NAT 不在此执行（ADR-006：转换在目标网关，随 agent 交付）。
+pub struct HubDataPlaneBackend {
+    plan: Result<HubPlan, String>,
+    interface: String,
+    private_key_file: Option<String>,
+}
+
+impl HubDataPlaneBackend {
+    /// 从期望状态快照构造（网络不存在/缺 IPAM 等构造错误延迟到 apply 报告，
+    /// 保持工厂不可失败的签名）。
+    fn from_mesh(
+        mesh: &MeshState,
+        network_id: &str,
+        cfg: &DataPlaneConfig,
+        tunnel_mtu: Option<u32>,
+    ) -> Self {
+        Self {
+            plan: hub_plan(mesh, network_id, cfg, tunnel_mtu),
+            interface: cfg.interface.clone(),
+            private_key_file: cfg.private_key_file.clone(),
+        }
+    }
+
+    /// hub 私钥：apply 时从文件读取（不落库，ADR-010）；未配置则保留接口
+    /// 现有私钥（幂等重应用；首装必须配置否则无法握手——错误如实报出）。
+    fn read_private_key(&self) -> Result<Option<String>, String> {
+        match &self.private_key_file {
+            None => Ok(None),
+            Some(path) => std::fs::read_to_string(path)
+                .map(|s| Some(s.trim().to_string()))
+                .map_err(|e| format!("read private_key_file {path}: {e}")),
+        }
+    }
+}
+
+impl ConfigApplyBackend for HubDataPlaneBackend {
+    fn apply(&mut self, _revision: &ConfigRevision) -> Result<(), String> {
+        let plan = self.plan.as_ref().map_err(Clone::clone)?;
+        let mut tunnel = plan.tunnel.clone();
+        tunnel.private_key = self.read_private_key()?;
+        let backend = LinuxNetworkBackend::new().with_interface(self.interface.clone());
+        let tunnel_result = backend
+            .apply_tunnel_sync(&tunnel)
+            .map_err(|e| format!("apply tunnel: {e}"))?;
+        if !tunnel_result.applied {
+            return Err(format!(
+                "apply tunnel rejected: {}",
+                tunnel_result.error.unwrap_or_else(|| "unknown".into())
+            ));
+        }
+        let routes_result = backend
+            .apply_routes_sync(&plan.routes)
+            .map_err(|e| format!("apply routes: {e}"))?;
+        if !routes_result.applied {
+            return Err(format!(
+                "apply routes rejected: {}",
+                routes_result.error.unwrap_or_else(|| "unknown".into())
+            ));
+        }
+        Ok(())
+    }
+
+    fn rollback(&mut self, _revision: &ConfigRevision) -> Result<(), String> {
+        let backend = LinuxNetworkBackend::new().with_interface(self.interface.clone());
+        let result = backend
+            .rollback_sync()
+            .map_err(|e| format!("rollback: {e}"))?;
+        if !result.applied {
+            return Err(format!(
+                "rollback rejected: {}",
+                result.error.unwrap_or_else(|| "unknown".into())
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 把指定网络的期望配置翻译为 hub 侧数据面计划。
+///
+/// - peer = 全部 Active 设备；allowed-ips = 设备虚拟 IP `/32` + 经该设备
+///   转发的 LAN/Alias 前缀（cryptkey 路由必须覆盖 hub 加密下发目的地）；
+/// - 路由 = LAN 路由（`Direct` → 真实目的段；`Alias` → 绑定 Alias 前缀）经
+///   网关设备虚拟 IP；网关设备非 Active 的路由跳过（无对端可发）。
+fn hub_plan(
+    mesh: &MeshState,
+    network_id: &str,
+    cfg: &DataPlaneConfig,
+    tunnel_mtu: Option<u32>,
+) -> Result<HubPlan, String> {
+    let network = mesh
+        .network_row(network_id)
+        .ok_or_else(|| format!("network {network_id} not found"))?;
+    let hub = mesh
+        .hub_address(network_id)
+        .ok_or_else(|| format!("ipam missing for network {network_id}"))?;
+
+    let devices: Vec<_> = mesh
+        .registry
+        .devices()
+        .iter()
+        .filter(|d| {
+            d.network_id == NetworkId(network_id.to_string()) && d.status == DeviceStatus::Active
+        })
+        .collect();
+    let routes_in = mesh
+        .lan_routes
+        .get(network_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let aliases: &[AliasMapping] = mesh
+        .aliases
+        .get(network_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    // hub 侧转发路由：Direct 用真实目的段，Alias 用 Alias 前缀（§9.4：VPS 只
+    // 按前缀转发，转换在目标网关做）。
+    let mut routes = Vec::new();
+    for route in routes_in {
+        let Some(gateway) = devices.iter().find(|d| d.id == route.gateway_device_id) else {
+            continue;
+        };
+        let destinations: Vec<Ipv4Cidr> = match route.route_mode {
+            RouteMode::Direct => vec![route.destination_cidr],
+            RouteMode::Alias => aliases
+                .iter()
+                .filter(|a| a.lan_route_id == route.id)
+                .map(|a| a.alias_cidr)
+                .collect(),
+        };
+        for destination in destinations {
+            routes.push(RouteConfig {
+                destination,
+                interface: cfg.interface.clone(),
+                gateway: Some(gateway.virtual_ipv4),
+            });
+        }
+    }
+
+    // peer allowed-ips：虚拟 IP /32 + 经该设备转发的全部前缀。
+    let mut peers = Vec::new();
+    for device in &devices {
+        let mut allowed_ips = vec![host_cidr(device.virtual_ipv4)];
+        for route in &routes {
+            if route.gateway == Some(device.virtual_ipv4)
+                && !allowed_ips.contains(&route.destination)
+            {
+                allowed_ips.push(route.destination);
+            }
+        }
+        peers.push(PeerConfig {
+            public_key: device.public_key.clone(),
+            allowed_ips,
+            endpoint: None,
+            persistent_keepalive_secs: None,
+        });
+    }
+
+    Ok(HubPlan {
+        tunnel: TunnelConfig {
+            name: cfg.interface.clone(),
+            address: hub,
+            address_prefix: network.overlay_cidr.prefix_len(),
+            listen_port: cfg.listen_port,
+            peers,
+            mtu: tunnel_mtu,
+            private_key: None,
+        },
+        routes,
+    })
+}
+
+/// `/32` 主机段（设备虚拟 IP 的 allowed-ips 单元）。
+fn host_cidr(addr: std::net::Ipv4Addr) -> Ipv4Cidr {
+    Ipv4Cidr::new(addr, 32).expect("host cidr is always valid")
+}
+
+/// 数据面工厂（`[dataplane] enabled = true`）：apply/rollback 真实执行。
+pub fn hub_backend_factory(dataplane: DataPlaneConfig, tunnel_mtu: Option<u32>) -> BackendFactory {
+    Arc::new(move |mesh, network_id| {
+        Box::new(HubDataPlaneBackend::from_mesh(
+            mesh, network_id, &dataplane, tunnel_mtu,
+        ))
+    })
 }
 
 /// 配置版本与应用状态路由（管理 API：会话认证 + 写请求 CSRF 头）。
@@ -160,10 +370,11 @@ pub async fn apply_revision_handler(
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
     let _persist = state.persist.lock().await;
-    let mut backend = (state.apply_backend)();
     let applied = {
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
+        // backend 在网络级互斥内按当前期望配置构造快照（§10.4 串行化）。
+        let mut backend = (state.apply_backend)(&guard, &network_id);
         guard
             .ledger
             .apply(
@@ -242,10 +453,10 @@ pub async fn rollback_revision_handler(
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
     let _persist = state.persist.lock().await;
-    let mut backend = (state.apply_backend)();
     let rolled = {
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
+        let mut backend = (state.apply_backend)(&guard, &network_id);
         guard
             .ledger
             .rollback(&network_id_of(&network_id), revision, backend.as_mut())

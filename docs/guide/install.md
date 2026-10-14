@@ -93,6 +93,16 @@ console_dir = "/usr/local/share/meshlet/console"
 # 等小 MTU 网络时建议显式配置（范围 1280..=65535，低于 1280 会拒绝启动）。
 # tunnel_mtu = 1380
 
+# 数据面接线（ADR-007）：默认**全关**——apply 修订只记录、显式失败并说明
+# 「已记录但未应用」，不碰内核。要让本机真正承担 hub 转发面（wg 接口/peer/
+# 路由/FORWARD 放行）才打开；进程需要 CAP_NET_ADMIN（systemd 单元未授予，
+# 见 deploy/systemd 注释）。私钥只从文件读取、绝不落库（ADR-010）。
+# [dataplane]
+# enabled = true                                 # 打开才真实执行 apply/rollback
+# interface = "wg0"                              # 受管 WireGuard 接口名
+# listen_port = 51820                            # hub 监听端口（不配=随机）
+# private_key_file = "/etc/meshlet/hub.key"      # hub 私钥文件（首装必须，0600）
+
 # 备份（§17.4「备份 ≠ 同步」）：默认**全关**——不写盘、不自动、无任何外发
 # /云上传/遥测。下面整段注释掉 = 备份未配置 = POST /api/v1/system/backup
 # 返回 503 backup_not_configured。要用备份必须显式给目录（auto 仍默认关）。

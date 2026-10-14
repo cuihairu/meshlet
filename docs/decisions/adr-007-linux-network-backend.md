@@ -26,6 +26,7 @@ Linux 侧需要管理 WireGuard 接口、路由、IP 转发、防火墙与 Alias
 - IP 转发：sysctl `net.ipv4.ip_forward` 检查与启用；
 - 回滚 = 删除 Meshlet 自有对象，**不得清空系统路由/规则**（§10.3）；
 - 实现 `NetworkBackend` trait（§15.1）：`inspect` / `apply_tunnel` / `apply_routes` / `rollback`。
+- 第一版实际落地的是**受控命令降级路径**（选项 2），Netlink/nftables 未采用——见下方「实施记录」。
 
 ## 理由
 
@@ -38,6 +39,50 @@ Linux 侧需要管理 WireGuard 接口、路由、IP 转发、防火墙与 Alias
 - Netlink 编程复杂度高（消息序列化、错误码语义）；可先用 `rtnetlink`/`wireguard` 生态 crate 评估；
 - 发行版 iptables/nft 混用历史问题——只依赖内核 nftables，绕开 iptables 兼容层；
 - **集成测试需要 NET_ADMIN 与网络命名空间**：需免密 sudo（`sudo -n`）+ `wg`（wireguard-tools）+ `wireguard` 内核模块。开发主机已具备（2026-10-15 实测：`sudo -n true` 通过、wireguard-tools v1.0.20250521、模块可加载，双 netns 隧道端到端跑通），四项转发证明已落为 `crates/meshlet-network/tests/wg_forwarding.rs`（网桥 star underlay + 4 netns）。缺任一前置的环境打印 `SKIP:` 正常通过，数据面回归依赖特权 runner。已知坑：veth 默认 GRO/GSO/TSO offload 会让 wg-over-veth 握手静默失败（tx 有字节 rx=0），两端 `ethtool -K ... off` 后即通——测试拓扑已固化该处理；无特权 `unshare -Urn` 确实被拒（uid_map 拒写），用 sudo 绕过即可。
+
+## 实施记录（2026-10-15 数据面接线）
+
+第一版落地为**受控命令执行**（`crates/meshlet-network/src/linux.rs` 的
+`LinuxNetworkBackend`），非 Netlink：控制面当前只需要逐配置下发（低频、
+原子粒度小），命令路径已覆盖全部能力且被真实内核集成测试钉死；Netlink 的
+事务性收益留到高频/大 peer 规模时再评估（见「重新评估条件」）。
+
+- **命令纪律**：全部经 `ip` / `wg` / `iptables` / `sysctl` 逐参数 argv 执行，
+  无任何字符串拼接 shell（§4.3）；`netns` / `sudo` 只是测试钩子字段（生产
+  server 不带 netns、按部署用户权限直跑）。
+- **幂等**：`ip address replace`、peer 对账（多退少补、allowed-ips 增量
+  `wg set`）、`ip route replace`、iptables 先 `-C` 探测存在才 `-A`——重复
+  应用不破坏网络（§10.3，集成测试断言）。
+- **所有权**：NAT 规则带 `meshlet alias {id}` 注释、FORWARD 放行带
+  `meshlet tunnel` 注释（nat.rs 计划层渲染）；`iptables -S` 引号感知分词
+  定位自有规则；回滚/`remove_nat` 只按注释删 Meshlet 规则，预埋的用户规则
+  原样保留（集成测试断言）；接口、接口地址与系统级 `ip_forward` 属系统状
+  态，回滚不回收。
+- **已知坑（固化进实现）**：`sudo -n ip netns exec` 下 `wg` 打开
+  `/dev/stdin` 与 0600 临时文件都报 `fopen: Permission denied`，唯一可行通
+  道是 bash 进程替换——`wg set wg0 private-key <(cat)`，密钥经 stdin 管道
+  递入、不进 argv、不落盘（`run_bash_stdin`）；veth offload、endpoint 指
+  netns 侧地址等坑位见 `wg_forwarding.rs` 头注。
+- **trait 扩展**（随接线需要）：`apply_nat(rules, gateway_lan_addr)` /
+  `remove_nat(owner)`；`TunnelConfig` 增 `address_prefix` 与
+  `private_key: Option`（`None` = 保留接口现有私钥，幂等重应用；首装必须
+  提供，否则无法握手——错误如实报出）；`RouteConfig` 增 `gateway`。
+- **server 接线**（`apps/server/src/revision.rs`）：`[dataplane] enabled =
+  true` 才启用 `HubDataPlaneBackend`，默认仍是显式失败的
+  `UnconfiguredBackend`（升级不悄悄接管内核）；hub 私钥只从
+  `private_key_file` 文件读、不落库（ADR-010）；hub 侧只下隧道与转发路
+  由，网关侧 NAT 在网关设备上执行、随 agent 数据面交付（ADR-006）。
+- **验证**：`crates/meshlet-network/tests/backend_wiring.rs`（真实内核 +
+  netns，**全部数据面操作走 `LinuxNetworkBackend`** 而非裸命令）覆盖
+  A↔B 互通、Alias 经 NAT 打到真实 LAN、幂等重应用、`remove_nat` 所有权
+  边界（用户规则幸存）、Overlay 源保留（§7.4，UDP echo 观测源地址）、撤
+  销即失效、回滚只删自有对象；SKIP 纪律与既有 netns 测试一致（CI 无
+  root 全绿）。
+- **未落地**：nftables 独立 table/chain（现为 iptables + 所有权注释，依赖
+  内核 nft 后端；发行版 iptables/nft 混用兼容层保留为本 ADR 已记录风
+  险）；`wg syncconf` 增量应用与最小 AllowedIPs（见
+  [routing-optimization.md](../architecture/routing-optimization.md)，属性
+  能优化非正确性）。
 
 ## 重新评估条件
 

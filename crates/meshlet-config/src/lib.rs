@@ -17,6 +17,8 @@ pub enum ConfigError {
     InvalidServerUrl(String),
     #[error("invalid tunnel_mtu {0} (1280..=65535 required: below 1280 breaks IPv6-in-tunnel and common TLS paths, §7.5)")]
     InvalidTunnelMtu(u32),
+    #[error("invalid dataplane config: {0}")]
+    InvalidDataPlane(String),
     #[error("missing required field: {0}")]
     MissingField(String),
 }
@@ -38,6 +40,7 @@ struct RawServerConfig {
     presence_handshake_window_secs: Option<u64>,
     backup: Option<RawBackupConfig>,
     tunnel_mtu: Option<u32>,
+    dataplane: Option<RawDataPlaneConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -45,6 +48,14 @@ struct RawBackupConfig {
     dir: Option<String>,
     auto: Option<bool>,
     interval_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct RawDataPlaneConfig {
+    enabled: Option<bool>,
+    interface: Option<String>,
+    listen_port: Option<u16>,
+    private_key_file: Option<String>,
 }
 
 /// 备份配置（存档 §17.4）：只写本地路径，默认**不**自动备份。
@@ -69,6 +80,33 @@ impl Default for BackupConfig {
     }
 }
 
+/// 数据面配置（ADR-007）：server 进程在本机执行的 WireGuard/路由接线。
+/// `enabled = false`（默认）时修订 apply 保持「确定性失败可见」（§10.3）；
+/// `enabled = true` 时 apply 走 Linux 网络后端真实执行（需 NET_ADMIN）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataPlaneConfig {
+    /// 显式开启才接管内核（默认关闭——升级不悄悄改网络栈）。
+    pub enabled: bool,
+    /// 受管 WireGuard 接口名（默认 `wg0`）。后端拒绝触碰其他接口。
+    pub interface: String,
+    /// 隧道监听端口；`None` = 不改接口现有端口（幂等重应用）。
+    pub listen_port: Option<u16>,
+    /// hub 私钥文件路径（单行 base64）。服务端**不落库**私钥（ADR-010），
+    /// apply 时读取；`None` = 保留接口现有私钥。首装必须提供，否则无法握手。
+    pub private_key_file: Option<String>,
+}
+
+impl Default for DataPlaneConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interface: "wg0".to_string(),
+            listen_port: None,
+            private_key_file: None,
+        }
+    }
+}
+
 /// Server 配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
@@ -88,6 +126,8 @@ pub struct ServerConfig {
     /// 计划隧道 MTU（存档 §7.5「MTU 可配置」）：`None` = 未显式配置，agent
     /// 按 WireGuard 默认 1420 组接口。诊断（§12.7）据此解释大包/分片问题。
     pub tunnel_mtu: Option<u32>,
+    /// 数据面（ADR-007）：本机 WireGuard/路由接线，默认关闭。
+    pub dataplane: DataPlaneConfig,
 }
 
 impl Default for ServerConfig {
@@ -102,6 +142,7 @@ impl Default for ServerConfig {
             presence_handshake_window_secs: 120,
             backup: BackupConfig::default(),
             tunnel_mtu: None,
+            dataplane: DataPlaneConfig::default(),
         }
     }
 }
@@ -134,6 +175,31 @@ impl ServerConfig {
             }
             other => other,
         };
+        let dataplane = match raw.dataplane {
+            Some(raw_dp) => {
+                let interface = raw_dp
+                    .interface
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or(default.dataplane.interface);
+                if interface.is_empty() {
+                    return Err(ConfigError::InvalidDataPlane(
+                        "interface must not be empty".into(),
+                    ));
+                }
+                if raw_dp.listen_port == Some(0) {
+                    return Err(ConfigError::InvalidDataPlane(
+                        "listen_port must be 1..=65535".into(),
+                    ));
+                }
+                DataPlaneConfig {
+                    enabled: raw_dp.enabled.unwrap_or(false),
+                    interface,
+                    listen_port: raw_dp.listen_port,
+                    private_key_file: raw_dp.private_key_file,
+                }
+            }
+            None => DataPlaneConfig::default(),
+        };
         Ok(Self {
             bind: raw.bind.unwrap_or(default.bind),
             database_path: raw.database_path.unwrap_or(default.database_path),
@@ -148,6 +214,7 @@ impl ServerConfig {
                 .unwrap_or(default.presence_handshake_window_secs),
             backup,
             tunnel_mtu,
+            dataplane,
         })
     }
 }
@@ -275,6 +342,53 @@ overlay_cidr = "172.30.0.0/16"
             let err = ServerConfig::from_toml(&format!("tunnel_mtu = {bad}")).unwrap_err();
             assert!(matches!(err, ConfigError::InvalidTunnelMtu(_)), "{bad}");
         }
+    }
+
+    #[test]
+    fn dataplane_defaults_off_and_parses_explicit_section() {
+        // 默认不接管内核：升级不悄悄改网络栈（§10.3 接线前确定性失败可见）。
+        assert!(!ServerConfig::default().dataplane.enabled);
+        assert_eq!(ServerConfig::default().dataplane.interface, "wg0");
+
+        let c = ServerConfig::from_toml(
+            r#"
+[dataplane]
+enabled = true
+interface = "mesh0"
+listen_port = 51820
+private_key_file = "/etc/meshlet/hub.key"
+"#,
+        )
+        .unwrap();
+        assert!(c.dataplane.enabled);
+        assert_eq!(c.dataplane.interface, "mesh0");
+        assert_eq!(c.dataplane.listen_port, Some(51820));
+        assert_eq!(
+            c.dataplane.private_key_file.as_deref(),
+            Some("/etc/meshlet/hub.key")
+        );
+
+        // 只开 enabled：其余默认（接口 wg0，不动现有私钥/端口）。
+        let c = ServerConfig::from_toml("[dataplane]\nenabled = true").unwrap();
+        assert!(c.dataplane.enabled);
+        assert_eq!(c.dataplane.interface, "wg0");
+        assert_eq!(c.dataplane.listen_port, None);
+    }
+
+    #[test]
+    fn dataplane_rejects_empty_interface_and_zero_port() {
+        let err = ServerConfig::from_toml(
+            r#"
+[dataplane]
+enabled = true
+interface = "  "
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err = ServerConfig::from_toml("[dataplane]\nlisten_port = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
     }
 
     #[test]

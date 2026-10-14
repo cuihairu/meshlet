@@ -941,6 +941,7 @@ dependencies = [
  "meshlet-api-types",
  "meshlet-config",
  "meshlet-domain",
+ "meshlet-network",
  "serde",
  "serde_json",
  "sha2",
