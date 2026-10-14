@@ -37,7 +37,7 @@ Not in scope for v1: public relay networks, P2P/NAT hole punching, L2 bridging, 
 
 ## Status
 
-Phase 0 done (analysis, ADRs, docs). Phase 1 in progress: domain crates (CIDR/IPAM/conflict/entities/invites), a control-plane server with network/invite/enrollment API, console auth (Argon2id, sessions, rate limiting, CSRF), SQLite migrations, and a React console (served by the server via console_dir), 121 tests green. Three high-risk areas remain for validation: WireGuard routing under VPS relay, alias DNAT/SNAT for overlapping subnets, and Windows/Linux network config with safe rollback.
+Phase 0 done (analysis, ADRs, docs). Phase 1 in progress: domain crates (CIDR/IPAM/conflict/entities/invites), a control-plane server with network/invite/enrollment API, console auth (Argon2id, sessions, rate limiting, CSRF), SQLite migrations, a React console (served by the server via console_dir), and online-status verdicts with source + update-time annotation, 145 tests green. Three high-risk areas remain for validation: WireGuard routing under VPS relay, alias DNAT/SNAT for overlapping subnets, and Windows/Linux network config with safe rollback.
 
 ## License
 

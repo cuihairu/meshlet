@@ -36,7 +36,7 @@
 - [x] 邀请 Token 安全（[存档 §11.3](docs/review/chatgpt-2026-10-13.md)）— 验收：只存摘要；过期/撤销/一次性可测；日志无 Token ✅ 安全随机 Token（32B→64hex）+ SHA-256 摘要存储（`meshlet-domain/src/invites.rs`）；过期/撤销/次数上限/并发单胜全部单测；Debug 形态不含原始 Token（摘要之外不落地）
 - [x] React 控制台：Network/Device/邀请/撤销页面（[存档 §12](docs/review/chatgpt-2026-10-13.md)）— 验收：不手工改库即可完成基本管理 ✅ `console/`（Vite+React+TS，`npm run build` 过）：bootstrap/login 门（409 冲突自动转登录）、Network 列表/创建、Device 表格、邀请创建（一次性 Token 仅显示一次）/撤销；API 层统一带 `X-Requested-With`（CSRF）；server 可静态托管 `console_dir`（`router_with_console` + ServeDir 回落，`/api` 路由优先、缺失文件 404，5 项集成测试 `console_static.rs`）；CI 增加 console build job
 - [ ] 配置版本页面（依赖「配置状态机」条目落地后才有 API 可展示）
-- [ ] 在线状态判定（握手+心跳+上报）（[存档 §12.4](docs/review/chatgpt-2026-10-13.md)）— 验收：状态标注数据来源与更新时间
+- [x] 在线状态判定（握手+心跳+上报）（[存档 §12.4](docs/review/chatgpt-2026-10-13.md)）— 验收：状态标注数据来源与更新时间 ✅ 判定引擎 `meshlet-domain/src/presence.rs`（纯函数，窗口/判定时刻可注入，12 单测）：三类证据（agent 上报 > 握手 > 加入）→ `online` / `tunnel_only` / `offline`；**握手新鲜 ≠ 在线**（§12.4：握手只证明隧道连通，单握手写 `tunnel_only` 而非 `online`）；窗口默认 5min/2min 且可配置（`presence_agent_window_secs` / `presence_handshake_window_secs`）；非法时间戳保守忽略。采集路径：加入签发 `agent_token`（Bearer，仅返回一次，`agent_tokens` 表只存 SHA-256 摘要，migration 003）→ `POST /api/v1/agent/heartbeat`（agent API，与管理 API 认证边界分离）带上 `wg show` 握手读数 → 写 `devices.last_handshake_at` / `last_report_at` / `last_seen_at`。控制台设备行标注 `online_state` + `presence_source` + 更新时间（§12.2：不出现无来源的绿色图标）；集成测试 8 项 `presence.rs`（含 tunnel_only 端到端、无 Token 401 且状态不被污染、未知路径仍 404）
 - [ ] 配置状态机（[存档 §10](docs/review/chatgpt-2026-10-13.md)）— 验收：DB 写入 ≠ 显示生效；失败可见；状态可区分
 - [ ] 撤销设备完整链路（[存档 §11.5](docs/review/chatgpt-2026-10-13.md)）— 验收：Peer/路由/Alias 关系全部移除；不确定生效时报失败
 - [ ] 审计日志（[存档 §16.5](docs/review/chatgpt-2026-10-13.md)）— 验收：敏感操作全记录；无密码/私钥/Token 明文

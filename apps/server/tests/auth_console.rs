@@ -21,7 +21,8 @@ async fn ctx() -> Ctx {
         .unwrap();
     let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
         meshlet_server::service::SharedState::default(),
-        meshlet_server::auth::AuthStore::new(pool),
+        meshlet_server::auth::AuthStore::new(pool.clone()),
+        meshlet_server::agent::AgentTokenStore::new(pool),
         false,
     ));
     Ctx {
@@ -393,7 +394,8 @@ async fn cookie_secure_flag_flips_with_config() {
         .unwrap();
     let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
         meshlet_server::service::SharedState::default(),
-        meshlet_server::auth::AuthStore::new(pool),
+        meshlet_server::auth::AuthStore::new(pool.clone()),
+        meshlet_server::agent::AgentTokenStore::new(pool),
         true,
     ));
     let ctx = Ctx {

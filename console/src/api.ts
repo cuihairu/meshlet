@@ -19,6 +19,12 @@ export interface Device {
   fingerprint: string;
   status: string;
   created_at: string;
+  /** Last evidence timestamp (enroll / heartbeat / report arrival). */
+  last_seen_at: string | null;
+  /** online | tunnel_only | offline — a fresh handshake alone is not "online". */
+  online_state: string;
+  /** agent_report | handshake | enrollment | none — the data source behind the state. */
+  presence_source: string;
 }
 
 export interface InviteCreated {

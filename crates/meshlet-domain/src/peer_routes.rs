@@ -478,6 +478,8 @@ mod tests {
             platform: Platform::Linux,
             status: DeviceStatus::Active,
             last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
             created_at: ts(),
             revoked_at: None,
         };
@@ -518,6 +520,8 @@ mod tests {
             platform: Platform::Linux,
             status: DeviceStatus::Active,
             last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
             created_at: ts(),
             revoked_at: None,
         }];

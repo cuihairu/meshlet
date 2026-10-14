@@ -273,17 +273,23 @@ function DevicesSection({ networkId }: { networkId: string }) {
               <th>Name</th>
               <th>Virtual IP</th>
               <th>Status</th>
+              <th>Online</th>
               <th>Fingerprint</th>
             </tr>
           </thead>
           <tbody>
             {devices.map((d) => (
-              <tr key={d.id} title={d.public_key}>
+              <tr key={d.id} title={d.public_key} className={`state-${d.online_state}`}>
                 <td>{d.name}</td>
                 <td>
                   <code>{d.virtual_ipv4}</code>
                 </td>
                 <td>{d.status}</td>
+                <td title={`source: ${d.presence_source}`}>
+                  <span className={`dot ${d.online_state}`}>{d.online_state}</span>
+                  <span className="muted"> · {SOURCE_LABELS[d.presence_source] ?? d.presence_source}</span>
+                  <span className="muted"> · updated {formatTime(d.last_seen_at)}</span>
+                </td>
                 <td>
                   <code className="fingerprint">{d.fingerprint.slice(0, 16)}…</code>
                 </td>
@@ -294,6 +300,20 @@ function DevicesSection({ networkId }: { networkId: string }) {
       )}
     </div>
   );
+}
+
+/** Presence data sources (archive §12.2: a green dot must say why). */
+const SOURCE_LABELS: Record<string, string> = {
+  agent_report: 'agent report',
+  handshake: 'wireguard handshake only',
+  enrollment: 'enrollment',
+  none: 'no evidence',
+};
+
+function formatTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
 function InvitesSection({ networkId }: { networkId: string }) {

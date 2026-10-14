@@ -96,7 +96,12 @@ pub struct Device {
     pub public_key: String,
     pub platform: Platform,
     pub status: DeviceStatus,
+    /// 最新一次证据时间（加入/心跳/上报到达时刻）——控制台「最后在线时间」。
     pub last_seen_at: Option<Timestamp>,
+    /// 最近一次 WireGuard 握手（agent 经心跳上报 `wg show` 本地读数，§12.4）。
+    pub last_handshake_at: Option<Timestamp>,
+    /// 最近一次 agent 心跳/状态上报时刻（§14.1）。
+    pub last_report_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub revoked_at: Option<Timestamp>,
 }
@@ -343,6 +348,14 @@ impl DeviceRegistry {
         &self.devices
     }
 
+    pub fn find_by_id(&self, id: &DeviceId) -> Option<&Device> {
+        self.devices.iter().find(|d| d.id == *id)
+    }
+
+    pub fn find_by_id_mut(&mut self, id: &DeviceId) -> Option<&mut Device> {
+        self.devices.iter_mut().find(|d| d.id == *id)
+    }
+
     pub fn add(&mut self, device: Device) -> Result<(), RegistryError> {
         if self
             .devices
@@ -402,6 +415,8 @@ mod tests {
             platform: Platform::Linux,
             status: DeviceStatus::Active,
             last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
             created_at: T0.into(),
             revoked_at: None,
         };
@@ -547,6 +562,8 @@ mod tests {
             platform: Platform::Linux,
             status: DeviceStatus::Active,
             last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
             created_at: T0.into(),
             revoked_at: None,
         };
@@ -562,5 +579,36 @@ mod tests {
         ));
         reg.add(mk("nas", "10.240.0.3")).unwrap();
         assert_eq!(reg.active_virtual_ips().len(), 2);
+    }
+
+    #[test]
+    fn registry_find_by_id_returns_device_for_update() {
+        let mk = |name: &str, ip: &str| Device {
+            id: DeviceId(format!("dev-{name}")),
+            network_id: NetworkId("net-1".into()),
+            name: name.into(),
+            virtual_ipv4: ip.parse().unwrap(),
+            public_key: "pub".into(),
+            platform: Platform::Linux,
+            status: DeviceStatus::Active,
+            last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
+            created_at: T0.into(),
+            revoked_at: None,
+        };
+        let mut reg = DeviceRegistry::new();
+        let laptop = mk("laptop", "10.240.0.2");
+        let id = laptop.id.clone();
+        reg.add(laptop).unwrap();
+
+        assert_eq!(reg.find_by_id(&id).unwrap().name, "laptop");
+        assert!(reg.find_by_id(&DeviceId("dev-nope".into())).is_none());
+        let d = reg.find_by_id_mut(&id).unwrap();
+        d.last_report_at = Some(T0.into());
+        assert_eq!(
+            reg.find_by_id(&id).unwrap().last_report_at.as_deref(),
+            Some(T0)
+        );
     }
 }

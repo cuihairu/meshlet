@@ -48,6 +48,7 @@ async fn migrations_create_all_core_tables() {
     let pool = db().await;
     let got = tables(&pool).await;
     for expected in [
+        "agent_tokens",
         "alias_mappings",
         "audit_events",
         "config_revisions",
@@ -256,9 +257,60 @@ async fn config_revisions_are_keyed_by_network_and_revision() {
 }
 
 #[tokio::test]
+async fn agent_tokens_store_digest_only_with_unique_hash() {
+    let pool = db().await;
+    let cols = columns(&pool, "agent_tokens").await;
+    assert!(cols.contains(&"token_hash".to_string()), "{cols:?}");
+    assert!(
+        !cols.contains(&"token".to_string()) && !cols.contains(&"agent_token".to_string()),
+        "agent_tokens must not store the raw token"
+    );
+
+    sqlx::query(
+        "INSERT INTO networks (id, name, overlay_cidr, created_at, updated_at)
+         VALUES ('net-1', 'n', '10.240.0.0/16', 't', 't')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, network_id, name, virtual_ipv4, public_key, platform, status, created_at)
+         VALUES ('dev-1', 'net-1', 'laptop', '10.240.0.2', 'pub-1', 'linux', 'active', 't')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO agent_tokens (token_hash, device_id, created_at)
+         VALUES ('ath-1', 'dev-1', 't')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // token_hash 唯一。
+    assert!(matches!(
+        sqlx::query(
+            "INSERT INTO agent_tokens (token_hash, device_id, created_at)
+             VALUES ('ath-1', 'dev-1', 't')"
+        )
+        .execute(&pool)
+        .await,
+        Err(Database(e)) if e.is_unique_violation()
+    ));
+}
+
+#[tokio::test]
+async fn devices_carry_presence_evidence_timestamps() {
+    let pool = db().await;
+    let cols = columns(&pool, "devices").await;
+    assert!(cols.contains(&"last_handshake_at".to_string()), "{cols:?}");
+    assert!(cols.contains(&"last_report_at".to_string()), "{cols:?}");
+}
+
+#[tokio::test]
 async fn migrations_are_idempotent_across_reopens() {
     // 迁移必须可重复应用（重启不破坏库）。
     let pool = db().await;
     meshlet_server::store::MIGRATIONS.run(&pool).await.unwrap();
-    assert_eq!(tables(&pool).await.len(), 10);
+    assert_eq!(tables(&pool).await.len(), 11);
 }

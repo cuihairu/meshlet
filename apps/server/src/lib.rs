@@ -8,6 +8,7 @@
 //! - 管理（handler 挂 `AuthenticatedUser` 会话提取器 + 写请求 `CsrfHeader`）：
 //!   `/networks*`、`/networks/{id}/invites*`、`/networks/{id}/devices`。
 
+pub mod agent;
 pub mod auth;
 pub mod service;
 pub mod store;
@@ -98,8 +99,19 @@ async fn enroll_handler(
     State(state): State<SharedAppState>,
     Json(req): Json<service::EnrollRequest>,
 ) -> Result<(StatusCode, Json<service::EnrollResponse>), service::ServiceError> {
-    let mut guard = state.mesh.lock().unwrap();
-    Ok((StatusCode::CREATED, Json(enroll(&mut guard, req)?)))
+    // 先完成加入（内存操作），再签发 agent 凭证——锁不跨 await（future 须 Send）。
+    let mut resp = {
+        let mut guard = state.mesh.lock().unwrap();
+        enroll(&mut guard, req)?
+    };
+    let device_id = meshlet_domain::DeviceId(resp.device_id.clone());
+    let (raw, _hash) = state
+        .agent_tokens
+        .issue(&device_id, service::now())
+        .await
+        .map_err(|e| service::ServiceError::Internal(e.to_string()))?;
+    resp.agent_token = raw;
+    Ok((StatusCode::CREATED, Json(resp)))
 }
 
 /// 构建完整路由。
@@ -127,6 +139,7 @@ pub fn router(state: SharedAppState) -> Router {
             "/api/v1/networks/{network_id}/devices",
             get(list_devices_handler),
         )
+        .route("/api/v1/agent/heartbeat", post(agent::heartbeat_handler))
         .with_state(state)
 }
 
@@ -141,6 +154,7 @@ impl IntoResponse for service::ServiceError {
         let status = match &self {
             service::ServiceError::NetworkNotFound(_)
             | service::ServiceError::InviteNotFound(_)
+            | service::ServiceError::DeviceNotFound(_)
             | service::ServiceError::InvalidInviteToken => StatusCode::NOT_FOUND,
             service::ServiceError::InvalidCidr(_) | service::ServiceError::InvalidInput(_) => {
                 StatusCode::BAD_REQUEST

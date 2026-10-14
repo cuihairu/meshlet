@@ -14,6 +14,7 @@ pub mod entities;
 pub mod invites;
 pub mod ipam;
 pub mod peer_routes;
+pub mod presence;
 pub mod tokens;
 
 pub use cidr::{CidrError, Ipv4Cidr};
@@ -29,6 +30,10 @@ pub use entities::{
 };
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};
+pub use presence::{
+    evaluate, evaluate_with_defaults, Presence, PresenceInput, PresenceSource, PresenceState,
+    PresenceThresholds,
+};
 
 #[cfg(test)]
 mod tests {

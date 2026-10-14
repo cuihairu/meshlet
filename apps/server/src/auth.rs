@@ -38,11 +38,12 @@ pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// 内容为 Argon2id PHC 格式的无效哈希——校验必然失败，但耗时与真哈希一致。
 const DUMMY_HASH: &str = "$argon2id$v=19$m=32768,t=2,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-/// 应用状态：内存 Mesh 状态 + SQLite 用户/会话 + 登录限流器。
+/// 应用状态：内存 Mesh 状态 + SQLite 用户/会话/agent 凭证 + 登录限流器。
 #[derive(Clone)]
 pub struct AppState {
     pub mesh: service::SharedState,
     pub auth: AuthStore,
+    pub agent_tokens: crate::agent::AgentTokenStore,
     pub login_limiter: Arc<RateLimiter>,
     pub cookie_secure: bool,
 }
@@ -50,10 +51,16 @@ pub struct AppState {
 pub type SharedAppState = Arc<AppState>;
 
 impl AppState {
-    pub fn new(mesh: service::SharedState, auth: AuthStore, cookie_secure: bool) -> Self {
+    pub fn new(
+        mesh: service::SharedState,
+        auth: AuthStore,
+        agent_tokens: crate::agent::AgentTokenStore,
+        cookie_secure: bool,
+    ) -> Self {
         Self {
             mesh,
             auth,
+            agent_tokens,
             login_limiter: Arc::new(RateLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
             cookie_secure,
         }

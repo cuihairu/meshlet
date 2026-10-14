@@ -39,9 +39,16 @@ async fn main() {
     let pool = meshlet_server::store::connect(&database_url)
         .await
         .unwrap_or_else(|e| panic!("database {}: {e}", config.database_path));
+    let presence_thresholds = meshlet_domain::PresenceThresholds {
+        agent_window: std::time::Duration::from_secs(config.presence_agent_window_secs),
+        handshake_window: std::time::Duration::from_secs(config.presence_handshake_window_secs),
+    };
     let state = std::sync::Arc::new(meshlet_server::auth::AppState::new(
-        meshlet_server::service::SharedState::default(),
-        meshlet_server::auth::AuthStore::new(pool),
+        std::sync::Arc::new(std::sync::Mutex::new(
+            meshlet_server::service::MeshState::new(presence_thresholds),
+        )),
+        meshlet_server::auth::AuthStore::new(pool.clone()),
+        meshlet_server::agent::AgentTokenStore::new(pool),
         config.cookie_secure,
     ));
     let app = match config.console_dir.as_deref() {

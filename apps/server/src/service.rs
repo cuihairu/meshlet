@@ -7,8 +7,8 @@
 
 use meshlet_api_types::ErrorResponse;
 use meshlet_domain::{
-    generate_token, Device, DeviceRegistry, Invite, Ipam, Ipv4Cidr, Network, Platform,
-    RegistryError,
+    generate_token, Device, DeviceId, DeviceRegistry, Invite, Ipam, Ipv4Cidr, Network, Platform,
+    RegistryError, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -43,6 +43,12 @@ pub struct DeviceView {
     pub fingerprint: String,
     pub status: String,
     pub created_at: String,
+    /// 最后证据时间（加入/心跳/上报到达时刻）——控制台「最后在线时间」。
+    pub last_seen_at: Option<String>,
+    /// 在线状态判定：`online` / `tunnel_only` / `offline`（数据来源见下）。
+    pub online_state: String,
+    /// 状态的数据来源：`agent_report` / `handshake` / `enrollment` / `none`（§12.2）。
+    pub presence_source: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +90,8 @@ pub struct EnrollResponse {
     pub network_id: String,
     pub virtual_ipv4: Ipv4Addr,
     pub fingerprint: String,
+    /// Agent API 凭证（Bearer）：**仅此一次**返回，服务端只存 SHA-256 摘要。
+    pub agent_token: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +104,8 @@ pub enum ServiceError {
     NetworkNotFound(String),
     #[error("invite {0} not found")]
     InviteNotFound(String),
+    #[error("device {0} not found")]
+    DeviceNotFound(String),
     #[error("invalid invite token")]
     InvalidInviteToken,
     #[error("{0}")]
@@ -112,7 +122,9 @@ impl ServiceError {
     /// 转为统一错误响应（结构见 docs/architecture/api-contract.md）。
     pub fn into_response(self) -> ErrorResponse {
         match self {
-            ServiceError::NetworkNotFound(_) | ServiceError::InviteNotFound(_) => {
+            ServiceError::NetworkNotFound(_)
+            | ServiceError::InviteNotFound(_)
+            | ServiceError::DeviceNotFound(_) => {
                 ErrorResponse::new(meshlet_api_types::ErrorCode::NotFound, self.to_string())
             }
             ServiceError::InvalidInviteToken => ErrorResponse::new(
@@ -156,15 +168,18 @@ pub struct MeshState {
     invites: HashMap<String, Invite>,
     ipams: HashMap<String, Ipam>,
     registry: DeviceRegistry,
+    /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
+    presence_thresholds: meshlet_domain::PresenceThresholds,
 }
 
 impl MeshState {
-    pub fn new() -> Self {
+    pub fn new(presence_thresholds: meshlet_domain::PresenceThresholds) -> Self {
         Self {
             networks: HashMap::new(),
             invites: HashMap::new(),
             ipams: HashMap::new(),
             registry: DeviceRegistry::new(),
+            presence_thresholds,
         }
     }
 
@@ -177,7 +192,7 @@ impl MeshState {
 
 impl Default for MeshState {
     fn default() -> Self {
-        Self::new()
+        Self::new(meshlet_domain::PresenceThresholds::default())
     }
 }
 
@@ -328,6 +343,8 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         platform,
         status: meshlet_domain::DeviceStatus::Active,
         last_seen_at: Some(ts.clone()),
+        last_handshake_at: None,
+        last_report_at: None,
         created_at: ts.clone(),
         revoked_at: None,
     };
@@ -340,17 +357,62 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         network_id,
         virtual_ipv4: virtual_ip,
         fingerprint,
+        agent_token: String::new(), // 由 handler 用 AgentTokenStore 签发后回填
     })
+}
+
+/// 记录一次 agent 心跳/上报（§14.1）：定位设备、更新 `last_report_at`（到达
+/// 时刻）、可选的 `last_handshake_at`（agent 本地 `wg show` 读数）与
+/// `last_seen_at`，返回当前在线判定（状态 + 数据来源）。
+pub fn record_agent_report(
+    state: &mut MeshState,
+    device_id: &DeviceId,
+    last_handshake_at: Option<String>,
+    now: Timestamp,
+) -> Result<meshlet_domain::Presence, ServiceError> {
+    let device = state
+        .registry
+        .find_by_id_mut(device_id)
+        .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
+    apply_agent_report(device, last_handshake_at, &now);
+    Ok(evaluate_presence(device, &now, &state.presence_thresholds))
+}
+
+/// 把一次上报写到设备记录（内部共享）。
+fn apply_agent_report(device: &mut Device, last_handshake_at: Option<String>, now: &Timestamp) {
+    if let Some(ts) = last_handshake_at {
+        device.last_handshake_at = Some(ts);
+    }
+    device.last_report_at = Some(now.clone());
+    device.last_seen_at = Some(now.clone());
+}
+
+/// 在线判定（域层纯函数；判定时刻 = 当前时间，阈值来自状态）。
+pub fn evaluate_presence(
+    device: &Device,
+    now: &Timestamp,
+    thresholds: &meshlet_domain::PresenceThresholds,
+) -> meshlet_domain::Presence {
+    meshlet_domain::evaluate(
+        meshlet_domain::PresenceInput {
+            last_handshake_at: device.last_handshake_at.as_deref(),
+            last_report_at: device.last_report_at.as_deref(),
+            enrolled_at: Some(device.created_at.as_str()),
+        },
+        now,
+        thresholds,
+    )
 }
 
 pub fn list_devices(state: &MeshState, network_id: &str) -> Result<Vec<DeviceView>, ServiceError> {
     state.network(network_id)?;
+    let now: Timestamp = now();
     Ok(state
         .registry
         .devices()
         .iter()
         .filter(|d| d.network_id.to_string() == network_id)
-        .map(to_device_view)
+        .map(|d| to_device_view(d, &now, &state.presence_thresholds))
         .collect())
 }
 
@@ -383,7 +445,12 @@ fn to_network_view(n: &Network) -> NetworkView {
     }
 }
 
-fn to_device_view(d: &Device) -> DeviceView {
+fn to_device_view(
+    d: &Device,
+    now: &Timestamp,
+    thresholds: &meshlet_domain::PresenceThresholds,
+) -> DeviceView {
+    let presence = evaluate_presence(d, now, thresholds);
     DeviceView {
         id: d.id.to_string(),
         network_id: d.network_id.to_string(),
@@ -398,5 +465,8 @@ fn to_device_view(d: &Device) -> DeviceView {
         }
         .to_string(),
         created_at: d.created_at.clone(),
+        last_seen_at: d.last_seen_at.clone(),
+        online_state: presence.state.as_str().to_string(),
+        presence_source: presence.source.as_str().to_string(),
     }
 }

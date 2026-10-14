@@ -26,6 +26,8 @@ struct RawServerConfig {
     overlay_cidr: Option<String>,
     cookie_secure: Option<bool>,
     console_dir: Option<String>,
+    presence_agent_window_secs: Option<u64>,
+    presence_handshake_window_secs: Option<u64>,
 }
 
 /// Server 配置。
@@ -38,6 +40,10 @@ pub struct ServerConfig {
     pub cookie_secure: bool,
     /// Web 控制台静态文件目录（`console/dist`）。缺省不托管控制台。
     pub console_dir: Option<String>,
+    /// 在线判定：agent 上报新鲜窗口（秒，默认 300）。
+    pub presence_agent_window_secs: u64,
+    /// 在线判定：握手新鲜窗口（秒，默认 120）。
+    pub presence_handshake_window_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -48,6 +54,8 @@ impl Default for ServerConfig {
             overlay_cidr: DEFAULT_OVERLAY_CIDR.parse().expect("valid default cidr"),
             cookie_secure: false,
             console_dir: None,
+            presence_agent_window_secs: 300,
+            presence_handshake_window_secs: 120,
         }
     }
 }
@@ -69,6 +77,12 @@ impl ServerConfig {
             overlay_cidr,
             cookie_secure: raw.cookie_secure.unwrap_or(default.cookie_secure),
             console_dir: raw.console_dir.or(default.console_dir),
+            presence_agent_window_secs: raw
+                .presence_agent_window_secs
+                .unwrap_or(default.presence_agent_window_secs),
+            presence_handshake_window_secs: raw
+                .presence_handshake_window_secs
+                .unwrap_or(default.presence_handshake_window_secs),
         })
     }
 }
@@ -150,6 +164,19 @@ overlay_cidr = "172.30.0.0/16"
         assert!(ServerConfig::default().console_dir.is_none());
         let c = ServerConfig::from_toml("console_dir = \"console/dist\"").unwrap();
         assert_eq!(c.console_dir.as_deref(), Some("console/dist"));
+    }
+
+    #[test]
+    fn presence_windows_default_and_parse() {
+        let d = ServerConfig::default();
+        assert_eq!(d.presence_agent_window_secs, 300);
+        assert_eq!(d.presence_handshake_window_secs, 120);
+        let c = ServerConfig::from_toml(
+            "presence_agent_window_secs = 60\npresence_handshake_window_secs = 30",
+        )
+        .unwrap();
+        assert_eq!(c.presence_agent_window_secs, 60);
+        assert_eq!(c.presence_handshake_window_secs, 30);
     }
 
     #[test]

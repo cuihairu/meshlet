@@ -225,6 +225,37 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /agent/heartbeat:
+    post:
+      security:
+        - agentToken: []
+      tags: [devices]
+      summary: Agent heartbeat / status report (§14.1)
+      description: >
+        Records the report time and, optionally, the latest WireGuard handshake
+        the agent read locally. Authenticated with a Bearer agent token issued at
+        enrollment — agent and management APIs are separate auth boundaries (§13.7).
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          schema: { type: string }
+          description: Bearer <agent_token>
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Heartbeat" }
+      responses:
+        "200":
+          description: Report recorded; current presence verdict returned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HeartbeatResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /networks/{network_id}/devices/{device_id}:
     parameters:
       - { $ref: "#/components/parameters/NetworkId" }
@@ -457,6 +488,13 @@ components:
         Console session cookie (HttpOnly, SameSite=Strict, Path=/api/v1).
         Mutating management requests must additionally send
         X-Requested-With: XMLHttpRequest (CSRF guard).
+    agentToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: >
+        Bearer <agent_token> — the agent's control-plane credential issued at
+        enrollment. Only returned once; the server stores the SHA-256 digest.
   parameters:
     NetworkId: { name: network_id, in: path, required: true, schema: { type: string } }
     DeviceId: { name: device_id, in: path, required: true, schema: { type: string } }
@@ -552,6 +590,19 @@ components:
         platform: { type: string, enum: [linux, windows] }
         status: { type: string, enum: [pending, active, revoked] }
         last_seen_at: { type: string, format: date-time, nullable: true }
+        online_state:
+          type: string
+          enum: [online, tunnel_only, offline]
+          description: >
+            online = a fresh agent report; tunnel_only = only a fresh WireGuard
+            handshake, which proves tunnel connectivity but not that the device
+            works end to end (§12.4); offline = no fresh evidence.
+        presence_source:
+          type: string
+          enum: [agent_report, handshake, enrollment, none]
+          description: >
+            The data source behind online_state (§12.2: never show a green "online"
+            icon without saying which evidence produced it and when).
         revoked_at: { type: string, format: date-time, nullable: true }
     DeviceList:
       type: object
@@ -578,12 +629,32 @@ components:
         platform: { type: string, enum: [linux, windows] }
     EnrollResponse:
       type: object
-      required: [device_id, network_id, virtual_ipv4, fingerprint]
+      required: [device_id, network_id, virtual_ipv4, fingerprint, agent_token]
       properties:
         device_id: { type: string }
         network_id: { type: string }
         virtual_ipv4: { type: string, format: ipv4 }
         fingerprint: { type: string, description: SHA-256 of the public key }
+        agent_token:
+          type: string
+          description: >
+            64 hex chars; the agent's Bearer credential for /agent/heartbeat.
+            Returned only here, only once — the server stores the SHA-256 digest.
+    Heartbeat:
+      type: object
+      additionalProperties: false
+      properties:
+        last_handshake_at:
+          type: string
+          format: date-time
+          description: Latest WireGuard handshake as read locally via `wg show`.
+    HeartbeatResponse:
+      type: object
+      required: [online_state, presence_source]
+      properties:
+        online_state: { type: string, enum: [online, tunnel_only, offline] }
+        presence_source: { type: string, enum: [agent_report, handshake, enrollment, none] }
+        last_seen_at: { type: string, format: date-time }
     LanRoute:
       type: object
       properties:

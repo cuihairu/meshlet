@@ -46,10 +46,33 @@ erDiagram
 | `id` / `network_id` / `name` | 标识与归属 |
 | `virtual_ipv4` | 网络内唯一；hub 保留地址不可分配（ADR-004） |
 | `public_key` | 绑定设备身份；密钥与 Device 记录分离（DeviceKey） |
-| `platform` / `status` / `last_seen_at` | 平台、在线状态（握手+心跳+上报综合判定，§12.4） |
+| `platform` / `status` | 平台与生命周期状态（`pending` / `active` / `revoked`） |
+| `last_seen_at` | 最后证据时间（加入/心跳/上报到达时刻）——控制台「最后在线时间」 |
+| `last_handshake_at` | 最近一次 WireGuard 握手（agent 从本地 `wg show` 读取后随心跳上报） |
+| `last_report_at` | 最近一次 agent 心跳/状态上报（§14.1） |
 | `created_at` / `revoked_at` | 创建与撤销时间 |
 
-约束：撤销后服务端必须移除其有效 Peer 与授权；离线状态不能只看数据库旧值。
+约束：撤销后服务端必须移除其有效 Peer 与授权；离线状态不能只看数据库旧值
+（须按证据时间戳实时判定，见 §7.3）。
+
+## Peer 与在线状态判定（§7.3、§12.4）
+
+`meshlet-domain/src/presence.rs` 是纯函数判定引擎：输入三类证据时间戳
+（`last_handshake_at` / `last_report_at` / 加入时刻），输出
+`Presence { state, source, evaluated_at }`。
+
+| 状态 | 判定条件 | 数据来源 |
+|---|---|---|
+| `online` | agent 上报在窗口内 | `agent_report` |
+| `tunnel_only` | 仅握手在窗口内 | `handshake` |
+| `offline` | 无新鲜证据 | 最新一条证据的来源 |
+
+- **握手新鲜 ≠ 在线**（§12.4）：握手只证明隧道连通，不足以证明设备功能全部正常，
+  故单独握手证据给出 `tunnel_only` 而非 `online`；
+- 窗口阈值与判定时刻均可注入（默认 5 分钟 / 2 分钟），
+  `fresh(now - ts <= window)` 含边界、未来时间戳视为新鲜（容忍时钟偏移）；
+- 无法解析的时间戳按「不存在」保守处理；
+- 判定结果必须随状态一起暴露**数据来源与更新时间**（§12.2）。
 
 ## DeviceKey（设备密钥）
 

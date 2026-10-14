@@ -32,6 +32,7 @@
 | POST | `/api/v1/networks/{network_id}/invites` | 生成一次性邀请（ADR-010）🔒 |
 | DELETE | `/api/v1/networks/{network_id}/invites/{invite_id}` | 撤销邀请（ADR-010）🔒 |
 | POST | `/api/v1/enroll` | 设备加入（邀请 Token + 公钥；私钥不出客户端，§11.2） |
+| POST | `/api/v1/agent/heartbeat` | Agent 心跳/状态上报（Bearer agent_token；可带 `last_handshake_at`，§14.1） |
 | GET/PATCH/DELETE | `/api/v1/networks/{network_id}/devices/{device_id}` | 设备详情 / 更新 / 删除 🔒 |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/rotate-key` | 密钥轮换 🔒 |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5）🔒 |
@@ -57,8 +58,34 @@
   超限 `429 too_many_requests`（每 email 15 分钟 5 次失败，成功登录清零）；
 - 密码 Argon2id 哈希存储（32 MiB/2 轮/4 并行）；**无默认管理员密码**，
   首个管理员仅经空库 `POST /api/v1/auth/bootstrap` 创建；
-- `/api/v1/enroll`（邀请 Token 即凭证）与 `/api/v1/system/status` 保持公开。
+- `/api/v1/enroll`（邀请 Token 即凭证）、`/api/v1/system/status` 与
+  `/api/v1/agent/heartbeat`（Bearer `agent_token`）不属于管理 API；agent_token
+  由加入时签发、原始 Token 仅返回一次，服务端只存 SHA-256 摘要（`agent_tokens`
+  表，migration 003）——agent 凭证与控制台会话是两条互不交叉的认证边界（§13.7）。
+
+## 在线状态判定（已实现）
+
+设备列表每个设备携带 `online_state` / `presence_source` / `last_seen_at`——
+**状态必须标注数据来源与更新时间**（§12.2），不允许只给一个绿色「在线」图标：
+
+| `online_state` | 判定条件 | `presence_source` |
+|---|---|---|
+| `online` | agent 上报在窗口内（默认 5 分钟） | `agent_report` |
+| `tunnel_only` | 仅握手在窗口内（默认 2 分钟） | `handshake` |
+| `offline` | 无任何新鲜证据 | 最新一条证据的来源：`handshake` / `agent_report` / `enrollment` / `none` |
+
+- **握手新鲜 ≠ 在线**（§12.4）：WireGuard latest-handshake 只证明隧道连通，
+  不能等同于设备全部网络功能正常，因此单独握手证据只给 `tunnel_only`；
+- 判定输入是三类证据时间戳（`devices.last_handshake_at` /
+  `last_report_at` / 加入时刻），纯函数实现于 `meshlet-domain/src/presence.rs`
+  （窗口与判定时刻可注入，确定性单测）；
+- 握手时间由 agent 从本地 `wg show` 读取后随心跳上报（§14.1），不需要
+  WireGuard 内核集成即可采集；
+- 窗口可配置：`presence_agent_window_secs`（默认 300）/
+  `presence_handshake_window_secs`（默认 120）；
+- 设备未持久化到 SQLite 前，证据时间戳仅存于内存 `MeshState`
+  （schema 列已就位：migration 003）。
 
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`；管理端点已挂会话认证 + CSRF 提取器。测试见 `apps/server/tests/{status,enroll,auth_console,migrations}.rs`。控制平面 Mesh 状态当前存于内存（`MeshState`）；用户/会话持久化 SQLite（migrations 001/002）。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`POST /api/v1/agent/heartbeat`；管理端点已挂会话认证 + CSRF 提取器，agent 端点挂 Bearer 提取器。测试见 `apps/server/tests/{status,enroll,auth_console,migrations,presence}.rs`。控制平面 Mesh 状态当前存于内存（`MeshState`）；用户/会话/agent 凭证持久化 SQLite（migrations 001/002/003）。
