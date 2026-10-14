@@ -44,7 +44,8 @@ export default defineConfig({
             { text: '平台差异清单', link: '/architecture/platform-notes' },
             { text: '路由优化方案', link: '/architecture/routing-optimization' },
             { text: '性能方案与基准', link: '/architecture/performance' },
-            { text: '备份与恢复', link: '/architecture/backup-restore' }
+            { text: '备份与恢复', link: '/architecture/backup-restore' },
+            { text: '网络诊断', link: '/architecture/diagnostics' }
           ]
         }
       ],

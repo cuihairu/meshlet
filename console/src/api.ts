@@ -77,6 +77,26 @@ export interface LanRoute {
   apply_status: string;
 }
 
+/** One of the 12 network diagnostics checks (§12.7). */
+export interface DiagnosticCheck {
+  id: string;
+  name: string;
+  /** control_plane | tunnel | routing | forwarding | alias — fault layer. */
+  layer: string;
+  /** pass | fail | warning | unavailable | not_applicable. */
+  status: string;
+  detail: string;
+  /** Actionable local step (empty when the server cannot act on this check). */
+  suggestion: string;
+}
+
+/** Latest persisted diagnostics snapshot for a network (§12.7). */
+export interface DiagnosticsReport {
+  network_id: string;
+  checked_at: string;
+  checks: DiagnosticCheck[];
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -159,4 +179,10 @@ export const api = {
     }),
   deleteRoute: (networkId: string, routeId: string) =>
     request<void>('DELETE', `/networks/${networkId}/routes/${routeId}`),
+  /** Latest persisted diagnostics snapshot; 404 when never run. */
+  getDiagnostics: (networkId: string) =>
+    request<DiagnosticsReport>('GET', `/networks/${networkId}/diagnostics`),
+  /** Run the 12 checks now and persist the snapshot. */
+  runDiagnostics: (networkId: string) =>
+    request<DiagnosticsReport>('POST', `/networks/${networkId}/diagnostics`, {}),
 };

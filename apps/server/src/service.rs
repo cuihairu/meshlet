@@ -153,6 +153,10 @@ pub enum ServiceError {
     RevisionNotFound(String),
     #[error("route {0} not found")]
     RouteNotFound(String),
+    /// 诊断从未运行过（§12.7：GET 返回最近一次运行，没有就是没有，不现算
+    /// 也不假称有）。消息点名 POST 触发方式。
+    #[error("{0}")]
+    DiagnosticsNotRun(String),
     #[error("invalid invite token")]
     InvalidInviteToken,
     #[error("{0}")]
@@ -178,7 +182,8 @@ impl ServiceError {
             | ServiceError::InviteNotFound(_)
             | ServiceError::DeviceNotFound(_)
             | ServiceError::RouteNotFound(_)
-            | ServiceError::RevisionNotFound(_) => {
+            | ServiceError::RevisionNotFound(_)
+            | ServiceError::DiagnosticsNotRun(_) => {
                 ErrorResponse::new(meshlet_api_types::ErrorCode::NotFound, self.to_string())
             }
             ServiceError::InvalidInviteToken => ErrorResponse::new(
@@ -252,7 +257,8 @@ pub struct MeshState {
     /// 路由 id 序列（全局单调，删除不复用）。
     route_seq: u64,
     /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
-    presence_thresholds: meshlet_domain::PresenceThresholds,
+    /// `pub(crate)`：诊断 §12.7 第 4/8 项按同一窗口判握手/上报新鲜度。
+    pub(crate) presence_thresholds: meshlet_domain::PresenceThresholds,
     /// 期望配置修订簿记（ADR-009 状态机，§10）。
     pub(crate) ledger: meshlet_domain::ConfigLedger,
 }

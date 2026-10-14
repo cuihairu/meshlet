@@ -25,8 +25,9 @@
 //! 本模块先把「服务端重启不丢期望状态」钉死。
 
 use meshlet_domain::{
-    ConfigRevision, DesiredStateStatus, Device, DeviceId, DeviceStatus, Invite, InviteId, Ipv4Cidr,
-    LanRoute, LanRouteId, Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode,
+    AliasMapping, ConfigRevision, DesiredStateStatus, Device, DeviceId, DeviceStatus, Invite,
+    InviteId, Ipv4Cidr, LanRoute, LanRouteId, Network, NetworkId, NetworkStatus, Platform,
+    ReturnPathMode, RouteMode, TranslationMode,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -587,14 +588,15 @@ pub fn internal(e: sqlx::Error) -> ServiceError {
 // 一致性备份与恢复（存档 §17.4）
 // ---------------------------------------------------------------------------
 
-/// 备份文件需要的完整表集合（schema 完整性校验，migrations 001–005）。
-const REQUIRED_TABLES: [&str; 13] = [
+/// 备份文件需要的完整表集合（schema 完整性校验，migrations 001–006）。
+const REQUIRED_TABLES: [&str; 14] = [
     "agent_tokens",
     "alias_mappings",
     "audit_events",
     "config_revisions",
     "device_keys",
     "devices",
+    "diagnostics_runs",
     "invitations",
     "lan_routes",
     "mesh_meta",
@@ -925,6 +927,79 @@ fn sync_parent_dir(database: &Path) {
     }
     #[cfg(not(unix))]
     let _ = database;
+}
+
+// ---------------------------------------------------------------------------
+// 诊断运行快照（存档 §12.7，migration 006）
+// ---------------------------------------------------------------------------
+
+/// 落一行诊断快照（`POST /networks/{id}/diagnostics`）：报告以 JSON 存储，
+/// 按行号取「最近一次」。
+pub async fn insert_diagnostics_run(
+    pool: &SqlitePool,
+    network_id: &str,
+    checked_at: &str,
+    report_json: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO diagnostics_runs (network_id, checked_at, report) VALUES (?, ?, ?)")
+        .bind(network_id)
+        .bind(checked_at)
+        .bind(report_json)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 最近一次诊断快照的 JSON（`GET /networks/{id}/diagnostics`）；从未运行
+/// 返回 `None`（端点据此 404，不现算、不假称有）。
+pub async fn latest_diagnostics_run(
+    pool: &SqlitePool,
+    network_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT report FROM diagnostics_runs WHERE network_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .bind(network_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(report,)| report))
+}
+
+/// Alias 映射行（诊断 §12.7 第 10 项的输入）。Phase 4 尚无服务写路径，
+/// 表通常为空——如实报 `not_applicable` 而不是假称检查过。
+pub async fn alias_rows(
+    pool: &SqlitePool,
+    network_id: &str,
+) -> Result<Vec<AliasMapping>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+        "SELECT id, lan_route_id, alias_cidr, target_cidr, translation_mode
+         FROM alias_mappings WHERE network_id = ? ORDER BY id",
+    )
+    .bind(network_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(
+            |(id, lan_route_id, alias_cidr, target_cidr, translation_mode)| {
+                // 行内容只能由（未来的）Phase 4 服务写入，写入前已经域层校验；
+                // 万一损坏的行跳过而不panic。
+                Some(AliasMapping {
+                    id: meshlet_domain::entities::AliasMappingId(id),
+                    network_id: NetworkId(network_id.to_string()),
+                    lan_route_id: LanRouteId(lan_route_id),
+                    alias_cidr: alias_cidr.parse().ok()?,
+                    target_cidr: target_cidr.parse().ok()?,
+                    translation_mode: if translation_mode == "dnat_only" {
+                        TranslationMode::DnatOnly
+                    } else {
+                        TranslationMode::DnatSnat
+                    },
+                    status: DesiredStateStatus::Pending,
+                })
+            },
+        )
+        .collect())
 }
 
 #[cfg(test)]

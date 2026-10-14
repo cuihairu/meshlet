@@ -89,6 +89,7 @@ impl From<&ServiceError> for ErrorCategory {
             | ServiceError::DeviceNotFound(_)
             | ServiceError::RouteNotFound(_)
             | ServiceError::RevisionNotFound(_)
+            | ServiceError::DiagnosticsNotRun(_)
             | ServiceError::InvalidInviteToken => ErrorCategory::NotFound,
             ServiceError::InvalidCidr(_) | ServiceError::InvalidInput(_) => {
                 ErrorCategory::Validation

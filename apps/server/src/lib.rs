@@ -8,6 +8,7 @@
 //! - 管理（`AuthenticatedUser`：Cookie 会话或 `mlt_` API Token；写请求另挂
 //!   `WriteUser` + `CsrfHeader`）：`/auth/tokens*`、`/networks*`、
 //!   `/networks/{id}/invites*`、`/networks/{id}/devices`、`/networks/{id}/revisions*`、
+//!   `/networks/{id}/diagnostics`（§12.7 十二项，POST 触发、GET 读最近快照）、
 //!   `/system/backup`（§17.4，目录未配置时 503）。
 
 pub mod agent;
@@ -15,6 +16,7 @@ pub mod api_token;
 pub mod audit;
 pub mod auth;
 pub mod backup;
+pub mod diagnostics;
 pub mod metrics;
 pub mod persist;
 pub mod revision;
@@ -498,6 +500,7 @@ pub fn router(state: SharedAppState) -> Router {
         .merge(api_token::routes())
         .merge(audit::routes())
         .merge(backup::routes())
+        .merge(diagnostics::routes())
         .merge(metrics::routes())
         .merge(revision::routes())
         .route("/api/v1/system/status", get(status_handler))
@@ -557,6 +560,7 @@ impl IntoResponse for service::ServiceError {
             | service::ServiceError::DeviceNotFound(_)
             | service::ServiceError::RouteNotFound(_)
             | service::ServiceError::RevisionNotFound(_)
+            | service::ServiceError::DiagnosticsNotRun(_)
             | service::ServiceError::InvalidInviteToken => StatusCode::NOT_FOUND,
             service::ServiceError::InvalidCidr(_) | service::ServiceError::InvalidInput(_) => {
                 StatusCode::BAD_REQUEST

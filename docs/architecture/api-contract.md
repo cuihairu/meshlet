@@ -63,7 +63,7 @@
   默认不自动备份（`auto` 默认 `false`，开自动备份必须显式配置位）；
   目录未配置时 `POST /api/v1/system/backup` 返回 `503 backup_not_configured`。
 - **一致性备份**：SQLite 在线备份语义（`VACUUM INTO`）——单一自洽快照，
-  备份文件可独立打开、表结构（13 表）与迁移（001–005）完整；目标文件已存在
+  备份文件可独立打开、表结构（14 表）与迁移（001–006）完整；目标文件已存在
   拒绝（`409 conflict`），既有备份绝不被静默覆盖；落盘权限 `0600`；写后独立
   只读复验（`quick_check` + 必需表齐全），响应摘要来自备份文件本体读取。
 - **审计**：备份 `system.backup`（端点触发 actor = 操作者，定时任务 actor 为空）；
@@ -75,6 +75,28 @@
   按 §17.3 语义收敛（`applying`→`failed`、`rollback_pending` 保留、`applied`
   不重放），与正常启动完全一致，不比启动更弱。
 - 运维细节见 [备份与恢复](backup-restore.md)。
+
+## 网络诊断（§12.7，已实现）
+
+- `GET/POST /api/v1/networks/{network_id}/diagnostics`（🔒）：12 项检查按故障层
+  归类（控制面 / 隧道 / 路由 / 转发 / Alias）；第一版**只诊断不修复**。
+- **快照语义**：`POST` 计算 → 落一行快照（migration 006 `diagnostics_runs`）→
+  返回报告并记审计 `diagnostics.run`；`GET` 返回**最近一次**运行的同一份 JSON
+  （不现算）；从未运行 → `404 not_found`（消息点名 POST 触发方式）——
+  「没有结果」不等于「结果都好」。
+- **状态词表**（封闭）：`pass` / `fail` / `warning` / `unavailable` / `not_applicable`。
+  - `unavailable` = 控制面**观测不到**（WireGuard 接口、内核路由、IP forwarding、
+    防火墙、NAT 规则五项恒如此：本机状态需本地特权读数）——**不是 pass**，
+    `suggestion` 给出目标机器上可执行的检查命令；
+  - `not_applicable` = 本网络没有该检查的对象（无设备/无路由/无 Alias/无修订），
+    如实区分于 `pass`；
+  - 每个 `fail`/`warning`/`unavailable` 都带可执行 `suggestion`。
+- **判读纪律**（§17.2 / §12.4）：③`server_peer_configured` 的 detail 必须点名
+  「registration only」——控制面在册 ≠ 隧道正常，隧道层唯一证据是 ④ 的握手新鲜
+  （`handshake_window`，默认 120s）；⑨`lan_route_published` 的 pass 只表示
+  控制面口径（路由已记录 + 最新修订已应用），不证明网关内核装了路由；
+  ⑩用域层冲突检测（overlay 重叠 / alias 互叠 / 绑定路由不一致，ADR-006）。
+- 语义文档见 [网络诊断](diagnostics.md)。
 
 ## 认证与 CSRF（已实现）
 

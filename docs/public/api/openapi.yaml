@@ -18,6 +18,7 @@ tags:
   - name: devices
   - name: routes
   - name: aliases
+  - name: diagnostics
   - name: status
 paths:
   /auth/bootstrap:
@@ -557,6 +558,43 @@ paths:
       summary: Delete alias (route and NAT rules cleaned up synchronously)
       responses:
         "204": { description: No content }
+  /networks/{network_id}/diagnostics:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [diagnostics]
+      summary: Latest diagnostics snapshot (12 checks, §12.7)
+      description: >
+        Returns the most recent persisted diagnostics run for the network —
+        the same JSON a POST produced, not a recompute. 404 when the network
+        has never been diagnosed; an absent result is never rendered as a
+        passing one.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiagnosticsReport" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [diagnostics]
+      summary: Run diagnostics now and persist the snapshot
+      description: >
+        Computes the 12 checks, stores one snapshot row (diagnostics_runs) and
+        returns the report. Check statuses use a closed vocabulary: pass /
+        fail / warning / unavailable / not_applicable. unavailable is honest
+        ignorance — the control plane cannot observe host-local facts
+        (WireGuard interface, kernel routes, ip_forward, firewall, NAT rules),
+        so those five checks carry an actionable command to run on the device
+        instead of a green light. Registration (server_peer_configured) never
+        proves the tunnel: handshake freshness (recent_handshake) is the only
+        tunnel-level evidence (§12.4). Records a diagnostics.run audit event.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiagnosticsReport" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /system/status:
     get:
       security: []
@@ -957,6 +995,53 @@ components:
         lan_route_id: { type: string }
         alias_cidr: { type: string, description: Must have same prefix length as target route CIDR }
         translation_mode: { type: string, enum: [dnat_only, dnat_snat], default: dnat_snat }
+    DiagnosticsReport:
+      type: object
+      required: [network_id, checked_at, checks]
+      properties:
+        network_id: { type: string }
+        checked_at: { type: string, format: date-time, description: When this run was computed }
+        checks:
+          type: array
+          minItems: 12
+          maxItems: 12
+          items: { $ref: "#/components/schemas/DiagnosticCheck" }
+    DiagnosticCheck:
+      type: object
+      required: [id, name, layer, status, detail, suggestion]
+      properties:
+        id:
+          type: string
+          enum:
+            - api_reachable
+            - wg_interface_exists
+            - server_peer_configured
+            - recent_handshake
+            - overlay_route_present
+            - ip_forwarding_enabled
+            - firewall_allows_forwarding
+            - lan_gateway_agent_online
+            - lan_route_published
+            - alias_prefix_conflict
+            - nat_rules_effective
+            - config_revision_consistent
+          description: Stable check id (§12.7 numbering, order fixed by the server)
+        name: { type: string, description: Human-readable check name }
+        layer:
+          type: string
+          enum: [control_plane, tunnel, routing, forwarding, alias]
+          description: Fault layer this check diagnoses
+        status:
+          type: string
+          enum: [pass, fail, warning, unavailable, not_applicable]
+          description: >
+            unavailable means the control plane cannot observe this host-local
+            fact — it is not a pass. not_applicable means the network has no
+            object for this check (distinct from pass).
+        detail: { type: string, description: Observed facts, including why a value is unavailable }
+        suggestion:
+          type: string
+          description: Actionable next step (command to run on the device); empty for passing checks
     ConfigRevision:
       type: object
       properties:

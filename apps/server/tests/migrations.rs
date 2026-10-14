@@ -55,6 +55,7 @@ async fn migrations_create_all_core_tables() {
         "config_revisions",
         "device_keys",
         "devices",
+        "diagnostics_runs",
         "invitations",
         "lan_routes",
         "networks",
@@ -313,10 +314,15 @@ async fn migrations_are_idempotent_across_reopens() {
     // 迁移必须可重复应用（重启不破坏库）。
     let pool = db().await;
     meshlet_server::store::MIGRATIONS.run(&pool).await.unwrap();
-    // 005 新增 mesh_meta（route_seq 等单调计数，§17.3）。
+    // 005 新增 mesh_meta（route_seq 等单调计数，§17.3）；006 新增
+    // diagnostics_runs（§12.7 诊断快照）。
     let tables = tables(&pool).await;
-    assert_eq!(tables.len(), 13);
+    assert_eq!(tables.len(), 14);
     assert!(tables.contains(&"mesh_meta".to_string()), "{tables:?}");
+    assert!(
+        tables.contains(&"diagnostics_runs".to_string()),
+        "{tables:?}"
+    );
 }
 
 #[tokio::test]

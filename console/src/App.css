@@ -186,3 +186,41 @@ td {
   color: #b91c1c;
   border-color: #b91c1c;
 }
+
+/* Diagnostics (§12.7): status pills mirror the API vocabulary. unavailable
+   means "the control plane cannot observe this host-local fact", not a pass. */
+.diag {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.diag-pass {
+  color: #15803d;
+}
+
+.diag-fail {
+  color: #b91c1c;
+}
+
+.diag-warning {
+  color: #a16207;
+}
+
+.diag-unavailable {
+  color: var(--muted);
+}
+
+.diag-not_applicable {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.diag-suggestion {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  color: #a16207;
+  white-space: pre-wrap;
+}
