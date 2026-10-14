@@ -59,8 +59,8 @@
 
 ## Phase 5 · 稳定性与发布
 
-- [ ] 配置应用幂等与回滚安全（[存档 §10.3–§10.4](docs/review/chatgpt-2026-10-13.md)）— 验收：重复应用不破坏网络；回滚不触碰非 Meshlet 规则
-- [ ] 并发版本顺序（[存档 §10.4](docs/review/chatgpt-2026-10-13.md)）— 验收：并发修改不交叉破坏 Peer/路由/NAT
+- [x] 配置应用幂等与回滚安全（[存档 §10.3–§10.4](docs/review/chatgpt-2026-10-13.md)）— 验收：重复应用不破坏网络；回滚不触碰非 Meshlet 规则 ✅ 2026-10-14 完成（`2bf333c`）：**幂等**由 `ConfigLedger::apply` 保证——已 `applied` 的修订直接返回、不再调用 backend（域层 `CountingBackend` 断言 backend 恰好被调 1 次；API 层注入计数 backend 断言两次 `POST .../apply` 响应逐字段一致且不新增修订）；**回滚安全**钉死边界——`rollback` 只接收那一个失败修订的身份（`network_id` + `revision`），结构上不存在「清空全部系统路由」的指令通道（域层 `RecordingBackend` 断言恰好一次调用、目标就是失败修订本身）；新增 `LedgerError::SupersededRevision`：**被更新修订取代的 `failed` 修订拒绝回滚**（按其意图回滚会交叉触碰新修订拥有的对象，§10.4 交叉破坏），→ `409 conflict` 且**绝不触碰 backend**、被回滚修订保持 `failed`（级联：回滚掉最新后更早的失败修订成为当前，可继续回滚）。回滚失败仍留在 `rollback_pending` 并合并诊断（未确认 ≠ 成功）。测试：域层 `config_state.rs`（幂等重放、取代回滚拒绝、并发记录唯一连续、backend 只收一个修订）+ API `apps/server/tests/revisions.rs`（API 幂等、回滚边界、被拒回滚不碰 backend）—— workspace 205 绿
+- [x] 并发版本顺序（[存档 §10.4](docs/review/chatgpt-2026-10-13.md)）— 验收：并发修改不交叉破坏 Peer/路由/NAT ✅ 2026-10-14 完成（`2bf333c`）：同一网络的配置修改由**网络级互斥**（`MeshState` 锁，覆盖「变更状态 + 记录修订 + 调用 backend」整段临界区）串行化，版本号网络内单调递增、唯一、连续、无丢号重号；`apply` 也在锁内构造并调用 backend，并发 apply 不会拿到各自后端实例交叉改写 Peer/路由/NAT；非法跃迁与被取代的回滚 → `409`（§10.4 乐观并发语义）。测试：域层 `concurrent_record_assigns_unique_contiguous_revisions`（8 线程 × 25 次记录 → 1..=200 唯一连续）；API `concurrent_mutations_get_unique_contiguous_revision_numbers`（12 个并发加入，各拿不同 `revision_id`，列表 1..=13 连续）、`concurrent_applies_are_serialized_per_network`（8 并发 apply 同一修订 → backend 任意时刻只有 1 个在飞且只被调 1 次）、`revision_numbering_is_independent_across_networks`（版本号按网络隔离）。文档：`openapi.yaml` / `api-contract.md` / `guide/external-caller.md` 补回滚只限当前修订的语义；控制台 Rollback 按钮仅对当前修订显示，被取代的失败版本标注 `superseded`
 - [ ] 结构化日志与指标（[存档 §17.1–§17.2](docs/review/chatgpt-2026-10-13.md)）— 验收：规定字段齐全；不依赖单一指标
 - [ ] 故障恢复（[存档 §17.3](docs/review/chatgpt-2026-10-13.md)）— 验收：服务端/客户端重启后按期望状态恢复
 - [ ] 备份与恢复（[存档 §17.4](docs/review/chatgpt-2026-10-13.md)）— 验收：一致性备份；恢复后协调到期望状态
