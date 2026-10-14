@@ -236,12 +236,22 @@ function NetworksPanel({
         {error && <p className="error">{error}</p>}
       </section>
 
-      {current && <NetworkDetail network={current} onClose={() => setSelected(null)} />}
+      {current && (
+        <NetworkDetail network={current} onClose={() => setSelected(null)} onChanged={onChanged} />
+      )}
     </div>
   );
 }
 
-function NetworkDetail({ network, onClose }: { network: Network; onClose: () => void }) {
+function NetworkDetail({
+  network,
+  onClose,
+  onChanged,
+}: {
+  network: Network;
+  onClose: () => void;
+  onChanged?: () => void;
+}) {
   return (
     <section className="detail">
       <h2>
@@ -256,19 +266,49 @@ function NetworkDetail({ network, onClose }: { network: Network; onClose: () => 
           {network.apply_status}
         </span>
       </p>
-      <DevicesSection networkId={network.id} />
+      <DevicesSection networkId={network.id} onChanged={onChanged} />
       <InvitesSection networkId={network.id} />
       <RevisionsSection networkId={network.id} />
     </section>
   );
 }
 
-function DevicesSection({ networkId }: { networkId: string }) {
+function DevicesSection({
+  networkId,
+  onChanged,
+}: {
+  networkId: string;
+  onChanged?: () => void;
+}) {
   const [devices, setDevices] = useState<import('./api').Device[] | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [revoked, setRevoked] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api.listDevices(networkId).then(setDevices).catch(() => setDevices([]));
   }, [networkId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const revoke = async (deviceId: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const ref = await api.revokeDevice(networkId, deviceId);
+      setConfirming(null);
+      setRevoked(`Device ${deviceId} revoked → revision #${ref.revision_id} (${ref.apply_status}).`);
+      load();
+      onChanged?.();
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div>
@@ -288,6 +328,7 @@ function DevicesSection({ networkId }: { networkId: string }) {
               <th>Status</th>
               <th>Online</th>
               <th>Fingerprint</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -306,11 +347,47 @@ function DevicesSection({ networkId }: { networkId: string }) {
                 <td>
                   <code className="fingerprint">{d.fingerprint.slice(0, 16)}…</code>
                 </td>
+                <td>
+                  {d.status === 'revoked' ? (
+                    <span className="muted">—</span>
+                  ) : confirming === d.id ? (
+                    <>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => revoke(d.id)}
+                      >
+                        Confirm revoke
+                      </button>{' '}
+                      <button
+                        type="button"
+                        className="link"
+                        onClick={() => setConfirming(null)}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => {
+                        setConfirming(d.id);
+                        setRevoked(null);
+                      }}
+                    >
+                      Revoke
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
+      {revoked && <p className="muted">{revoked}</p>}
+      {error && <p className="error">{error}</p>}
     </div>
   );
 }

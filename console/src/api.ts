@@ -56,6 +56,12 @@ export interface SessionUser {
   email: string;
 }
 
+/** Reference to the config revision an operation recorded (server: RevisionRef). */
+export interface RevisionRef {
+  revision_id: number;
+  apply_status: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -106,6 +112,11 @@ export const api = {
     request<InviteCreated>('POST', `/networks/${networkId}/invites`, { max_uses: maxUses }),
   revokeInvite: (networkId: string, inviteId: string) =>
     request<void>('DELETE', `/networks/${networkId}/invites/${inviteId}`),
+  revokeDevice: (networkId: string, deviceId: string) =>
+    request<RevisionRef>(
+      'POST',
+      `/networks/${networkId}/devices/${deviceId}/revoke`,
+    ),
   listRevisions: (networkId: string) =>
     request<ConfigRevision[]>('GET', `/networks/${networkId}/config-revisions`),
   applyRevision: (networkId: string, revision: number) =>

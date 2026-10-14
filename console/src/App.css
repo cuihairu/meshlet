@@ -167,3 +167,8 @@ td {
 .hash {
   font-size: 0.8rem;
 }
+
+.danger {
+  color: #b91c1c;
+  border-color: #b91c1c;
+}
