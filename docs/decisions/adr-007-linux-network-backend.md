@@ -37,7 +37,7 @@ Linux 侧需要管理 WireGuard 接口、路由、IP 转发、防火墙与 Alias
 
 - Netlink 编程复杂度高（消息序列化、错误码语义）；可先用 `rtnetlink`/`wireguard` 生态 crate 评估；
 - 发行版 iptables/nft 混用历史问题——只依赖内核 nftables，绕开 iptables 兼容层；
-- **集成测试需要 NET_ADMIN 与网络命名空间**：当前开发沙箱禁用 user namespace（uid_map 拒写）且无 root，四项转发证明（§7.3）与 Alias NAT 原型必须放到特权环境（root 主机或特权 CI runner）执行——已在 TODO 标注卡点。
+- **集成测试需要 NET_ADMIN 与网络命名空间**：需免密 sudo（`sudo -n`）+ `wg`（wireguard-tools）+ `wireguard` 内核模块。开发主机已具备（2026-10-15 实测：`sudo -n true` 通过、wireguard-tools v1.0.20250521、模块可加载，双 netns 隧道端到端跑通），四项转发证明已落为 `crates/meshlet-network/tests/wg_forwarding.rs`（网桥 star underlay + 4 netns）。缺任一前置的环境打印 `SKIP:` 正常通过，数据面回归依赖特权 runner。已知坑：veth 默认 GRO/GSO/TSO offload 会让 wg-over-veth 握手静默失败（tx 有字节 rx=0），两端 `ethtool -K ... off` 后即通——测试拓扑已固化该处理；无特权 `unshare -Urn` 确实被拒（uid_map 拒写），用 sudo 绕过即可。
 
 ## 重新评估条件
 

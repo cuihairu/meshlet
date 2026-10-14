@@ -25,7 +25,7 @@
 方案 1：
 
 - Alias 与 Target 前缀**等长**，前缀替换式一对一映射（`10.241.1.10 → 192.168.1.10`）；非等长映射、端口代理、DNS 动态映射第一版不做；
-- 转换在**目标 LAN 网关**实施（DNAT + 按需受控 SNAT，遵循 ADR-005 模式 B 语义）；VPS 只需知道 Alias 前缀对应哪个网关 Peer；规则**计划**已实现（`crates/meshlet-network/src/nat.rs`：从映射确定性推导 PREROUTING NETMAP（DNAT 恒有）与 `dnat_snat` 模式下的 POSTROUTING 受控 SNAT（源改写为网关 LAN 地址，§9.5），所有权注释 `meshlet alias {id}` 供 §12.6 清理定位，渲染与计划共用同一结构；**执行**随 ADR-007 数据面接线）；
+- 转换在**目标 LAN 网关**实施（DNAT + 按需受控 SNAT，遵循 ADR-005 模式 B 语义）；VPS 只需知道 Alias 前缀对应哪个网关 Peer；规则**计划**已实现（`crates/meshlet-network/src/nat.rs`：从映射确定性推导 PREROUTING NETMAP（DNAT 恒有）与 `dnat_snat` 模式下的 POSTROUTING 受控 SNAT（源改写为网关 LAN 地址，§9.5），所有权注释 `meshlet alias {id}` 供 §12.6 清理定位，渲染与计划共用同一结构；**执行**随 ADR-007 数据面接线）；方案已经**真实内核验证**（2026-10-15，`crates/meshlet-network/tests/alias_nat.rs`：6 netns 拓扑里两个真实前缀完全重叠的 `192.168.1.0/24` LAN 经不同 Alias 同时可达——ping + UDP echo 证明站点不串线、受控 SNAT 下 LAN 主机看到网关 LAN 地址、`dnat_only` 下 LAN 主机看到真实 Overlay 源地址，NETMAP 的 conntrack 逆变换让应答源自动回到 Alias 地址，无需额外规则）；
 - 转换前六项检查（§9.2）：前缀归属、Target 归属、冲突、网关有效、发起方授权、规则已应用；
 - 协议边界按 §9.6 明示（完整清单见下节「协议兼容边界」）。
 
