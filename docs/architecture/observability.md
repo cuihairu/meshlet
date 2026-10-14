@@ -11,7 +11,7 @@
 | 字段 | 说明 | 代码位置 |
 | --- | --- | --- |
 | `time` | 事件时刻（ISO-8601 UTC，与库内时间戳同源） | `telemetry::op_log!` 宏展开 |
-| `component` | 组件：`http` / `auth` / `network` / `device` / `route` / `revision` / `agent` | 各 handler 的调用点 |
+| `component` | 组件：`http` / `auth` / `network` / `device` / `route` / `alias` / `revision` / `agent` | 各 handler 的调用点 |
 | `operation` | 操作名（`create_network` / `apply_revision` / …；访问日志用路由模板） | 同上 |
 | `network_id` | 适用时；不适用为空串 | 同上 |
 | `device_id` | 适用时（`enroll` / `heartbeat` / `revoke`）；不适用为空串 | 同上 |
@@ -47,7 +47,7 @@
 | --- | --- | --- |
 | 配置应用成功率 | `meshlet_config_apply_success_ratio`（gauge，= applied/(applied+failed)，**首次 apply 前省略**——无样本 ≠ 100% 健康） | `revision.rs` apply handler |
 | 配置应用失败数 | `meshlet_config_apply_total{result="failed"}` | 同上（以状态机结论计数，不凭响应码） |
-| 路由冲突数 | `meshlet_route_conflicts_total`（仅计「目的网段与 overlay/既有路由重叠」；网关未激活等其它 409 不计——`ServiceError::RouteConflict` 变体保证口径） | `lib.rs` `create_route_handler` |
+| 路由冲突数 | `meshlet_route_conflicts_total`（仅计「网段重叠」类拒绝——路由目的与 overlay/既有路由重叠，以及 Alias 前缀与 overlay/既有 Alias/既有路由目的重叠（§12.6，前缀重叠同为网段冲突）；网关未激活、一路由多映射等其它 409 不计——`ServiceError::RouteConflict` 变体保证口径） | `lib.rs` `create_route_handler`、`alias.rs` `create_alias_handler` |
 | （补充）回滚结果 | `meshlet_config_rollback_total{result="rolled_back"/"unconfirmed"}` | `revision.rs` rollback handler |
 | （补充）agent 心跳 | `meshlet_agent_heartbeats_total` | `agent.rs` heartbeat handler |
 | （补充）服务端接口 | `meshlet_http_requests_total{method,route,status_class}`、`meshlet_http_response_bytes_total` | `telemetry::request_log` 中间件 |

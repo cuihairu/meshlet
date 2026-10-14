@@ -519,6 +519,16 @@ paths:
       tags: [aliases]
       summary: Create alias (equal prefix length enforced, ADR-006)
       description: >
+        Binds a mapping to an alias-mode LAN route (archive §12.6): one
+        mapping per route, the gateway must be active. `target_cidr` is NOT
+        accepted — it is derived server-side from the bound route's
+        destination, so a target mismatch is structurally impossible at
+        creation. Prefix length must equal the target's (ADR-006) and the
+        alias prefix must differ from it; both answer 400. Rejected creates
+        are never silent (archive §8.3): the alias prefix overlapping the
+        overlay, an existing alias, or an existing route destination answers
+        409 naming the counterpart and mutates nothing (these overlaps count
+        toward the route-conflict metric, §17.2).
         Protocol boundary (archive §9.6): an alias covers the IPv4/IPv6
         unicast routing layer only. Broadcast, multicast and L2-discovery
         protocols (ARP/NDP, mDNS, DHCP broadcast domains) are NOT carried
@@ -526,7 +536,9 @@ paths:
         proxy. Applications that embed their own IP inside the protocol
         payload may break under translation, and controlled_snat rewrites
         the source IP seen on the LAN. The first release does not claim
-        full protocol transparency.
+        full protocol transparency. Kernel-side NAT execution is part of
+        the data plane (ADR-007): until it lands, the revision apply
+        reports deterministic failure instead of pretending success (§10.3).
       requestBody:
         required: true
         content:
@@ -538,8 +550,28 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AliasMapping" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
+        "400":
+          description: >
+            Bad CIDR, prefix length mismatch with the bound route, alias
+            equal to its target, unknown translation_mode, or the route is
+            not in alias mode.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Network, bound route (in this network), or gateway not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            Prefix overlaps the overlay, an existing alias, or an existing
+            route destination (message names the counterpart); gateway
+            inactive; or the route already has a mapping (one per route,
+            §12.6). Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /networks/{network_id}/aliases/{alias_id}:
     parameters:
       - { $ref: "#/components/parameters/NetworkId" }
@@ -553,20 +585,21 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AliasMapping" }
-    patch:
-      tags: [aliases]
-      summary: Update alias
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/AliasMapping" }
+        "404": { description: Unknown alias (or network). }
     delete:
       tags: [aliases]
-      summary: Delete alias (route and NAT rules cleaned up synchronously)
+      summary: Delete alias (removes the bound route in the same revision, §12.6)
+      description: >
+        Ownership-unit cleanup (archive §12.6): the mapping and its bound
+        alias-mode route are removed together and one revision records the
+        change. Kernel-side NAT rule removal rides that revision's apply
+        (ADR-007 — deterministic failure until the data plane lands).
+        The bound route cannot outlive its alias: deleting the route instead
+        cascades the alias the same way. There is no update path — change a
+        mapping by deleting and recreating it (each records a new revision).
       responses:
         "204": { description: No content }
+        "404": { description: Unknown alias (or network). }
   /networks/{network_id}/diagnostics:
     parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
     get:
@@ -989,19 +1022,22 @@ components:
         return_path_mode: { type: string, enum: [dual_route, controlled_snat] }
     AliasMapping:
       type: object
+      required: [id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode, status, revision_id, apply_status]
       properties:
         id: { type: string }
         network_id: { type: string }
-        lan_route_id: { type: string }
+        lan_route_id: { type: string, description: The bound alias-mode route (one ownership unit, §12.6) }
         alias_cidr: { type: string }
-        target_cidr: { type: string }
+        target_cidr: { type: string, description: Real LAN prefix, derived server-side from the bound route — never client-set }
         translation_mode: { type: string, enum: [dnat_only, dnat_snat] }
-        status: { type: string, enum: [pending, applied, failed] }
+        status: { type: string, enum: [pending, applied, failed], description: The mapping's own desired-state status }
+        revision_id: { type: integer, description: Config revision recorded by this change (ADR-009) }
+        apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
     AliasCreate:
       type: object
       required: [lan_route_id, alias_cidr]
       properties:
-        lan_route_id: { type: string }
+        lan_route_id: { type: string, description: An alias-mode route of this network; one mapping per route }
         alias_cidr: { type: string, description: Must have same prefix length as target route CIDR }
         translation_mode: { type: string, enum: [dnat_only, dnat_snat], default: dnat_snat }
     DiagnosticsReport:

@@ -188,6 +188,24 @@ pub enum TranslationMode {
     DnatSnat,
 }
 
+impl TranslationMode {
+    /// API/控制台展示用小写蛇形标识（契约字段 `translation_mode`）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TranslationMode::DnatOnly => "dnat_only",
+            TranslationMode::DnatSnat => "dnat_snat",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "dnat_only" => Some(TranslationMode::DnatOnly),
+            "dnat_snat" => Some(TranslationMode::DnatSnat),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AliasError {
     #[error("prefix length mismatch: alias /{alias} vs target /{target} (equal length required, ADR-006)")]

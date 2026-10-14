@@ -88,6 +88,7 @@ impl From<&ServiceError> for ErrorCategory {
             | ServiceError::InviteNotFound(_)
             | ServiceError::DeviceNotFound(_)
             | ServiceError::RouteNotFound(_)
+            | ServiceError::AliasNotFound(_)
             | ServiceError::RevisionNotFound(_)
             | ServiceError::DiagnosticsNotRun(_)
             | ServiceError::InvalidInviteToken => ErrorCategory::NotFound,

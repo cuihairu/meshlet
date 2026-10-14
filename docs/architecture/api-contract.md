@@ -41,8 +41,8 @@
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5）🔒 |
 | GET/POST | `/api/v1/networks/{network_id}/routes` | LAN Route 列表 / 创建（含返回路径模式，ADR-005）；与 overlay/既有路由重叠 → `409 conflict` 且**消息点名冲突对端**（既有路由 id + 网段），拒绝发生在任何状态变更前——既有路由绝不被覆盖，客户端应提示改用 Alias 等长前缀映射（§8.3 不静默）🔒 |
 | GET/PATCH/DELETE | `/api/v1/networks/{network_id}/routes/{route_id}` | 详情 / 更新 / 删除 🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/aliases` | Alias 列表 / 创建（等长前缀校验，ADR-006）；**协议边界**：只覆盖 IP 单播路由层——广播/组播/二层发现（ARP/NDP、mDNS、DHCP 广播域）不跨 Alias 透传，协议负载内嵌 IP 的应用可能失效（§9.6，详见 [ADR-006](../decisions/adr-006-alias-prefix-nat.md)）🔒 |
-| GET/PATCH/DELETE | `/api/v1/networks/{network_id}/aliases/{alias_id}` | 详情 / 更新 / 删除（删除同步清理 NAT）🔒 |
+| GET/POST | `/api/v1/networks/{network_id}/aliases` | Alias 列表 / 创建（等长前缀校验，ADR-006；**已实现**）：绑定本网络 `alias` 模式路由（每路由一映射）、网关须 Active；`target_cidr` 服务端由绑定路由推导、**客户端不可指定**；前缀不等长或与 target 相同 → `400`；Alias 前缀与 overlay / 既有 Alias / 既有路由目的网段重叠 → `409 conflict` 且**消息点名对端**（计入路由冲突指标，§17.2）；拒绝发生在任何状态变更前。**协议边界**：只覆盖 IP 单播路由层——广播/组播/二层发现（ARP/NDP、mDNS、DHCP 广播域）不跨 Alias 透传，协议负载内嵌 IP 的应用可能失效（§9.6，详见 [ADR-006](../decisions/adr-006-alias-prefix-nat.md)）；内核侧 NAT 执行随数据面（ADR-007），未接线时修订 apply 确定性失败可见（§10.3）🔒 |
+| GET/DELETE | `/api/v1/networks/{network_id}/aliases/{alias_id}` | 详情 / 删除（**已实现**）：删除 = **整单元清理**（§12.6）——映射与其绑定路由同删、记录**一个**修订；内核侧 NAT 规则移除随该修订 apply 交 backend；反向同理：删除绑定路由级联删除 Alias；无更新路径——修改 = 删除后重建（各记一个修订）🔒 |
 | GET | `/api/v1/system/status` | 服务端状态（公开） |
 | GET | `/api/v1/networks/{network_id}/status` | 网络状态 🔒 |
 | GET/POST | `/api/v1/networks/{network_id}/diagnostics` | 诊断结果 / 触发诊断（§12.7 十二项检查）🔒 |

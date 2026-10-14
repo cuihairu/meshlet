@@ -8,10 +8,12 @@
 //! - 管理（`AuthenticatedUser`：Cookie 会话或 `mlt_` API Token；写请求另挂
 //!   `WriteUser` + `CsrfHeader`）：`/auth/tokens*`、`/networks*`、
 //!   `/networks/{id}/invites*`、`/networks/{id}/devices`、`/networks/{id}/revisions*`、
+//!   `/networks/{id}/routes*`、`/networks/{id}/aliases*`（§12.6，删除即整单元清理）、
 //!   `/networks/{id}/diagnostics`（§12.7 十二项，POST 触发、GET 读最近快照）、
 //!   `/system/backup`（§17.4，目录未配置时 503）。
 
 pub mod agent;
+pub mod alias;
 pub mod api_token;
 pub mod audit;
 pub mod auth;
@@ -289,7 +291,7 @@ async fn create_route_handler(
 
 /// 路由冲突拒绝（§17.2「路由冲突数」指标）：仅计「目的网段重叠」类冲突
 /// （`ServiceError::RouteConflict`）；设备未激活等其它 409 不计。
-fn record_route_conflict(state: &SharedAppState) {
+pub(crate) fn record_route_conflict(state: &SharedAppState) {
     state.metrics.record_route_conflict();
 }
 
@@ -497,6 +499,7 @@ async fn enroll_handler(
 /// 构建完整路由。
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
+        .merge(alias::routes())
         .merge(api_token::routes())
         .merge(audit::routes())
         .merge(backup::routes())
@@ -559,6 +562,7 @@ impl IntoResponse for service::ServiceError {
             | service::ServiceError::InviteNotFound(_)
             | service::ServiceError::DeviceNotFound(_)
             | service::ServiceError::RouteNotFound(_)
+            | service::ServiceError::AliasNotFound(_)
             | service::ServiceError::RevisionNotFound(_)
             | service::ServiceError::DiagnosticsNotRun(_)
             | service::ServiceError::InvalidInviteToken => StatusCode::NOT_FOUND,

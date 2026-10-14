@@ -625,7 +625,8 @@ async fn alias_conflicts_detected_when_mappings_exist() {
     assert_eq!(st, StatusCode::CREATED);
     let route_id = route["id"].as_str().unwrap().to_string();
 
-    // 直接落两行 alias 映射（Phase 4 无服务写路径；FK 指向刚建的路由），
+    // 直接落两行 alias 映射（模拟脏库/手改库——服务写路径在创建时已拒绝
+    // 这类重叠，正常 API 到不了这里；FK 指向刚建的路由），
     // 造一个「alias 与 overlay 重叠 + alias 互叠」的坏配置。
     for (id, alias_cidr) in [("al-1", "10.240.1.0/24"), ("al-2", "10.240.1.0/24")] {
         sqlx::query(

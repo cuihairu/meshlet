@@ -57,6 +57,7 @@ pub struct MeshStatePersistedView {
     pub networks: usize,
     pub devices: usize,
     pub routes: usize,
+    pub aliases: usize,
     pub invites: usize,
     pub revisions: usize,
 }
@@ -259,24 +260,69 @@ async fn save_route_seq_tx(
     Ok(())
 }
 
-/// 删除一条 LAN 路由（路由 id 序列不回退，已删 id 不复用）。
-pub async fn delete_route(pool: &SqlitePool, route_id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM lan_routes WHERE id = ?")
-        .bind(route_id)
-        .execute(pool)
-        .await?;
+/// 落库一条 Alias 映射（§12.6）。alias id 与路由共用 `route_seq` 序列
+/// （`al-N` / `rt-N` 同源单调，已删 id 不复用），同一事务保存序列。
+pub async fn insert_alias(
+    pool: &SqlitePool,
+    a: &AliasMapping,
+    route_seq: u64,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO alias_mappings
+           (id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode,
+            status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(a.id.to_string())
+    .bind(a.network_id.to_string())
+    .bind(a.lan_route_id.to_string())
+    .bind(a.alias_cidr.to_string())
+    .bind(a.target_cidr.to_string())
+    .bind(a.translation_mode.as_str())
+    .bind(desired_status_to_str(a.status))
+    .bind(crate::service::now())
+    .execute(&mut *tx)
+    .await?;
+    save_route_seq_tx(&mut tx, route_seq).await?;
+    tx.commit().await?;
     Ok(())
 }
 
-/// 撤销设备时移除其发布的全部路由（§11.5）。
+/// 删除一条 LAN 路由及其绑定 Alias（§12.6 所有权清理：alias-路由是一对一
+/// 单元；FK 约束下必须先删子行）。路由 id 序列不回退，已删 id 不复用。
+pub async fn delete_route(pool: &SqlitePool, route_id: &str) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM alias_mappings WHERE lan_route_id = ?")
+        .bind(route_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM lan_routes WHERE id = ?")
+        .bind(route_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 撤销设备时移除其发布的全部路由与绑定 Alias（§11.5 + §12.6 级联清理）。
 pub async fn delete_routes_of_device(
     pool: &SqlitePool,
     gateway_device_id: &str,
 ) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM alias_mappings WHERE lan_route_id IN
+           (SELECT id FROM lan_routes WHERE gateway_device_id = ?)",
+    )
+    .bind(gateway_device_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM lan_routes WHERE gateway_device_id = ?")
         .bind(gateway_device_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -482,6 +528,40 @@ pub async fn load(
         state.set_route_seq(seq);
     }
 
+    // Alias 映射（§12.6）：随绑定路由重建。孤儿行（绑定路由已删，正常写
+    // 路径不会产生，只有手改库才可能）不进内存——单元语义在启动时即收敛。
+    let bound_routes: std::collections::HashSet<String> = state.bound_route_ids();
+    let alias_rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
+        "SELECT id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode, status
+         FROM alias_mappings ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
+    for (id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode, status) in
+        alias_rows
+    {
+        if !bound_routes.contains(&lan_route_id) {
+            continue;
+        }
+        let alias = AliasMapping {
+            id: meshlet_domain::entities::AliasMappingId(id),
+            network_id: NetworkId(network_id),
+            lan_route_id: LanRouteId(lan_route_id),
+            alias_cidr: alias_cidr
+                .parse()
+                .map_err(|e| corrupt("alias alias_cidr", e))?,
+            target_cidr: target_cidr
+                .parse()
+                .map_err(|e| corrupt("alias target_cidr", e))?,
+            translation_mode: TranslationMode::parse(&translation_mode).ok_or_else(|| {
+                corrupt("alias translation_mode", format!("{:?}", translation_mode))
+            })?,
+            status: desired_status_parse(&status).map_err(|e| corrupt("alias status", e))?,
+        };
+        state.restore_alias(alias);
+    }
+    let aliases = state.alias_count();
+
     // 邀请（摘要索引；撤销/兑换计数如常恢复，未兑换的邀请跨重启仍可用）。
     let invite_rows = sqlx::query_as::<
         _,
@@ -568,6 +648,7 @@ pub async fn load(
             networks,
             devices,
             routes,
+            aliases,
             invites,
             revisions: state.revision_count(),
         },
@@ -726,6 +807,7 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
         networks: count(pool, "networks").await?,
         devices: count(pool, "devices").await?,
         routes: count(pool, "lan_routes").await?,
+        aliases: count(pool, "alias_mappings").await?,
         invites: count(pool, "invitations").await?,
         revisions: count(pool, "config_revisions").await?,
     })
@@ -965,14 +1047,14 @@ pub async fn latest_diagnostics_run(
     Ok(row.map(|(report,)| report))
 }
 
-/// Alias 映射行（诊断 §12.7 第 10 项的输入）。Phase 4 尚无服务写路径，
-/// 表通常为空——如实报 `not_applicable` 而不是假称检查过。
+/// Alias 映射行（诊断 §12.7 第 10 项的输入）。行由服务写路径产生（写入前
+/// 已域层校验）；万一损坏的行跳过而不panic——诊断对脏库报冲突而非崩溃。
 pub async fn alias_rows(
     pool: &SqlitePool,
     network_id: &str,
 ) -> Result<Vec<AliasMapping>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
-        "SELECT id, lan_route_id, alias_cidr, target_cidr, translation_mode
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
+        "SELECT id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode, status
          FROM alias_mappings WHERE network_id = ? ORDER BY id",
     )
     .bind(network_id)
@@ -981,21 +1063,23 @@ pub async fn alias_rows(
     Ok(rows
         .into_iter()
         .filter_map(
-            |(id, lan_route_id, alias_cidr, target_cidr, translation_mode)| {
-                // 行内容只能由（未来的）Phase 4 服务写入，写入前已经域层校验；
-                // 万一损坏的行跳过而不panic。
+            |(
+                id,
+                row_network_id,
+                lan_route_id,
+                alias_cidr,
+                target_cidr,
+                translation_mode,
+                status,
+            )| {
                 Some(AliasMapping {
                     id: meshlet_domain::entities::AliasMappingId(id),
-                    network_id: NetworkId(network_id.to_string()),
+                    network_id: NetworkId(row_network_id),
                     lan_route_id: LanRouteId(lan_route_id),
                     alias_cidr: alias_cidr.parse().ok()?,
                     target_cidr: target_cidr.parse().ok()?,
-                    translation_mode: if translation_mode == "dnat_only" {
-                        TranslationMode::DnatOnly
-                    } else {
-                        TranslationMode::DnatSnat
-                    },
-                    status: DesiredStateStatus::Pending,
+                    translation_mode: TranslationMode::parse(&translation_mode)?,
+                    status: desired_status_parse(&status).ok()?,
                 })
             },
         )

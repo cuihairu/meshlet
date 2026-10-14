@@ -77,6 +77,24 @@ export interface LanRoute {
   apply_status: string;
 }
 
+/** Alias mapping (ADR-006): equal-prefix virtual translation of a LAN route. */
+export interface AliasMapping {
+  id: string;
+  network_id: string;
+  /** Bound alias-mode route — alias and route are one ownership unit (§12.6). */
+  lan_route_id: string;
+  /** Virtual prefix (same length as target). */
+  alias_cidr: string;
+  /** Real LAN prefix — derived server-side from the bound route, never set by the client. */
+  target_cidr: string;
+  /** dnat_snat | dnat_only. */
+  translation_mode: string;
+  /** pending | applied | failed — desired-state marker. */
+  status: string;
+  revision_id: number;
+  apply_status: string;
+}
+
 /** One of the 12 network diagnostics checks (§12.7). */
 export interface DiagnosticCheck {
   id: string;
@@ -171,14 +189,33 @@ export const api = {
     gateway_device_id: string,
     destination_cidr: string,
     return_path_mode: string,
+    /** direct (default) | alias — alias mode marks the route as translated (§5). */
+    route_mode?: string,
   ) =>
     request<LanRoute>('POST', `/networks/${networkId}/routes`, {
       gateway_device_id,
       destination_cidr,
       return_path_mode,
+      ...(route_mode ? { route_mode } : {}),
     }),
   deleteRoute: (networkId: string, routeId: string) =>
     request<void>('DELETE', `/networks/${networkId}/routes/${routeId}`),
+  listAliases: (networkId: string) =>
+    request<AliasMapping[]>('GET', `/networks/${networkId}/aliases`),
+  createAlias: (
+    networkId: string,
+    lan_route_id: string,
+    alias_cidr: string,
+    translation_mode?: string,
+  ) =>
+    request<AliasMapping>('POST', `/networks/${networkId}/aliases`, {
+      lan_route_id,
+      alias_cidr,
+      ...(translation_mode ? { translation_mode } : {}),
+    }),
+  /** Removes the mapping AND its bound route in one revision (§12.6). */
+  deleteAlias: (networkId: string, aliasId: string) =>
+    request<void>('DELETE', `/networks/${networkId}/aliases/${aliasId}`),
   /** Latest persisted diagnostics snapshot; 404 when never run. */
   getDiagnostics: (networkId: string) =>
     request<DiagnosticsReport>('GET', `/networks/${networkId}/diagnostics`),

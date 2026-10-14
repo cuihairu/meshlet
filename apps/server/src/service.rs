@@ -8,8 +8,9 @@
 
 use meshlet_api_types::ErrorResponse;
 use meshlet_domain::{
-    generate_token, DesiredStateStatus, Device, DeviceId, DeviceRegistry, Invite, Ipam, Ipv4Cidr,
-    LanRoute, LanRouteId, Network, Platform, RegistryError, ReturnPathMode, RouteMode, Timestamp,
+    generate_token, AliasError, AliasMapping, AliasMappingId, DesiredStateStatus, Device, DeviceId,
+    DeviceRegistry, Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network, Platform, RegistryError,
+    ReturnPathMode, RouteMode, Timestamp, TranslationMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -137,6 +138,31 @@ pub struct RevisionRef {
     pub apply_status: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateAliasRequest {
+    /// 绑定的 LAN Route（必须存在且 `route_mode = "alias"`，ADR-006 单元语义）。
+    pub lan_route_id: String,
+    pub alias_cidr: String,
+    /// `dnat_snat`（缺省）或 `dnat_only`。
+    pub translation_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AliasView {
+    pub id: String,
+    pub network_id: String,
+    pub lan_route_id: String,
+    pub alias_cidr: String,
+    /// 真实目标网段 = 绑定路由的目的网段（服务端推导，客户端不可指定）。
+    pub target_cidr: String,
+    pub translation_mode: String,
+    /// `pending` / `applied` / `failed`（映射自身的期望态）。
+    pub status: String,
+    /// 本次变更生成的期望配置修订号（ADR-009）。
+    pub revision_id: u64,
+    pub apply_status: String,
+}
+
 // ---------------------------------------------------------------------------
 // 服务错误 → API 错误码
 // ---------------------------------------------------------------------------
@@ -153,6 +179,8 @@ pub enum ServiceError {
     RevisionNotFound(String),
     #[error("route {0} not found")]
     RouteNotFound(String),
+    #[error("alias {0} not found")]
+    AliasNotFound(String),
     /// 诊断从未运行过（§12.7：GET 返回最近一次运行，没有就是没有，不现算
     /// 也不假称有）。消息点名 POST 触发方式。
     #[error("{0}")]
@@ -182,6 +210,7 @@ impl ServiceError {
             | ServiceError::InviteNotFound(_)
             | ServiceError::DeviceNotFound(_)
             | ServiceError::RouteNotFound(_)
+            | ServiceError::AliasNotFound(_)
             | ServiceError::RevisionNotFound(_)
             | ServiceError::DiagnosticsNotRun(_) => {
                 ErrorResponse::new(meshlet_api_types::ErrorCode::NotFound, self.to_string())
@@ -254,6 +283,10 @@ pub struct MeshState {
     pub(crate) registry: DeviceRegistry,
     /// LAN 路由（Phase 3 控制面：增删先落状态，应用待 backend，ADR-005）。
     pub(crate) lan_routes: HashMap<String, Vec<LanRoute>>,
+    /// Alias 映射（Phase 4 控制面：等长前缀一对一，ADR-006；NAT 规则的
+    /// 所有权归属——删除即整单元清理（alias + 绑定路由），内核规则由修订
+    /// apply 交 backend 执行）。
+    pub(crate) aliases: HashMap<String, Vec<AliasMapping>>,
     /// 路由 id 序列（全局单调，删除不复用）。
     route_seq: u64,
     /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
@@ -271,6 +304,7 @@ impl MeshState {
             ipams: HashMap::new(),
             registry: DeviceRegistry::new(),
             lan_routes: HashMap::new(),
+            aliases: HashMap::new(),
             route_seq: 0,
             presence_thresholds,
             ledger: meshlet_domain::ConfigLedger::new(),
@@ -342,6 +376,14 @@ impl MeshState {
             .push(route);
     }
 
+    /// 启动重建：灌回一条 Alias 映射。
+    pub(crate) fn restore_alias(&mut self, alias: AliasMapping) {
+        self.aliases
+            .entry(alias.network_id.to_string())
+            .or_default()
+            .push(alias);
+    }
+
     /// 启动重建：灌回一份邀请（摘要索引；撤销/耗尽状态如常保留）。
     pub(crate) fn restore_invite(&mut self, invite: Invite) {
         self.invites.insert(invite.token_hash.clone(), invite);
@@ -364,6 +406,18 @@ impl MeshState {
 
     pub(crate) fn route_count(&self) -> usize {
         self.lan_routes.values().map(Vec::len).sum()
+    }
+
+    pub(crate) fn alias_count(&self) -> usize {
+        self.aliases.values().map(Vec::len).sum()
+    }
+
+    /// 启动重建用：全部在册路由 id（Alias 孤儿行判定）。
+    pub(crate) fn bound_route_ids(&self) -> std::collections::HashSet<String> {
+        self.lan_routes
+            .values()
+            .flat_map(|rs| rs.iter().map(|r| r.id.to_string()))
+            .collect()
     }
 
     pub(crate) fn invite_count(&self) -> usize {
@@ -408,7 +462,18 @@ fn record_revision(state: &mut MeshState, network_id: &str) -> Result<u64, Servi
         .get(network_id)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let hash = meshlet_domain::desired_config_hash(&overlay, ipam.hub_address(), &devices, routes);
+    let aliases = state
+        .aliases
+        .get(network_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let hash = meshlet_domain::desired_config_hash(
+        &overlay,
+        ipam.hub_address(),
+        &devices,
+        routes,
+        aliases,
+    );
     Ok(state.ledger.record(
         &meshlet_domain::NetworkId(network_id.to_string()),
         hash,
@@ -839,6 +904,8 @@ pub fn get_route(
 }
 
 /// 删除一条 LAN 路由。删除也是期望配置变更：记录新修订。
+/// §12.6 所有权清理：绑定该路由的 Alias 一并移除（alias-路由是一对一单元，
+/// 留下孤儿 Alias 会让 AllowedIPs 推导引用不存在的翻译）。
 pub fn delete_route(
     state: &mut MeshState,
     network_id: &str,
@@ -855,8 +922,214 @@ pub fn delete_route(
             "{route_id} in network {network_id}"
         )));
     }
+    if let Some(aliases) = state.aliases.get_mut(network_id) {
+        aliases.retain(|a| a.lan_route_id.to_string() != route_id);
+    }
     record_revision(state, network_id)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Alias 映射（ADR-006：等长前缀一对一；§12.6 所有权与清理）
+// ---------------------------------------------------------------------------
+
+/// 创建 Alias 映射（§9.2 转换前检查的控制面部分）：绑定路由必须是本网络
+/// `alias` 模式路由、网关 Active、每路由一映射；前缀等长（域层校验）、
+/// 与 overlay / 既有 Alias / 既有路由目的网段互不重叠（§8.3/§9.2 不静默——
+/// 冲突消息点名对端）。target 由绑定路由推导，客户端不可指定。
+/// 拒绝发生在任何状态变更之前。
+pub fn create_alias(
+    state: &mut MeshState,
+    network_id: &str,
+    req: CreateAliasRequest,
+) -> Result<AliasView, ServiceError> {
+    state.network(network_id)?;
+    let alias_cidr: Ipv4Cidr = req
+        .alias_cidr
+        .parse()
+        .map_err(|e| ServiceError::InvalidCidr(format!("{}: {e}", req.alias_cidr)))?;
+    let translation_mode = match req.translation_mode.as_deref() {
+        None | Some("dnat_snat") => TranslationMode::DnatSnat,
+        Some("dnat_only") => TranslationMode::DnatOnly,
+        Some(other) => {
+            return Err(ServiceError::InvalidInput(format!(
+                "translation_mode must be \"dnat_snat\" or \"dnat_only\", got {other:?}"
+            )));
+        }
+    };
+
+    // 绑定路由：本网络、alias 模式（§5：route_mode=alias 即「经虚拟前缀」，
+    // alias-路由是一对一单元）；网关 Active（§9.2「网关有效」）；每路由一映射。
+    let routes = state.lan_routes.get(network_id).ok_or_else(|| {
+        ServiceError::RouteNotFound(format!("{} in network {network_id}", req.lan_route_id))
+    })?;
+    let route = routes
+        .iter()
+        .find(|r| r.id.to_string() == req.lan_route_id)
+        .ok_or_else(|| {
+            ServiceError::RouteNotFound(format!("{} in network {network_id}", req.lan_route_id))
+        })?;
+    if route.route_mode != RouteMode::Alias {
+        return Err(ServiceError::InvalidInput(format!(
+            "alias can only bind to a route with route_mode = \"alias\", but route {} has route_mode = \"{}\" (create the route in alias mode first, §5/ADR-006)",
+            route.id,
+            route.route_mode.as_str()
+        )));
+    }
+    let gateway = state
+        .registry
+        .find_by_id(&route.gateway_device_id)
+        .ok_or_else(|| ServiceError::DeviceNotFound(route.gateway_device_id.to_string()))?;
+    if !gateway.is_active() {
+        return Err(ServiceError::Conflict(format!(
+            "gateway device {} of route {} is not active",
+            gateway.id, route.id
+        )));
+    }
+    if let Some(aliases) = state.aliases.get(network_id) {
+        if let Some(existing) = aliases.iter().find(|a| a.lan_route_id == route.id) {
+            return Err(ServiceError::Conflict(format!(
+                "route {} already has alias {} bound (one mapping per route, §12.6)",
+                route.id, existing.id
+            )));
+        }
+    }
+
+    // target 由路由推导（alias_target_mismatch 在创建路径上结构性不可能）。
+    let target_cidr = route.destination_cidr;
+    let id = AliasMappingId(format!("al-{}", state.route_seq + 1));
+    let alias = AliasMapping::new(
+        id,
+        meshlet_domain::NetworkId(network_id.to_string()),
+        route.id.clone(),
+        alias_cidr,
+        target_cidr,
+        translation_mode,
+    )
+    .map_err(|e: AliasError| ServiceError::InvalidInput(e.to_string()))?;
+
+    // 冲突检查（拒绝在任何状态变更前，消息点名对端）：
+    // ① 与 overlay 重叠；② 与既有 Alias 重叠；③ 与既有路由目的网段重叠
+    // （Alias 是虚拟前缀，必须与真实 LAN 空间全隔离）。
+    let overlay = state.network(network_id)?.overlay_cidr;
+    if alias.alias_cidr.overlaps(&overlay) {
+        return Err(ServiceError::RouteConflict(format!(
+            "alias {} overlaps overlay {overlay}",
+            alias.alias_cidr
+        )));
+    }
+    if let Some(aliases) = state.aliases.get(network_id) {
+        if let Some(existing) = aliases
+            .iter()
+            .find(|a| a.alias_cidr.overlaps(&alias.alias_cidr))
+        {
+            return Err(ServiceError::RouteConflict(format!(
+                "alias {} overlaps existing alias {} ({}) in network {network_id}",
+                alias.alias_cidr, existing.id, existing.alias_cidr
+            )));
+        }
+    }
+    if let Some(existing) = routes
+        .iter()
+        .find(|r| r.destination_cidr.overlaps(&alias.alias_cidr))
+    {
+        return Err(ServiceError::RouteConflict(format!(
+            "alias {} overlaps existing route {} ({}) in network {network_id}",
+            alias.alias_cidr, existing.id, existing.destination_cidr
+        )));
+    }
+
+    state.route_seq += 1;
+    state
+        .aliases
+        .entry(network_id.to_string())
+        .or_default()
+        .push(alias.clone());
+    let revision_id = record_revision(state, network_id)?;
+    Ok(to_alias_view(state, network_id, &alias, revision_id))
+}
+
+pub fn list_aliases(state: &MeshState, network_id: &str) -> Result<Vec<AliasView>, ServiceError> {
+    state.network(network_id)?;
+    let (revision_id, _) = current_revision_ref(state, network_id);
+    Ok(state
+        .aliases
+        .get(network_id)
+        .map(|aliases| {
+            aliases
+                .iter()
+                .map(|a| to_alias_view(state, network_id, a, revision_id))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+pub fn get_alias(
+    state: &MeshState,
+    network_id: &str,
+    alias_id: &str,
+) -> Result<AliasView, ServiceError> {
+    state.network(network_id)?;
+    let alias = state
+        .aliases
+        .get(network_id)
+        .and_then(|aliases| aliases.iter().find(|a| a.id.to_string() == alias_id))
+        .ok_or_else(|| {
+            ServiceError::AliasNotFound(format!("{alias_id} in network {network_id}"))
+        })?;
+    let (revision_id, _) = current_revision_ref(state, network_id);
+    Ok(to_alias_view(state, network_id, alias, revision_id))
+}
+
+/// 删除 Alias = 整单元清理（§12.6「删除 Alias 同步清理其路由和 NAT 规则」
+/// 的控制面部分）：移除映射与其绑定路由，记录**一个**修订。内核侧 NAT 规则
+/// 的移除随该修订的 apply 交 backend 执行（未接线时确定性失败可见，§10.3）。
+/// 返回 (alias_id, route_id) 供 handler 落库与审计。
+pub fn delete_alias(
+    state: &mut MeshState,
+    network_id: &str,
+    alias_id: &str,
+) -> Result<(String, String), ServiceError> {
+    state.network(network_id)?;
+    let aliases = state.aliases.get_mut(network_id).ok_or_else(|| {
+        ServiceError::AliasNotFound(format!("{alias_id} in network {network_id}"))
+    })?;
+    let before = aliases.len();
+    let route_id = aliases
+        .iter()
+        .find(|a| a.id.to_string() == alias_id)
+        .map(|a| a.lan_route_id.to_string())
+        .ok_or_else(|| {
+            ServiceError::AliasNotFound(format!("{alias_id} in network {network_id}"))
+        })?;
+    aliases.retain(|a| a.id.to_string() != alias_id);
+    debug_assert_eq!(aliases.len(), before - 1);
+    // 绑定路由同删（一对一单元；孤儿 alias 模式路由没有翻译语义）。
+    if let Some(routes) = state.lan_routes.get_mut(network_id) {
+        routes.retain(|r| r.id.to_string() != route_id);
+    }
+    record_revision(state, network_id)?;
+    Ok((alias_id.to_string(), route_id))
+}
+
+fn to_alias_view(
+    state: &MeshState,
+    network_id: &str,
+    alias: &AliasMapping,
+    revision_id: u64,
+) -> AliasView {
+    let (_, apply_status) = current_revision_ref(state, network_id);
+    AliasView {
+        id: alias.id.to_string(),
+        network_id: alias.network_id.to_string(),
+        lan_route_id: alias.lan_route_id.to_string(),
+        alias_cidr: alias.alias_cidr.to_string(),
+        target_cidr: alias.target_cidr.to_string(),
+        translation_mode: alias.translation_mode.as_str().to_string(),
+        status: alias.status.as_str().to_string(),
+        revision_id,
+        apply_status,
+    }
 }
 
 /// 撤销设备（peer 撤销，§11.5 控制面部分）：状态转 `Revoked`（下线）并记录
@@ -882,8 +1155,23 @@ pub fn revoke_device(
     };
     // §11.5：撤销必须移除该设备发布的 LAN 路由，避免期望配置里留下指向
     // 已撤销 Peer 的路由（AllowedIPs 推导会把它当成远端网段继续下发）。
+    // §12.6 所有权清理：随之移除绑定这些路由的 Alias 映射（不留孤儿翻译）。
+    let orphaned: Vec<String> = state
+        .lan_routes
+        .get(network_id)
+        .map(|routes| {
+            routes
+                .iter()
+                .filter(|r| r.gateway_device_id == revoked_id)
+                .map(|r| r.id.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
     if let Some(routes) = state.lan_routes.get_mut(network_id) {
         routes.retain(|r| r.gateway_device_id != revoked_id);
+    }
+    if let Some(aliases) = state.aliases.get_mut(network_id) {
+        aliases.retain(|a| !orphaned.contains(&a.lan_route_id.to_string()));
     }
     let revision_id = record_revision(state, network_id)?;
     Ok(RevisionRef {

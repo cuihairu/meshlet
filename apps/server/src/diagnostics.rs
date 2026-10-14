@@ -122,7 +122,8 @@ fn check(
 // ---------------------------------------------------------------------------
 
 /// 计算一个网络的 12 项检查。`now` 注入便于确定性测试；`aliases` 来自
-/// `alias_mappings` 表（Phase 4 尚无服务写路径，通常为空）。
+/// `alias_mappings` 表（§12.6 服务写路径产生；正常数据创建时已过同一套
+/// 冲突检查，此处兜底防脏库/手改库）。
 pub fn run_checks(
     mesh: &service::MeshState,
     network_id: &str,
