@@ -1,5 +1,7 @@
 <p align="center"><img src="logo-copper.svg" width="64" height="64"></p>
 
+> **English** | [中文](README.zh.md)
+
 <h1 align="center">meshlet</h1>
 
 <p align="center">
