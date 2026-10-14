@@ -16,6 +16,7 @@ export default defineConfig({
       { text: '架构', link: '/architecture/domain-model', activeMatch: '/architecture/' },
       { text: '决策', link: '/decisions/', activeMatch: '/decisions/' },
       { text: '存档', link: '/review/chatgpt-2026-10-13', activeMatch: '/review/' },
+      { text: '指南', link: '/guide/external-caller', activeMatch: '/guide/' },
       { text: 'GitHub', link: 'https://github.com/cuihairu/meshlet' }
     ],
     sidebar: {
@@ -68,6 +69,14 @@ export default defineConfig({
           text: '外部意见存档',
           items: [
             { text: 'ChatGPT 对话 · 2026-10-13', link: '/review/chatgpt-2026-10-13' }
+          ]
+        }
+      ],
+      '/guide/': [
+        {
+          text: '指南',
+          items: [
+            { text: '外部调用方指南', link: '/guide/external-caller' }
           ]
         }
       ]
