@@ -39,7 +39,8 @@ export default defineConfig({
           items: [
             { text: '领域模型', link: '/architecture/domain-model' },
             { text: 'API 契约', link: '/architecture/api-contract' },
-            { text: '平台差异清单', link: '/architecture/platform-notes' }
+            { text: '平台差异清单', link: '/architecture/platform-notes' },
+            { text: '路由优化方案', link: '/architecture/routing-optimization' }
           ]
         }
       ],
