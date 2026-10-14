@@ -626,19 +626,22 @@ pub fn create_route(
             "destination {destination} overlaps overlay {overlay}"
         )));
     }
-    // 同网络目的网段互斥（重叠即冲突，不做超集合并）。
-    if state
+    // 同网络目的网段互斥（重叠即冲突，不做超集合并）。拒绝发生在任何状态
+    // 变更之前：既有路由绝不被覆盖（§8.3 不静默）。错误消息点名冲突对端
+    // （既有路由 id + 网段），控制台据此展示「跟哪条路由冲突」。
+    if let Some(existing) = state
         .lan_routes
         .get(network_id)
-        .map(|routes| {
+        .and_then(|routes| {
             routes
                 .iter()
-                .any(|r| r.destination_cidr.overlaps(&destination))
+                .find(|r| r.destination_cidr.overlaps(&destination))
         })
-        .unwrap_or(false)
+        .cloned()
     {
         return Err(ServiceError::RouteConflict(format!(
-            "destination {destination} overlaps an existing route in network {network_id}"
+            "destination {destination} overlaps existing route {} ({}) in network {network_id}",
+            existing.id, existing.destination_cidr
         )));
     }
 

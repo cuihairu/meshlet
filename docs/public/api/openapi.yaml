@@ -425,6 +425,12 @@ paths:
     post:
       tags: [routes]
       summary: Publish LAN route (return-path mode required, ADR-005)
+      description: >
+        Rejected creates are never silent (archive §8.3): a destination that
+        overlaps the overlay or an existing LAN route answers 409 naming the
+        conflicting counterpart (existing route id and CIDR) and mutates
+        nothing — existing routes are never overwritten. Clients should offer
+        an equal-prefix Alias mapping for the remote LAN instead.
       requestBody:
         required: true
         content:
@@ -436,7 +442,13 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/LanRoute" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409":
+          description: >
+            Destination overlaps the overlay or an existing route in this
+            network; the message names the counterpart. Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /networks/{network_id}/routes/{route_id}:
     parameters:
       - { $ref: "#/components/parameters/NetworkId" }

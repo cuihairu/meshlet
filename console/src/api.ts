@@ -62,6 +62,21 @@ export interface RevisionRef {
   apply_status: string;
 }
 
+export interface LanRoute {
+  id: string;
+  network_id: string;
+  gateway_device_id: string;
+  destination_cidr: string;
+  /** direct | alias */
+  route_mode: string;
+  /** dual_route | controlled_snat */
+  return_path_mode: string;
+  /** pending | applied | failed — desired-state marker, not a live route. */
+  status: string;
+  revision_id: number;
+  apply_status: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -129,4 +144,19 @@ export const api = {
       'POST',
       `/networks/${networkId}/config-revisions/${revision}/rollback`,
     ),
+  listRoutes: (networkId: string) =>
+    request<LanRoute[]>('GET', `/networks/${networkId}/routes`),
+  createRoute: (
+    networkId: string,
+    gateway_device_id: string,
+    destination_cidr: string,
+    return_path_mode: string,
+  ) =>
+    request<LanRoute>('POST', `/networks/${networkId}/routes`, {
+      gateway_device_id,
+      destination_cidr,
+      return_path_mode,
+    }),
+  deleteRoute: (networkId: string, routeId: string) =>
+    request<void>('DELETE', `/networks/${networkId}/routes/${routeId}`),
 };

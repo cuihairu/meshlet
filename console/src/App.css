@@ -131,6 +131,20 @@ td {
   font-size: 0.875rem;
 }
 
+/* §8.3: a rejected route create is never silent — name the counterpart and
+   suggest the Alias mapping instead. */
+.conflict {
+  padding: 0.75rem;
+  border: 1px solid #b91c1c;
+  border-radius: 4px;
+  margin: 0.5rem 0;
+  font-size: 0.875rem;
+}
+
+.conflict p {
+  margin: 0.25rem 0;
+}
+
 .token-box {
   padding: 0.75rem;
   border: 1px dashed var(--accent);

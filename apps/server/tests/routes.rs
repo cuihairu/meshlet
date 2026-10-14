@@ -231,12 +231,19 @@ async fn overlapping_destination_in_same_network_is_conflict() {
     let (network_id, device_id) = net_with_device(&c, "home", OVERLAY).await;
     let uri = format!("/api/v1/networks/{network_id}/routes");
 
-    let (st, _) = json_post(&c, &uri, route_body(&device_id, "192.168.1.0/24")).await;
+    let (st, route) = json_post(&c, &uri, route_body(&device_id, "192.168.1.0/24")).await;
     assert_eq!(st, StatusCode::CREATED);
-    // 同网段重复。
+    let route_id = route["id"].as_str().unwrap().to_string();
+
+    // 同网段重复：409 且错误消息点名冲突对端（既有路由 id + 网段，§8.3）。
     let (st, body) = json_post(&c, &uri, route_body(&device_id, "192.168.1.0/24")).await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert_eq!(body["error"]["code"], "conflict");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(&route_id) && message.contains("192.168.1.0/24"),
+        "conflict message must name the existing route: {message}"
+    );
     // 子网重叠同样冲突。
     let (st, _) = json_post(&c, &uri, route_body(&device_id, "192.168.1.0/25")).await;
     assert_eq!(st, StatusCode::CONFLICT);
@@ -251,6 +258,38 @@ async fn overlapping_destination_in_same_network_is_conflict() {
     )
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+/// §8.3「不覆盖已有路由」：被拒绝的创建不留下任何痕迹——路由列表不变、
+/// 不产生新修订（拒绝发生在任何状态变更之前）。
+#[tokio::test]
+async fn rejected_route_create_overwrites_nothing() {
+    let c = ctx().await;
+    let (network_id, device_id) = net_with_device(&c, "home", OVERLAY).await;
+    let uri = format!("/api/v1/networks/{network_id}/routes");
+
+    let (st, route) = json_post(&c, &uri, route_body(&device_id, "192.168.1.0/24")).await;
+    assert_eq!(st, StatusCode::CREATED);
+    let revisions_uri = format!("/api/v1/networks/{network_id}/config-revisions");
+    let (_, before) = json_get(&c, &revisions_uri).await;
+    let before_count = before.as_array().unwrap().len();
+
+    for dst in ["192.168.1.0/24", "192.168.1.0/25", OVERLAY] {
+        let (st, _) = json_post(&c, &uri, route_body(&device_id, dst)).await;
+        assert_eq!(st, StatusCode::CONFLICT, "dst={dst}");
+    }
+
+    let (_, list) = json_get(&c, &uri).await;
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 1, "only the original route remains: {list:?}");
+    assert_eq!(list[0]["id"], route["id"].as_str().unwrap());
+    assert_eq!(list[0]["destination_cidr"], "192.168.1.0/24");
+    let (_, after) = json_get(&c, &revisions_uri).await;
+    assert_eq!(
+        after.as_array().unwrap().len(),
+        before_count,
+        "a rejected create records no revision"
+    );
 }
 
 #[tokio::test]
