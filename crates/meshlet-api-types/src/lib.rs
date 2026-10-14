@@ -16,6 +16,7 @@ pub enum ErrorCode {
     ValidationFailed,
     TooManyRequests,
     ApplyFailed,
+    BackupNotConfigured,
     Internal,
 }
 

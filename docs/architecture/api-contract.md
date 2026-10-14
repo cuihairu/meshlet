@@ -7,7 +7,7 @@
 - 所有 API 使用版本前缀 `/api/v1`；JSON 请求与响应；统一错误响应结构（见下）；
 - 输入验证在服务端执行；有副作用的操作记录审计事件（ADR-010）；
 - 列表接口分页（`limit`/`offset`，响应带 `total`）；
-- 可区分的错误码：`conflict` / `unauthorized` / `forbidden` / `not_found` / `validation_failed` / `too_many_requests` / `apply_failed`；
+- 可区分的错误码：`conflict` / `unauthorized` / `forbidden` / `not_found` / `validation_failed` / `too_many_requests` / `apply_failed` / `backup_not_configured`；
 - 配置修改类响应必须携带 `revision_id` 与 `apply_status`（ADR-009）；
 - 敏感可重试操作提供幂等语义；
 - **Agent API 与管理 API 认证边界清晰分离**（§13.7）。
@@ -50,11 +50,31 @@
 | GET | `/api/v1/networks/{network_id}/config-revisions/{revision}` | 版本详情（含 apply_status）🔒 |
 | POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/apply` | 应用指定版本到实际环境（响应即该版本视图）🔒 |
 | POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/rollback` | 回滚失败版本（仅删除/恢复 Meshlet 自有对象，ADR-007；只允许回滚当前修订，被取代者 409，§10.4）🔒 |
+| POST | `/api/v1/system/backup` | 一致性本地备份（SQLite 在线备份语义；只写 `[backup] dir`，不覆盖既有文件 → 409；目录未配置 → 503 `backup_not_configured`；响应含备份文件内容摘要）🔒 |
 
 - 撤销设备语义（§11.5，已实现）：`POST .../devices/{device_id}/revoke`
   返回 `202` + `RevisionRef`（新修订号）；设备状态转 `revoked`（列表可见），
   该设备的 agent 凭证**立即失效**，且**其已发布的全部 LAN Route 一并移除**
   （不给 AllowedIPs 推导留下指向已撤销 Peer 的网段）；重复撤销 → `409 conflict`。
+
+## 备份与恢复（§17.4，已实现）
+
+- **备份 ≠ 同步**：只写本地 `[backup] dir`，无任何外发/云上传/遥测；
+  默认不自动备份（`auto` 默认 `false`，开自动备份必须显式配置位）；
+  目录未配置时 `POST /api/v1/system/backup` 返回 `503 backup_not_configured`。
+- **一致性备份**：SQLite 在线备份语义（`VACUUM INTO`）——单一自洽快照，
+  备份文件可独立打开、表结构（13 表）与迁移（001–005）完整；目标文件已存在
+  拒绝（`409 conflict`），既有备份绝不被静默覆盖；落盘权限 `0600`；写后独立
+  只读复验（`quick_check` + 必需表齐全），响应摘要来自备份文件本体读取。
+- **审计**：备份 `system.backup`（端点触发 actor = 操作者，定时任务 actor 为空）；
+  恢复 `system.restore`（actor 为空，detail 记源路径与内容摘要）。
+- **恢复是离线操作**：`meshlet-server restore <backup.db> [config.toml]`
+  （先停服务）——校验备份（损坏/缺表明确拒绝并点名缺失表）→ 拒绝未合并 WAL
+  （非空 `-wal` 旁挂即拒，防静默丢已提交事务）→ 活动库占用检查 →
+  拷贝复验后原子换名（任何失败都不触碰活动库，不留半恢复状态）→ 审计留痕 →
+  按 §17.3 语义收敛（`applying`→`failed`、`rollback_pending` 保留、`applied`
+  不重放），与正常启动完全一致，不比启动更弱。
+- 运维细节见 [备份与恢复](backup-restore.md)。
 
 ## 认证与 CSRF（已实现）
 
@@ -159,4 +179,4 @@
 
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,device_revoke,audit,observability,recovery}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`、`POST /api/v1/system/backup`（§17.4）；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,device_revoke,audit,observability,recovery,backup}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。

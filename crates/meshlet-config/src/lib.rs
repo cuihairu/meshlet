@@ -28,6 +28,36 @@ struct RawServerConfig {
     console_dir: Option<String>,
     presence_agent_window_secs: Option<u64>,
     presence_handshake_window_secs: Option<u64>,
+    backup: Option<RawBackupConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct RawBackupConfig {
+    dir: Option<String>,
+    auto: Option<bool>,
+    interval_secs: Option<u64>,
+}
+
+/// 备份配置（存档 §17.4）：只写本地路径，默认**不**自动备份。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupConfig {
+    /// 备份目录。`None` = 备份未配置（`POST /system/backup` 返回 503）。
+    pub dir: Option<String>,
+    /// 定时自动备份开关——必须显式置 true 才开启（默认 false，§17.4
+    /// 「备份 ≠ 同步」：无任何外发/云上传/遥测）。
+    pub auto: bool,
+    /// 自动备份间隔（秒，默认 86400）。
+    pub interval_secs: u64,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            auto: false,
+            interval_secs: 86400,
+        }
+    }
 }
 
 /// Server 配置。
@@ -44,6 +74,8 @@ pub struct ServerConfig {
     pub presence_agent_window_secs: u64,
     /// 在线判定：握手新鲜窗口（秒，默认 120）。
     pub presence_handshake_window_secs: u64,
+    /// 备份（存档 §17.4）：默认全关。
+    pub backup: BackupConfig,
 }
 
 impl Default for ServerConfig {
@@ -56,6 +88,7 @@ impl Default for ServerConfig {
             console_dir: None,
             presence_agent_window_secs: 300,
             presence_handshake_window_secs: 120,
+            backup: BackupConfig::default(),
         }
     }
 }
@@ -71,6 +104,17 @@ impl ServerConfig {
                 .map_err(|_| ConfigError::InvalidOverlayCidr(s.clone()))?,
             None => default.overlay_cidr,
         };
+        let backup = match raw.backup {
+            Some(raw_backup) => BackupConfig {
+                dir: raw_backup.dir.or(default.backup.dir),
+                auto: raw_backup.auto.unwrap_or(default.backup.auto),
+                interval_secs: raw_backup
+                    .interval_secs
+                    .unwrap_or(default.backup.interval_secs)
+                    .max(1),
+            },
+            None => default.backup,
+        };
         Ok(Self {
             bind: raw.bind.unwrap_or(default.bind),
             database_path: raw.database_path.unwrap_or(default.database_path),
@@ -83,6 +127,7 @@ impl ServerConfig {
             presence_handshake_window_secs: raw
                 .presence_handshake_window_secs
                 .unwrap_or(default.presence_handshake_window_secs),
+            backup,
         })
     }
 }
@@ -193,6 +238,45 @@ overlay_cidr = "172.30.0.0/16"
             ServerConfig::from_toml("bind = "),
             Err(ConfigError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn backup_defaults_completely_off() {
+        // §17.4「备份 ≠ 同步」：默认无目录、不自动、无任何外发。
+        let d = ServerConfig::default().backup;
+        assert_eq!(d, BackupConfig::default());
+        assert!(d.dir.is_none());
+        assert!(!d.auto);
+        assert_eq!(d.interval_secs, 86400);
+        // 无 [backup] 段的配置文件同样是全关。
+        assert_eq!(
+            ServerConfig::from_toml("bind = \"0.0.0.0:8080\"")
+                .unwrap()
+                .backup,
+            BackupConfig::default()
+        );
+    }
+
+    #[test]
+    fn backup_section_parses_with_explicit_auto_flag() {
+        let c = ServerConfig::from_toml(
+            r#"
+[backup]
+dir = "/var/lib/meshlet/backups"
+auto = true
+interval_secs = 3600
+"#,
+        )
+        .unwrap();
+        assert_eq!(c.backup.dir.as_deref(), Some("/var/lib/meshlet/backups"));
+        assert!(c.backup.auto);
+        assert_eq!(c.backup.interval_secs, 3600);
+
+        // 只给目录不开 auto：手动备份可用，定时仍关（显式配置位）。
+        let c = ServerConfig::from_toml("[backup]\ndir = \"/tmp/b\"\n").unwrap();
+        assert_eq!(c.backup.dir.as_deref(), Some("/tmp/b"));
+        assert!(!c.backup.auto);
+        assert_eq!(c.backup.interval_secs, 86400);
     }
 
     #[test]

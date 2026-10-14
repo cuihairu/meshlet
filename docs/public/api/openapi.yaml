@@ -182,6 +182,31 @@ paths:
                 meshlet_config_apply_total{result="failed"} 1
                 meshlet_devices_online 2
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /system/backup:
+    post:
+      tags: [system]
+      summary: Take a consistent local backup (§17.4)
+      description: >
+        Consistent single-file snapshot (SQLite online backup semantics): the
+        file is independently openable, schema and migrations complete, content
+        self-consistent at the backup moment. Writes only the configured
+        [backup] dir — no external upload of any kind. Backups are never
+        overwritten (same-name target → 409). Response carries the content
+        summary read back from the backup file itself. Restore is offline:
+        `meshlet-server restore <backup.db> [config.toml]` (§17.4); both
+        backup and restore are audit-logged (system.backup / system.restore).
+        Management-plane authentication required: session cookie or
+        write-scope API token (CSRF guard applies).
+      responses:
+        "200":
+          description: Backup written
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /networks:
     get:
       tags: [networks]
@@ -698,6 +723,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    ServiceUnavailable:
+      description: Backup not configured (no [backup] dir)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
   schemas:
     Error:
       type: object
@@ -709,7 +739,7 @@ components:
           properties:
             code:
               type: string
-              enum: [unauthorized, forbidden, not_found, conflict, validation_failed, too_many_requests, apply_failed, internal]
+              enum: [unauthorized, forbidden, not_found, conflict, validation_failed, too_many_requests, apply_failed, backup_not_configured, internal]
             message: { type: string }
             details: { type: object, additionalProperties: true }
     Session:
@@ -770,7 +800,8 @@ components:
             user.logout / network.created / invite.created / invite.revoked /
             route.created / route.deleted / device.enrolled / device.revoked /
             api_token.created / api_token.revoked / revision.applied /
-            revision.apply_failed / revision.rolled_back / revision.rollback_failed
+            revision.apply_failed / revision.rolled_back / revision.rollback_failed /
+            system.backup / system.restore (§17.4)
         target_type: { type: string }
         target_id: { type: string, nullable: true }
         detail: { type: string, nullable: true, description: JSON-encoded structured metadata }
@@ -950,3 +981,16 @@ components:
       properties:
         status: { type: string, enum: [ok, degraded] }
         version: { type: string }
+    BackupResponse:
+      type: object
+      description: Backup content summary read back from the backup file itself (§17.4)
+      required: [path, created_at, bytes, networks, devices, routes, invites, revisions]
+      properties:
+        path: { type: string, description: "<dir>/meshlet-backup-<UTC timestamp>.db (millisecond precision)" }
+        created_at: { type: string, format: date-time }
+        bytes: { type: integer }
+        networks: { type: integer }
+        devices: { type: integer }
+        routes: { type: integer }
+        invites: { type: integer }
+        revisions: { type: integer }

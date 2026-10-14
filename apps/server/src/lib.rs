@@ -7,12 +7,14 @@
 //! - 公开：`/system/status`、`/enroll`（自带邀请 Token 鉴权）、`/auth/bootstrap|login`；
 //! - 管理（`AuthenticatedUser`：Cookie 会话或 `mlt_` API Token；写请求另挂
 //!   `WriteUser` + `CsrfHeader`）：`/auth/tokens*`、`/networks*`、
-//!   `/networks/{id}/invites*`、`/networks/{id}/devices`、`/networks/{id}/revisions*`。
+//!   `/networks/{id}/invites*`、`/networks/{id}/devices`、`/networks/{id}/revisions*`、
+//!   `/system/backup`（§17.4，目录未配置时 503）。
 
 pub mod agent;
 pub mod api_token;
 pub mod audit;
 pub mod auth;
+pub mod backup;
 pub mod metrics;
 pub mod persist;
 pub mod revision;
@@ -495,6 +497,7 @@ pub fn router(state: SharedAppState) -> Router {
     Router::new()
         .merge(api_token::routes())
         .merge(audit::routes())
+        .merge(backup::routes())
         .merge(metrics::routes())
         .merge(revision::routes())
         .route("/api/v1/system/status", get(status_handler))

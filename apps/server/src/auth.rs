@@ -59,6 +59,8 @@ pub struct AppState {
     /// Mesh 持久化互斥（§17.3）：变更 + 落库在同一个互斥段内完成，任何并发
     /// 交错都不会让旧行快照覆盖新行（请求路径 DB 镜像的写序保证）。
     pub persist: Arc<tokio::sync::Mutex<()>>,
+    /// 备份目录（§17.4）：`None` = 备份未配置（`POST /system/backup` 503）。
+    pub backup_dir: Option<std::path::PathBuf>,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -84,12 +86,19 @@ impl AppState {
             apply_backend: crate::revision::unconfigured_backend_factory(),
             metrics: crate::metrics::Metrics::new(),
             persist: Arc::new(tokio::sync::Mutex::new(())),
+            backup_dir: None,
         }
     }
 
     /// 注入自定义配置应用 backend（数据面接入 / 集成测试）。
     pub fn with_apply_backend(mut self, factory: crate::revision::BackendFactory) -> Self {
         self.apply_backend = factory;
+        self
+    }
+
+    /// 注入备份目录（§17.4；生产来自 `[backup] dir`，测试注入临时目录）。
+    pub fn with_backup_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.backup_dir = dir;
         self
     }
 
