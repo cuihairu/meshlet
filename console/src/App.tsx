@@ -491,6 +491,10 @@ function RevisionsSection({ networkId }: { networkId: string }) {
     load();
   }, [load]);
 
+  // Newest first, so the head of the list is the current desired config — the
+  // only revision the server accepts a rollback for.
+  const currentRevision = revisions?.[0]?.revision;
+
   const act = async (action: 'apply' | 'rollback', revision: number) => {
     setBusy(revision);
     setError(null);
@@ -512,7 +516,8 @@ function RevisionsSection({ networkId }: { networkId: string }) {
         A new revision is recorded for every config change (network, device join,
         route, revoke). A database write is not an apply: the status below is
         the verdict. Apply targets the current desired config; rollback is only
-        for failed revisions.
+        for the current failed revision — a superseded failure is refused rather
+        than rolled back across the newer revision.
       </p>
       {revisions === null ? (
         <p className="muted">Loading…</p>
@@ -546,7 +551,7 @@ function RevisionsSection({ networkId }: { networkId: string }) {
                   <code className="hash">{r.desired_config_hash.slice(0, 16)}…</code>
                 </td>
                 <td>
-                  {r.revision === revisions[0].revision && (
+                  {r.revision === currentRevision && (
                     <button
                       type="button"
                       disabled={busy === r.revision}
@@ -556,16 +561,27 @@ function RevisionsSection({ networkId }: { networkId: string }) {
                     </button>
                   )}
                   {(r.apply_status === 'failed' ||
-                    r.apply_status === 'rollback_pending') && (
-                    <button
-                      type="button"
-                      className="link"
-                      disabled={busy === r.revision}
-                      onClick={() => act('rollback', r.revision)}
-                    >
-                      Rollback
-                    </button>
-                  )}
+                    r.apply_status === 'rollback_pending') &&
+                    r.revision === currentRevision && (
+                      <button
+                        type="button"
+                        className="link"
+                        disabled={busy === r.revision}
+                        onClick={() => act('rollback', r.revision)}
+                      >
+                        Rollback
+                      </button>
+                    )}
+                  {(r.apply_status === 'failed' ||
+                    r.apply_status === 'rollback_pending') &&
+                    r.revision !== currentRevision && (
+                      <span
+                        className="muted"
+                        title="Superseded by revision #{currentRevision}. Rolling this back would cross-touch objects the newer revision owns, so the server refuses it (409). Record a new revision instead."
+                      >
+                        superseded
+                      </span>
+                    )}
                 </td>
               </tr>
             ))}

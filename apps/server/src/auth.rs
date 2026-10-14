@@ -51,6 +51,9 @@ pub struct AppState {
     pub audit: crate::audit::AuditStore,
     pub login_limiter: Arc<RateLimiter>,
     pub cookie_secure: bool,
+    /// 配置应用/回滚 backend 工厂（§10.3 幂等、§10.4 回滚边界）；默认数据面
+    /// 未接入（显式失败），测试可注入计数 backend 验证幂等与串行化。
+    pub apply_backend: crate::revision::BackendFactory,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -73,7 +76,14 @@ impl AppState {
             audit,
             login_limiter: Arc::new(RateLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
             cookie_secure,
+            apply_backend: crate::revision::unconfigured_backend_factory(),
         }
+    }
+
+    /// 注入自定义配置应用 backend（数据面接入 / 集成测试）。
+    pub fn with_apply_backend(mut self, factory: crate::revision::BackendFactory) -> Self {
+        self.apply_backend = factory;
+        self
     }
 }
 

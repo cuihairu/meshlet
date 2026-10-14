@@ -582,8 +582,11 @@ paths:
       description: >
         Only failed (or an interrupted rollback_pending) revisions can be rolled
         back; applied revisions are undone by recording a new forward revision.
-        If the rollback cannot be confirmed the revision stays rollback_pending
-        with a combined error_summary. Never wipes system routes (§10.3).
+        Only the current (latest un-rolled-back) revision may be rolled back: a
+        superseded failed revision is refused with 409 because undoing it would
+        cross-touch objects the newer revision owns (§10.4). If the rollback
+        cannot be confirmed the revision stays rollback_pending with a combined
+        error_summary. Never wipes system routes (§10.3).
       responses:
         "200":
           description: OK (check apply_status in the body)

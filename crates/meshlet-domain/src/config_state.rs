@@ -9,7 +9,9 @@
 //!
 //! 应用幂等（§10.3）：同一版本重复应用结果一致——已 `Applied` 的修订直接返回，
 //! 不再调用 backend；失败版本不允许原地重试（重试 = 以相同哈希记录新修订，
-//! 保持状态机严格）；回滚只针对 `Failed` 修订（`Applied` 的撤销走前滚新版本）。
+//! 保持状态机严格）；回滚只针对**当前**（最新未回滚的）`Failed` 修订
+//! （`Applied` 的撤销走前滚新版本；被更新修订取代的失败修订拒绝回滚，
+//! §10.4 不交叉破坏）。
 
 use crate::cidr::Ipv4Cidr;
 use crate::entities::{
@@ -96,6 +98,18 @@ pub trait ConfigApplyBackend {
 pub enum LedgerError {
     #[error("revision {revision} not found in network {network_id}")]
     RevisionNotFound { network_id: String, revision: u64 },
+    /// 回滚目标已被更新修订取代（§10.4）：被取代的失败修订从未生效，按其
+    /// 意图回滚会交叉触碰更新修订所拥有的对象——重试路径是对当前修订操作
+    /// 或前滚记录新修订。
+    #[error(
+        "revision {revision} superseded by {latest} in network {network_id}; \
+            roll back the current revision or record a new one"
+    )]
+    SupersededRevision {
+        network_id: String,
+        revision: u64,
+        latest: u64,
+    },
     #[error(transparent)]
     IllegalTransition(#[from] RevisionError),
 }
@@ -201,6 +215,10 @@ impl ConfigLedger {
     /// 回滚动作同样交给 backend；上次回滚未确认（`RollbackPending`）允许重试，
     /// 已 `RolledBack` 的修订幂等返回。回滚成功后当前期望修订自然回落到更早
     /// 的未回滚修订（见 [`Self::current`]）。
+    ///
+    /// 只允许回滚**当前**（最新未回滚的）修订：被更新修订取代的 `Failed`
+    /// 修订从未生效，按其意图回滚会交叉触碰更新修订拥有的对象（§10.4），
+    /// 返回 [`LedgerError::SupersededRevision`]。
     pub fn rollback(
         &mut self,
         network_id: &NetworkId,
@@ -228,6 +246,16 @@ impl ConfigLedger {
                     ))
                 }
             },
+        }
+        // 取代检查（§10.4 交叉破坏）：只回滚当前修订。
+        if let Some(latest) = self.current(network_id) {
+            if latest.revision != revision {
+                return Err(LedgerError::SupersededRevision {
+                    network_id: network_id.to_string(),
+                    revision,
+                    latest: latest.revision,
+                });
+            }
         }
         let r = self.get_mut(network_id, revision).unwrap();
         if r.apply_status == ApplyStatus::Failed {
@@ -504,6 +532,134 @@ mod tests {
         l.apply(&id, 1, &mut broken, T1.into()).unwrap();
         l.rollback(&id, 1, &mut OkBackend).unwrap();
         assert!(l.current(&id).is_none());
+    }
+
+    #[test]
+    fn rollback_of_superseded_failed_revision_is_rejected() {
+        // §10.4 交叉破坏防线：被更新修订取代的 Failed 修订从未生效，按其
+        // 意图回滚会触碰更新修订拥有的对象。
+        let mut l = ConfigLedger::new();
+        let id = net("net-1");
+        l.record(&id, "h1".into(), T0.into());
+        let mut broken = BrokenBackend::new("boom", "unused");
+        l.apply(&id, 1, &mut broken, T1.into()).unwrap();
+
+        // 取代者是 Pending：回滚旧失败修订被拒。
+        l.record(&id, "h2".into(), T2.into());
+        assert_eq!(
+            l.rollback(&id, 1, &mut OkBackend).unwrap_err(),
+            LedgerError::SupersededRevision {
+                network_id: "net-1".into(),
+                revision: 1,
+                latest: 2,
+            }
+        );
+        // 取代者是 Applied：同样被拒（Applied 的撤销走前滚新版本）。
+        let mut l2 = ConfigLedger::new();
+        l2.record(&id, "h1".into(), T0.into());
+        l2.apply(&id, 1, &mut broken, T1.into()).unwrap();
+        l2.record(&id, "h2".into(), T2.into());
+        l2.apply(&id, 2, &mut OkBackend, T2.into()).unwrap();
+        assert!(matches!(
+            l2.rollback(&id, 1, &mut OkBackend).unwrap_err(),
+            LedgerError::SupersededRevision { .. }
+        ));
+        // 当前（最新）失败修订仍可正常回滚——限制不是全禁。
+        let mut l3 = ConfigLedger::new();
+        l3.record(&id, "h1".into(), T0.into());
+        l3.apply(&id, 1, &mut broken, T1.into()).unwrap();
+        l3.record(&id, "h2".into(), T2.into());
+        l3.apply(&id, 2, &mut broken, T2.into()).unwrap();
+        let r = l3.rollback(&id, 2, &mut OkBackend).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::RolledBack);
+        // 级联：回滚掉最新后，更早的失败修订成为当前，可继续回滚。
+        let r = l3.rollback(&id, 1, &mut OkBackend).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::RolledBack);
+    }
+
+    /// 记录 backend 收到的每次调用（修订身份），用于断言回滚边界。
+    #[derive(Default)]
+    struct RecordingBackend {
+        applied: Vec<(String, u64)>,
+        rolled_back: Vec<(String, u64)>,
+    }
+
+    impl ConfigApplyBackend for RecordingBackend {
+        fn apply(&mut self, r: &ConfigRevision) -> Result<(), String> {
+            self.applied.push((r.network_id.to_string(), r.revision));
+            Err("recorded failure".into())
+        }
+        fn rollback(&mut self, r: &ConfigRevision) -> Result<(), String> {
+            self.rolled_back
+                .push((r.network_id.to_string(), r.revision));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rollback_backend_receives_only_the_failed_revision() {
+        // §10.3 / ADR-007：回滚以**该失败修订**为边界——backend 只收到这个
+        // 修订的身份（network_id + revision），从不收到其他修订或任何
+        // 「清空全部」指令；ledger 层钉死这条契约。
+        let mut l = ConfigLedger::new();
+        let (a, b) = (net("net-a"), net("net-b"));
+        l.record(&a, "ha1".into(), T0.into());
+        l.record(&b, "hb1".into(), T0.into());
+        l.record(&a, "ha2".into(), T1.into());
+        let mut backend = RecordingBackend::default();
+
+        // net-a rev2 应用失败；回滚它。
+        l.apply(&a, 2, &mut backend, T2.into()).unwrap();
+        let r = l.rollback(&a, 2, &mut backend).unwrap();
+        assert_eq!(r.apply_status, ApplyStatus::RolledBack);
+
+        assert_eq!(backend.applied, vec![("net-a".into(), 2)]);
+        // 恰好一次回滚调用，目标就是失败修订本身——不是 rev1、不是 net-b。
+        assert_eq!(backend.rolled_back, vec![("net-a".into(), 2)]);
+    }
+
+    #[test]
+    fn concurrent_record_assigns_unique_contiguous_revisions() {
+        // §10.4 版本顺序：并发记录（调用方持网络级互斥）下版本号唯一、
+        // 连续、严格递增——不交叉、不丢号、不重号。
+        use std::sync::{Arc, Mutex};
+        const THREADS: u64 = 8;
+        const PER_THREAD: u64 = 25;
+
+        let ledger = Arc::new(Mutex::new(ConfigLedger::new()));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|t| {
+                let ledger = Arc::clone(&ledger);
+                std::thread::spawn(move || {
+                    let mut mine = Vec::new();
+                    for i in 0..PER_THREAD {
+                        let rev = ledger.lock().unwrap().record(
+                            &net("net-1"),
+                            format!("h-{t}-{i}"),
+                            T0.into(),
+                        );
+                        mine.push(rev);
+                    }
+                    mine
+                })
+            })
+            .collect();
+        let mut all = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(all.len() as u64, THREADS * PER_THREAD);
+        all.sort_unstable();
+        let expected: Vec<u64> = (1..=THREADS * PER_THREAD).collect();
+        assert_eq!(all, expected, "unique, contiguous, strictly increasing");
+
+        let guard = ledger.lock().unwrap();
+        let numbers: Vec<u64> = guard
+            .revisions(&net("net-1"))
+            .iter()
+            .map(|r| r.revision)
+            .collect();
+        assert_eq!(numbers, expected);
     }
 
     // -- desired_config_hash ------------------------------------------------

@@ -207,7 +207,8 @@ impl From<RegistryError> for ServiceError {
 }
 
 impl ServiceError {
-    /// 版本簿记错误 → API 错误（未知修订 404；非法跃迁 409，§10.4 乐观并发）。
+    /// 版本簿记错误 → API 错误（未知修订 404；非法跃迁与被取代的回滚 409，
+    /// §10.4 乐观并发）。
     pub fn from_ledger(e: meshlet_domain::LedgerError) -> Self {
         match e {
             meshlet_domain::LedgerError::RevisionNotFound {
@@ -217,6 +218,14 @@ impl ServiceError {
             meshlet_domain::LedgerError::IllegalTransition(err) => {
                 ServiceError::Conflict(err.to_string())
             }
+            meshlet_domain::LedgerError::SupersededRevision {
+                network_id,
+                revision,
+                latest,
+            } => ServiceError::Conflict(format!(
+                "revision {revision} in network {network_id} is superseded by revision \
+                 {latest}; roll back revision {latest} or record a new revision"
+            )),
         }
     }
 }

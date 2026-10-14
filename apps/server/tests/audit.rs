@@ -252,11 +252,25 @@ async fn management_lifecycle_is_fully_recorded() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // 修订 1（建网）应用：无数据面 backend → 失败必留痕。
+    // 最新修订（撤建设备那次变更）应用：无数据面 backend → 失败必留痕；
+    // 随后回滚它（§10.4：只允许回滚当前修订）。
+    let (status, revisions) = call(
+        &c,
+        "GET",
+        &format!("/api/v1/networks/{network_id}/config-revisions"),
+        Some(&c.cookie),
+        false,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let latest = revisions.as_array().unwrap().last().unwrap()["revision"]
+        .as_u64()
+        .unwrap();
     let (status, _) = write(
         &c,
         "POST",
-        &format!("/api/v1/networks/{network_id}/config-revisions/1/apply"),
+        &format!("/api/v1/networks/{network_id}/config-revisions/{latest}/apply"),
         None,
     )
     .await;
@@ -264,7 +278,7 @@ async fn management_lifecycle_is_fully_recorded() {
     let (status, _) = write(
         &c,
         "POST",
-        &format!("/api/v1/networks/{network_id}/config-revisions/1/rollback"),
+        &format!("/api/v1/networks/{network_id}/config-revisions/{latest}/rollback"),
         None,
     )
     .await;
@@ -318,7 +332,7 @@ async fn management_lifecycle_is_fully_recorded() {
     // 失败留痕带诊断摘要（§16.5：配置应用失败必记录）。
     let failed = &events_with(&page, "revision.apply_failed")[0];
     assert_eq!(failed["target_type"], "revision");
-    assert_eq!(failed["target_id"], "1");
+    assert_eq!(failed["target_id"], latest.to_string());
     let detail = failed["detail"].as_str().unwrap();
     assert!(detail.contains(&format!("\"network_id\":\"{network_id}\"")));
     assert!(detail.contains("error_summary"));

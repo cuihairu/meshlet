@@ -19,6 +19,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use meshlet_domain::{ConfigApplyBackend, ConfigRevision};
 use serde::Serialize;
+use std::sync::Arc;
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service::{self, ServiceError};
@@ -72,6 +73,20 @@ impl ConfigApplyBackend for UnconfiguredBackend {
                 .to_string(),
         )
     }
+}
+
+/// 构造一次应用/回滚 backend 的工厂。
+///
+/// 每次请求构造独立实例（领域 trait 是 `&mut self`），但**必须在网络级互斥内
+/// 调用**——§10.4 的「同一网络的配置修改串行化」由此保证：并发 apply 不会拿到
+/// 各自的后端实例交叉改写 WireGuard Peer / 路由 / NAT。生产用
+/// [`unconfigured_backend_factory`]；集成测试注入计数 backend，在 API 层验证
+/// 幂等与回滚边界（§10.3 验收）。
+pub type BackendFactory = Arc<dyn Fn() -> Box<dyn ConfigApplyBackend + Send> + Send + Sync>;
+
+/// 默认工厂：数据面未接入，显式失败。
+pub fn unconfigured_backend_factory() -> BackendFactory {
+    Arc::new(|| Box::new(UnconfiguredBackend))
 }
 
 /// 配置版本与应用状态路由（管理 API：会话认证 + 写请求 CSRF 头）。
@@ -144,7 +159,7 @@ pub async fn apply_revision_handler(
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
-    let mut backend = UnconfiguredBackend;
+    let mut backend = (state.apply_backend)();
     let applied = {
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
@@ -153,7 +168,7 @@ pub async fn apply_revision_handler(
             .apply(
                 &network_id_of(&network_id),
                 revision,
-                &mut backend,
+                backend.as_mut(),
                 service::now(),
             )
             .map_err(ServiceError::from_ledger)?
@@ -195,13 +210,13 @@ pub async fn rollback_revision_handler(
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
-    let mut backend = UnconfiguredBackend;
+    let mut backend = (state.apply_backend)();
     let rolled = {
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
         guard
             .ledger
-            .rollback(&network_id_of(&network_id), revision, &mut backend)
+            .rollback(&network_id_of(&network_id), revision, backend.as_mut())
             .map_err(ServiceError::from_ledger)?
     };
     // 回滚失败同样留痕（§16.5）：无 backend 的回滚停在 `rollback_pending`

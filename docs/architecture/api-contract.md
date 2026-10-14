@@ -49,7 +49,7 @@
 | GET | `/api/v1/networks/{network_id}/config-revisions` | 配置版本列表 🔒 |
 | GET | `/api/v1/networks/{network_id}/config-revisions/{revision}` | 版本详情（含 apply_status）🔒 |
 | POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/apply` | 应用指定版本到实际环境（响应即该版本视图）🔒 |
-| POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/rollback` | 回滚失败版本（仅删除/恢复 Meshlet 自有对象，ADR-007）🔒 |
+| POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/rollback` | 回滚失败版本（仅删除/恢复 Meshlet 自有对象，ADR-007；只允许回滚当前修订，被取代者 409，§10.4）🔒 |
 
 - 撤销设备语义（§11.5，已实现）：`POST .../devices/{device_id}/revoke`
   返回 `202` + `RevisionRef`（新修订号）；设备状态转 `revoked`（列表可见），
