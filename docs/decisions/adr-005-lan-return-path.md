@@ -26,7 +26,7 @@
 
 - 模式 A（双向路由）：保留真实源 IP，用户须能管理 LAN 路由器；
 - 模式 B（受控 SNAT）：兼容普通家庭网络，LAN 主机看到的来源是网关；控制台必须明示该限制；
-- Overlay 设备间通信**不做 SNAT**，保持原始源地址（§7.4）；仅进入真实 LAN 的流量按所选模式处理。
+- Overlay 设备间通信**不做 SNAT**，保持原始源地址（§7.4）；仅进入真实 LAN 的流量按所选模式处理。该纪律在计划层有结构性保证：`meshlet-network` 的 NAT 计划规则按**目的**前缀匹配，前缀只能是 alias 或真实 LAN 网段——目的落在 Overlay 内的流量匹配不到任何规则（`overlay_traffic_matches_no_rule_so_sources_stay_original` 单测断言）。
 
 ## 理由
 

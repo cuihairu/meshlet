@@ -187,6 +187,41 @@ mod tests {
     }
 
     #[test]
+    fn overlay_traffic_matches_no_rule_so_sources_stay_original() {
+        // §7.4：普通 Overlay 设备间通信保留原始源地址——禁止把整个 Overlay
+        // 网络无差别 SNAT 到 VPS 地址。这是计划层的结构性保证：规则按
+        // **目的**前缀匹配，前缀只能是 alias 或真实 LAN（target）网段；
+        // 目的落在 Overlay 内的流量匹配不到任何规则，原样通过。
+        let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
+        for mode in [TranslationMode::DnatOnly, TranslationMode::DnatSnat] {
+            let rules = alias_nat_rules(&mapping(mode));
+
+            // 没有任何规则的匹配前缀与 Overlay 网段重叠（不存在「整个
+            // Overlay 网络无差别 SNAT」的规则形状）。
+            for rule in &rules {
+                assert!(
+                    !overlay.overlaps(&rule.match_dest),
+                    "rule must not match overlay destinations: {rule:?}"
+                );
+            }
+            // Overlay 目的地址匹配不到任何规则。
+            for dest in ["10.240.0.5", "10.240.200.9"] {
+                let ip = dest.parse::<std::net::Ipv4Addr>().unwrap();
+                assert!(
+                    !rules.iter().any(|r| r.match_dest.contains(ip)),
+                    "overlay dest {dest} must match no NAT rule"
+                );
+            }
+            // 而 Alias 目的匹配得到规则——转换只针对 Alias 流量。
+            let alias_dest = "10.241.1.5".parse::<std::net::Ipv4Addr>().unwrap();
+            assert!(
+                rules.iter().any(|r| r.match_dest.contains(alias_dest)),
+                "alias destination must match a rule"
+            );
+        }
+    }
+
+    #[test]
     fn iptables_rendering_matches_the_plan() {
         // 计划与渲染共用同一结构：规则里出现什么，渲染就下什么。
         let gw: std::net::Ipv4Addr = "192.168.1.1".parse().unwrap();
