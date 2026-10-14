@@ -47,6 +47,8 @@ pub struct AppState {
     pub auth: AuthStore,
     pub agent_tokens: crate::agent::AgentTokenStore,
     pub api_tokens: crate::api_token::ApiTokenStore,
+    /// 审计日志（存档 §16.5）：与凭证同库。
+    pub audit: crate::audit::AuditStore,
     pub login_limiter: Arc<RateLimiter>,
     pub cookie_secure: bool,
 }
@@ -61,11 +63,14 @@ impl AppState {
         api_tokens: crate::api_token::ApiTokenStore,
         cookie_secure: bool,
     ) -> Self {
+        // 审计与凭证同库；克隆池句柄而非共享借用（下方 auth 会被移动进 Self）。
+        let audit = crate::audit::AuditStore::new(auth.pool().clone());
         Self {
             mesh,
             auth,
             agent_tokens,
             api_tokens,
+            audit,
             login_limiter: Arc::new(RateLimiter::new(LOGIN_MAX_ATTEMPTS, LOGIN_WINDOW)),
             cookie_secure,
         }
@@ -92,6 +97,11 @@ pub struct UserRecord {
 impl AuthStore {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    /// 池句柄（克隆后供审计存储与其他 store 共用同一库）。
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     pub async fn user_count(&self) -> Result<i64, sqlx::Error> {
@@ -413,6 +423,20 @@ impl FromRequestParts<SharedAppState> for CsrfHeader {
 // 端点
 // ---------------------------------------------------------------------------
 
+/// 审计留痕（§16.5）：复用 [`crate::audit::record_or_fail`]，失败映射本模块
+/// 错误（不留痕不放行）。
+async fn record_audit(
+    state: &SharedAppState,
+    actor: Option<&str>,
+    action: &str,
+    target_id: Option<&str>,
+    detail: Option<serde_json::Value>,
+) -> Result<(), AuthApiError> {
+    crate::audit::record_or_fail(state, actor, action, "user", target_id, detail)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialsRequest {
@@ -468,6 +492,14 @@ pub async fn bootstrap_handler(
         .map_err(|e| AuthApiError::Internal(e.to_string()))?;
 
     let headers = open_session(&state, &user_id).await?;
+    record_audit(
+        &state,
+        Some(&user_id.0),
+        "user.bootstrap",
+        Some(&user_id.0),
+        None,
+    )
+    .await?;
     Ok((
         StatusCode::CREATED,
         headers,
@@ -498,16 +530,42 @@ pub async fn login_handler(
     let Some(record) = record else {
         // 恒时：对固定哈希跑一次校验再拒绝。
         let _ = meshlet_domain::auth::verify_password(&req.password, DUMMY_HASH);
+        // 失败也要留痕（§16.5：登录失败必记录）；email 非秘密字段，有助
+        // 暴破诊断。不记录密码本身。
+        record_audit(
+            &state,
+            None,
+            "user.login_failed",
+            None,
+            Some(serde_json::json!({ "email": req.email, "reason": "unknown_user" })),
+        )
+        .await?;
         return Err(AuthApiError::Unauthorized);
     };
     let user_id = record.id.clone();
     let email = record.email;
     if !meshlet_domain::auth::verify_password(&req.password, &record.password_hash) {
+        record_audit(
+            &state,
+            None,
+            "user.login_failed",
+            None,
+            Some(serde_json::json!({ "email": email, "reason": "bad_password" })),
+        )
+        .await?;
         return Err(AuthApiError::Unauthorized);
     }
     state.login_limiter.reset(&key);
 
     let headers = open_session(&state, &user_id).await?;
+    record_audit(
+        &state,
+        Some(&user_id.0),
+        "user.login",
+        Some(&user_id.0),
+        None,
+    )
+    .await?;
     Ok((
         StatusCode::OK,
         headers,
@@ -526,8 +584,26 @@ pub async fn logout_handler(
 ) -> Response {
     if let Some(token) = session_token_from_headers(req.headers()) {
         let now: Timestamp = service::now();
+        // 先取属主再撤销（撤销后查不到了），登出留痕归属到人。
+        let actor = state
+            .auth
+            .validate_session(&token, &now)
+            .await
+            .ok()
+            .flatten();
         if let Err(e) = state.auth.revoke_session(&token, &now).await {
             return AuthApiError::Internal(e.to_string()).into_response();
+        }
+        if let Err(e) = record_audit(
+            &state,
+            actor.as_ref().map(|u| u.0.as_str()),
+            "user.logout",
+            actor.as_ref().map(|u| u.0.as_str()),
+            None,
+        )
+        .await
+        {
+            return e.into_response();
         }
     }
     (

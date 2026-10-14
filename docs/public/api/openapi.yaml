@@ -134,6 +134,27 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /audit:
+    get:
+      tags: [auth]
+      summary: Audit events (newest first, paginated)
+      description: >
+        Sensitive operations trail (§16.5): login success/failure, bootstrap,
+        logout, network/invite/route/device/API-token mutations, config apply
+        and rollback (failures included). Never contains passwords, private
+        keys, invite tokens, or other long-lived secret material — only ids,
+        names, scopes, and structured metadata. Read-only: no CSRF header
+        required.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /networks:
     get:
       tags: [networks]
@@ -688,6 +709,37 @@ components:
         created_at: { type: string, format: date-time }
         last_used_at: { type: string, format: date-time, nullable: true, description: Throttled to 60s resolution }
         revoked_at: { type: string, format: date-time, nullable: true }
+    AuditEvent:
+      type: object
+      description: >
+        One sensitive-operation record. actor_id is null for events without a
+        user actor (device enrollment via invite token, failed logins before
+        authentication succeeds). detail is a JSON object serialized to text;
+        by contract it never carries secret material.
+      required: [id, created_at, action, target_type]
+      properties:
+        id: { type: integer }
+        created_at: { type: string, format: date-time }
+        actor_id: { type: string, nullable: true }
+        action:
+          type: string
+          description: >
+            Dotted verb: user.bootstrap / user.login / user.login_failed /
+            user.logout / network.created / invite.created / invite.revoked /
+            route.created / route.deleted / device.enrolled / device.revoked /
+            api_token.created / api_token.revoked / revision.applied /
+            revision.apply_failed / revision.rolled_back / revision.rollback_failed
+        target_type: { type: string }
+        target_id: { type: string, nullable: true }
+        detail: { type: string, nullable: true, description: JSON-encoded structured metadata }
+    AuditPage:
+      type: object
+      required: [total, events]
+      properties:
+        total: { type: integer }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEvent" }
     Network:
       type: object
       properties:

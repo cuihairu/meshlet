@@ -140,39 +140,95 @@ pub async fn get_revision_handler(
 /// 但状态为 `failed` 且 `error_summary` 说明原因（失败可见，不伪装成功）。
 pub async fn apply_revision_handler(
     State(state): State<SharedAppState>,
-    WriteUser(_user): WriteUser,
+    WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
     let mut backend = UnconfiguredBackend;
-    let mut guard = state.mesh.lock().unwrap();
-    service::require_network(&guard, &network_id)?;
-    let applied = guard
-        .ledger
-        .apply(
-            &network_id_of(&network_id),
-            revision,
-            &mut backend,
-            service::now(),
+    let applied = {
+        let mut guard = state.mesh.lock().unwrap();
+        service::require_network(&guard, &network_id)?;
+        guard
+            .ledger
+            .apply(
+                &network_id_of(&network_id),
+                revision,
+                &mut backend,
+                service::now(),
+            )
+            .map_err(ServiceError::from_ledger)?
+    };
+    // 应用失败必留痕（§16.5）；结果以 apply_status 为准（`applied` 即成功，
+    // 其余一律按失败留痕），不凭响应码判断。
+    let view = to_revision_view(&applied);
+    let (action, detail) = if view.apply_status != "applied" {
+        (
+            "revision.apply_failed",
+            serde_json::json!({
+                "network_id": network_id,
+                "error_summary": view.error_summary,
+            }),
         )
-        .map_err(ServiceError::from_ledger)?;
-    Ok(Json(to_revision_view(&applied)))
+    } else {
+        (
+            "revision.applied",
+            serde_json::json!({ "network_id": network_id }),
+        )
+    };
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        action,
+        "revision",
+        Some(&revision.to_string()),
+        Some(detail),
+    )
+    .await?;
+    Ok(Json(view))
 }
 
 /// `POST .../config-revisions/{revision}/rollback`：回滚一个 `Failed` 修订。
 /// 回滚只允许动 Meshlet 自有对象（ADR-007），不得清空系统路由（§10.3）。
 pub async fn rollback_revision_handler(
     State(state): State<SharedAppState>,
-    WriteUser(_user): WriteUser,
+    WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
     let mut backend = UnconfiguredBackend;
-    let mut guard = state.mesh.lock().unwrap();
-    service::require_network(&guard, &network_id)?;
-    let rolled = guard
-        .ledger
-        .rollback(&network_id_of(&network_id), revision, &mut backend)
-        .map_err(ServiceError::from_ledger)?;
-    Ok(Json(to_revision_view(&rolled)))
+    let rolled = {
+        let mut guard = state.mesh.lock().unwrap();
+        service::require_network(&guard, &network_id)?;
+        guard
+            .ledger
+            .rollback(&network_id_of(&network_id), revision, &mut backend)
+            .map_err(ServiceError::from_ledger)?
+    };
+    // 回滚失败同样留痕（§16.5）：无 backend 的回滚停在 `rollback_pending`
+    //（明确未完成）——除 `rolled_back` 外一律按失败留痕。
+    let view = to_revision_view(&rolled);
+    let (action, detail) = if view.apply_status != "rolled_back" {
+        (
+            "revision.rollback_failed",
+            serde_json::json!({
+                "network_id": network_id,
+                "error_summary": view.error_summary,
+            }),
+        )
+    } else {
+        (
+            "revision.rolled_back",
+            serde_json::json!({ "network_id": network_id }),
+        )
+    };
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        action,
+        "revision",
+        Some(&revision.to_string()),
+        Some(detail),
+    )
+    .await?;
+    Ok(Json(view))
 }

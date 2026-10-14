@@ -313,6 +313,17 @@ pub async fn create_token_handler(
         .issue(&user_id, &name, scopes, service::now())
         .await
         .map_err(|e| AuthApiError::Internal(e.to_string()))?;
+    // 只留痕元数据（id/名称/scope）；原始 Token 不进审计（§16.5）。
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "api_token.created",
+        "api_token",
+        Some(&record.id),
+        Some(serde_json::json!({ "name": name, "scopes": scopes.as_str() })),
+    )
+    .await
+    .map_err(|e| AuthApiError::Internal(e.to_string()))?;
     Ok((
         StatusCode::CREATED,
         Json(ApiTokenCreated {
@@ -351,6 +362,16 @@ pub async fn revoke_token_handler(
         .await
         .map_err(|e| AuthApiError::Internal(e.to_string()))?;
     if revoked {
+        crate::audit::record_or_fail(
+            &state,
+            Some(&user_id.0),
+            "api_token.revoked",
+            "api_token",
+            Some(&token_id),
+            None,
+        )
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AuthApiError::NotFound(format!(

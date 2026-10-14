@@ -11,6 +11,7 @@
 
 pub mod agent;
 pub mod api_token;
+pub mod audit;
 pub mod auth;
 pub mod revision;
 pub mod service;
@@ -49,12 +50,24 @@ async fn status_handler() -> Json<SystemStatus> {
 
 async fn create_network_handler(
     State(state): State<SharedAppState>,
-    WriteUser(_user): WriteUser,
+    WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     Json(req): Json<service::CreateNetworkRequest>,
 ) -> Result<(StatusCode, Json<service::NetworkView>), service::ServiceError> {
-    let mut guard = state.mesh.lock().unwrap();
-    Ok((StatusCode::CREATED, Json(create_network(&mut guard, req)?)))
+    let view = {
+        let mut guard = state.mesh.lock().unwrap();
+        create_network(&mut guard, req)?
+    };
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "network.created",
+        "network",
+        Some(&view.id),
+        None,
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(view)))
 }
 
 async fn list_networks_handler(
@@ -67,26 +80,50 @@ async fn list_networks_handler(
 
 async fn create_invite_handler(
     State(state): State<SharedAppState>,
-    WriteUser(_user): WriteUser,
+    WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     axum::extract::Path(network_id): axum::extract::Path<String>,
     Json(req): Json<service::CreateInviteRequest>,
 ) -> Result<(StatusCode, Json<service::CreateInviteResponse>), service::ServiceError> {
-    let mut guard = state.mesh.lock().unwrap();
-    Ok((
-        StatusCode::CREATED,
-        Json(create_invite(&mut guard, &network_id, req)?),
-    ))
+    let resp = {
+        let mut guard = state.mesh.lock().unwrap();
+        create_invite(&mut guard, &network_id, req)?
+    };
+    // 只留痕元数据（过期/次数上限）；原始邀请 Token 不进审计（§16.5）。
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "invite.created",
+        "invite",
+        Some(&resp.invite_id),
+        Some(serde_json::json!({
+            "network_id": network_id,
+            "expires_at": resp.expires_at,
+        })),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(resp)))
 }
 
 async fn revoke_invite_handler(
     State(state): State<SharedAppState>,
-    WriteUser(_user): WriteUser,
+    WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     axum::extract::Path((network_id, invite_id)): axum::extract::Path<(String, String)>,
 ) -> Result<StatusCode, service::ServiceError> {
-    let mut guard = state.mesh.lock().unwrap();
-    revoke_invite(&mut guard, &network_id, &invite_id)?;
+    {
+        let mut guard = state.mesh.lock().unwrap();
+        revoke_invite(&mut guard, &network_id, &invite_id)?;
+    }
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "invite.revoked",
+        "invite",
+        Some(&invite_id),
+        Some(serde_json::json!({ "network_id": network_id })),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -101,16 +138,25 @@ async fn list_devices_handler(
 
 async fn create_route_handler(
     State(state): State<SharedAppState>,
-    WriteUser(_user): WriteUser,
+    WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     axum::extract::Path(network_id): axum::extract::Path<String>,
     Json(req): Json<service::CreateRouteRequest>,
 ) -> Result<(StatusCode, Json<service::RouteView>), service::ServiceError> {
-    let mut guard = state.mesh.lock().unwrap();
-    Ok((
-        StatusCode::CREATED,
-        Json(create_route(&mut guard, &network_id, req)?),
-    ))
+    let view = {
+        let mut guard = state.mesh.lock().unwrap();
+        create_route(&mut guard, &network_id, req)?
+    };
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "route.created",
+        "route",
+        Some(&view.id),
+        Some(serde_json::json!({ "network_id": network_id })),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(view)))
 }
 
 async fn list_routes_handler(
@@ -133,31 +179,54 @@ async fn get_route_handler(
 
 async fn delete_route_handler(
     State(state): State<SharedAppState>,
-    WriteUser(_user): WriteUser,
+    WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     axum::extract::Path((network_id, route_id)): axum::extract::Path<(String, String)>,
 ) -> Result<StatusCode, service::ServiceError> {
-    let mut guard = state.mesh.lock().unwrap();
-    delete_route(&mut guard, &network_id, &route_id)?;
+    {
+        let mut guard = state.mesh.lock().unwrap();
+        delete_route(&mut guard, &network_id, &route_id)?;
+    }
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "route.deleted",
+        "route",
+        Some(&route_id),
+        Some(serde_json::json!({ "network_id": network_id })),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn revoke_device_handler(
     State(state): State<SharedAppState>,
-    WriteUser(_user): WriteUser,
+    WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     axum::extract::Path((network_id, device_id)): axum::extract::Path<(String, String)>,
 ) -> Result<(StatusCode, Json<service::RevisionRef>), service::ServiceError> {
-    // 先完成撤销 + 修订簿记（内存操作），再在锁外失效 agent 凭证。
+    // 先完成撤销 + 修订簿记（内存操作），再在锁外失效 agent 凭证并留痕。
     let rev = {
         let mut guard = state.mesh.lock().unwrap();
         revoke_device(&mut guard, &network_id, &device_id)?
     };
     state
         .agent_tokens
-        .revoke_for_device(&meshlet_domain::DeviceId(device_id), &crate::service::now())
+        .revoke_for_device(
+            &meshlet_domain::DeviceId(device_id.clone()),
+            &crate::service::now(),
+        )
         .await
         .map_err(|e| service::ServiceError::Internal(e.to_string()))?;
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "device.revoked",
+        "device",
+        Some(&device_id),
+        Some(serde_json::json!({ "network_id": network_id })),
+    )
+    .await?;
     Ok((StatusCode::ACCEPTED, Json(rev)))
 }
 
@@ -177,6 +246,17 @@ async fn enroll_handler(
         .await
         .map_err(|e| service::ServiceError::Internal(e.to_string()))?;
     resp.agent_token = raw;
+    // 加入者经邀请 Token 而来，无用户 actor（actor=None）；agent Token 原始
+    // 材料不进审计（§16.5）。
+    crate::audit::record_or_fail(
+        &state,
+        None,
+        "device.enrolled",
+        "device",
+        Some(&resp.device_id),
+        Some(serde_json::json!({ "network_id": resp.network_id })),
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
@@ -184,6 +264,7 @@ async fn enroll_handler(
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
         .merge(api_token::routes())
+        .merge(audit::routes())
         .merge(revision::routes())
         .route("/api/v1/system/status", get(status_handler))
         .route("/api/v1/enroll", post(enroll_handler))
