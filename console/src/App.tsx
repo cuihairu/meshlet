@@ -1069,7 +1069,7 @@ function DiagnosticsSection({ networkId }: { networkId: string }) {
         </button>
       </h3>
       <p className="muted">
-        12 checks across fault layers. <strong>unavailable</strong> means the
+        13 checks across fault layers. <strong>unavailable</strong> means the
         control plane cannot observe a host-local fact — it is not a pass; run
         the given command on the device itself.
       </p>

@@ -39,4 +39,4 @@
 - Dashboard 不只给绿色图标，要说明数据来源与更新时间（[§12.2](/review/chatgpt-2026-10-13#_12-2-dashboard)）；
 - 设备在线状态结合隧道握手 + Agent 心跳 + 状态上报判断；**"最近有握手"≠"所有网络功能正常"**（[§12.4](/review/chatgpt-2026-10-13#_12-4-devices-页面)）；
 - 删除 Alias 必须同步清理路由与 NAT 规则（[§12.6](/review/chatgpt-2026-10-13#_12-6-aliases-页面)）；
-- Diagnostics 至少覆盖 12 项检查（API 可达、接口存在、Peer 配置、握手、Overlay 路由、IP forwarding、防火墙、网关在线、Route 发布、Alias 冲突、NAT 生效、版本一致）；第一版先给准确诊断与建议，不做自动修复（[§12.7](/review/chatgpt-2026-10-13#_12-7-diagnostics-页面)）。
+- Diagnostics 至少覆盖 12 项检查（API 可达、接口存在、Peer 配置、握手、Overlay 路由、IP forwarding、防火墙、网关在线、Route 发布、Alias 冲突、NAT 生效、版本一致）；第一版先给准确诊断与建议，不做自动修复（[§12.7](/review/chatgpt-2026-10-13#_12-7-diagnostics-页面)）。实现另加第 ⑬ 项 `mtu_planned`（§7.5 计划隧道 MTU：显式配置 pass / 未配置 warning + `ping -M do` 实测建议）。

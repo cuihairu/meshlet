@@ -604,7 +604,7 @@ paths:
     parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
     get:
       tags: [diagnostics]
-      summary: Latest diagnostics snapshot (12 checks, §12.7)
+      summary: Latest diagnostics snapshot (13 checks, §12.7)
       description: >
         Returns the most recent persisted diagnostics run for the network —
         the same JSON a POST produced, not a recompute. 404 when the network
@@ -621,7 +621,7 @@ paths:
       tags: [diagnostics]
       summary: Run diagnostics now and persist the snapshot
       description: >
-        Computes the 12 checks, stores one snapshot row (diagnostics_runs) and
+        Computes the 13 checks, stores one snapshot row (diagnostics_runs) and
         returns the report. Check statuses use a closed vocabulary: pass /
         fail / warning / unavailable / not_applicable. unavailable is honest
         ignorance — the control plane cannot observe host-local facts
@@ -629,7 +629,11 @@ paths:
         so those five checks carry an actionable command to run on the device
         instead of a green light. Registration (server_peer_configured) never
         proves the tunnel: handshake freshness (recent_handshake) is the only
-        tunnel-level evidence (§12.4). Records a diagnostics.run audit event.
+        tunnel-level evidence (§12.4). The MTU check (mtu_planned) reports the
+        planned tunnel_mtu from the server config: explicit value = pass,
+        unset = warning (devices fall back to the WireGuard default 1420,
+        which can blackhole large packets on small-MTU underlays, §7.5).
+        Records a diagnostics.run audit event.
       responses:
         "200":
           description: OK
@@ -659,7 +663,7 @@ paths:
     parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
     get:
       tags: [status]
-      summary: Latest diagnostics results (12 checks, section 12.7)
+      summary: Latest diagnostics results (13 checks, section 12.7)
       responses:
         "200": { description: OK }
     post:
@@ -1048,8 +1052,8 @@ components:
         checked_at: { type: string, format: date-time, description: When this run was computed }
         checks:
           type: array
-          minItems: 12
-          maxItems: 12
+          minItems: 13
+          maxItems: 13
           items: { $ref: "#/components/schemas/DiagnosticCheck" }
     DiagnosticCheck:
       type: object
@@ -1070,7 +1074,8 @@ components:
             - alias_prefix_conflict
             - nat_rules_effective
             - config_revision_consistent
-          description: Stable check id (§12.7 numbering, order fixed by the server)
+            - mtu_planned
+          description: Stable check id (§12.7 numbering, order fixed by the server; mtu_planned appended last, §7.5)
         name: { type: string, description: Human-readable check name }
         layer:
           type: string

@@ -1,4 +1,4 @@
-//! 网络诊断（[存档 §12.7](../../docs/review/chatgpt-2026-10-13.md)）：12 项
+//! 网络诊断（[存档 §12.7](../../docs/review/chatgpt-2026-10-13.md)）：13 项
 //! 检查，按故障层归类（隧道/路由/转发/Alias + 控制面），第一版只诊断不修复。
 //!
 //! 判读纪律（§17.2 组合判读 + 本单硬要求）：
@@ -41,7 +41,7 @@ pub mod layer {
 /// 反序列化；词表由下方构造函数与 `layer` 常量钉住）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticCheck {
-    /// 稳定标识（契约字段，控制台据此排序/对位 §12.7 十二项）。
+    /// 稳定标识（契约字段，控制台据此排序/对位 §12.7 检查项）。
     pub id: String,
     pub name: String,
     /// `control_plane` / `tunnel` / `routing` / `forwarding` / `alias`。
@@ -118,16 +118,18 @@ fn check(
 }
 
 // ---------------------------------------------------------------------------
-// 12 项检查（§12.7 顺序）
+// 13 项检查（§12.7 顺序）
 // ---------------------------------------------------------------------------
 
-/// 计算一个网络的 12 项检查。`now` 注入便于确定性测试；`aliases` 来自
+/// 计算一个网络的 13 项检查。`now` 注入便于确定性测试；`aliases` 来自
 /// `alias_mappings` 表（§12.6 服务写路径产生；正常数据创建时已过同一套
-/// 冲突检查，此处兜底防脏库/手改库）。
+/// 冲突检查，此处兜底防脏库/手改库）；`tunnel_mtu` 来自 server 配置
+/// （§7.5，⑬ 的输入）。
 pub fn run_checks(
     mesh: &service::MeshState,
     network_id: &str,
     aliases: &[AliasMapping],
+    tunnel_mtu: Option<u32>,
     now: &str,
 ) -> DiagnosticsReport {
     let overlay = mesh
@@ -167,6 +169,7 @@ pub fn run_checks(
             check_alias_conflict(aliases, &routes, &overlay),
             check_nat_rules(),
             check_revision_consistent(latest.as_ref()),
+            check_mtu_planned(tunnel_mtu, &active),
         ],
     }
 }
@@ -594,6 +597,40 @@ fn check_revision_consistent(latest: Option<&ConfigRevision>) -> DiagnosticCheck
     )
 }
 
+/// ⑬ 计划隧道 MTU（隧道）：控制面只掌握**计划**值——实际接口 MTU 与路径 MTU
+/// 仍需设备侧观测（那部分不假装）。未显式配置时按 WireGuard 默认 1420 解释
+/// 大包/分片风险（§7.5：PPPoE/4G 底层会黑洞大包）。
+fn check_mtu_planned(tunnel_mtu: Option<u32>, active: &[&Device]) -> DiagnosticCheck {
+    if active.is_empty() {
+        return not_applicable(
+            "mtu_planned",
+            "Tunnel MTU planned",
+            layer::TUNNEL,
+            "no active devices in this network — no tunnel to size".into(),
+        );
+    }
+    match tunnel_mtu {
+        Some(mtu) => check(
+            "mtu_planned",
+            "Tunnel MTU planned",
+            layer::TUNNEL,
+            "pass",
+            format!(
+                "tunnel_mtu = {mtu} is explicitly configured (planned value; WireGuard adds ~80B overhead per packet, keep mtu + overhead <= underlay MTU)"
+            ),
+            String::new(),
+        ),
+        None => check(
+            "mtu_planned",
+            "Tunnel MTU planned",
+            layer::TUNNEL,
+            "warning",
+            "tunnel_mtu is not configured — devices fall back to the WireGuard default 1420, which blackholes large packets on PPPoE/4G underlays unless the path is verified".into(),
+            "set tunnel_mtu in the server config for a deliberate value, or verify the path from a device: `ping -M do -s 1392 <overlay-peer-ip>` (1420-28) — failures mean the effective MTU is smaller and packets fragment or vanish (§7.5)".into(),
+        ),
+    }
+}
+
 fn desired_status(s: DesiredStateStatus) -> &'static str {
     match s {
         DesiredStateStatus::Pending => "pending",
@@ -634,7 +671,7 @@ pub fn routes() -> Router<SharedAppState> {
     )
 }
 
-/// `POST /api/v1/networks/{network_id}/diagnostics`：计算 12 项检查，落一行
+/// `POST /api/v1/networks/{network_id}/diagnostics`：计算 13 项检查，落一行
 /// 快照并返回。留审计事件（显式操作者动作，便于事后追溯「谁在何时诊断过」）。
 pub async fn run_diagnostics_handler(
     State(state): State<SharedAppState>,
@@ -644,14 +681,14 @@ pub async fn run_diagnostics_handler(
 ) -> Result<Json<DiagnosticsReport>, ServiceError> {
     let _persist = state.persist.lock().await;
     let now = service::now();
-    // alias 行（§12.7 第 10 项的输入）来自 DB：Phase 4 无服务写路径，通常为空。
+    // alias 行（§12.7 第 10 项的输入）来自 DB（§12.6 服务写路径产生）。
     let aliases = crate::persist::alias_rows(state.auth.pool(), &network_id)
         .await
         .map_err(crate::persist::internal)?;
     let report = {
         let guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
-        run_checks(&guard, &network_id, &aliases, &now)
+        run_checks(&guard, &network_id, &aliases, state.tunnel_mtu, &now)
     };
     let json = serde_json::to_string(&report)
         .map_err(|e| ServiceError::Internal(format!("serialize diagnostics report: {e}")))?;

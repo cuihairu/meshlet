@@ -95,7 +95,7 @@ export interface AliasMapping {
   apply_status: string;
 }
 
-/** One of the 12 network diagnostics checks (§12.7). */
+/** One of the 13 network diagnostics checks (§12.7). */
 export interface DiagnosticCheck {
   id: string;
   name: string;
@@ -219,7 +219,7 @@ export const api = {
   /** Latest persisted diagnostics snapshot; 404 when never run. */
   getDiagnostics: (networkId: string) =>
     request<DiagnosticsReport>('GET', `/networks/${networkId}/diagnostics`),
-  /** Run the 12 checks now and persist the snapshot. */
+  /** Run the 13 checks now and persist the snapshot. */
   runDiagnostics: (networkId: string) =>
     request<DiagnosticsReport>('POST', `/networks/${networkId}/diagnostics`, {}),
 };

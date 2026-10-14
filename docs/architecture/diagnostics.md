@@ -5,7 +5,7 @@
 
 ## 定位：只诊断，不修复
 
-12 项检查按**故障层**归类（隧道 / 路由 / 转发 / Alias / 控制面），输出**准确诊断结果 +
+13 项检查按**故障层**归类（隧道 / 路由 / 转发 / Alias / 控制面），输出**准确诊断结果 +
 可执行建议**。第一版**不做任何自动修复**——每条 `fail` / `warning` / `unavailable`
 都给出一句
 可执行的下一步（多为在目标机器上跑的命令），由运维照做。
@@ -21,7 +21,7 @@
 - **记录 ≠ 发布**：路由/修订的 pass 只表示控制面口径（已记录 + 最新修订已应用），
   不证明网关内核装了路由（那是 ⑤⑦ 的本机读数）。
 
-## 十二项检查
+## 十三项检查
 
 顺序与故障层为控制台与测试共用的契约。
 
@@ -39,9 +39,14 @@
 | ⑩ | `alias_prefix_conflict` | Alias | 域层冲突检测（overlay 重叠 / alias 互叠 / 绑定路由网段不一致） | 无冲突 `pass`；有冲突 `fail` 并列出对端（ADR-006） |
 | ⑪ | `nat_rules_effective` | Alias | 网关机 NAT 规则存在且计数器增长 | 恒 `unavailable` → `iptables -t nat -L -n -v` |
 | ⑫ | `config_revision_consistent` | 控制面 | 最新未回滚修订状态 = 期望/实际一致性 | `applied`→`pass`；`failed`→`fail`（带 error_summary）；否则 `warning` |
+| ⑬ | `mtu_planned` | 隧道 | server 配置的计划隧道 MTU（§7.5，配置面事实） | 显式配置→`pass`（detail 点名计划值）；未配置→`warning`（默认 1420 + `ping -M do -s 1392` 实测建议） |
 
-无对象的检查如实报 `not_applicable`（无设备→③④、无路由→⑧⑨、无 Alias 映射→⑩、无
+无对象的检查如实报 `not_applicable`（无设备→③④⑬、无路由→⑧⑨、无 Alias 映射→⑩、无
 修订→⑫）——**如实区分于 `pass`**。
+
+⑬ 只报告**计划值**（控制面知道的配置事实），不假装观测到实际接口/路径 MTU：未显式
+配置时设备按 WireGuard 默认 1420 组接口，PPPoE/4G 等小 MTU 底层会出现大包黑洞——
+建议命令 `ping -M do -s 1392 <overlay-peer-ip>`（1420−28）在设备侧实测（§7.5）。
 
 ②⑤⑥⑦⑪ 五项恒 `unavailable`：本机无 root/CAP_NET_ADMIN，控制面读不到这些主机本地
 读数，agent 也只上报 `last_handshake_at`。这是**设计上的诚实**，不是缺陷：页面会把
@@ -52,7 +57,7 @@
 | 端点 | 行为 |
 |---|---|
 | `GET /api/v1/networks/{id}/diagnostics` | 返回**最近一次**运行的报告（`DiagnosticsReport` JSON）；从未运行 → `404 not_found`（`diagnostics_not_run`，消息点名 POST 触发方式） |
-| `POST /api/v1/networks/{id}/diagnostics` 🔒 | 计算 12 项检查 → 落一行快照（`diagnostics_runs`）→ 返回报告；记审计 `diagnostics.run`（detail 含 checks/fail/unavailable 计数） |
+| `POST /api/v1/networks/{id}/diagnostics` 🔒 | 计算 13 项检查 → 落一行快照（`diagnostics_runs`）→ 返回报告；记审计 `diagnostics.run`（detail 含 checks/fail/unavailable 计数） |
 
 - 门禁同其余管理端点：会话认证；POST 另需 `write` 权限 + CSRF 头；
 - **快照语义**：`GET` 读的是上次 `POST` 落库的同份 JSON（逐字节相同，不是现算）——
@@ -77,7 +82,8 @@ Forwarding / Alias / Control plane），状态词用彩色 pill，顶部一行�
 2. ④ 与 ⑧：隧道与路由层的分水岭——注册在册但握手过期/缺失，或网关只有
    tunnel_only，分别对应「接口/密钥/agent 进程」三类不同故障；
 3. ⑨：路由层是否在册且已发布；
-4. ②⑤⑥⑦⑪：**去机器上**按建议逐项执行（控制面只能给命令，读数必须本机取）。
+4. ⑬：握手新鲜但大包传输卡死（小包通、文件传不动）先查 MTU 计划值与实测建议（§7.5）；
+5. ②⑤⑥⑦⑪：**去机器上**按建议逐项执行（控制面只能给命令，读数必须本机取）。
 
 交叉阅读：§12.4（presence 判读）、§10.1（DB 写入 ≠ 生效）、§17.2（组合判读纪律）、
 [API 契约](../architecture/api-contract.md)。

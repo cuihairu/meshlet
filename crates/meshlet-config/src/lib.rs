@@ -15,9 +15,17 @@ pub enum ConfigError {
     InvalidOverlayCidr(String),
     #[error("invalid server url {0:?} (expected http(s)://host)")]
     InvalidServerUrl(String),
+    #[error("invalid tunnel_mtu {0} (1280..=65535 required: below 1280 breaks IPv6-in-tunnel and common TLS paths, §7.5)")]
+    InvalidTunnelMtu(u32),
     #[error("missing required field: {0}")]
     MissingField(String),
 }
+
+/// 隧道 MTU 的合理下界：1280 是 IPv6 最小 MTU——低于它的隧道承载不了
+/// IPv6-in-tunnel 与绝大多数大包路径（存档 §7.5「避免明显不合理的 MTU」）。
+pub const MIN_TUNNEL_MTU: u32 = 1280;
+/// 内核接口 MTU 上限。
+pub const MAX_TUNNEL_MTU: u32 = 65535;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RawServerConfig {
@@ -29,6 +37,7 @@ struct RawServerConfig {
     presence_agent_window_secs: Option<u64>,
     presence_handshake_window_secs: Option<u64>,
     backup: Option<RawBackupConfig>,
+    tunnel_mtu: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -76,6 +85,9 @@ pub struct ServerConfig {
     pub presence_handshake_window_secs: u64,
     /// 备份（存档 §17.4）：默认全关。
     pub backup: BackupConfig,
+    /// 计划隧道 MTU（存档 §7.5「MTU 可配置」）：`None` = 未显式配置，agent
+    /// 按 WireGuard 默认 1420 组接口。诊断（§12.7）据此解释大包/分片问题。
+    pub tunnel_mtu: Option<u32>,
 }
 
 impl Default for ServerConfig {
@@ -89,6 +101,7 @@ impl Default for ServerConfig {
             presence_agent_window_secs: 300,
             presence_handshake_window_secs: 120,
             backup: BackupConfig::default(),
+            tunnel_mtu: None,
         }
     }
 }
@@ -115,6 +128,12 @@ impl ServerConfig {
             },
             None => default.backup,
         };
+        let tunnel_mtu = match raw.tunnel_mtu {
+            Some(mtu) if !(MIN_TUNNEL_MTU..=MAX_TUNNEL_MTU).contains(&mtu) => {
+                return Err(ConfigError::InvalidTunnelMtu(mtu));
+            }
+            other => other,
+        };
         Ok(Self {
             bind: raw.bind.unwrap_or(default.bind),
             database_path: raw.database_path.unwrap_or(default.database_path),
@@ -128,6 +147,7 @@ impl ServerConfig {
                 .presence_handshake_window_secs
                 .unwrap_or(default.presence_handshake_window_secs),
             backup,
+            tunnel_mtu,
         })
     }
 }
@@ -230,6 +250,31 @@ overlay_cidr = "172.30.0.0/16"
         assert!(matches!(err, ConfigError::InvalidOverlayCidr(_)));
         let err = ServerConfig::from_toml("overlay_cidr = \"not-a-cidr\"").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidOverlayCidr(_)));
+    }
+
+    #[test]
+    fn tunnel_mtu_defaults_none_and_parses_with_bounds() {
+        // §7.5「MTU 可配置」：默认未配置（诊断按 WireGuard 默认 1420 解释）。
+        assert_eq!(ServerConfig::default().tunnel_mtu, None);
+        let c = ServerConfig::from_toml("tunnel_mtu = 1380").unwrap();
+        assert_eq!(c.tunnel_mtu, Some(1380));
+        // 边界：1280（IPv6 最小 MTU）与 65535 合法；之下/之上明显不合理，拒绝。
+        assert_eq!(
+            ServerConfig::from_toml("tunnel_mtu = 1280")
+                .unwrap()
+                .tunnel_mtu,
+            Some(1280)
+        );
+        assert_eq!(
+            ServerConfig::from_toml("tunnel_mtu = 65535")
+                .unwrap()
+                .tunnel_mtu,
+            Some(65535)
+        );
+        for bad in [1279, 65536] {
+            let err = ServerConfig::from_toml(&format!("tunnel_mtu = {bad}")).unwrap_err();
+            assert!(matches!(err, ConfigError::InvalidTunnelMtu(_)), "{bad}");
+        }
     }
 
     #[test]

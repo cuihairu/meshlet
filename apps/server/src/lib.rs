@@ -9,7 +9,7 @@
 //!   `WriteUser` + `CsrfHeader`）：`/auth/tokens*`、`/networks*`、
 //!   `/networks/{id}/invites*`、`/networks/{id}/devices`、`/networks/{id}/revisions*`、
 //!   `/networks/{id}/routes*`、`/networks/{id}/aliases*`（§12.6，删除即整单元清理）、
-//!   `/networks/{id}/diagnostics`（§12.7 十二项，POST 触发、GET 读最近快照）、
+//!   `/networks/{id}/diagnostics`（§12.7 十三项，POST 触发、GET 读最近快照）、
 //!   `/system/backup`（§17.4，目录未配置时 503）。
 
 pub mod agent;

@@ -1,7 +1,7 @@
-//! 集成测试：网络诊断 12 项检查（[存档 §12.7](../../docs/review/chatgpt-2026-10-13.md)）。
+//! 集成测试：网络诊断 13 项检查（[存档 §12.7](../../docs/review/chatgpt-2026-10-13.md)）。
 //!
 //! 1. 端点门禁：GET 需会话，POST 需会话 + CSRF；未知网络 404；
-//! 2. 十二项齐全、顺序固定、按故障层归类（隧道/路由/转发/Alias + 控制面）；
+//! 2. 十三项齐全、顺序固定、按故障层归类（隧道/路由/转发/Alias + 控制面）；
 //! 3. **不假绿**：控制面观测不到的本机检查（WireGuard 接口/内核路由/IP
 //!    forwarding/防火墙/NAT）恒 `unavailable` 并带可执行建议；
 //! 4. **控制面在册 ≠ 隧道正常**：设备已注册（③ pass）同时握手缺失（④ fail）
@@ -23,8 +23,8 @@ const EMAIL: &str = "admin@test.local";
 const PASSWORD: &str = "bootstrap-password-123";
 const OVERLAY: &str = "10.240.0.0/16";
 
-/// §12.7 十二项的固定顺序与故障层。
-const EXPECTED: [(&str, &str); 12] = [
+/// §12.7 十三项的固定顺序与故障层。
+const EXPECTED: [(&str, &str); 13] = [
     ("api_reachable", "control_plane"),
     ("wg_interface_exists", "tunnel"),
     ("server_peer_configured", "tunnel"),
@@ -37,6 +37,7 @@ const EXPECTED: [(&str, &str); 12] = [
     ("alias_prefix_conflict", "alias"),
     ("nat_rules_effective", "alias"),
     ("config_revision_consistent", "control_plane"),
+    ("mtu_planned", "tunnel"),
 ];
 
 /// 控制面观测不到的本机检查（§12.7 ②⑤⑥⑦⑪）：恒 unavailable。
@@ -75,19 +76,35 @@ async fn ctx_with_backend(backend: revision::BackendFactory) -> Ctx {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
         .unwrap();
-    let state = Arc::new(
-        meshlet_server::auth::AppState::new(
-            Arc::new(std::sync::Mutex::new(
-                meshlet_server::service::MeshState::default(),
-            )),
-            meshlet_server::auth::AuthStore::new(pool.clone()),
-            meshlet_server::agent::AgentTokenStore::new(pool.clone()),
-            meshlet_server::api_token::ApiTokenStore::new(pool.clone()),
-            false,
-        )
-        .with_apply_backend(backend),
-    );
-    let app = meshlet_server::router(state);
+    let state = build_state(&pool).with_apply_backend(backend);
+    ctx_from(state, pool).await
+}
+
+/// 带计划隧道 MTU（§7.5，⑬ 的输入）的 ctx。
+async fn ctx_with_mtu(mtu: Option<u32>) -> Ctx {
+    let pool = meshlet_server::store::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let state = build_state(&pool).with_tunnel_mtu(mtu);
+    ctx_from(state, pool).await
+}
+
+/// 共享同一池的完整 AppState（审计与凭证同库，见 auth.rs）。
+fn build_state(pool: &sqlx::SqlitePool) -> meshlet_server::auth::AppState {
+    meshlet_server::auth::AppState::new(
+        Arc::new(std::sync::Mutex::new(
+            meshlet_server::service::MeshState::default(),
+        )),
+        meshlet_server::auth::AuthStore::new(pool.clone()),
+        meshlet_server::agent::AgentTokenStore::new(pool.clone()),
+        meshlet_server::api_token::ApiTokenStore::new(pool.clone()),
+        false,
+    )
+}
+
+/// 组 router + bootstrap 管理员，返回登录态 ctx。
+async fn ctx_from(state: meshlet_server::auth::AppState, pool: sqlx::SqlitePool) -> Ctx {
+    let app = meshlet_server::router(Arc::new(state));
     let res = app
         .clone()
         .oneshot(
@@ -329,11 +346,11 @@ async fn get_before_any_run_is_404_and_names_post() {
 }
 
 // ---------------------------------------------------------------------------
-// 十二项结构与不假绿
+// 十三项结构与不假绿
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn run_reports_twelve_checks_in_order_with_layers() {
+async fn run_reports_thirteen_checks_in_order_with_layers() {
     let c = ctx().await;
     let (st, net) = json_post(
         &c,
@@ -348,9 +365,9 @@ async fn run_reports_twelve_checks_in_order_with_layers() {
     assert_eq!(report["network_id"], network_id);
     assert!(report["checked_at"].as_str().is_some_and(|s| !s.is_empty()));
 
-    // 十二项、顺序与层固定（§12.7 列表 + 隧道/路由/转发/Alias + 控制面）。
+    // 十三项、顺序与层固定（§12.7 列表 + 隧道/路由/转发/Alias + 控制面）。
     let checks = report["checks"].as_array().unwrap();
-    assert_eq!(checks.len(), 12, "{checks:?}");
+    assert_eq!(checks.len(), 13, "{checks:?}");
     for (i, (id, layer)) in EXPECTED.iter().enumerate() {
         assert_eq!(checks[i]["id"], *id, "position {i}");
         assert_eq!(checks[i]["layer"], *layer, "check {id}");
@@ -418,10 +435,38 @@ async fn empty_network_honestly_reports_not_applicable() {
         check_of(&report, "alias_prefix_conflict")["status"],
         "not_applicable"
     );
+    // 无设备：无隧道可定尺寸，⑬ 也 not_applicable（不是 pass）。
+    assert_eq!(check_of(&report, "mtu_planned")["status"], "not_applicable");
     // 建网已记录修订 #1（pending）：配置一致性是 warning——期望配置未确认应用。
     let revision_check = check_of(&report, "config_revision_consistent");
     assert_eq!(revision_check["status"], "warning", "{revision_check}");
     assert!(revision_check["detail"].as_str().unwrap().contains("#1"));
+}
+
+// ---------------------------------------------------------------------------
+// ⑬ 计划隧道 MTU 跟随 server 配置（§7.5）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mtu_check_follows_server_config() {
+    // 未显式配置（默认 ctx）：有设备时 warning——默认 1420 在 PPPoE/4G 底层
+    // 上有大包黑洞风险，建议必须给出可执行的 ping -M do 实测命令。
+    let c = ctx().await;
+    let (network_id, _device_id, _token) = net_with_device(&c).await;
+    let report = run(&c, &network_id).await;
+    let item = check_of(&report, "mtu_planned");
+    assert_eq!(item["status"], "warning", "{item}");
+    assert!(item["detail"].as_str().unwrap().contains("1420"));
+    assert!(item["suggestion"].as_str().unwrap().contains("ping -M do"));
+
+    // 显式配置：pass，detail 点名计划值；pass ⇒ 无需建议。
+    let c = ctx_with_mtu(Some(1380)).await;
+    let (network_id, _device_id, _token) = net_with_device(&c).await;
+    let report = run(&c, &network_id).await;
+    let item = check_of(&report, "mtu_planned");
+    assert_eq!(item["status"], "pass", "{item}");
+    assert!(item["detail"].as_str().unwrap().contains("1380"));
+    assert_eq!(item["suggestion"], "");
 }
 
 // ---------------------------------------------------------------------------

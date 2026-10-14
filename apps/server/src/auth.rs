@@ -61,6 +61,9 @@ pub struct AppState {
     pub persist: Arc<tokio::sync::Mutex<()>>,
     /// 备份目录（§17.4）：`None` = 备份未配置（`POST /system/backup` 503）。
     pub backup_dir: Option<std::path::PathBuf>,
+    /// 计划隧道 MTU（§7.5「MTU 可配置」）：`None` = 未显式配置，诊断按
+    /// WireGuard 默认 1420 解释大包/分片风险；诊断第 13 项据此判读。
+    pub tunnel_mtu: Option<u32>,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -87,6 +90,7 @@ impl AppState {
             metrics: crate::metrics::Metrics::new(),
             persist: Arc::new(tokio::sync::Mutex::new(())),
             backup_dir: None,
+            tunnel_mtu: None,
         }
     }
 
@@ -99,6 +103,12 @@ impl AppState {
     /// 注入备份目录（§17.4；生产来自 `[backup] dir`，测试注入临时目录）。
     pub fn with_backup_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
         self.backup_dir = dir;
+        self
+    }
+
+    /// 注入计划隧道 MTU（§7.5；生产来自 `tunnel_mtu`，测试注入以验证诊断分支）。
+    pub fn with_tunnel_mtu(mut self, mtu: Option<u32>) -> Self {
+        self.tunnel_mtu = mtu;
         self
     }
 

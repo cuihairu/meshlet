@@ -45,7 +45,7 @@
 | GET/DELETE | `/api/v1/networks/{network_id}/aliases/{alias_id}` | 详情 / 删除（**已实现**）：删除 = **整单元清理**（§12.6）——映射与其绑定路由同删、记录**一个**修订；内核侧 NAT 规则移除随该修订 apply 交 backend；反向同理：删除绑定路由级联删除 Alias；无更新路径——修改 = 删除后重建（各记一个修订）🔒 |
 | GET | `/api/v1/system/status` | 服务端状态（公开） |
 | GET | `/api/v1/networks/{network_id}/status` | 网络状态 🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/diagnostics` | 诊断结果 / 触发诊断（§12.7 十二项检查）🔒 |
+| GET/POST | `/api/v1/networks/{network_id}/diagnostics` | 诊断结果 / 触发诊断（§12.7 十三项检查）🔒 |
 | GET | `/api/v1/networks/{network_id}/config-revisions` | 配置版本列表 🔒 |
 | GET | `/api/v1/networks/{network_id}/config-revisions/{revision}` | 版本详情（含 apply_status）🔒 |
 | POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/apply` | 应用指定版本到实际环境（响应即该版本视图）🔒 |
@@ -78,7 +78,7 @@
 
 ## 网络诊断（§12.7，已实现）
 
-- `GET/POST /api/v1/networks/{network_id}/diagnostics`（🔒）：12 项检查按故障层
+- `GET/POST /api/v1/networks/{network_id}/diagnostics`（🔒）：13 项检查按故障层
   归类（控制面 / 隧道 / 路由 / 转发 / Alias）；第一版**只诊断不修复**。
 - **快照语义**：`POST` 计算 → 落一行快照（migration 006 `diagnostics_runs`）→
   返回报告并记审计 `diagnostics.run`；`GET` 返回**最近一次**运行的同一份 JSON
@@ -95,7 +95,9 @@
   「registration only」——控制面在册 ≠ 隧道正常，隧道层唯一证据是 ④ 的握手新鲜
   （`handshake_window`，默认 120s）；⑨`lan_route_published` 的 pass 只表示
   控制面口径（路由已记录 + 最新修订已应用），不证明网关内核装了路由；
-  ⑩用域层冲突检测（overlay 重叠 / alias 互叠 / 绑定路由不一致，ADR-006）。
+  ⑩用域层冲突检测（overlay 重叠 / alias 互叠 / 绑定路由不一致，ADR-006）；
+  ⑬`mtu_planned` 只报 server 配置的计划值（§7.5）：显式配置 `pass`，未配置
+  `warning`（默认 1420 + `ping -M do -s 1392` 实测建议），不假装观测实际接口/路径 MTU。
 - 语义文档见 [网络诊断](diagnostics.md)。
 
 ## 认证与 CSRF（已实现）

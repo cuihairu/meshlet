@@ -88,6 +88,11 @@ console_dir = "/usr/local/share/meshlet/console"
 # presence_agent_window_secs = 300
 # presence_handshake_window_secs = 120
 
+# 计划隧道 MTU（§7.5）。默认不配置——设备按 WireGuard 默认 1420 组接口，诊断
+# 第 ⑬ 项会报 warning 并给出 `ping -M do -s 1392` 实测命令；底层是 PPPoE/4G
+# 等小 MTU 网络时建议显式配置（范围 1280..=65535，低于 1280 会拒绝启动）。
+# tunnel_mtu = 1380
+
 # 备份（§17.4「备份 ≠ 同步」）：默认**全关**——不写盘、不自动、无任何外发
 # /云上传/遥测。下面整段注释掉 = 备份未配置 = POST /api/v1/system/backup
 # 返回 503 backup_not_configured。要用备份必须显式给目录（auto 仍默认关）。

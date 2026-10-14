@@ -82,7 +82,8 @@ async fn main() {
             meshlet_server::api_token::ApiTokenStore::new(pool.clone()),
             config.cookie_secure,
         )
-        .with_backup_dir(config.backup.dir.clone().map(std::path::PathBuf::from)),
+        .with_backup_dir(config.backup.dir.clone().map(std::path::PathBuf::from))
+        .with_tunnel_mtu(config.tunnel_mtu),
     );
     // 定时自动备份（§17.4）：显式 `[backup] auto = true` 才开启；只写本地
     // `[backup] dir`，无任何外发。到期写一份 + 审计留痕，失败只记日志。
