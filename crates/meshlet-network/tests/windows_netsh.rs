@@ -35,14 +35,22 @@ use meshlet_network::{NetworkError, RouteConfig};
 const TEST_PREFIX: &str = "192.0.2.0/24";
 /// Windows 恒在的回环接口（多词名，顺带覆盖计划层引号渲染路径）。
 const TEST_INTERFACE: &str = "Loopback Pseudo-Interface 1";
+/// 回环接口上的下一跳（127.0.0.1 在回环上恒在）。
+const TEST_GATEWAY: &str = "127.0.0.1";
 /// 不存在的接口名：真实 netsh 失败报文的取证探针。
 const MISSING_INTERFACE: &str = "meshlet-no-such-if-01";
 
+/// 回环怪癖（2026-10-16 CI runner 实测报文）：回环上 on-link 路由
+/// （不带 `nexthop=`）被 netsh 拒绝——`Invalid nexthop parameter (Loopback).
+/// It should be a valid IPv4 address.`（netsh 把缺失的 nexthop 推断成字面量
+/// "Loopback"）；真实错误文本经 `classify_netsh_route_failure` 正确落为
+/// `ApplyRejected`。规避：回环上显式 `nexthop=127.0.0.1`（普通接口的
+/// on-link 路由不受此影响）。
 fn test_route(interface: &str) -> RouteConfig {
     RouteConfig {
         destination: TEST_PREFIX.parse().unwrap(),
         interface: interface.into(),
-        gateway: None,
+        gateway: Some(TEST_GATEWAY.parse().unwrap()),
     }
 }
 
@@ -50,7 +58,7 @@ fn delete_command() -> NetshRouteCommand {
     NetshRouteCommand::Delete {
         destination: TEST_PREFIX.parse().unwrap(),
         interface: TEST_INTERFACE.into(),
-        gateway: None,
+        gateway: Some(TEST_GATEWAY.parse().unwrap()),
     }
 }
 
@@ -148,6 +156,7 @@ fn add_show_readback_delete_and_idempotent_redelete() {
         "route".into(),
         format!("prefix={TEST_PREFIX}"),
         format!("interface={TEST_INTERFACE}"),
+        format!("nexthop={TEST_GATEWAY}"),
         "store=active".into(),
     ]);
     eprintln!("re-delete exit={code} raw output: {text}");
