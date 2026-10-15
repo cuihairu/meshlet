@@ -253,6 +253,12 @@ function NetworkDetail({
   onClose: () => void;
   onChanged?: () => void;
 }) {
+  // Approving or denying a registration promotes/drops a pending device — the
+  // devices list must reload alongside the registrations queue, so sibling
+  // sections bump this key instead of reaching into each other's state.
+  const [deviceListKey, setDeviceListKey] = useState(0);
+  const bumpDeviceList = useCallback(() => setDeviceListKey((v) => v + 1), []);
+
   return (
     <section className="detail">
       <h2>
@@ -267,11 +273,21 @@ function NetworkDetail({
           {network.apply_status}
         </span>
       </p>
-      <DevicesSection networkId={network.id} onChanged={onChanged} />
+      <DevicesSection
+        networkId={network.id}
+        onChanged={onChanged}
+        refreshKey={deviceListKey}
+      />
+      <RegistrationsSection
+        networkId={network.id}
+        onChanged={onChanged}
+        onDevicesChanged={bumpDeviceList}
+      />
       <RoutesSection networkId={network.id} overlayCidr={network.overlay_cidr} onChanged={onChanged} />
       <AliasesSection networkId={network.id} onChanged={onChanged} />
       <DiagnosticsSection networkId={network.id} />
       <InvitesSection networkId={network.id} />
+      <BootstrapTokensSection networkId={network.id} />
       <RevisionsSection networkId={network.id} />
     </section>
   );
@@ -280,9 +296,12 @@ function NetworkDetail({
 function DevicesSection({
   networkId,
   onChanged,
+  refreshKey = 0,
 }: {
   networkId: string;
   onChanged?: () => void;
+  /** Bumped by sibling sections (approve/deny) to force a reload. */
+  refreshKey?: number;
 }) {
   const [devices, setDevices] = useState<import('./api').Device[] | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -296,7 +315,7 @@ function DevicesSection({
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, refreshKey]);
 
   const revoke = async (deviceId: string) => {
     setBusy(true);
@@ -376,7 +395,9 @@ function DevicesSection({
                   <code className="fingerprint">{d.fingerprint.slice(0, 16)}…</code>
                 </td>
                 <td>
-                  {d.status === 'revoked' ? (
+                  {/* Defensive: only approved devices (never "pending" — that
+                     state lives in the registrations queue) can be revoked. */}
+                  {d.status === 'revoked' || d.status === 'pending' ? (
                     <span className="muted">—</span>
                   ) : confirming === d.id ? (
                     <>
@@ -427,6 +448,170 @@ const SOURCE_LABELS: Record<string, string> = {
   enrollment: 'enrollment',
   none: 'no evidence',
 };
+
+/**
+ * Pending device self-registrations (ZeroTier-style bootstrap entry). Approve
+ * allocates the overlay IP and records a revision; deny drops the request and
+ * the device may re-register. No credential is re-issued either way — the
+ * device keeps the agent token it received at registration.
+ */
+function RegistrationsSection({
+  networkId,
+  onChanged,
+  onDevicesChanged,
+}: {
+  networkId: string;
+  onChanged?: () => void;
+  onDevicesChanged?: () => void;
+}) {
+  const [registrations, setRegistrations] = useState<
+    import('./api').DeviceRegistration[] | null
+  >(null);
+  const [confirming, setConfirming] = useState<{
+    id: string;
+    action: 'approve' | 'deny';
+  } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api
+      .listRegistrations(networkId)
+      .then(setRegistrations)
+      .catch(() => setRegistrations([]));
+  }, [networkId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const act = async (
+    deviceId: string,
+    name: string,
+    action: 'approve' | 'deny',
+  ) => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (action === 'approve') {
+        const res = await api.approveRegistration(networkId, deviceId);
+        setNotice(`已批准 ${name}：虚拟地址 ${res.virtual_ipv4} · 修订 #${res.revision_id}`);
+      } else {
+        await api.denyRegistration(networkId, deviceId);
+        setNotice(`已拒绝 ${name} 的注册申请。`);
+      }
+      setConfirming(null);
+      load();
+      onDevicesChanged?.();
+      onChanged?.();
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <h3>待审批设备</h3>
+      <p className="muted">
+        设备用自举码自助注册后在此排队，批准前不参与数据面。批准即分配
+        overlay 地址并记入新修订；拒绝则丢弃申请（设备可重新注册）。设备
+        继续沿用注册时领取的凭证。
+      </p>
+      {registrations === null ? (
+        <p className="muted">加载中…</p>
+      ) : registrations.length === 0 ? (
+        <p className="muted">无待审批申请</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>平台</th>
+              <th>ID</th>
+              <th>申请时间</th>
+              <th>最后上报</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {registrations.map((r) => {
+              const confirmingRow =
+                confirming && confirming.id === r.id ? confirming : null;
+              return (
+                <tr key={r.id} title={r.public_key}>
+                  <td>{r.name}</td>
+                  <td>{r.platform}</td>
+                  <td>
+                    <code>{r.id}</code>
+                  </td>
+                  <td>{formatTime(r.requested_at)}</td>
+                  <td>
+                    {r.last_report_at ? (
+                      formatTime(r.last_report_at)
+                    ) : (
+                      <span className="muted">未上报</span>
+                    )}
+                  </td>
+                  <td>
+                    {confirmingRow ? (
+                      <>
+                        <button
+                          type="button"
+                          className={confirmingRow.action === 'deny' ? 'danger' : undefined}
+                          disabled={busy}
+                          onClick={() => act(r.id, r.name, confirmingRow.action)}
+                        >
+                          {confirmingRow.action === 'approve' ? '确认批准' : '确认拒绝'}
+                        </button>{' '}
+                        <button
+                          type="button"
+                          className="link"
+                          onClick={() => setConfirming(null)}
+                        >
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="link"
+                          onClick={() => {
+                            setConfirming({ id: r.id, action: 'approve' });
+                            setNotice(null);
+                            setError(null);
+                          }}
+                        >
+                          批准
+                        </button>{' '}
+                        <button
+                          type="button"
+                          className="link"
+                          onClick={() => {
+                            setConfirming({ id: r.id, action: 'deny' });
+                            setNotice(null);
+                            setError(null);
+                          }}
+                        >
+                          拒绝
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {notice && <p className="muted">{notice}</p>}
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
 
 /**
  * LAN routes (ADR-005). A rejected create is never silent: the server answers
@@ -951,6 +1136,180 @@ function InvitesSection({ networkId }: { networkId: string }) {
           Create invite
         </button>
       </div>
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * Bootstrap tokens: long-lived, reusable self-registration credentials, unlike
+ * one-shot invites. The raw token is revealed exactly once at creation (the
+ * server stores only its SHA-256 digest), so the one-time reveal box is the
+ * only chance to copy it. Revocation is immediate — already-registered devices
+ * keep their own agent credential.
+ */
+function BootstrapTokensSection({ networkId }: { networkId: string }) {
+  const [tokens, setTokens] = useState<import('./api').BootstrapToken[] | null>(null);
+  // Unchecked limit = unlimited: max_uses is omitted from the body entirely.
+  const [unlimited, setUnlimited] = useState(true);
+  const [maxUses, setMaxUses] = useState(1);
+  const [created, setCreated] = useState<import('./api').BootstrapTokenCreated | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api
+      .listBootstrapTokens(networkId)
+      .then(setTokens)
+      .catch(() => setTokens([]));
+  }, [networkId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setCreated(
+        await api.createBootstrapToken(networkId, unlimited ? undefined : maxUses),
+      );
+      load();
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (tokenId: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.revokeBootstrapToken(networkId, tokenId);
+      setConfirming(null);
+      if (created?.token_id === tokenId) setCreated(null);
+      load();
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <h3>自举码</h3>
+      <p className="muted">
+        设备自助注册的长期入口凭据（区别于一次性邀请）。原始自举码仅在创建时
+        显示一次，服务端只存其 SHA-256 摘要；撤销立即生效。
+      </p>
+      {created && (
+        <div className="token-box">
+          <p>自举码（复制保存，仅显示一次）：</p>
+          <code>{created.token}</code>
+        </div>
+      )}
+      {tokens === null ? (
+        <p className="muted">加载中…</p>
+      ) : tokens.length === 0 ? (
+        <p className="muted">尚无自举码。</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>使用上限</th>
+              <th>已用</th>
+              <th>创建时间</th>
+              <th>状态</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {tokens.map((t) => (
+              <tr key={t.id}>
+                <td>
+                  <code>{t.id}</code>
+                </td>
+                <td>{t.max_uses === null ? '不限' : t.max_uses}</td>
+                <td>{t.used_count}</td>
+                <td>{formatTime(t.created_at)}</td>
+                <td>
+                  {t.revoked_at ? <span className="muted">已撤销</span> : '有效'}
+                </td>
+                <td>
+                  {t.revoked_at ? (
+                    <span className="muted">—</span>
+                  ) : confirming === t.id ? (
+                    <>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => revoke(t.id)}
+                      >
+                        确认撤销
+                      </button>{' '}
+                      <button
+                        type="button"
+                        className="link"
+                        onClick={() => setConfirming(null)}
+                      >
+                        取消
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => {
+                        setConfirming(t.id);
+                        setError(null);
+                      }}
+                    >
+                      撤销
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <form
+        className="inline"
+        onSubmit={(e) => {
+          e.preventDefault();
+          create();
+        }}
+      >
+        <label>
+          使用次数上限
+          <input
+            type="number"
+            min={1}
+            value={unlimited ? '' : maxUses}
+            disabled={unlimited}
+            required={!unlimited}
+            placeholder="不限"
+            onChange={(e) => setMaxUses(Number(e.target.value))}
+          />
+        </label>
+        <label>
+          不限次
+          <input
+            type="checkbox"
+            checked={unlimited}
+            onChange={(e) => setUnlimited(e.target.checked)}
+          />
+        </label>
+        <button type="submit" disabled={busy}>
+          创建自举码
+        </button>
+      </form>
       {error && <p className="error">{error}</p>}
     </div>
   );

@@ -84,9 +84,20 @@ impl Agent {
         }
     }
 
-    /// 一轮：拉计划 → 需要则应用 → 心跳上报。
+    /// 一轮：拉计划 → 需要则应用 → 心跳上报。待审批（自举注册，ZeroTier 式）
+    /// 时拉不到计划：心跳保活让控制中心看到设备活着，批准后自然转入正常循环。
     pub fn tick(&self) -> Result<(), String> {
-        let plan = server::fetch_plan(&self.server_url, &self.token)?;
+        let plan = match server::fetch_plan(&self.server_url, &self.token) {
+            Ok(plan) => plan,
+            // 服务端契约：Pending 申请的 desired 端点 404 且消息含
+            // "pending approval"（migration 008 取舍：批准前不进期望配置）。
+            Err(e) if e.contains("pending approval") => {
+                self.heartbeat(None)?;
+                tracing::info!("registration pending approval: heartbeat sent, plan withheld");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
         self.reconcile(&plan)?;
         if let Err(e) = self.heartbeat(Some(&plan)) {
             // 上报失败不影响数据面：计划已按期望对账完毕。
@@ -240,6 +251,8 @@ mod tests {
             server_url: "http://127.0.0.1:1".into(),
             state_dir: state_dir.into(),
             device_token: Some("tok".into()),
+            bootstrap_token: None,
+            device_name: None,
             dataplane: DataplaneConfig {
                 enabled: true,
                 ..DataplaneConfig::default()

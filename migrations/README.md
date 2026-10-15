@@ -1,6 +1,17 @@
 # migrations
 
-SQLx migrations 落库目录。当前版本：`001_init.sql`（Phase 1 核心实体）。
+SQLx migrations 落库目录。当前版本：`008_device_registrations.sql`。
+
+| 版本 | 内容 |
+| --- | --- |
+| 001_init | Phase 1 核心实体：9 表（users / networks / devices / device_keys / invitations / lan_routes / alias_mappings / config_revisions / audit_events） |
+| 002_sessions | 控制台会话（`sessions`） |
+| 003_agent_tokens | agent 凭证摘要 + 设备在线证据时间戳（`agent_tokens`，`devices` 增 last_handshake_at / last_report_at） |
+| 004_api_tokens | 外部调用 API Token 摘要（`api_tokens`） |
+| 005_recovery | 单调计数器持久化（`mesh_meta`） |
+| 006_diagnostics | 诊断快照（`diagnostics_runs`） |
+| 007_dataplane_evidence | 心跳回传数据面证据（`devices.dataplane_evidence`） |
+| 008_device_registrations | 设备自举注册：`bootstrap_tokens`（自举码摘要）+ `device_registrations`（Pending 申请） |
 
 ## 应用方式
 

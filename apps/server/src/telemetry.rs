@@ -91,7 +91,9 @@ impl From<&ServiceError> for ErrorCategory {
             | ServiceError::AliasNotFound(_)
             | ServiceError::RevisionNotFound(_)
             | ServiceError::DiagnosticsNotRun(_)
+            | ServiceError::BootstrapTokenNotFound(_)
             | ServiceError::InvalidInviteToken => ErrorCategory::NotFound,
+            ServiceError::InvalidBootstrapToken => ErrorCategory::Unauthorized,
             ServiceError::InvalidCidr(_) | ServiceError::InvalidInput(_) => {
                 ErrorCategory::Validation
             }

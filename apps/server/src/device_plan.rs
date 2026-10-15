@@ -197,6 +197,7 @@ mod tests {
             last_report_at: None,
             dataplane_evidence: None,
             created_at: T0.into(),
+            approved_at: None,
             revoked_at: None,
         }
     }

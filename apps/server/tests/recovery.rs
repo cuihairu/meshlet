@@ -6,7 +6,9 @@
 //! 2. 停在 `applying` 的修订重启后按 §10.3 落 `failed`（不假装成功），
 //!    `rollback_pending` 保留可重试；
 //! 3. 已删路由的 id 重启后不复用；
-//! 4. presence 证据重启后保守判定——旧证据不虚构 `online`（§12.4）。
+//! 4. presence 证据重启后保守判定——旧证据不虚构 `online`（§12.4）；
+//! 5. 自举码与待审批注册申请（含 Pending 心跳证据）跨重启逐字段重建，
+//!    注册期 agent 凭证跨重启继续有效（2026-10-15 自举注册）。
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -550,6 +552,179 @@ async fn presence_is_conservative_after_restart() {
         .unwrap();
     assert_eq!(laptop["dataplane_evidence"]["tunnel_mtu"], 1380);
     assert_eq!(laptop["dataplane_evidence"]["nat_rules_present"], false);
+
+    c.pool.close().await;
+    cleanup_db(&db);
+}
+
+/// Agent API 调用（Bearer 凭证，无会话/CSRF）。
+async fn agent_call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    agent_token: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    builder = builder.header("authorization", format!("Bearer {agent_token}"));
+    let body = body.map(|v| Body::from(v.to_string())).unwrap_or_default();
+    let req = builder
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Object(Default::default()));
+    (status, value)
+}
+
+/// §17.3 延伸（2026-10-15 自举注册）：自举码与待审批申请跨重启逐字段重建，
+/// 注册期 agent 凭证跨重启继续有效（心跳仍 pending），重启后批准照常走通。
+#[tokio::test]
+async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
+    let db = db_file("selfreg");
+    let network_id;
+    let agent_token;
+    let before_regs;
+    let before_tokens;
+    {
+        let c = open_app(&db).await;
+        let (st, net) = json_post(
+            &c,
+            "/api/v1/networks",
+            json!({"name": "selfreg", "overlay_cidr": OVERLAY}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+        network_id = net["id"].as_str().unwrap().to_string();
+
+        // 自举码 → 设备自注册 → Pending 心跳（带数据面证据）。
+        let (st, token) = json_post(
+            &c,
+            &format!("/api/v1/networks/{network_id}/bootstrap-tokens"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{token}");
+        let (st, reg) = call(
+            &c,
+            "POST",
+            "/api/v1/device-registrations",
+            Some(json!({
+                "bootstrap_token": token["token"],
+                "device_name": "edge-restart",
+                "public_key": "pub-selfreg-recovery",
+                "platform": "linux",
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "{reg}");
+        agent_token = reg["agent_token"].as_str().unwrap().to_string();
+        let (st, hb) = agent_call(
+            &c.app,
+            "POST",
+            "/api/v1/agent/heartbeat",
+            &agent_token,
+            Some(json!({
+                "last_handshake_at": null,
+                "dataplane": { "tunnel_mtu": 1380 },
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{hb}");
+        assert_eq!(hb["online_state"], "pending");
+
+        before_regs = json_get(&c, &format!("/api/v1/networks/{network_id}/registrations"))
+            .await
+            .1;
+        before_tokens = json_get(
+            &c,
+            &format!("/api/v1/networks/{network_id}/bootstrap-tokens"),
+        )
+        .await
+        .1;
+        c.pool.close().await;
+    }
+
+    // 重启：同一 DB 重建——自举码元数据与待审批申请（含心跳证据）逐字段恢复。
+    let c = open_app(&db).await;
+    let after_regs = json_get(&c, &format!("/api/v1/networks/{network_id}/registrations"))
+        .await
+        .1;
+    let after_tokens = json_get(
+        &c,
+        &format!("/api/v1/networks/{network_id}/bootstrap-tokens"),
+    )
+    .await
+    .1;
+    assert_eq!(before_regs, after_regs, "registrations survive restart");
+    assert_eq!(after_regs[0]["name"], "edge-restart");
+    assert_eq!(
+        after_regs[0]["dataplane_evidence"]["tunnel_mtu"], 1380,
+        "pending-period heartbeat evidence restored"
+    );
+    assert_eq!(
+        before_tokens, after_tokens,
+        "bootstrap tokens survive restart"
+    );
+    assert_eq!(after_tokens[0]["id"], "bt-1");
+    assert_eq!(after_tokens[0]["used_count"], 1);
+
+    // 注册期凭证跨重启仍有效：心跳继续 pending；desired 仍 404 pending approval。
+    let (st, hb) = agent_call(
+        &c.app,
+        "POST",
+        "/api/v1/agent/heartbeat",
+        &agent_token,
+        Some(json!({
+            "last_handshake_at": null,
+            "dataplane": { "tunnel_mtu": 1380 },
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "credential survives restart: {hb}");
+    assert_eq!(hb["online_state"], "pending");
+    let (st, desired) = agent_call(
+        &c.app,
+        "GET",
+        "/api/v1/agent/device/desired",
+        &agent_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{desired}");
+    assert!(desired["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("pending approval"));
+
+    // 重启后批准照常走通：设备入册 + 恰好一个新修订（基线 = 建网初始修订）。
+    let (st, revisions_before) = json_get(
+        &c,
+        &format!("/api/v1/networks/{network_id}/config-revisions"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let baseline = revisions_before.as_array().unwrap().len();
+    let (st, approved) = json_post(
+        &c,
+        &format!("/api/v1/networks/{network_id}/devices/dev-reg-1/approve"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{approved}");
+    assert!(approved["virtual_ipv4"].is_string());
+    let (_, revisions_after) = json_get(
+        &c,
+        &format!("/api/v1/networks/{network_id}/config-revisions"),
+    )
+    .await;
+    assert_eq!(
+        revisions_after.as_array().unwrap().len(),
+        baseline + 1,
+        "approve after restart records exactly one revision"
+    );
 
     c.pool.close().await;
     cleanup_db(&db);

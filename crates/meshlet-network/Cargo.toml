@@ -9,6 +9,9 @@ license.workspace = true
 meshlet-domain = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+rand_core = { workspace = true }
+x25519-dalek = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

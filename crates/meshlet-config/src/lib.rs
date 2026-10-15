@@ -235,6 +235,11 @@ struct RawAgentConfig {
     server_url: Option<String>,
     state_dir: Option<String>,
     device_token: Option<String>,
+    /// 自举码（ZeroTier 式自举注册的入口凭据）：`device_token` 缺省时用它向
+    /// `POST /api/v1/device-registrations` 自举注册，批准后即转为正式设备。
+    bootstrap_token: Option<String>,
+    /// 自举注册时上报的设备名（同网络内唯一，跨设备/待审批申请）。
+    device_name: Option<String>,
     dataplane: RawDataplaneConfig,
 }
 
@@ -246,6 +251,11 @@ pub struct AgentConfig {
     /// 设备凭证（enrollment 返回的 agent token，仅此一次下发）：拉取期望配置
     /// 用；`[dataplane] enabled` 且未配置时启动即报失败。
     pub device_token: Option<String>,
+    /// 自举码（ZeroTier 式）：缺 `device_token` 时用它注册自身，落 Pending 等
+    /// 控制中心审批。**原始凭据只写 0600 配置文件**，服务端只存摘要（§11.3）。
+    pub bootstrap_token: Option<String>,
+    /// 自举注册时的设备名（必须显式配置——注册名要可读，不能取默认值）。
+    pub device_name: Option<String>,
     pub dataplane: DataplaneConfig,
 }
 
@@ -283,6 +293,8 @@ impl Default for AgentConfig {
             server_url: "https://127.0.0.1".into(),
             state_dir: "/var/lib/meshlet".into(),
             device_token: None,
+            bootstrap_token: None,
+            device_name: None,
             dataplane: DataplaneConfig::default(),
         }
     }
@@ -320,6 +332,14 @@ impl AgentConfig {
             state_dir: raw.state_dir.unwrap_or(default.state_dir),
             device_token: raw
                 .device_token
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            bootstrap_token: raw
+                .bootstrap_token
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            device_name: raw
+                .device_name
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             dataplane: DataplaneConfig {

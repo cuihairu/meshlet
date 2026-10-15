@@ -14,8 +14,10 @@
 //!   `[dataplane] private_key_file` 本地注入。
 
 pub mod agent;
+pub mod bootstrap;
 pub mod reconcile;
 pub mod server;
 
 pub use agent::{read_private_key, Agent};
+pub use bootstrap::resolve_device_token;
 pub use reconcile::{needs_apply, stale_owners, AgentState, Decision, Reason};

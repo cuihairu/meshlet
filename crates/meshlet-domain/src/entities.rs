@@ -29,6 +29,7 @@ string_id!(LanRouteId, "LAN 路由标识。");
 string_id!(AliasMappingId, "Alias 映射标识。");
 string_id!(UserId, "控制台用户标识。");
 string_id!(InviteId, "邀请标识。");
+string_id!(BootstrapTokenId, "自举码标识（设备自举注册入口凭据）。");
 
 // ---------------------------------------------------------------------------
 // Network
@@ -105,6 +106,45 @@ pub struct Device {
     /// 最近一次心跳回传的数据面实测证据（§7.5：内核读数 + 大包探测）；
     /// `None` = 尚无 agent 上报过（旧 agent / 未运行）。
     pub dataplane_evidence: Option<DataplaneEvidence>,
+    pub created_at: Timestamp,
+    /// 批准时刻（自举注册路径，见 [DeviceRegistration]）；邀请入会路径为 `None`
+    /// （`created_at` 即入会时刻）。
+    pub approved_at: Option<Timestamp>,
+    pub revoked_at: Option<Timestamp>,
+}
+
+/// 待审批的设备注册申请（ZeroTier 式自举注册：设备持自举码自举 → 落此表 →
+/// 控制中心审批/拒绝）。
+///
+/// 设计要点：**Pending 申请不进 `DeviceRegistry`**，因此不占 overlay 地址、不进
+/// 期望配置、不进 Peer AllowedIPs——批准时刻才分配虚拟 IP 并转入
+/// [Device]（ID 在注册时已分配，批准不改 ID，故 `agent_tokens` 等引用无需迁移）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRegistration {
+    pub id: DeviceId,
+    pub network_id: NetworkId,
+    pub name: String,
+    pub public_key: String,
+    pub platform: Platform,
+    /// 申请时刻（控制台「等待审批」的起点，也即该设备 id 的创建时刻）。
+    pub requested_at: Timestamp,
+    /// agent 最近一次心跳到达时刻——Pending 设备尚无 `devices` 行，证据只落这里。
+    pub last_report_at: Option<Timestamp>,
+    /// agent 心跳回传的数据面证据（§7.5）；`None` = 尚未上报。
+    pub dataplane_evidence: Option<DataplaneEvidence>,
+}
+
+/// 自举码（bootstrap token）：**只存 SHA-256 摘要**，与邀请 Token 同一纪律
+/// （§11.3）。语义差异：它是**长期、可复用**的注册入口（管理员可撤销/限额），
+/// 不是单次入会凭证。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapToken {
+    pub id: BootstrapTokenId,
+    pub network_id: NetworkId,
+    pub token_hash: String,
+    /// 使用次数上限；`None` = 无上限。
+    pub max_uses: Option<u32>,
+    pub used_count: u32,
     pub created_at: Timestamp,
     pub revoked_at: Option<Timestamp>,
 }
@@ -427,6 +467,9 @@ impl ConfigRevision {
 #[derive(Debug, Clone, Default)]
 pub struct DeviceRegistry {
     devices: Vec<Device>,
+    /// 待审批的设备注册申请（[DeviceRegistration]）。与 `devices` 分离存放：
+    /// Pending 设备不参与期望配置/Peer 推导/IPAM，批准才转入 `devices`。
+    registrations: Vec<DeviceRegistration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -462,7 +505,7 @@ impl DeviceRegistry {
         {
             return Err(RegistryError::DuplicateVirtualIp(device.virtual_ipv4));
         }
-        if self.devices.iter().any(|d| d.name == device.name) {
+        if self.name_taken(&device.name) {
             return Err(RegistryError::DuplicateName(device.name));
         }
         self.devices.push(device);
@@ -475,6 +518,50 @@ impl DeviceRegistry {
             .filter(|d| d.is_active())
             .map(|d| d.virtual_ipv4)
             .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // 待审批注册申请（ZeroTier 式自举注册）
+    // ------------------------------------------------------------------
+
+    pub fn registrations(&self) -> &[DeviceRegistration] {
+        &self.registrations
+    }
+
+    pub fn find_registration(&self, id: &DeviceId) -> Option<&DeviceRegistration> {
+        self.registrations.iter().find(|r| r.id == *id)
+    }
+
+    pub fn find_registration_mut(&mut self, id: &DeviceId) -> Option<&mut DeviceRegistration> {
+        self.registrations.iter_mut().find(|r| r.id == *id)
+    }
+
+    /// 登记一条注册申请。**名字唯一性跨 `devices` 与 `registrations` 两侧检查**
+    /// （同一网络内不允许重名，无论设备处于哪个阶段）。
+    pub fn add_registration(
+        &mut self,
+        registration: DeviceRegistration,
+    ) -> Result<(), RegistryError> {
+        if self.name_taken(&registration.name) {
+            return Err(RegistryError::DuplicateName(registration.name));
+        }
+        if self.registrations.iter().any(|r| r.id == registration.id) {
+            return Err(RegistryError::DuplicateName(registration.name));
+        }
+        self.registrations.push(registration);
+        Ok(())
+    }
+
+    /// 移除一条注册申请（批准/拒绝时调用），返回被移除的申请。
+    pub fn remove_registration(&mut self, id: &DeviceId) -> Option<DeviceRegistration> {
+        let pos = self.registrations.iter().position(|r| r.id == *id)?;
+        Some(self.registrations.remove(pos))
+    }
+
+    /// 名字是否已被占用（`devices` 或 `registrations` 任一侧）。
+    pub fn name_taken(&self, name: &str) -> bool {
+        self.devices.iter().any(|d| d.name == name)
+            || self.registrations.iter().any(|r| r.name == name)
     }
 }
 
@@ -517,6 +604,7 @@ mod tests {
             last_report_at: None,
             dataplane_evidence: None,
             created_at: T0.into(),
+            approved_at: None,
             revoked_at: None,
         };
         assert!(d.is_active());
@@ -665,6 +753,7 @@ mod tests {
             last_report_at: None,
             dataplane_evidence: None,
             created_at: T0.into(),
+            approved_at: None,
             revoked_at: None,
         };
         let mut reg = DeviceRegistry::new();
@@ -696,6 +785,7 @@ mod tests {
             last_report_at: None,
             dataplane_evidence: None,
             created_at: T0.into(),
+            approved_at: None,
             revoked_at: None,
         };
         let mut reg = DeviceRegistry::new();

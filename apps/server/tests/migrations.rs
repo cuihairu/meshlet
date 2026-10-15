@@ -315,12 +315,21 @@ async fn migrations_are_idempotent_across_reopens() {
     let pool = db().await;
     meshlet_server::store::MIGRATIONS.run(&pool).await.unwrap();
     // 005 新增 mesh_meta（route_seq 等单调计数，§17.3）；006 新增
-    // diagnostics_runs（§12.7 诊断快照）。
+    // diagnostics_runs（§12.7 诊断快照）；008 新增 bootstrap_tokens +
+    // device_registrations（设备自举注册，Pending 不进 devices）。
     let tables = tables(&pool).await;
-    assert_eq!(tables.len(), 14);
+    assert_eq!(tables.len(), 16);
     assert!(tables.contains(&"mesh_meta".to_string()), "{tables:?}");
     assert!(
         tables.contains(&"diagnostics_runs".to_string()),
+        "{tables:?}"
+    );
+    assert!(
+        tables.contains(&"bootstrap_tokens".to_string()),
+        "{tables:?}"
+    );
+    assert!(
+        tables.contains(&"device_registrations".to_string()),
         "{tables:?}"
     );
 }

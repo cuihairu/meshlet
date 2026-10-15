@@ -208,32 +208,70 @@ pub async fn heartbeat_handler(
     }
     let now: Timestamp = service::now();
     // 心跳证据时间戳同样落库（§17.3）：重启后 presence 按原证据判定，
-    // 不虚构在线（§12.4）。
+    // 不虚构在线（§12.4）。Pending 注册申请的心跳走 `device_registrations`
+    // 证据通道（批准前无 devices 行，§7.5 证据不丢）。
     let _persist = state.persist.lock().await;
     let (presence, network_id, device) = {
         let mut guard = state.mesh.lock().unwrap();
-        let presence = service::record_agent_report(
+        match service::record_agent_report(
             &mut guard,
             &device_id,
             req.last_handshake_at.clone(),
-            req.dataplane,
+            req.dataplane.clone(),
             now.clone(),
-        )
-        .map_err(|e| match e {
-            service::ServiceError::DeviceNotFound(id) => AgentApiError::NotFound(id),
-            other => AgentApiError::Internal(other.to_string()),
-        })?;
-        let device = guard
-            .registry
-            .find_by_id(&device_id)
-            .expect("report just recorded")
-            .clone();
-        let network_id = device.network_id.to_string();
-        (presence, network_id, device)
+        ) {
+            Ok(presence) => {
+                let device = guard
+                    .registry
+                    .find_by_id(&device_id)
+                    .expect("report just recorded")
+                    .clone();
+                let network_id = device.network_id.to_string();
+                (Some(presence), network_id, Some(device))
+            }
+            Err(service::ServiceError::DeviceNotFound(_)) => {
+                service::record_pending_agent_report(
+                    &mut guard,
+                    &device_id,
+                    req.dataplane.clone(),
+                    now.clone(),
+                )
+                .map_err(|e| match e {
+                    service::ServiceError::DeviceNotFound(id) => AgentApiError::NotFound(id),
+                    other => AgentApiError::Internal(other.to_string()),
+                })?;
+                let network_id = guard
+                    .registry
+                    .find_registration(&device_id)
+                    .expect("just reported")
+                    .network_id
+                    .to_string();
+                (None, network_id, None)
+            }
+            Err(other) => return Err(AgentApiError::Internal(other.to_string())),
+        }
     };
-    crate::persist::update_device_presence(state.auth.pool(), &device)
+    if let Some(device) = &device {
+        crate::persist::update_device_presence(state.auth.pool(), device)
+            .await
+            .map_err(|e| AgentApiError::Internal(e.to_string()))?;
+    } else {
+        // Pending 申请：证据落 device_registrations（approval 前唯一证据通道）。
+        let evidence = req
+            .dataplane
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| AgentApiError::Internal(e.to_string()))?;
+        crate::persist::update_registration_report(
+            state.auth.pool(),
+            &device_id,
+            &now,
+            evidence.as_deref(),
+        )
         .await
         .map_err(|e| AgentApiError::Internal(e.to_string()))?;
+    }
     // 指标（§17.2 agent 心跳计数）+ 结构化日志（§17.1：device 组件事件）。
     state.metrics.record_agent_heartbeat();
     crate::op_log!(
@@ -246,9 +284,18 @@ pub async fn heartbeat_handler(
         crate::telemetry::ErrorCategory::None.as_str(),
         crate::telemetry::RESULT_OK
     );
+    // Pending 申请无隧道、不参与数据面：`pending` 明确区别于在线三态，
+    // agent 据此保持退避重试而不是当隧道故障。
+    let (online_state, presence_source) = match presence {
+        Some(presence) => (
+            presence.state.as_str().to_string(),
+            presence.source.as_str().to_string(),
+        ),
+        None => ("pending".to_string(), "registration".to_string()),
+    };
     Ok(Json(HeartbeatResponse {
-        online_state: presence.state.as_str().to_string(),
-        presence_source: presence.source.as_str().to_string(),
+        online_state,
+        presence_source,
         last_seen_at: Some(now),
     }))
 }
@@ -266,23 +313,34 @@ pub async fn desired_device_plan_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
 ) -> Result<Json<meshlet_network::DevicePlan>, AgentApiError> {
-    if !state.dataplane.enabled {
-        return Err(AgentApiError::DataplaneNotConfigured(
-            "server dataplane is disabled: set [dataplane] enabled = true to distribute device \
-             plans"
-                .into(),
-        ));
-    }
-    let hub_public_key =
-        crate::device_plan::hub_public_key(&state.dataplane).map_err(AgentApiError::Internal)?;
+    // 身份判定先于全局数据面开关：待审批的注册申请永远 404「pending approval」，
+    // 否则数据面关闭时该信号被 503 掩盖，agent 与管理员都读不到真实状态。
     let (plan, network_id) = {
         let guard = state.mesh.lock().unwrap();
         let Some(device) = guard.registry.find_by_id(&device_id) else {
+            // 待审批的注册申请（ZeroTier 式自举流）：404 语义同「计划不存在」
+            // ——批准前不进期望配置（migration 008 取舍），agent 退避重试，
+            // 批准后本端点即返回计划。
+            if guard.registry.find_registration(&device_id).is_some() {
+                return Err(AgentApiError::NotFound(format!(
+                    "device {device_id} is pending approval: no desired plan until an operator \
+                     approves the registration"
+                )));
+            }
             return Err(AgentApiError::NotFound(format!(
                 "device {device_id} not found"
             )));
         };
         let network_id = device.network_id.to_string();
+        if !state.dataplane.enabled {
+            return Err(AgentApiError::DataplaneNotConfigured(
+                "server dataplane is disabled: set [dataplane] enabled = true to distribute \
+                 device plans"
+                    .into(),
+            ));
+        }
+        let hub_public_key = crate::device_plan::hub_public_key(&state.dataplane)
+            .map_err(AgentApiError::Internal)?;
         let plan = crate::device_plan::build_device_plan(
             &guard,
             &network_id,

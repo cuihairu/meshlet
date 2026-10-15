@@ -16,6 +16,7 @@
 //! [DevicePlan] 是 server → agent 的**结构化配置对象**（§16.4）：agent 只消费
 //! 类型化的隧道/路由/NAT 计划，绝不执行服务端下发的任意 Shell 命令。
 
+pub mod keys;
 pub mod nat;
 
 #[cfg(target_os = "linux")]

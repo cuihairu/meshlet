@@ -25,9 +25,9 @@
 //! 本模块先把「服务端重启不丢期望状态」钉死。
 
 use meshlet_domain::{
-    AliasMapping, ConfigRevision, DesiredStateStatus, Device, DeviceId, DeviceStatus, Invite,
-    InviteId, Ipv4Cidr, LanRoute, LanRouteId, Network, NetworkId, NetworkStatus, Platform,
-    ReturnPathMode, RouteMode, TranslationMode,
+    AliasMapping, BootstrapToken, BootstrapTokenId, ConfigRevision, DesiredStateStatus, Device,
+    DeviceId, DeviceRegistration, DeviceStatus, Invite, InviteId, Ipv4Cidr, LanRoute, LanRouteId,
+    Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode, TranslationMode,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -56,6 +56,8 @@ pub struct BootState {
 pub struct MeshStatePersistedView {
     pub networks: usize,
     pub devices: usize,
+    /// 待审批的设备注册申请（ZeroTier 式，Pending 不计入 `devices`）。
+    pub registrations: usize,
     pub routes: usize,
     pub aliases: usize,
     pub invites: usize,
@@ -251,21 +253,172 @@ pub async fn insert_route(
     .bind(&r.created_at)
     .execute(&mut *tx)
     .await?;
-    save_route_seq_tx(&mut tx, route_seq).await?;
+    save_seq_tx(&mut tx, "route_seq", route_seq).await?;
     tx.commit().await?;
     Ok(())
 }
 
-async fn save_route_seq_tx(
+async fn save_seq_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    route_seq: u64,
+    key: &str,
+    seq: u64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO mesh_meta (key, value) VALUES ('route_seq', ?)
+        "INSERT INTO mesh_meta (key, value) VALUES (?, ?)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",
     )
-    .bind(route_seq.to_string())
+    .bind(key)
+    .bind(seq.to_string())
     .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// 落库一条自举码（只存摘要，§11.3）+ 当前自举码序列（同一事务）。
+/// `bootstrap_seq` 驱动 `bt-N`；注册申请序列（`dev-reg-N`）另见
+/// [`insert_registration`]——前缀不冲突，故各自单调即可。
+pub async fn save_bootstrap_token(
+    pool: &SqlitePool,
+    t: &BootstrapToken,
+    bootstrap_seq: u64,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO bootstrap_tokens
+           (id, network_id, token_hash, max_uses, used_count, created_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+           used_count = excluded.used_count,
+           revoked_at = excluded.revoked_at",
+    )
+    .bind(t.id.to_string())
+    .bind(t.network_id.to_string())
+    .bind(&t.token_hash)
+    .bind(t.max_uses)
+    .bind(t.used_count as i64)
+    .bind(&t.created_at)
+    .bind(&t.revoked_at)
+    .execute(&mut *tx)
+    .await?;
+    save_seq_tx(&mut tx, "bootstrap_seq", bootstrap_seq).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 撤销自举码：只回写撤销时刻（整行 upsert，与 `save_invite` 同语义）。
+pub async fn revoke_bootstrap_token_db(
+    pool: &SqlitePool,
+    id: &BootstrapTokenId,
+    revoked_at: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE bootstrap_tokens SET revoked_at = ? WHERE id = ?")
+        .bind(revoked_at)
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 登记一条设备注册申请（Pending）+ 当前注册序列（同一事务）。
+pub async fn insert_registration(
+    pool: &SqlitePool,
+    r: &DeviceRegistration,
+    registration_seq: u64,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO device_registrations
+           (id, network_id, name, public_key, platform, requested_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(r.id.to_string())
+    .bind(r.network_id.to_string())
+    .bind(&r.name)
+    .bind(&r.public_key)
+    .bind(platform_to_str(r.platform))
+    .bind(&r.requested_at)
+    .execute(&mut *tx)
+    .await?;
+    save_seq_tx(&mut tx, "registration_seq", registration_seq).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 删除一条注册申请（批准/拒绝），并连带清掉它签发的 agent 凭证。
+/// Pending 申请不在 `devices` 表，故无需回滚设备行/路由。
+pub async fn delete_registration_db(pool: &SqlitePool, id: &DeviceId) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM device_registrations WHERE id = ?")
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM agent_tokens WHERE device_id = ?")
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 批准：把注册申请（不改 id）转成 `devices` 行并释放申请记录（同一事务）。
+/// `virtual_ipv4` 是批准时刻刚从 IPAM 分配的真实地址（不再用占位值）。
+///
+/// **不轮换 agent 凭证**：凭证绑定的是设备 id（注册时即分配、批准沿用），
+/// 设备身份未变；轮换会把原始凭证只塞进批准响应、设备端永远拿不到（批准后
+/// 401）。Pending 期签发的凭证继续有效，撤销走 `revoke_device` 既有路径。
+pub async fn promote_registration(
+    pool: &SqlitePool,
+    r: &DeviceRegistration,
+    device: &Device,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    // 列集与 insert_device 一致 + approved_at：Pending 期心跳证据直接带入
+    // （批准后 presence 连续，§7.5 证据不因转正而清零）。
+    sqlx::query(
+        "INSERT INTO devices
+           (id, network_id, name, virtual_ipv4, public_key, platform, status,
+            last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
+            created_at, approved_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(device.id.to_string())
+    .bind(device.network_id.to_string())
+    .bind(&device.name)
+    .bind(device.virtual_ipv4.to_string())
+    .bind(&device.public_key)
+    .bind(platform_to_str(device.platform))
+    .bind(device_status_to_str(device.status))
+    .bind(&device.last_seen_at)
+    .bind(&device.last_handshake_at)
+    .bind(&device.last_report_at)
+    .bind(evidence_json(device))
+    .bind(&device.created_at)
+    .bind(&device.approved_at)
+    .bind(&device.revoked_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM device_registrations WHERE id = ?")
+        .bind(r.id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Pending 设备无 `devices` 行，心跳证据只落注册申请表（§7.5/§12.4）。
+pub async fn update_registration_report(
+    pool: &SqlitePool,
+    id: &DeviceId,
+    last_report_at: &str,
+    dataplane_evidence: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE device_registrations SET last_report_at = ?, dataplane_evidence = ? WHERE id = ?",
+    )
+    .bind(last_report_at)
+    .bind(dataplane_evidence)
+    .bind(id.to_string())
+    .execute(pool)
     .await?;
     Ok(())
 }
@@ -294,7 +447,7 @@ pub async fn insert_alias(
     .bind(crate::service::now())
     .execute(&mut *tx)
     .await?;
-    save_route_seq_tx(&mut tx, route_seq).await?;
+    save_seq_tx(&mut tx, "route_seq", route_seq).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -487,11 +640,12 @@ pub async fn load(
             Option<String>,
             String,
             Option<String>,
+            Option<String>,
         ),
     >(
         "SELECT id, network_id, name, virtual_ipv4, public_key, platform, status,
                 last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
-                created_at, revoked_at
+                created_at, approved_at, revoked_at
          FROM devices ORDER BY created_at, id",
     )
     .fetch_all(pool)
@@ -518,13 +672,107 @@ pub async fn load(
             last_report_at: row.9,
             dataplane_evidence: evidence,
             created_at: row.11,
-            revoked_at: row.12,
+            approved_at: row.12,
+            revoked_at: row.13,
         };
         state
             .restore_device(device)
             .map_err(|e| corrupt("restore device", e.to_string()))?;
     }
     let devices = state.device_count();
+
+    // 待审批的注册申请（ZeroTier 式）：不进 IPAM、不进期望配置，重启后仍待批。
+    let reg_rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT id, network_id, name, public_key, platform, requested_at,
+                last_report_at, dataplane_evidence
+         FROM device_registrations ORDER BY requested_at, id",
+    )
+    .fetch_all(pool)
+    .await?;
+    for (id, network_id, name, public_key, platform, requested_at, last_report_at, evidence) in
+        reg_rows
+    {
+        let evidence = evidence
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .map_err(|e| corrupt("registration dataplane_evidence", e))?;
+        let registration = DeviceRegistration {
+            id: DeviceId(id),
+            network_id: NetworkId(network_id),
+            name,
+            public_key,
+            platform: platform_parse(&platform).map_err(|e| corrupt("registration platform", e))?,
+            requested_at,
+            last_report_at,
+            dataplane_evidence: evidence,
+        };
+        state
+            .restore_registration(registration)
+            .map_err(|e| corrupt("restore registration", e.to_string()))?;
+    }
+    let registrations = state.registration_count();
+
+    // 自举码（摘要索引；撤销/次数上限如常恢复）。
+    let bt_rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            Option<i64>,
+            i64,
+            String,
+            Option<String>,
+        ),
+    >(
+        "SELECT id, network_id, token_hash, max_uses, used_count, created_at, revoked_at
+         FROM bootstrap_tokens ORDER BY created_at, id",
+    )
+    .fetch_all(pool)
+    .await?;
+    for (id, network_id, token_hash, max_uses, used_count, created_at, revoked_at) in bt_rows {
+        let token = BootstrapToken {
+            id: BootstrapTokenId(id),
+            network_id: NetworkId(network_id),
+            token_hash,
+            max_uses: max_uses.map(|n| n as u32),
+            used_count: used_count as u32,
+            created_at,
+            revoked_at,
+        };
+        state
+            .bootstrap_tokens
+            .insert(token.token_hash.clone(), token);
+    }
+
+    // 自举码与注册申请各持一条序列（`bt-N` / `dev-reg-N`，前缀不冲突）。
+    for key in ["bootstrap_seq", "registration_seq"] {
+        let value: Option<String> =
+            sqlx::query_scalar(&format!("SELECT value FROM mesh_meta WHERE key = '{key}'"))
+                .fetch_optional(pool)
+                .await?;
+        if let Some(v) = value {
+            let seq: u64 = v
+                .parse()
+                .map_err(|e: std::num::ParseIntError| corrupt(&format!("mesh_meta {key}"), e))?;
+            match key {
+                "bootstrap_seq" => state.set_bootstrap_seq(seq),
+                _ => state.set_registration_seq(seq),
+            }
+        }
+    }
 
     // LAN 路由 + 路由 id 序列。
     let route_rows = sqlx::query_as::<
@@ -696,6 +944,7 @@ pub async fn load(
         summary: MeshStatePersistedView {
             networks,
             devices,
+            registrations,
             routes,
             aliases,
             invites,
@@ -719,12 +968,14 @@ pub fn internal(e: sqlx::Error) -> ServiceError {
 // ---------------------------------------------------------------------------
 
 /// 备份文件需要的完整表集合（schema 完整性校验，migrations 001–006）。
-const REQUIRED_TABLES: [&str; 14] = [
+const REQUIRED_TABLES: [&str; 16] = [
     "agent_tokens",
     "alias_mappings",
     "audit_events",
+    "bootstrap_tokens",
     "config_revisions",
     "device_keys",
+    "device_registrations",
     "devices",
     "diagnostics_runs",
     "invitations",
@@ -855,6 +1106,7 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
     Ok(MeshStatePersistedView {
         networks: count(pool, "networks").await?,
         devices: count(pool, "devices").await?,
+        registrations: count(pool, "device_registrations").await?,
         routes: count(pool, "lan_routes").await?,
         aliases: count(pool, "alias_mappings").await?,
         invites: count(pool, "invitations").await?,

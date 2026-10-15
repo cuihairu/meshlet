@@ -482,6 +482,7 @@ mod tests {
             last_report_at: None,
             dataplane_evidence: None,
             created_at: ts(),
+            approved_at: None,
             revoked_at: None,
         };
         let devices = vec![device("dev-a", "10.240.0.2"), device("dev-b", "10.240.0.3")];
@@ -525,6 +526,7 @@ mod tests {
             last_report_at: None,
             dataplane_evidence: None,
             created_at: ts(),
+            approved_at: None,
             revoked_at: None,
         }];
 

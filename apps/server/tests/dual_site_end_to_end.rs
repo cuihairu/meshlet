@@ -1063,6 +1063,8 @@ fn tick_agent(
             .to_string_lossy()
             .to_string(),
         device_token: Some(token.to_string()),
+        bootstrap_token: None,
+        device_name: None,
         dataplane: meshlet_config::DataplaneConfig {
             enabled: true,
             hub_endpoint: hub_endpoint.map(str::to_string),

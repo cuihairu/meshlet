@@ -13,7 +13,7 @@
 - **Agent API 与管理 API 认证边界清晰分离**（§13.7）。
 
 
-> **契约 ↔ 实现对账（2026-10-15）**：本表与 [openapi.yaml](/api/openapi.yaml) 已与 `apps/server` 注册的 27 条路由逐一对齐——规格先行的端点（网络/设备详情与更新删除、 `rotate-key`、逐网络 `status`、路由 `PATCH`）从未实现且不在第一版验收（§22）内， 已从机器契约移除，避免代码生成出 404 客户端；重复的 `diagnostics` 路径块已去重（保留与实现一致的一份：`POST` 返回 `200` + 报告，非 `202`）。
+> **契约 ↔ 实现对账（2026-10-15）**：本表与 [openapi.yaml](/api/openapi.yaml) 已与 `apps/server` 注册的 33 条路由逐一对齐——规格先行的端点（网络/设备详情与更新删除、 `rotate-key`、逐网络 `status`、路由 `PATCH`）从未实现且不在第一版验收（§22）内， 已从机器契约移除，避免代码生成出 404 客户端；重复的 `diagnostics` 路径块已去重（保留与实现一致的一份：`POST` 返回 `200` + 报告，非 `202`）。
 
 ## 统一错误响应
 
@@ -36,7 +36,13 @@
 | GET | `/api/v1/networks/{network_id}/devices` | 设备列表 🔒 |
 | POST | `/api/v1/networks/{network_id}/invites` | 生成一次性邀请（ADR-010）🔒 |
 | DELETE | `/api/v1/networks/{network_id}/invites/{invite_id}` | 撤销邀请（ADR-010）🔒 |
+| GET/POST | `/api/v1/networks/{network_id}/bootstrap-tokens` | 自举码列表 / 签发（设备自举注册入口；原始码仅此一次返回，§11.3）🔒 |
+| DELETE | `/api/v1/networks/{network_id}/bootstrap-tokens/{token_id}` | 撤销自举码（立即失效；重复撤销 409、未知 id 404）🔒 |
 | POST | `/api/v1/enroll` | 设备加入（邀请 Token + 公钥；私钥不出客户端，§11.2） |
+| POST | `/api/v1/device-registrations` | 设备自举注册（ZeroTier 式：自举码 + 公钥 → Pending 待审批；原始 agent 凭证即签即用，§11.6） |
+| GET | `/api/v1/networks/{network_id}/registrations` | 待审批注册申请列表（Pending 心跳证据在此可见）🔒 |
+| POST | `/api/v1/networks/{network_id}/devices/{device_id}/approve` | 批准注册（此刻才分配虚拟 IP + 记修订；沿用注册期凭证，不轮换）🔒 |
+| POST | `/api/v1/networks/{network_id}/devices/{device_id}/deny` | 拒绝注册（纯状态清理：申请与凭证一并作废，不记修订）🔒 |
 | POST | `/api/v1/agent/heartbeat` | Agent 心跳/状态上报（Bearer agent_token；可带 `last_handshake_at`，§14.1） |
 | GET | `/api/v1/agent/device/desired` | 本设备的期望数据面计划（Bearer agent_token；**结构化配置对象**：隧道/路由/NAT + `desired_config_hash`，**绝无 Shell 命令**，§16.4；`private_key` 恒为 `null`，ADR-010；服务端 `[dataplane] enabled = false` → `503 dataplane_not_configured`，agent 重试而非把「未配置」当「已生效」） |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5）🔒 |
@@ -58,6 +64,38 @@
   返回 `202` + `RevisionRef`（新修订号）；设备状态转 `revoked`（列表可见），
   该设备的 agent 凭证**立即失效**，且**其已发布的全部 LAN Route 一并移除**
   （不给 AllowedIPs 推导留下指向已撤销 Peer 的网段）；重复撤销 → `409 conflict`。
+
+## 设备自举注册（ZeroTier 式，已实现）
+
+邀请制的补充入口：管理员先开**自举码**（长期、可撤销、可选使用次数上限），
+新设备持码自注册 → 落 **Pending 待审批** → 控制中心批准或拒绝。
+
+- **自举码**（`bootstrap_tokens` 表，migration 008）与邀请/会话同一纪律：
+  只存 SHA-256 摘要，原始码仅在签发响应里出现**一次**；列表绝无凭据材料；
+  撤销立即生效（设备出示无效/撤销/耗尽的码 → `401 unauthorized`，
+  管理侧对未知 id 操作 → `404 not_found`——两条错误面分离）；
+  `used_count` 只在**校验通过后**递增，无效输入（400）不消耗次数。
+- **Pending 不进 `devices` 表**（migration 008 取舍）：批准前不分配虚拟 IP、
+  不进期望配置哈希、不出现在设备列表——待审批队列是唯一可视面
+  （`GET .../registrations`）。设备名唯一性跨 `devices` + `device_registrations`
+  两侧（重名 → `409 conflict`），拒绝后名字立即可复用。
+- **Pending 期心跳**：agent 持注册即签发的 agent 凭证正常心跳，
+  证据（`last_report_at` / `dataplane_evidence`）落注册申请行而非设备行，
+  心跳回执 `online_state = "pending"` 明示状态；
+  `desired` 端点对 Pending 设备 `404` 且消息点名 `pending approval`
+  ——**身份判定先于全局数据面开关**（`503 dataplane_not_configured`
+  不得掩盖 pending 信号），agent 退避重试，批准后本端点即返回计划。
+- **批准** = 此刻才发生状态变更：分配虚拟 IP（IPAM）、设备入册
+  （`devices` 表，`approved_at` 记审批时刻）、记录**一个**修订（§10.1）；
+  **凭证不轮换**——注册期签发的 agent 凭证原样沿用（设备 id 不变，
+  批准动作对设备透明，审批者无需传递任何秘密）。
+- **拒绝** = 纯状态清理：注册申请删除、agent 凭证一并作废（`401`）、
+  不记修订（期望配置从未包含过 Pending 申请）。
+- 审计事件：`bootstrap_token.created` / `bootstrap_token.revoked` /
+  `device.registered`（actor 为空——设备自举） / `device.approved` / `device.denied`。
+- Agent 侧流程见 [安装指南](../guide/install.md)：`bootstrap_token` + `device_name`
+  + `private_key_file` 三项配置即可开机自举，密钥对本机生成（§11.2），
+  私钥不出设备。
 
 ## 设备数据面计划（`GET /api/v1/agent/device/desired`，已实现）
 
@@ -141,10 +179,11 @@ agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
   超限 `429 too_many_requests`（每 email 15 分钟 5 次失败，成功登录清零）；
 - 密码 Argon2id 哈希存储（32 MiB/2 轮/4 并行）；**无默认管理员密码**，
   首个管理员仅经空库 `POST /api/v1/auth/bootstrap` 创建；
-- `/api/v1/enroll`（邀请 Token 即凭证）、`/api/v1/system/status` 与
+- `/api/v1/enroll`（邀请 Token 即凭证）、`/api/v1/device-registrations`
+  （自举码即凭证，§11.6）、`/api/v1/system/status` 与
   `/api/v1/agent/heartbeat` 与 `GET /api/v1/agent/device/desired`（Bearer
   `agent_token`）不属于管理 API；agent_token
-  由加入时签发、原始 Token 仅返回一次，服务端只存 SHA-256 摘要（`agent_tokens`
+  由加入/自举注册时签发、原始 Token 仅返回一次，服务端只存 SHA-256 摘要（`agent_tokens`
   表，migration 003）——agent 凭证与控制台会话是两条互不交叉的认证边界（§13.7）。
 
 ### API Token（外部机器凭据，已实现）
@@ -234,4 +273,4 @@ agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
 
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/agent/device/desired`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`、`POST /api/v1/system/backup`（§17.4）；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,aliases,agent_plan,device_revoke,audit,observability,recovery,backup}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET/POST /api/v1/networks/{id}/bootstrap-tokens`、`DELETE /api/v1/networks/{id}/bootstrap-tokens/{token_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/device-registrations`、`GET /api/v1/networks/{id}/registrations`、`POST /api/v1/networks/{id}/devices/{device_id}/approve`、`POST /api/v1/networks/{id}/devices/{device_id}/deny`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/agent/device/desired`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`、`POST /api/v1/system/backup`（§17.4）；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,aliases,agent_plan,device_revoke,device_registration,audit,observability,recovery,backup}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/自举码/注册申请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005/008 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。

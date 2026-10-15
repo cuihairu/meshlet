@@ -289,6 +289,125 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
 
   # Agent-facing: no console session required. Private key never leaves the client (§11.2).
+  /device-registrations:
+    post:
+      security: []
+      tags: [devices]
+      summary: Self-register a device with a bootstrap token (ZeroTier-style, §11.2b)
+      description: >
+        The device presents a long-lived, revocable bootstrap token (created by an
+        operator in the control center) and its public key. The server records a
+        pending registration — no virtual IP is allocated and the device does not
+        appear in the desired config until an operator approves it. The response
+        carries the agent Bearer credential, returned only once (§11.3); the
+        credential stays valid through approval (the device id does not change).
+        Unknown fields are rejected (no private key material may be sent, §11.2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterDevice" }
+      responses:
+        "201":
+          description: Registration recorded, status pending
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegisterDeviceResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+  /networks/{network_id}/registrations:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [devices]
+      summary: List pending device registrations (approval queue)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeviceRegistrationList" }
+        "404": { $ref: "#/components/responses/Error" }
+  /networks/{network_id}/devices/{device_id}/approve:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/DeviceId" }
+    post:
+      tags: [devices]
+      summary: Approve a pending registration — device becomes Active
+      description: >
+        Allocates the virtual IP now (ADR-004), promotes the registration to a
+        device row under the same device id (its agent credential keeps working),
+        and records a new config revision (ADR-009). Revoking the device later
+        follows the existing revoke flow.
+      responses:
+        "201":
+          description: Approved; virtual IP allocated, revision recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApproveRegistration" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /networks/{network_id}/devices/{device_id}/deny:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/DeviceId" }
+    post:
+      tags: [devices]
+      summary: Deny a pending registration — registration and credential removed
+      description: >
+        Removes the registration row and the agent credential issued at
+        registration. No config revision is recorded: the desired config never
+        contained pending devices.
+      responses:
+        "204": { description: Denied }
+        "404": { $ref: "#/components/responses/Error" }
+  /networks/{network_id}/bootstrap-tokens:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    post:
+      tags: [devices]
+      summary: Create a bootstrap token for device self-registration (§11.2b)
+      description: >
+        Long-lived, revocable, optionally use-count-limited enrollment entry
+        credential. The raw token is returned only in this response; the server
+        stores the SHA-256 digest (§11.3).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BootstrapTokenCreate" }
+      responses:
+        "201":
+          description: Created; token shown once
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootstrapTokenCreated" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    get:
+      tags: [devices]
+      summary: List bootstrap tokens (metadata only, no credential material)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BootstrapTokenList" }
+        "404": { $ref: "#/components/responses/Error" }
+  /networks/{network_id}/bootstrap-tokens/{token_id}:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { name: token_id, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [devices]
+      summary: Revoke a bootstrap token (stops further self-registrations; pending registrations unaffected)
+      responses:
+        "204": { description: Revoked }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /enroll:
     post:
       security: []
@@ -924,6 +1043,88 @@ components:
           type: integer
           description: Config revision produced by this enrollment (ADR-009)
         apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
+    RegisterDevice:
+      type: object
+      required: [bootstrap_token, device_name, public_key, platform]
+      additionalProperties: false
+      properties:
+        bootstrap_token: { type: string }
+        device_name: { type: string, minLength: 1 }
+        public_key: { type: string, minLength: 1 }
+        platform: { type: string, enum: [linux, windows] }
+    RegisterDeviceResponse:
+      type: object
+      required: [device_id, network_id, status, agent_token, requested_at]
+      properties:
+        device_id: { type: string, description: "dev-reg-N; kept as the device id after approval" }
+        network_id: { type: string }
+        status: { type: string, enum: [pending] }
+        agent_token:
+          type: string
+          description: >
+            64 hex chars; the agent's Bearer credential. Returned only here, only
+            once (§11.3). Stays valid through approval — the device id does not
+            change, so the credential is not rotated.
+        requested_at: { type: string, format: date-time }
+    DeviceRegistration:
+      type: object
+      required: [id, network_id, name, platform, public_key, requested_at]
+      properties:
+        id: { type: string }
+        network_id: { type: string }
+        name: { type: string }
+        platform: { type: string, enum: [linux, windows] }
+        public_key: { type: string }
+        requested_at: { type: string, format: date-time }
+        last_report_at: { type: [string, "null"], format: date-time, description: Pending devices keep reporting; the evidence lands here until approval }
+        dataplane_evidence: { $ref: "#/components/schemas/DataplaneEvidence" }
+    DeviceRegistrationList:
+      type: array
+      items: { $ref: "#/components/schemas/DeviceRegistration" }
+    ApproveRegistration:
+      type: object
+      required: [device_id, network_id, virtual_ipv4, fingerprint, revision_id, apply_status, approved_at]
+      properties:
+        device_id: { type: string }
+        network_id: { type: string }
+        virtual_ipv4: { type: string, format: ipv4, description: Allocated at approval time (ADR-004) }
+        fingerprint: { type: string, description: SHA-256 of the public key }
+        revision_id: { type: integer, description: Config revision that brings the device into the desired config (ADR-009) }
+        apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
+        approved_at: { type: string, format: date-time }
+    BootstrapTokenCreate:
+      type: object
+      required: []
+      properties:
+        max_uses: { type: integer, minimum: 1, description: Omit for unlimited (bootstrap tokens are long-lived entry credentials, not single-use invites) }
+    BootstrapTokenCreated:
+      type: object
+      required: [token_id, token]
+      properties:
+        token_id: { type: string, description: "bt-N; id sequence shared with device registrations, monotonic in mesh_meta" }
+        token: { type: string, description: 64 hex chars; only returned here, never stored plaintext (§11.3) }
+        max_uses: { type: [integer, "null"] }
+    BootstrapToken:
+      type: object
+      required: [id, network_id, used_count, created_at]
+      properties:
+        id: { type: string }
+        network_id: { type: string }
+        max_uses: { type: [integer, "null"] }
+        used_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        revoked_at: { type: [string, "null"], format: date-time }
+    BootstrapTokenList:
+      type: array
+      items: { $ref: "#/components/schemas/BootstrapToken" }
+    DataplaneEvidence:
+      type: [object, "null"]
+      description: Device-side dataplane readings (§7.5); null fields = not read.
+      properties:
+        tunnel_mtu: { type: [integer, "null"] }
+        nat_rules_present: { type: [boolean, "null"] }
+        nat_snat_rules_present: { type: [boolean, "null"] }
+        mtu_probe_payload: { type: [integer, "null"] }
     Heartbeat:
       type: object
       additionalProperties: false
@@ -936,8 +1137,8 @@ components:
       type: object
       required: [online_state, presence_source]
       properties:
-        online_state: { type: string, enum: [online, tunnel_only, offline] }
-        presence_source: { type: string, enum: [agent_report, handshake, enrollment, none] }
+        online_state: { type: string, enum: [online, tunnel_only, offline, pending], description: "pending = registration awaiting approval: no tunnel, agent keeps backing off" }
+        presence_source: { type: string, enum: [agent_report, handshake, enrollment, none, registration], description: "registration = the pending registration's own heartbeat evidence" }
         last_seen_at: { type: string, format: date-time }
     PeerConfig:
       type: object

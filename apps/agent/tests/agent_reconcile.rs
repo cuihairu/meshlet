@@ -553,6 +553,8 @@ fn agent_in(node: &Node, state_dir: &str) -> Agent {
         server_url: "http://127.0.0.1:1".into(),
         state_dir: state_dir.into(),
         device_token: Some("test-token".into()),
+        bootstrap_token: None,
+        device_name: None,
         dataplane: DataplaneConfig {
             enabled: true,
             ..DataplaneConfig::default()

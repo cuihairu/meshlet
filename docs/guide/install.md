@@ -123,7 +123,15 @@ server_url = "https://meshlet.example.com"
 state_dir = "/var/lib/meshlet-agent"
 # 设备凭证：加入（POST /api/v1/enroll）返回的 agent_token，仅此一次可见。
 # 写入本机文件（0600）；服务端只存 SHA-256 摘要，撤销即失效（ADR-010）。
+# 二选一：手工 enroll 后填这里，或走下面的自举注册（推荐批量部署）。
 device_token = "…enroll 响应里的 agent_token…"
+
+# 自举注册（ZeroTier 式，替代手工 enroll）：控制台先在网络里签发自举码
+# （管理端 → 自举码 → 签发；原始码仅显示一次），设备只配这两项 +
+# private_key_file，开机自动注册：控制中心出现待审批申请，管理员批准后
+# 该设备即拿到虚拟 IP 并进入期望配置——全程无需在设备间传递 agent_token。
+# bootstrap_token = "…控制台签发的自举码…"
+# device_name = "edge-office-1"
 
 # 数据面（ADR-007）：默认**全关**——关闭时 agent 只打印状态、不碰内核。
 # 打开后 agent 启动即用 device_token 拉取自身计划
@@ -137,6 +145,15 @@ device_token = "…enroll 响应里的 agent_token…"
 # hub_endpoint = "203.0.113.10:51820"            # hub 可达地址（服务端未通告时兜底）
 # poll_interval_secs = 30                        # 轮询间隔（秒）
 ```
+
+**自举注册的凭证解析顺序**（`device_token` → `{state_dir}/device_token` →
+`bootstrap_token` 注册）：agent 首次启动无凭证时持自举码注册
+（`POST /api/v1/device-registrations`），返回的 agent_token 落盘
+`{state_dir}/device_token`（0600）后续启动复用——自举码只需配置一次；
+WireGuard 密钥对本机生成（已有 `private_key_file` 则只推导公钥，
+重装不换钥匙，私钥不出设备）。**批准前**设备处于待审批：计划端点 404
+`pending approval`，agent 退避重试并继续心跳（证据在待审批列表可见），
+管理员批准后无需任何设备侧操作，下一个轮询周期自动拉到计划。
 
 **服务端必须先开数据面**，否则计划端点返回 `503 dataplane_not_configured`
 （agent 退避重试，不会把「未配置」当成「已生效」）。hub 侧
@@ -180,8 +197,9 @@ journalctl -u meshlet-server -f
 
 **agent 单元**（`deploy/systemd/meshlet-agent.service`）：agent 二进制已实装
 数据面（拉计划 → 对账 → 应用 → 心跳），但单元的**真机部署走查尚未做**——
-安装启用前请确认：`[dataplane] enabled = true`、`device_token` 已写入
-`/etc/meshlet/agent.toml`（0600）、`private_key_file` 存在（0600），
+安装启用前请确认：`[dataplane] enabled = true`、`device_token` 或
+`bootstrap_token` 之一已写入 `/etc/meshlet/agent.toml`（0600）、
+`private_key_file` 存在（0600；自举注册时可不存在，agent 会生成），
 并按单元注释授予 `CAP_NET_ADMIN`。启动后核对 `applied.json` 与
 `wg show` 即可确认是否已按期望重放。**此段待真机验证。**
 

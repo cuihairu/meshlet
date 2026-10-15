@@ -12,7 +12,7 @@
 | | Console 会话（浏览器） | API Token（外部机器） | Agent Token（设备） |
 |---|---|---|---|
 | 形态 | `meshlet_session` Cookie | `Authorization: Bearer mlt_…` | `Authorization: Bearer <agent_token>` |
-| 适用 | 控制台页面 | 外部系统长期调用 | 仅 `POST /api/v1/agent/heartbeat` |
+| 适用 | 控制台页面 | 外部系统长期调用 | 仅 agent 端点（`heartbeat` / `device/desired`） |
 | 落库材料 | 仅摘要 | 仅 SHA-256 摘要（migration 004） | 仅 SHA-256 摘要（migration 003） |
 | 互相替代 | **否**：带 Cookie 的请求按会话校验，无效一律 401，**不回退**到 Bearer | 否 | 否 |
 
@@ -30,7 +30,8 @@
   生产 HTTPS 反代后由 `cookie_secure = true` 加 `Secure`。
 - 登录限流：每 email 15 分钟 5 次失败 → 429；成功登录清零。失败统一 401
   （不区分用户不存在/密码错误）。
-- 公开端点：`GET /api/v1/system/status`、`POST /api/v1/enroll`。
+- 公开端点：`GET /api/v1/system/status`、`POST /api/v1/enroll`、
+  `POST /api/v1/device-registrations`（自举码即凭证）。
 - `POST /api/v1/auth/bootstrap` 仅空库可用：成功 201，已有用户 409。
 
 ## 2. 控制端点（当前已实现）
@@ -61,7 +62,12 @@
 | POST | `/api/v1/networks` | 建网络（CIDR 校验） |
 | POST | `/api/v1/networks/{id}/invites` | 生成一次性邀请（201） |
 | DELETE | `/api/v1/networks/{id}/invites/{invite_id}` | 撤销邀请（204） |
+| GET / POST | `/api/v1/networks/{id}/bootstrap-tokens` | 自举码列表 / 签发（原始码仅签发响应一次） |
+| DELETE | `/api/v1/networks/{id}/bootstrap-tokens/{token_id}` | 撤销自举码（204） |
 | POST | `/api/v1/enroll` | 设备加入（邀请 Token + 公钥；201，返回 `agent_token` + `revision_id`） |
+| GET | `/api/v1/networks/{id}/registrations` | 待审批自举注册列表（含 Pending 心跳证据） |
+| POST | `/api/v1/networks/{id}/devices/{device_id}/approve` | 批准注册（201：分配 IP + 记修订；凭证不轮换） |
+| POST | `/api/v1/networks/{id}/devices/{device_id}/deny` | 拒绝注册（204：申请与凭证清理，无修订） |
 | GET / POST | `/api/v1/networks/{id}/routes` | 路由列表 / 创建（201） |
 | GET / DELETE | `/api/v1/networks/{id}/routes/{route_id}` | 详情 / 删除（204） |
 | POST | `/api/v1/networks/{id}/devices/{device_id}/revoke` | 撤销设备（202 + `RevisionRef`） |
@@ -70,7 +76,8 @@
 | POST | `/api/v1/agent/heartbeat` | Agent 心跳（仅 agent_token） |
 
 **未实现（契约里列了、服务端没有，调用方不得依赖）**：网络/设备/路由/别名的
-`PATCH` 更新、`rotate-key`、aliases、diagnostics、`GET /networks/{id}/status`。
+`PATCH` 更新、`rotate-key`、`GET /networks/{id}/status`（aliases 与 diagnostics
+已实现，见 [API 契约](../architecture/api-contract.md)）。
 设备**没有删除端点**——只能 `revoke`（状态 + 凭证失效 + 出期望配置）。
 
 ## 3. 统一错误响应怎么读
@@ -130,6 +137,7 @@ meshlet 提供的是**修订号**而非乐观锁。
 |---|---|
 | `POST /api/v1/networks` | 建网络（新 overlay） |
 | `POST /api/v1/enroll`（经邀请） | 设备加入 → 新修订 |
+| `POST /networks/{id}/devices/{device_id}/approve` | 批准自举注册 → 设备入册（分配 IP）+ 新修订 |
 | `POST` / `DELETE /networks/{id}/routes[/{route_id}]` | LAN 路由增删 → 新修订 |
 | `POST /networks/{id}/devices/{device_id}/revoke` | 设备撤销 → 状态 revoked + agent 凭证**立即失效** + 其已发布 LAN 路由**一并移除** + 新修订 |
 | `POST /networks/{id}/config-revisions/{n}/apply` | 把期望配置应用到实际环境 |
@@ -142,6 +150,7 @@ meshlet 提供的是**修订号**而非乐观锁。
 | 全部 GET | 只读 |
 | `POST` / `DELETE /api/v1/auth/tokens[/{id}]` | 只影响控制面认证（撤 Token 不改网络配置） |
 | `POST` / `DELETE /networks/{id}/invites[/{invite_id}]` | 邀请是**未消费的凭证**：撤销未用邀请不产生修订；已消费邀请对应的设备需单独 revoke |
+| `POST /api/v1/device-registrations`、`POST .../deny`、自举码签发/撤销 | 注册流只动待审批队列与凭证：Pending **不进期望配置哈希**；拒绝（申请+凭证清理）与自举码增删均无修订 |
 | `POST /auth/login` / `logout`、`GET /auth/me` | 会话生命周期 |
 | `POST /api/v1/agent/heartbeat` | 只更新在线状态（presence），不进期望配置 |
 | `GET /api/v1/system/status` | 公开只读 |

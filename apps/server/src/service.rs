@@ -8,10 +8,10 @@
 
 use meshlet_api_types::ErrorResponse;
 use meshlet_domain::{
-    generate_token, AliasError, AliasMapping, AliasMappingId, DataplaneEvidence,
-    DesiredStateStatus, Device, DeviceId, DeviceRegistry, Invite, Ipam, Ipv4Cidr, LanRoute,
-    LanRouteId, Network, Platform, RegistryError, ReturnPathMode, RouteMode, Timestamp,
-    TranslationMode,
+    generate_token, token_hash, AliasError, AliasMapping, AliasMappingId, BootstrapToken,
+    DataplaneEvidence, DesiredStateStatus, Device, DeviceId, DeviceRegistration, DeviceRegistry,
+    Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network, Platform, RegistryError, ReturnPathMode,
+    RouteMode, Timestamp, TranslationMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -51,6 +51,10 @@ pub struct DeviceView {
     pub fingerprint: String,
     pub status: String,
     pub created_at: String,
+    /// 批准时刻：自举注册路径 = 审批时刻（created_at 是申请时刻）；邀请入会
+    /// 路径为 `None`（两时刻同值，无需重复展示）。控制台据此区分「刚批准」
+    /// 与「已运行一段时间」。
+    pub approved_at: Option<String>,
     /// 最后证据时间（加入/心跳/上报到达时刻）——控制台「最后在线时间」。
     pub last_seen_at: Option<String>,
     /// 在线状态判定：`online` / `tunnel_only` / `offline`（数据来源见下）。
@@ -81,6 +85,88 @@ pub struct CreateInviteResponse {
     /// 原始 Token **仅此一次**返回；服务端只存 SHA-256 摘要（§11.3）。
     pub token: String,
     pub expires_at: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// 设备自举注册（ZeroTier 式：自举码注册 → Pending → 控制中心审批/拒绝）
+// ---------------------------------------------------------------------------
+
+/// 自举码（bootstrap token）：长期、可复用的注册入口凭据，区别于一次性邀请。
+#[derive(Debug, Deserialize)]
+pub struct CreateBootstrapTokenRequest {
+    /// 使用次数上限；缺省不限次（自举码是长期入口，不是单次邀请）。
+    pub max_uses: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateBootstrapTokenResponse {
+    pub token_id: String,
+    /// 原始自举码 **仅此一次**返回；服务端只存 SHA-256 摘要（§11.3）。
+    pub token: String,
+    pub max_uses: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BootstrapTokenView {
+    pub id: String,
+    pub network_id: String,
+    pub max_uses: Option<u32>,
+    pub used_count: u32,
+    pub created_at: String,
+    pub revoked_at: Option<String>,
+}
+
+/// 设备自举注册请求（`POST /device-registrations`，公开端点）。
+/// `deny_unknown_fields` 同 [EnrollRequest]：客户端尝试发送私钥即被 400 拒绝
+/// （私钥不出客户端，§11.2）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterDeviceRequest {
+    pub bootstrap_token: String,
+    pub device_name: String,
+    pub public_key: String,
+    pub platform: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RegisterDeviceResponse {
+    pub device_id: String,
+    pub network_id: String,
+    /// 恒为 `pending`（控制中心批准前不参与数据面）。
+    pub status: String,
+    /// Agent API 凭证（Bearer）：**仅此一次**返回。Pending 期可心跳上报
+    /// （证明 agent 活着），但拉不到计划——批准前不进数据面。
+    pub agent_token: String,
+    pub requested_at: String,
+}
+
+/// 待审批申请视图（控制台设备页与设备列表共用；`status = "pending"`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RegistrationView {
+    pub id: String,
+    pub network_id: String,
+    pub name: String,
+    pub platform: String,
+    pub public_key: String,
+    pub requested_at: String,
+    pub last_report_at: Option<String>,
+    /// agent 心跳回传的数据面证据（Pending 设备尚无 `devices` 行，证据只在这里）。
+    pub dataplane_evidence: Option<DataplaneEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApproveRegistrationResponse {
+    pub device_id: String,
+    pub network_id: String,
+    /// 批准时刻才分配的 overlay 地址（ADR-004 顺序分配）。
+    pub virtual_ipv4: Ipv4Addr,
+    /// 设备公钥指纹（SHA-256；服务端不存私钥侧材料）。
+    pub fingerprint: String,
+    /// **不含 agent 凭证**：注册时签发的凭证绑定设备 id（批准沿用同一 id），
+    /// 设备端继续使用原凭证拉计划；轮换只会让无人能送达的新凭证作废设备。
+    pub revision_id: u64,
+    pub apply_status: String,
+    pub approved_at: String,
 }
 
 /// 加入请求：**不允许携带任何私钥字段**（`deny_unknown_fields` 强制，
@@ -190,6 +276,12 @@ pub enum ServiceError {
     DiagnosticsNotRun(String),
     #[error("invalid invite token")]
     InvalidInviteToken,
+    /// 设备出示的自举码无效/已撤销/已耗尽（401：凭据问题，非资源缺失——
+    /// 管理侧按 id 撤销时才走 `BootstrapTokenNotFound` 404）。
+    #[error("invalid bootstrap token")]
+    InvalidBootstrapToken,
+    #[error("bootstrap token {0} not found")]
+    BootstrapTokenNotFound(String),
     #[error("{0}")]
     InvalidCidr(String),
     #[error("{0}")]
@@ -211,6 +303,7 @@ impl ServiceError {
         match self {
             ServiceError::NetworkNotFound(_)
             | ServiceError::InviteNotFound(_)
+            | ServiceError::BootstrapTokenNotFound(_)
             | ServiceError::DeviceNotFound(_)
             | ServiceError::RouteNotFound(_)
             | ServiceError::AliasNotFound(_)
@@ -221,6 +314,10 @@ impl ServiceError {
             ServiceError::InvalidInviteToken => ErrorResponse::new(
                 meshlet_api_types::ErrorCode::NotFound,
                 "invite token is not valid",
+            ),
+            ServiceError::InvalidBootstrapToken => ErrorResponse::new(
+                meshlet_api_types::ErrorCode::Unauthorized,
+                "bootstrap token is not valid",
             ),
             ServiceError::InvalidCidr(_) | ServiceError::InvalidInput(_) => ErrorResponse::new(
                 meshlet_api_types::ErrorCode::ValidationFailed,
@@ -297,6 +394,14 @@ pub struct MeshState {
     pub(crate) presence_thresholds: meshlet_domain::PresenceThresholds,
     /// 期望配置修订簿记（ADR-009 状态机，§10）。
     pub(crate) ledger: meshlet_domain::ConfigLedger,
+    /// 自举码（按 Token 摘要索引；摘要索引纪律同邀请，§11.3）。
+    pub(crate) bootstrap_tokens: std::collections::HashMap<String, meshlet_domain::BootstrapToken>,
+    /// 自举码序列（`bt-N`，持久化到 `mesh_meta`，已删 id 不复用）。
+    bootstrap_seq: u64,
+    /// 注册申请序列（`dev-reg-N`，持久化到 `mesh_meta`，已删 id 不复用）。
+    /// 前缀与 `bt-` 不冲突，故二者各自单调即可——不用共享计数器。
+    /// 待审批申请本体在 `registry` 内（[DeviceRegistry]）。
+    registration_seq: u64,
 }
 
 impl MeshState {
@@ -311,6 +416,9 @@ impl MeshState {
             route_seq: 0,
             presence_thresholds,
             ledger: meshlet_domain::ConfigLedger::new(),
+            bootstrap_tokens: HashMap::new(),
+            bootstrap_seq: 0,
+            registration_seq: 0,
         }
     }
 
@@ -347,6 +455,38 @@ impl MeshState {
     /// 当前路由 id 序列（持久化到 `mesh_meta`，重启不归零、不重号）。
     pub(crate) fn route_seq(&self) -> u64 {
         self.route_seq
+    }
+
+    /// 当前自举码序列（持久化到 `mesh_meta`）。
+    pub(crate) fn bootstrap_seq(&self) -> u64 {
+        self.bootstrap_seq
+    }
+
+    pub(crate) fn set_bootstrap_seq(&mut self, seq: u64) {
+        self.bootstrap_seq = seq;
+    }
+
+    /// 当前注册申请序列（持久化到 `mesh_meta`）。
+    pub(crate) fn registration_seq(&self) -> u64 {
+        self.registration_seq
+    }
+
+    pub(crate) fn set_registration_seq(&mut self, seq: u64) {
+        self.registration_seq = seq;
+    }
+
+    pub(crate) fn registration_count(&self) -> usize {
+        self.registry.registrations().len()
+    }
+
+    /// 启动重建：灌回一条待审批的注册申请（不进 IPAM、不进期望配置）。
+    pub(crate) fn restore_registration(
+        &mut self,
+        r: DeviceRegistration,
+    ) -> Result<(), ServiceError> {
+        self.registry
+            .add_registration(r)
+            .map_err(ServiceError::from)
     }
 
     /// 启动重建（§17.3）：灌回一个网络与其 IPAM（hub 重算，地址逐一保留——
@@ -675,6 +815,284 @@ pub fn revoke_invite(
         .map_err(|e| ServiceError::Conflict(e.to_string()))
 }
 
+// ---------------------------------------------------------------------------
+// 设备自举注册（ZeroTier 式：自举码注册 → Pending → 控制中心审批/拒绝）
+// ---------------------------------------------------------------------------
+
+/// 创建自举码（控制中心侧）：长期、可复用的注册入口凭据。原始自举码
+/// **仅此一次**返回，服务端只存 SHA-256 摘要（§11.3，同邀请）。
+pub fn create_bootstrap_token(
+    state: &mut MeshState,
+    network_id: &str,
+    req: CreateBootstrapTokenRequest,
+) -> Result<CreateBootstrapTokenResponse, ServiceError> {
+    state.network(network_id)?; // 网络必须存在
+    if req.max_uses == Some(0) {
+        return Err(ServiceError::InvalidInput(
+            "max_uses must be at least 1, or unset for unlimited".into(),
+        ));
+    }
+    // 自举码序列（`bootstrap_seq`，持久化到 mesh_meta）：重启不重号、不复用。
+    let seq = state.bootstrap_seq() + 1;
+    let raw = generate_token();
+    let token = BootstrapToken {
+        id: meshlet_domain::BootstrapTokenId(format!("bt-{seq}")),
+        network_id: meshlet_domain::NetworkId(network_id.to_string()),
+        token_hash: token_hash(&raw),
+        max_uses: req.max_uses,
+        used_count: 0,
+        created_at: now(),
+        revoked_at: None,
+    };
+    let view = CreateBootstrapTokenResponse {
+        token_id: token.id.to_string(),
+        token: raw,
+        max_uses: req.max_uses,
+    };
+    // 只存摘要（§11.3）：索引键即 token_hash，原始自举码不落地。
+    state
+        .bootstrap_tokens
+        .insert(token.token_hash.clone(), token);
+    state.set_bootstrap_seq(seq);
+    Ok(view)
+}
+
+/// 撤销自举码：之后任何用它发起的注册都被拒绝（已落地的 Pending 申请不受
+/// 影响——审批流程独立于入口凭据）。返回撤销时刻供 handler 落库。
+pub fn revoke_bootstrap_token(
+    state: &mut MeshState,
+    network_id: &str,
+    token_id: &str,
+) -> Result<Timestamp, ServiceError> {
+    state.network(network_id)?;
+    let target = state
+        .bootstrap_tokens
+        .values_mut()
+        .find(|t| t.id.to_string() == token_id)
+        .ok_or_else(|| ServiceError::BootstrapTokenNotFound(token_id.to_string()))?;
+    if target.revoked_at.is_some() {
+        return Err(ServiceError::Conflict(
+            "bootstrap token already revoked".into(),
+        ));
+    }
+    let revoked_at = now();
+    target.revoked_at = Some(revoked_at.clone());
+    Ok(revoked_at)
+}
+
+/// 自举码列表（控制台展示用量；只含元数据，不含摘要以外的任何凭据材料）。
+pub fn list_bootstrap_tokens(
+    state: &MeshState,
+    network_id: &str,
+) -> Result<Vec<BootstrapTokenView>, ServiceError> {
+    state.network(network_id)?;
+    let mut views: Vec<BootstrapTokenView> = state
+        .bootstrap_tokens
+        .values()
+        .filter(|t| t.network_id.to_string() == network_id)
+        .map(|t| BootstrapTokenView {
+            id: t.id.to_string(),
+            network_id: t.network_id.to_string(),
+            max_uses: t.max_uses,
+            used_count: t.used_count,
+            created_at: t.created_at.clone(),
+            revoked_at: t.revoked_at.clone(),
+        })
+        .collect();
+    // 稳定输出：按创建时刻排序（`bt-N` 文本序在位数不同时不等价于创建序）。
+    views.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+    Ok(views)
+}
+
+/// 设备自举注册（公开端点）：持自举码换取 agent 凭证，落 **Pending** 申请。
+/// 批准前不分配虚拟 IP、不进期望配置（`device_plan` 只读 `devices`），
+/// 数据面对 Pending 设备完全不可见（migration 008 头注释的三条理由）。
+pub fn register_device(
+    state: &mut MeshState,
+    req: RegisterDeviceRequest,
+) -> Result<RegisterDeviceResponse, ServiceError> {
+    let platform = match req.platform.as_str() {
+        "linux" => Platform::Linux,
+        "windows" => Platform::Windows,
+        other => {
+            return Err(ServiceError::InvalidInput(format!(
+                "unsupported platform {other:?}"
+            )));
+        }
+    };
+    if req.device_name.trim().is_empty() {
+        return Err(ServiceError::InvalidInput(
+            "device_name must not be empty".into(),
+        ));
+    }
+    if req.public_key.trim().is_empty() {
+        return Err(ServiceError::InvalidInput(
+            "public_key must not be empty".into(),
+        ));
+    }
+
+    // 以摘要定位自举码并校验（持锁内原子完成，闭合并发竞态）。
+    let token = state
+        .bootstrap_tokens
+        .get_mut(&token_hash(&req.bootstrap_token))
+        .ok_or(ServiceError::InvalidBootstrapToken)?;
+    if token.revoked_at.is_some() {
+        return Err(ServiceError::InvalidBootstrapToken);
+    }
+    if let Some(max) = token.max_uses {
+        if token.used_count >= max {
+            return Err(ServiceError::InvalidBootstrapToken);
+        }
+    }
+    token.used_count += 1;
+    let network_id = token.network_id.to_string();
+
+    let ts = now();
+    let seq = state.registration_seq() + 1;
+    let registration = DeviceRegistration {
+        id: meshlet_domain::DeviceId(format!("dev-reg-{seq}")),
+        network_id: meshlet_domain::NetworkId(network_id.clone()),
+        name: req.device_name.clone(),
+        public_key: req.public_key.clone(),
+        platform,
+        requested_at: ts.clone(),
+        // 注册即首次上报（请求到达时刻）。
+        last_report_at: Some(ts.clone()),
+        dataplane_evidence: None,
+    };
+    // 名字唯一性跨 devices + registrations 两侧（域层 `add_registration`）。
+    state.registry.add_registration(registration.clone())?;
+    state.set_registration_seq(seq);
+
+    Ok(RegisterDeviceResponse {
+        device_id: registration.id.to_string(),
+        network_id,
+        status: "pending".to_string(),
+        agent_token: String::new(), // 由 handler 用 AgentTokenStore 签发后回填
+        requested_at: ts,
+    })
+}
+
+/// 批准注册申请：**沿用注册时分配的设备 id** 转入 `devices`（`agent_tokens`
+/// 等引用无需迁移），此刻才分配 overlay 地址（IPAM 顺序分配），并记录新
+/// 修订——期望配置随之把新设备纳入数据面（§10.1/ADR-009）。
+///
+/// **凭证不轮换**：注册期签发的 agent 凭证原样沿用（设备 id 不变，批准
+/// 动作对设备透明，审批者无需传递任何秘密）；拒绝路径才作废凭证。
+pub fn approve_registration(
+    state: &mut MeshState,
+    network_id: &str,
+    device_id: &str,
+) -> Result<(DeviceRegistration, Device, u64), ServiceError> {
+    state.network(network_id)?;
+    let registration = state
+        .registry
+        .find_registration(&meshlet_domain::DeviceId(device_id.to_string()))
+        .filter(|r| r.network_id.to_string() == network_id)
+        .cloned()
+        .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
+
+    // 先摘除申请（名字唯一性检查跨两侧，摘除后同名转入 devices 才不撞自己）。
+    let registration = state
+        .registry
+        .remove_registration(&registration.id)
+        .expect("just found");
+
+    let ipam = state
+        .ipams
+        .get_mut(network_id)
+        .ok_or_else(|| ServiceError::NetworkNotFound(network_id.to_string()))?;
+    let virtual_ip = match ipam.allocate() {
+        Ok(ip) => ip,
+        // IPAM 失败则把申请放回去：审批失败不得吞掉 Pending 申请。
+        Err(e) => {
+            state.registry.add_registration(registration.clone())?;
+            return Err(ServiceError::Conflict(e.to_string()));
+        }
+    };
+
+    let ts = now();
+    let device = Device {
+        id: registration.id.clone(),
+        network_id: meshlet_domain::NetworkId(network_id.to_string()),
+        name: registration.name.clone(),
+        virtual_ipv4: virtual_ip,
+        public_key: registration.public_key.clone(),
+        platform: registration.platform,
+        status: meshlet_domain::DeviceStatus::Active,
+        // Pending 期的心跳证据直接带入：批准后 agent 无缝续报。
+        last_seen_at: registration.last_report_at.clone(),
+        last_handshake_at: None,
+        last_report_at: registration.last_report_at.clone(),
+        dataplane_evidence: registration.dataplane_evidence.clone(),
+        // created_at = 申请时刻（Pending 起始），approved_at = 审批时刻。
+        created_at: registration.requested_at.clone(),
+        approved_at: Some(ts.clone()),
+        revoked_at: None,
+    };
+    if let Err(e) = state.registry.add(device.clone()) {
+        // 登记失败（例如 IPAM 分配到重复地址）则回收地址并把申请放回去。
+        if let Some(ipam) = state.ipams.get_mut(network_id) {
+            ipam.release(virtual_ip);
+        }
+        state.registry.add_registration(registration.clone())?;
+        return Err(e.into());
+    }
+    // 新设备改变期望配置：记录新修订（版本号网络内递增，§10.4）。
+    let revision_id = record_revision(state, network_id)?;
+    Ok((registration, device, revision_id))
+}
+
+/// 拒绝注册申请：摘除申请并返回（handler 据此清理 `device_registrations`
+/// 行与 Pending 凭证）。**不记修订**（期望配置从未包含过 Pending 申请，
+/// 拒绝是纯状态清理，§10.1「DB 写入 ≠ 生效」的反向：无生效即无修订）。
+pub fn deny_registration(
+    state: &mut MeshState,
+    network_id: &str,
+    device_id: &str,
+) -> Result<DeviceRegistration, ServiceError> {
+    state.network(network_id)?;
+    let registration = state
+        .registry
+        .find_registration(&meshlet_domain::DeviceId(device_id.to_string()))
+        .filter(|r| r.network_id.to_string() == network_id)
+        .cloned()
+        .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
+    Ok(state
+        .registry
+        .remove_registration(&registration.id)
+        .expect("just found"))
+}
+
+/// Pending 申请视图列表（控制台设备页「待审批」分区；`RegistrationView`
+/// 不含虚拟 IP——批准前本就未分配，避免占位假值）。
+pub fn list_registrations(
+    state: &MeshState,
+    network_id: &str,
+) -> Result<Vec<RegistrationView>, ServiceError> {
+    state.network(network_id)?;
+    Ok(state
+        .registry
+        .registrations()
+        .iter()
+        .filter(|r| r.network_id.to_string() == network_id)
+        .map(|r| RegistrationView {
+            id: r.id.to_string(),
+            network_id: r.network_id.to_string(),
+            name: r.name.clone(),
+            platform: match r.platform {
+                Platform::Linux => "linux",
+                Platform::Windows => "windows",
+            }
+            .to_string(),
+            public_key: r.public_key.clone(),
+            requested_at: r.requested_at.clone(),
+            last_report_at: r.last_report_at.clone(),
+            dataplane_evidence: r.dataplane_evidence.clone(),
+        })
+        .collect())
+}
+
 /// 设备加入（§11.2 第 3-9 步的控制平面部分）。
 /// 私钥不出客户端：本函数只接收公钥；服务端登记公钥 + 指纹、分配虚拟 IP。
 pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollResponse, ServiceError> {
@@ -733,6 +1151,7 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         last_report_at: None,
         dataplane_evidence: None,
         created_at: ts.clone(),
+        approved_at: None,
         revoked_at: None,
     };
     state.registry.add(device.clone())?;
@@ -768,6 +1187,26 @@ pub fn record_agent_report(
         .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
     apply_agent_report(device, last_handshake_at, dataplane, &now);
     Ok(evaluate_presence(device, &now, &state.presence_thresholds))
+}
+
+/// Pending 申请的 agent 心跳（§7.5：证据不因 Pending 而丢弃）：只更新
+/// `last_report_at` 与数据面证据。无隧道期握手读数无从谈起，`last_handshake_at`
+/// 对 Pending 申请不采集（批准后从零开始，与 `devices.last_handshake_at` 一致）。
+pub fn record_pending_agent_report(
+    state: &mut MeshState,
+    device_id: &DeviceId,
+    dataplane: Option<DataplaneEvidence>,
+    now: Timestamp,
+) -> Result<(), ServiceError> {
+    let registration = state
+        .registry
+        .find_registration_mut(device_id)
+        .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
+    if let Some(evidence) = dataplane {
+        registration.dataplane_evidence = Some(evidence);
+    }
+    registration.last_report_at = Some(now);
+    Ok(())
 }
 
 /// 把一次上报写到设备记录（内部共享）。证据与握手时间同一纪律：请求未携带
@@ -1320,7 +1759,7 @@ fn to_route_view(
 // 辅助
 // ---------------------------------------------------------------------------
 
-fn fingerprint_of(public_key: &str) -> String {
+pub(crate) fn fingerprint_of(public_key: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(public_key.as_bytes());
@@ -1373,6 +1812,7 @@ fn to_device_view(
         }
         .to_string(),
         created_at: d.created_at.clone(),
+        approved_at: d.approved_at.clone(),
         last_seen_at: d.last_seen_at.clone(),
         online_state: presence.state.as_str().to_string(),
         presence_source: presence.source.as_str().to_string(),

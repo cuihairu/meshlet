@@ -27,6 +27,47 @@ pub fn fetch_plan(server_url: &str, token: &str) -> Result<DevicePlan, String> {
     serde_json::from_str(&body).map_err(|e| format!("parse the desired plan: {e}"))
 }
 
+/// 自举注册响应（`POST /api/v1/device-registrations`）。
+#[derive(Debug, serde::Deserialize)]
+pub struct RegisterDeviceResponse {
+    pub device_id: String,
+    pub network_id: String,
+    /// 恒为 `pending`（控制中心批准前不参与数据面）。
+    pub status: String,
+    /// Agent API 凭证，**仅此一次**下发。
+    pub agent_token: String,
+    pub requested_at: String,
+}
+
+/// 自举注册：持自举码上报本机公钥，落 Pending 申请等控制中心审批。
+///
+/// 401（自举码无效/已撤销/已耗尽）、409（设备名冲突）等都会以服务端
+/// 分类错误原样报出——这是运维能直接读懂的信息，不做本地转译。
+pub fn register_device(
+    server_url: &str,
+    bootstrap_token: &str,
+    device_name: &str,
+    public_key: &str,
+    platform: &str,
+) -> Result<RegisterDeviceResponse, String> {
+    let url = format!(
+        "{}/api/v1/device-registrations",
+        server_url.trim_end_matches('/')
+    );
+    let payload = serde_json::json!({
+        "bootstrap_token": bootstrap_token,
+        "device_name": device_name,
+        "public_key": public_key,
+        "platform": platform,
+    })
+    .to_string();
+    let req = ureq::post(&url)
+        .set("content-type", "application/json")
+        .send(payload.as_bytes());
+    let body = read(req)?;
+    serde_json::from_str(&body).map_err(|e| format!("parse the registration response: {e}"))
+}
+
 /// 心跳上报：返回服务端在线判定回执（仅用于日志/排查）。
 ///
 /// 失败一律以 `Err` 报出（含 401/503 等分类），由调用方决定是否重试。

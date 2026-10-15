@@ -36,8 +36,10 @@ use serde::Serialize;
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service::{
-    create_invite, create_network, create_route, delete_route, enroll, get_route, list_devices,
-    list_networks, list_routes, revoke_device, revoke_invite,
+    approve_registration, create_bootstrap_token, create_invite, create_network, create_route,
+    delete_route, deny_registration, enroll, get_route, list_bootstrap_tokens, list_devices,
+    list_networks, list_registrations, list_routes, register_device, revoke_bootstrap_token,
+    revoke_device, revoke_invite,
 };
 
 /// `GET /api/v1/system/status` 响应（契约见 docs/architecture/api-contract.md）。
@@ -497,6 +499,293 @@ async fn enroll_handler(
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
+// ---------------------------------------------------------------------------
+// 设备自举注册（ZeroTier 式：自举码注册 → Pending → 控制中心审批/拒绝）
+// ---------------------------------------------------------------------------
+
+async fn create_bootstrap_token_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path(network_id): axum::extract::Path<String>,
+    Json(req): Json<service::CreateBootstrapTokenRequest>,
+) -> Result<(StatusCode, Json<service::CreateBootstrapTokenResponse>), service::ServiceError> {
+    let _persist = state.persist.lock().await;
+    let (resp, token, seq) = {
+        let mut guard = state.mesh.lock().unwrap();
+        let resp = create_bootstrap_token(&mut guard, &network_id, req)?;
+        let token = guard
+            .bootstrap_tokens
+            .get(&meshlet_domain::token_hash(&resp.token))
+            .expect("just created")
+            .clone();
+        (resp, token, guard.bootstrap_seq())
+    };
+    // 摘要 + 序列落库（§17.3：重启后自举码继续可用，`bt-N` 不重号）。
+    crate::persist::save_bootstrap_token(state.auth.pool(), &token, seq)
+        .await
+        .map_err(crate::persist::internal)?;
+    // 原始自举码不进审计（§16.5，同邀请 Token 纪律）。
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "bootstrap_token.created",
+        "bootstrap_token",
+        Some(&resp.token_id),
+        Some(serde_json::json!({
+            "network_id": network_id,
+            "max_uses": resp.max_uses,
+        })),
+    )
+    .await?;
+    crate::op_log!(
+        info,
+        "network",
+        "create_bootstrap_token",
+        &network_id,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+async fn list_bootstrap_tokens_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    axum::extract::Path(network_id): axum::extract::Path<String>,
+) -> Result<Json<Vec<service::BootstrapTokenView>>, service::ServiceError> {
+    let guard = state.mesh.lock().unwrap();
+    Ok(Json(list_bootstrap_tokens(&guard, &network_id)?))
+}
+
+async fn revoke_bootstrap_token_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path((network_id, token_id)): axum::extract::Path<(String, String)>,
+) -> Result<StatusCode, service::ServiceError> {
+    let _persist = state.persist.lock().await;
+    let revoked_at = {
+        let mut guard = state.mesh.lock().unwrap();
+        revoke_bootstrap_token(&mut guard, &network_id, &token_id)?
+    };
+    crate::persist::revoke_bootstrap_token_db(
+        state.auth.pool(),
+        &meshlet_domain::BootstrapTokenId(token_id.clone()),
+        &revoked_at,
+    )
+    .await
+    .map_err(crate::persist::internal)?;
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "bootstrap_token.revoked",
+        "bootstrap_token",
+        Some(token_id.as_str()),
+        Some(serde_json::json!({ "network_id": network_id })),
+    )
+    .await?;
+    crate::op_log!(
+        info,
+        "network",
+        "revoke_bootstrap_token",
+        &network_id,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 设备自举注册（公开端点，设备凭自举码而来，无用户会话）。落 Pending
+/// 申请并签发 agent 凭证——凭证**仅此一次**返回（§11.3）。
+async fn register_device_handler(
+    State(state): State<SharedAppState>,
+    Json(req): Json<service::RegisterDeviceRequest>,
+) -> Result<(StatusCode, Json<service::RegisterDeviceResponse>), service::ServiceError> {
+    let _persist = state.persist.lock().await;
+    // 摘要先行：req 被 service 消费后仍需定位刚被递增的自举码以落库。
+    let token_hash = meshlet_domain::token_hash(&req.bootstrap_token);
+    let (mut resp, registration, seq, token, bootstrap_seq) = {
+        let mut guard = state.mesh.lock().unwrap();
+        let resp = register_device(&mut guard, req)?;
+        let registration = guard
+            .registry
+            .find_registration(&meshlet_domain::DeviceId(resp.device_id.clone()))
+            .expect("just registered")
+            .clone();
+        // 使用次数随注册递增，同步落库——否则重启后计数回退，max_uses
+        // 限制可被重启绕过。
+        let token = guard
+            .bootstrap_tokens
+            .get(&token_hash)
+            .expect("token validated by service")
+            .clone();
+        (
+            resp,
+            registration,
+            guard.registration_seq(),
+            token,
+            guard.bootstrap_seq(),
+        )
+    };
+    crate::persist::insert_registration(state.auth.pool(), &registration, seq)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::persist::save_bootstrap_token(state.auth.pool(), &token, bootstrap_seq)
+        .await
+        .map_err(crate::persist::internal)?;
+    let device_id = meshlet_domain::DeviceId(resp.device_id.clone());
+    let (raw, _hash) = state
+        .agent_tokens
+        .issue(&device_id, service::now())
+        .await
+        .map_err(|e| service::ServiceError::Internal(e.to_string()))?;
+    resp.agent_token = raw;
+    // 注册者凭自举码而来，无用户 actor；agent 凭证原始材料不进审计（§16.5）。
+    crate::audit::record_or_fail(
+        &state,
+        None,
+        "device.registered",
+        "device",
+        Some(&resp.device_id),
+        Some(serde_json::json!({
+            "network_id": resp.network_id,
+            "name": registration.name,
+        })),
+    )
+    .await?;
+    crate::op_log!(
+        info,
+        "device",
+        "register",
+        &resp.network_id,
+        &resp.device_id,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+async fn list_registrations_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    axum::extract::Path(network_id): axum::extract::Path<String>,
+) -> Result<Json<Vec<service::RegistrationView>>, service::ServiceError> {
+    let guard = state.mesh.lock().unwrap();
+    Ok(Json(list_registrations(&guard, &network_id)?))
+}
+
+/// 批准注册：Pending 申请转正为设备（此刻才分配 overlay 地址），新修订
+/// 随期望配置下发；Pending 凭证作废并换发新凭证（仅此一次返回）。
+async fn approve_registration_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path((network_id, device_id)): axum::extract::Path<(String, String)>,
+) -> Result<(StatusCode, Json<service::ApproveRegistrationResponse>), service::ServiceError> {
+    let _persist = state.persist.lock().await;
+    let (registration, device, revision, revision_id, approved_at) = {
+        let mut guard = state.mesh.lock().unwrap();
+        let (registration, device, revision_id) =
+            approve_registration(&mut guard, &network_id, &device_id)?;
+        let revision = guard
+            .ledger
+            .get(&meshlet_domain::NetworkId(network_id.clone()), revision_id)
+            .expect("just recorded")
+            .clone();
+        let approved_at = device.approved_at.clone().expect("just approved");
+        (registration, device, revision, revision_id, approved_at)
+    };
+    // 设备行 + 新修订 + 申请转正（同一事务）。agent 凭证不轮换：凭证绑定
+    // 设备 id（注册时分配、批准沿用），设备端继续用原凭证拉计划。
+    crate::persist::promote_registration(state.auth.pool(), &registration, &device)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::persist::insert_revision(state.auth.pool(), &revision)
+        .await
+        .map_err(crate::persist::internal)?;
+    let resp = service::ApproveRegistrationResponse {
+        device_id: device.id.to_string(),
+        network_id: device.network_id.to_string(),
+        virtual_ipv4: device.virtual_ipv4,
+        fingerprint: crate::service::fingerprint_of(&device.public_key),
+        revision_id,
+        apply_status: meshlet_domain::ApplyStatus::Pending.as_str().to_string(),
+        approved_at,
+    };
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "device.approved",
+        "device",
+        Some(&resp.device_id),
+        Some(serde_json::json!({
+            "network_id": network_id,
+            "virtual_ipv4": resp.virtual_ipv4.to_string(),
+            "revision_id": revision_id,
+        })),
+    )
+    .await?;
+    crate::op_log!(
+        info,
+        "device",
+        "approve_registration",
+        &network_id,
+        &resp.device_id,
+        &revision_id.to_string(),
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+/// 拒绝注册：申请摘除、Pending 凭证作废。不记修订（期望配置从未包含过
+/// Pending 申请）。
+async fn deny_registration_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path((network_id, device_id)): axum::extract::Path<(String, String)>,
+) -> Result<StatusCode, service::ServiceError> {
+    let _persist = state.persist.lock().await;
+    let registration = {
+        let mut guard = state.mesh.lock().unwrap();
+        deny_registration(&mut guard, &network_id, &device_id)?
+    };
+    // 申请行 + Pending 凭证同一事务清理（persist::delete_registration_db）。
+    crate::persist::delete_registration_db(state.auth.pool(), &registration.id)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "device.denied",
+        "device",
+        Some(&registration.id.to_string()),
+        Some(serde_json::json!({
+            "network_id": network_id,
+            "name": registration.name,
+        })),
+    )
+    .await?;
+    crate::op_log!(
+        info,
+        "device",
+        "deny_registration",
+        &network_id,
+        &registration.id.to_string(),
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// 构建完整路由。
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
@@ -509,6 +798,10 @@ pub fn router(state: SharedAppState) -> Router {
         .merge(revision::routes())
         .route("/api/v1/system/status", get(status_handler))
         .route("/api/v1/enroll", post(enroll_handler))
+        .route(
+            "/api/v1/device-registrations",
+            post(register_device_handler),
+        )
         .route("/api/v1/auth/bootstrap", post(auth::bootstrap_handler))
         .route("/api/v1/auth/login", post(auth::login_handler))
         .route("/api/v1/auth/logout", post(auth::logout_handler))
@@ -541,6 +834,26 @@ pub fn router(state: SharedAppState) -> Router {
             "/api/v1/networks/{network_id}/devices",
             get(list_devices_handler),
         )
+        .route(
+            "/api/v1/networks/{network_id}/devices/{device_id}/approve",
+            post(approve_registration_handler),
+        )
+        .route(
+            "/api/v1/networks/{network_id}/devices/{device_id}/deny",
+            post(deny_registration_handler),
+        )
+        .route(
+            "/api/v1/networks/{network_id}/registrations",
+            get(list_registrations_handler),
+        )
+        .route(
+            "/api/v1/networks/{network_id}/bootstrap-tokens",
+            post(create_bootstrap_token_handler).get(list_bootstrap_tokens_handler),
+        )
+        .route(
+            "/api/v1/networks/{network_id}/bootstrap-tokens/{token_id}",
+            delete(revoke_bootstrap_token_handler),
+        )
         .route("/api/v1/agent/heartbeat", post(agent::heartbeat_handler))
         .route(
             "/api/v1/agent/device/desired",
@@ -565,12 +878,14 @@ impl IntoResponse for service::ServiceError {
         let status = match &self {
             service::ServiceError::NetworkNotFound(_)
             | service::ServiceError::InviteNotFound(_)
+            | service::ServiceError::BootstrapTokenNotFound(_)
             | service::ServiceError::DeviceNotFound(_)
             | service::ServiceError::RouteNotFound(_)
             | service::ServiceError::AliasNotFound(_)
             | service::ServiceError::RevisionNotFound(_)
             | service::ServiceError::DiagnosticsNotRun(_)
             | service::ServiceError::InvalidInviteToken => StatusCode::NOT_FOUND,
+            service::ServiceError::InvalidBootstrapToken => StatusCode::UNAUTHORIZED,
             service::ServiceError::InvalidCidr(_) | service::ServiceError::InvalidInput(_) => {
                 StatusCode::BAD_REQUEST
             }

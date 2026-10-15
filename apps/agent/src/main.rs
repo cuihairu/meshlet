@@ -39,16 +39,15 @@ fn main() -> std::process::ExitCode {
         tracing::info!("dataplane disabled: agent does not touch the kernel (see ADR-007)");
         return std::process::ExitCode::SUCCESS;
     }
-    if config
-        .device_token
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .is_empty()
-    {
-        eprintln!("meshlet-agent: [dataplane] enabled but agent.device_token is not configured");
-        return std::process::ExitCode::FAILURE;
-    }
+    // 凭证解析（ZeroTier 式自举）：配置 device_token → 凭证文件 → 持自举码
+    // 注册自身（落 Pending，控制中心批准前拉不到计划，心跳保活）。
+    let config = match meshlet_agent::resolve_device_token(config) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("meshlet-agent: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     let private_key = match read_private_key(&config.dataplane) {
         Ok(k) => k,
         Err(e) => {

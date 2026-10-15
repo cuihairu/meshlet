@@ -56,6 +56,8 @@ export interface Device {
   presence_source: string;
   /** Last heartbeat dataplane evidence; null = no agent has reported yet. */
   dataplane_evidence: DataplaneEvidence | null;
+  /** Approval time for self-registered devices; null = enrolled via invite. */
+  approved_at: string | null;
 }
 
 export interface InviteCreated {
@@ -63,6 +65,61 @@ export interface InviteCreated {
   /** Raw token: shown exactly once, the server stores only its digest (§11.3). */
   token: string;
   expires_at: string | null;
+}
+
+/**
+ * Long-lived, reusable self-registration credential (device bootstrap entry) —
+ * unlike one-shot invites.
+ */
+export interface BootstrapTokenCreated {
+  token_id: string;
+  /** Raw token: shown exactly once, the server stores only its digest (§11.3). */
+  token: string;
+  /** null = unlimited uses. */
+  max_uses: number | null;
+}
+
+export interface BootstrapToken {
+  id: string;
+  network_id: string;
+  /** null = unlimited uses. */
+  max_uses: number | null;
+  used_count: number;
+  created_at: string;
+  /** Set once revoked; null = still active. */
+  revoked_at: string | null;
+}
+
+/**
+ * Pending device self-registration (registered via a bootstrap token). The
+ * device is not in the dataplane until approved; it has no `devices` row yet.
+ */
+export interface DeviceRegistration {
+  id: string;
+  network_id: string;
+  name: string;
+  platform: string;
+  public_key: string;
+  requested_at: string;
+  /** Last pending-period agent heartbeat; null = the agent never reported. */
+  last_report_at: string | null;
+  /** Heartbeat dataplane evidence — for a pending device this is the only place it surfaces. */
+  dataplane_evidence: DataplaneEvidence | null;
+}
+
+/**
+ * Approve result: the overlay IP is allocated at approval time (ADR-004) and a
+ * new revision is recorded. There is no agent_token field — the device keeps
+ * the credential it received at registration.
+ */
+export interface ApproveRegistration {
+  device_id: string;
+  network_id: string;
+  virtual_ipv4: string;
+  fingerprint: string;
+  revision_id: number;
+  apply_status: string;
+  approved_at: string;
 }
 
 export interface SessionUser {
@@ -179,11 +236,33 @@ export const api = {
     request<InviteCreated>('POST', `/networks/${networkId}/invites`, { max_uses: maxUses }),
   revokeInvite: (networkId: string, inviteId: string) =>
     request<void>('DELETE', `/networks/${networkId}/invites/${inviteId}`),
+  /** Omit maxUses for an unlimited-use token — the field is simply absent from the body. */
+  createBootstrapToken: (networkId: string, maxUses?: number) =>
+    request<BootstrapTokenCreated>(
+      'POST',
+      `/networks/${networkId}/bootstrap-tokens`,
+      maxUses === undefined ? {} : { max_uses: maxUses },
+    ),
+  listBootstrapTokens: (networkId: string) =>
+    request<BootstrapToken[]>('GET', `/networks/${networkId}/bootstrap-tokens`),
+  revokeBootstrapToken: (networkId: string, tokenId: string) =>
+    request<void>('DELETE', `/networks/${networkId}/bootstrap-tokens/${tokenId}`),
   revokeDevice: (networkId: string, deviceId: string) =>
     request<RevisionRef>(
       'POST',
       `/networks/${networkId}/devices/${deviceId}/revoke`,
     ),
+  listRegistrations: (networkId: string) =>
+    request<DeviceRegistration[]>('GET', `/networks/${networkId}/registrations`),
+  /** Approves a pending registration: allocates the overlay IP, records a revision. */
+  approveRegistration: (networkId: string, deviceId: string) =>
+    request<ApproveRegistration>(
+      'POST',
+      `/networks/${networkId}/devices/${deviceId}/approve`,
+    ),
+  /** Denies (drops) a pending registration; the device may re-register later. */
+  denyRegistration: (networkId: string, deviceId: string) =>
+    request<void>('POST', `/networks/${networkId}/devices/${deviceId}/deny`),
   listRevisions: (networkId: string) =>
     request<ConfigRevision[]>('GET', `/networks/${networkId}/config-revisions`),
   applyRevision: (networkId: string, revision: number) =>
