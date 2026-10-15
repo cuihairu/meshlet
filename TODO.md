@@ -18,7 +18,7 @@
 ## 仓库事务
 
 - [x] dependabot 4 告警（1 high 3 moderate，2026-10-15）— 根因：docs 依赖链 vitepress → vite 5.4.21 → esbuild 0.21.5（开发服务器任意文件读取链）；修复：根 `package.json` 加 `pnpm.overrides` 固定 `vite: ^6.4.4`（传递 esbuild 0.25.12），`pnpm run docs:build` 绿；console 有独立 lockfile，不受影响
-- [ ] License 徽章与许可证一致性 — README 徽章按实际 LICENSE 挂 **Apache-2.0**；**待用户确认是否换 MIT**（许可证变更属用户拍板事项，不代改；确认换则同步改 LICENSE 文件与两份 README 徽章）
+- [x] License 徽章与许可证一致性 — ✅ 2026-10-15 用户确认按 **Apache-2.0** 收口（不换 MIT）：LICENSE 为 Apache License Version 2.0 全文；两份 README（`README.md` / `README.zh.md`）徽章均为 `license-Apache--2.0-blue` 且指向 `LICENSE`；仓内 `grep -rn MIT` 仅剩本条待确认记录，无其它残留。结论：无需改文件，许可证不变更
 
 ## Phase 1 · 最小 Overlay
 
