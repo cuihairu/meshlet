@@ -58,16 +58,17 @@ interoperating, and the Windows dataplane backend (ADR-008). See [TODO](TODO.md)
 
 ---
 
-[中文说明](README.zh.md)
+[Chinese version](README.zh.md)
 
-## 本地测试口径
+## Local Testing Conventions
 
-CI 与本地开发按改动面三路分流——改一行文档不该全量编译。
+CI and local development gate on the surface area that changed — editing one line of docs should not
+trigger a full build.
 
-1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的
-   `paths-ignore` 已跳过这些路径。
-2. **代码改动**：只跑改动子集，不全量。
-   - `cargo test -p <改动 crate>`
-3. **全量**（`cargo test --workspace`）：仅以下情形触发——Cargo.toml / Cargo.lock / console/pnpm-lock.yaml、
-   `.github/**`、Docker/Compose 配置、发布前。
+1. **Docs-only changes** (`*.md`, `docs/**`, images): no compile. The main CI workflow's
+   `paths-ignore` already skips these paths.
+2. **Code changes**: run only the affected subset, never the full suite.
+   - `cargo test -p <changed crate>`
+3. **Full suite** (`cargo test --workspace`): only for — Cargo.toml / Cargo.lock /
+   console/pnpm-lock.yaml, `.github/**`, Docker/Compose config, and pre-release.
 

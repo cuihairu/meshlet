@@ -49,6 +49,17 @@
 仍未完成：真实硬件走查——在真实 VPS 上部署、两台真实 Linux 客户端互通，以及 Windows 数据面后端
 （ADR-008）。见 [TODO](TODO.md)。
 
+## 本地测试口径
+
+CI 与本地开发按改动面三路分流——改一行文档不该全量编译。
+
+1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的
+   `paths-ignore` 已跳过这些路径。
+2. **代码改动**：只跑改动子集，不全量。
+   - `cargo test -p <改动 crate>`
+3. **全量**（`cargo test --workspace`）：仅以下情形触发——Cargo.toml / Cargo.lock / console/pnpm-lock.yaml、
+   `.github/**`、Docker/Compose 配置、发布前。
+
 ## 许可证
 
 [Apache-2.0](LICENSE)
