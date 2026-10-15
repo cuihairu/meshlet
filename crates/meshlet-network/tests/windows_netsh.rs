@@ -35,25 +35,26 @@ use meshlet_network::{NetworkError, RouteConfig};
 const TEST_PREFIX: &str = "192.0.2.0/24";
 /// Windows 恒在的回环接口（多词名，顺带覆盖计划层引号渲染路径）。
 const TEST_INTERFACE: &str = "Loopback Pseudo-Interface 1";
-/// 回环接口上的下一跳（127.0.0.1 在回环上恒在）。
-const TEST_GATEWAY: &str = "127.0.0.1";
 /// 不存在的接口名：真实 netsh 失败报文的取证探针。
 const MISSING_INTERFACE: &str = "meshlet-no-such-if-01";
 
-/// 回环怪癖的实测取证（2026-10-16 CI runner，两轮报文同一根因）：计划层
-/// 早期版本给含空格接口名内嵌引号（`interface="…"`），经 std `Command`
-/// 转义成 `\"` 后 **netsh 自己的分词器不认**，词元被拆碎——碎词 `Loopback`
-/// 顺位落进 nexthop / siteprefixlength 槽位，先后报
-/// `Invalid nexthop parameter (Loopback)` 与
-/// `Invalid siteprefixlength parameter (Loopback)`；两轮真实文本均经
-/// `classify_netsh_route_failure` 正确落为 `ApplyRejected` 携带原文。
-/// 修复（见 `named_value` 注记）：键值对保持单个 argv 词元、不内嵌引号。
-/// 本测试带 `nexthop=127.0.0.1`（回环上恒可达）顺带覆盖 nexthop 渲染路径。
+/// 回环实测取证（2026-10-16 CI runner，三轮报文）：
+/// 1. 计划层早期版本给含空格接口名内嵌引号（`interface="…"`），经 std
+///    `Command` 转义成 `\"` 后 **netsh 自己的分词器不认**，词元被拆碎——
+///    碎词 `Loopback` 顺位落进 nexthop / siteprefixlength 槽位，先后报
+///    `Invalid nexthop parameter (Loopback)` 与
+///    `Invalid siteprefixlength parameter (Loopback)`（修复见 `named_value`
+///    注记：键值对保持单个 argv 词元、不内嵌引号）；
+/// 2. 分词修好后，回环上带 `nexthop=127.0.0.1` 的路由被 netsh 拒绝——
+///    `The parameter is incorrect.`（netsh 对回环的 nexthop 参数校验）；
+/// 3. 结论：回环上的可用形式是 **on-link 路由**（无 `nexthop=`）。三轮
+///    真实文本均经 `classify_netsh_route_failure` 正确落为 `ApplyRejected`
+///    携带原文——失败文本分类在真 Windows 报文上闭环。
 fn test_route(interface: &str) -> RouteConfig {
     RouteConfig {
         destination: TEST_PREFIX.parse().unwrap(),
         interface: interface.into(),
-        gateway: Some(TEST_GATEWAY.parse().unwrap()),
+        gateway: None,
     }
 }
 
@@ -61,7 +62,7 @@ fn delete_command() -> NetshRouteCommand {
     NetshRouteCommand::Delete {
         destination: TEST_PREFIX.parse().unwrap(),
         interface: TEST_INTERFACE.into(),
-        gateway: Some(TEST_GATEWAY.parse().unwrap()),
+        gateway: None,
     }
 }
 
@@ -159,7 +160,6 @@ fn add_show_readback_delete_and_idempotent_redelete() {
         "route".into(),
         format!("prefix={TEST_PREFIX}"),
         format!("interface={TEST_INTERFACE}"),
-        format!("nexthop={TEST_GATEWAY}"),
         "store=active".into(),
     ]);
     eprintln!("re-delete exit={code} raw output: {text}");
