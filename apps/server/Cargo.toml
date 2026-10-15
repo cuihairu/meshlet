@@ -25,3 +25,5 @@ meshlet-network = { workspace = true }
 [dev-dependencies]
 tower = { workspace = true }
 http-body-util = { workspace = true }
+meshlet-agent = { workspace = true }
+ureq = { workspace = true }

@@ -122,21 +122,26 @@ pub struct HubDataPlaneBackend {
     plan: Result<HubPlan, String>,
     interface: String,
     private_key_file: Option<String>,
+    /// 后端构造（生产 `LinuxNetworkBackend::new()`；netns 集成测试注入指定
+    /// netns 的后端，同一 hub 期望翻译跑进沙箱内核）。
+    make_backend: Arc<dyn Fn() -> LinuxNetworkBackend + Send + Sync>,
 }
 
 impl HubDataPlaneBackend {
     /// 从期望状态快照构造（网络不存在/缺 IPAM 等构造错误延迟到 apply 报告，
-    /// 保持工厂不可失败的签名）。
-    fn from_mesh(
+    /// 保持工厂不可失败的签名）；后端构造可注入（netns 集成测试用）。
+    fn from_mesh_with(
         mesh: &MeshState,
         network_id: &str,
         cfg: &DataPlaneConfig,
         tunnel_mtu: Option<u32>,
+        make_backend: Arc<dyn Fn() -> LinuxNetworkBackend + Send + Sync>,
     ) -> Self {
         Self {
             plan: hub_plan(mesh, network_id, cfg, tunnel_mtu),
             interface: cfg.interface.clone(),
             private_key_file: cfg.private_key_file.clone(),
+            make_backend,
         }
     }
 
@@ -157,7 +162,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
         let plan = self.plan.as_ref().map_err(Clone::clone)?;
         let mut tunnel = plan.tunnel.clone();
         tunnel.private_key = self.read_private_key()?;
-        let backend = LinuxNetworkBackend::new().with_interface(self.interface.clone());
+        let backend = (self.make_backend)().with_interface(self.interface.clone());
         let tunnel_result = backend
             .apply_tunnel_sync(&tunnel)
             .map_err(|e| format!("apply tunnel: {e}"))?;
@@ -180,7 +185,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
     }
 
     fn rollback(&mut self, _revision: &ConfigRevision) -> Result<(), String> {
-        let backend = LinuxNetworkBackend::new().with_interface(self.interface.clone());
+        let backend = (self.make_backend)().with_interface(self.interface.clone());
         let result = backend
             .rollback_sync()
             .map_err(|e| format!("rollback: {e}"))?;
@@ -294,11 +299,27 @@ fn host_cidr(addr: std::net::Ipv4Addr) -> Ipv4Cidr {
     Ipv4Cidr::new(addr, 32).expect("host cidr is always valid")
 }
 
-/// 数据面工厂（`[dataplane] enabled = true`）：apply/rollback 真实执行。
+/// 数据面工厂（`[dataplane] enabled = true`）：apply/rollback 真实执行
+/// （生产路径：后端在本机 root namespace 构造）。
 pub fn hub_backend_factory(dataplane: DataPlaneConfig, tunnel_mtu: Option<u32>) -> BackendFactory {
+    hub_backend_factory_with(dataplane, tunnel_mtu, LinuxNetworkBackend::new)
+}
+
+/// 同 [`hub_backend_factory`]，后端构造可注入——netns 集成测试把 hub 数据面
+/// （同一份期望翻译）跑进沙箱 netns，验证 server→agent→内核全链路。
+pub fn hub_backend_factory_with(
+    dataplane: DataPlaneConfig,
+    tunnel_mtu: Option<u32>,
+    make_backend: impl Fn() -> LinuxNetworkBackend + Send + Sync + 'static,
+) -> BackendFactory {
+    let make_backend = Arc::new(make_backend);
     Arc::new(move |mesh, network_id| {
-        Box::new(HubDataPlaneBackend::from_mesh(
-            mesh, network_id, &dataplane, tunnel_mtu,
+        Box::new(HubDataPlaneBackend::from_mesh_with(
+            mesh,
+            network_id,
+            &dataplane,
+            tunnel_mtu,
+            make_backend.clone(),
         ))
     })
 }

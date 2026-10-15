@@ -975,6 +975,7 @@ dependencies = [
  "axum",
  "chrono",
  "http-body-util",
+ "meshlet-agent",
  "meshlet-api-types",
  "meshlet-config",
  "meshlet-domain",
@@ -989,6 +990,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "ureq",
 ]
 
 [[package]]

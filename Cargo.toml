@@ -38,6 +38,7 @@ meshlet-domain = { path = "crates/meshlet-domain" }
 meshlet-api-types = { path = "crates/meshlet-api-types" }
 meshlet-config = { path = "crates/meshlet-config" }
 meshlet-network = { path = "crates/meshlet-network" }
+meshlet-agent = { path = "apps/agent" }
 
 [profile.release]
 lto = "thin"
