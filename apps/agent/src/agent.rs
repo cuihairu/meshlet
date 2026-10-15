@@ -116,8 +116,12 @@ impl Agent {
                 .map_err(|e| format!("remove meshlet nat rules of {owner}: {e}"))?;
             tracing::info!(owner = %owner, "removed stale meshlet nat rules");
         }
+        // hub 入口地址兜底（§16.4：服务端不下发 agent 的网络位置）：计划未带
+        // endpoint 时用本地 `[dataplane] hub_endpoint` 填充——只影响本次内核下
+        // 发，账本仍按服务端原计划记（desired_config_hash 不因此变化）。
+        let local_plan = plan_with_hub_endpoint(plan, self.dataplane.hub_endpoint.as_deref());
         self.backend
-            .apply_device_plan_sync(plan, self.private_key.clone(), None)
+            .apply_device_plan_sync(&local_plan, self.private_key.clone(), None)
             .map_err(|e| format!("apply the desired plan: {e}"))?;
         AgentState::from_plan(plan).save(&self.state_path)?;
         tracing::info!(
@@ -212,6 +216,20 @@ fn probe_decision(plan: &DevicePlan) -> Option<(Ipv4Addr, u32)> {
     (payload > 0).then_some((hub, payload))
 }
 
+/// hub 入口地址兜底（纯逻辑，§16.4）：服务端不知道 agent 的网络位置，计划里
+/// hub peer 的 endpoint 为 `None`；agent 用本地 `[dataplane] hub_endpoint`
+///（`host:port`）填充，设备才能主动发起握手。服务端已带值（未来通告
+/// advertise endpoint）则尊重服务端，不覆盖；未配置兜底则原样返回。
+fn plan_with_hub_endpoint(plan: &DevicePlan, hub_endpoint: Option<&str>) -> DevicePlan {
+    let mut local = plan.clone();
+    if let (Some(endpoint), Some(peer)) = (hub_endpoint, local.tunnel.peers.first_mut()) {
+        if peer.endpoint.is_none() {
+            peer.endpoint = Some(endpoint.to_string());
+        }
+    }
+    local
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +312,52 @@ mod tests {
             hub_address: hub.map(|h| h.parse().unwrap()),
             desired_config_hash: "hash".into(),
         }
+    }
+
+    #[test]
+    fn hub_endpoint_fills_a_plan_without_one() {
+        // 服务端计划不携带 endpoint（§16.4：服务端不知道 agent 的网络位置）。
+        let mut p = probe_plan(None, Some("10.240.0.1"), "10.240.0.7");
+        p.tunnel.peers.push(meshlet_network::PeerConfig {
+            public_key: "hub-pub".into(),
+            allowed_ips: vec!["10.240.0.0/16".parse().unwrap()],
+            endpoint: None,
+            persistent_keepalive_secs: None,
+        });
+
+        // 本地兜底填充 → 设备可主动发起握手。
+        let filled = plan_with_hub_endpoint(&p, Some("10.98.0.10:51820"));
+        assert_eq!(
+            filled.tunnel.peers[0].endpoint.as_deref(),
+            Some("10.98.0.10:51820")
+        );
+        // 哈希不被本地兜底改写：账本与漂移判定仍以服务端期望为准。
+        assert_eq!(filled.desired_config_hash, p.desired_config_hash);
+
+        // 服务端已带值（未来通告 advertise endpoint）→ 尊重服务端，不覆盖。
+        let mut explicit = p.clone();
+        explicit.tunnel.peers[0].endpoint = Some("10.98.0.99:51820".into());
+        assert_eq!(
+            plan_with_hub_endpoint(&explicit, Some("10.98.0.10:51820"))
+                .tunnel
+                .peers[0]
+                .endpoint,
+            explicit.tunnel.peers[0].endpoint
+        );
+
+        // 未配置兜底 → 原样返回；空 peer 计划不越界。
+        assert_eq!(
+            plan_with_hub_endpoint(&p, None).tunnel.peers[0].endpoint,
+            None
+        );
+        let empty = probe_plan(None, None, "10.240.0.7");
+        assert_eq!(
+            plan_with_hub_endpoint(&empty, Some("10.98.0.10:51820"))
+                .tunnel
+                .peers
+                .len(),
+            0
+        );
     }
 
     #[test]
