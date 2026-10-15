@@ -22,8 +22,10 @@
 - **Alias**（[ADR-006](../decisions/adr-006-alias-prefix-nat.md)）：等长前缀
   一对一替换解决重叠网段，DNAT/SNAT 在 VPS 侧执行。
 
-以下 P2P 直连不在第一版范围（ADR-002）；Windows/Linux 网络后端尚未接线
-（server 端 apply 当前是显式失败的 `UnconfiguredBackend`，ADR-009）。
+以下 P2P 直连不在第一版范围（ADR-002）；Linux 网络后端已接线（ADR-007，
+`[dataplane] enabled = true` 时 apply 真实下发内核），Windows 后端仍为显式
+拒绝的占位（ADR-008）；数据面未配置时 apply 显式失败可见
+（`UnconfiguredBackend`，ADR-009）。
 
 ## 当前实现的瓶颈清单
 
