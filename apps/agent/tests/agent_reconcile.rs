@@ -446,7 +446,8 @@ fn hub_plan(topo: &Topology) -> DevicePlan {
                 .iter()
                 .map(|key| peer_for(topo, key))
                 .collect(),
-            mtu: None,
+            // 显式 MTU（非默认 1420）：让「计划值真的落到内核」可断言（#51①）。
+            mtu: Some(1380),
             private_key: None,
         },
         routes: vec![
@@ -578,12 +579,19 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
     };
 
     // ---- hub 侧先行（server 数据面，与 agent 无关） ------------------------
-    LinuxNetworkBackend::new()
+    let hub_backend = LinuxNetworkBackend::new()
         .with_netns(&topo.hub.netns)
         .with_sudo()
-        .with_interface("wg0")
+        .with_interface("wg0");
+    hub_backend
         .apply_device_plan_sync(&hub_plan(&topo), Some(topo.hub.private_key.clone()), None)
         .expect("hub applies its own plan");
+    // 内核级 MTU 断言（#51①）：计划里的 MTU 真的落在了接口上。
+    assert_eq!(
+        hub_backend.inspect_sync().expect("hub snapshot").tunnel_mtu,
+        Some(1380),
+        "hub tunnel MTU must match the plan in the kernel"
+    );
 
     // ---- 1. agent 应用设备计划（隧道 + 他人网关的前缀路由） ----------------
     // 客户端计划的路由 = 他人网关发布的 LAN/Alias 前缀经该网关虚拟 IP，
@@ -696,6 +704,40 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
 
     // 重放后再次对账：无漂移 → 不重放。
     assert!(!a_agent.reconcile(&a_plan_v2).unwrap().needs_apply);
+
+    // ---- 3.5 MTU：计划值落到内核；内核读数不符 → 判漂移并纠回（#51）-------
+    let a_backend = LinuxNetworkBackend::new()
+        .with_netns(&topo.a.netns)
+        .with_sudo()
+        .with_interface("wg0");
+    let mut mtu_plan = a_plan_v2.clone();
+    mtu_plan.tunnel.mtu = Some(1380);
+    // MTU 是计划的一部分：服务端哈希覆盖整份计划，MTU 变化即新修订。
+    mtu_plan.desired_config_hash = "hash-a3".into();
+    let decision = a_agent.reconcile(&mtu_plan).expect("apply mtu plan");
+    assert!(decision.needs_apply);
+    assert_eq!(decision.reason, Reason::DesiredConfigChanged);
+    assert_eq!(
+        a_backend.inspect_sync().expect("A snapshot").tunnel_mtu,
+        Some(1380),
+        "planned MTU must land in the kernel"
+    );
+
+    // 内核读数被改走（手工改动 / 半途失败）→ 对账判漂移，重放纠回。
+    require_ok(
+        &netns_exec(&topo.a.netns, &["ip", "link", "set", "wg0", "mtu", "1420"]),
+        "sabotage tunnel mtu",
+    );
+    let decision = a_agent
+        .reconcile(&mtu_plan)
+        .expect("reconcile after mtu sabotage");
+    assert!(decision.needs_apply, "mtu mismatch must be replayed");
+    assert_eq!(decision.reason, Reason::KernelDrift);
+    assert_eq!(
+        a_backend.inspect_sync().expect("A snapshot").tunnel_mtu,
+        Some(1380),
+        "replay restores the planned MTU"
+    );
 
     // ---- 4. 网关侧：Alias NAT 随计划下发，映射删除即整单元清理（§12.6）----
     let gw_dir = temp_state_dir("state-gw");

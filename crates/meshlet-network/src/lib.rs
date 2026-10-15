@@ -111,6 +111,9 @@ pub struct NetworkSnapshot {
     pub peer_count: u32,
     pub installed_routes: Vec<Ipv4Cidr>,
     pub nat_rules_present: bool,
+    /// 隧道接口的实际 MTU 读数（`ip link show` 解析；计划显式配置 MTU
+    /// 时用于漂移判定：内核读数与计划不符即重放纠回）。
+    pub tunnel_mtu: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -183,6 +186,7 @@ mod tests {
                 peer_count: 2,
                 installed_routes: vec!["10.240.0.0/16".parse().unwrap()],
                 nat_rules_present: false,
+                tunnel_mtu: Some(1420),
             })
         }
 

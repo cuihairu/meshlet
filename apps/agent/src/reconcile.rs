@@ -142,6 +142,11 @@ fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) ->
     if !state.tunnel_address.is_empty() && state.tunnel_address != plan.tunnel.address.to_string() {
         return true;
     }
+    // MTU：计划显式配置而内核读数不符 → 漂移（手工改动 / 半途失败的纠回）。
+    // 计划未配置 MTU 时不判：内核默认值或管理员有意设置都不算违背计划。
+    if plan.tunnel.mtu.is_some() && snapshot.tunnel_mtu != plan.tunnel.mtu {
+        return true;
+    }
     if snapshot.peer_count < plan.tunnel.peers.len() as u32 {
         return true;
     }
@@ -286,6 +291,7 @@ mod tests {
             peer_count: 1,
             installed_routes: vec!["192.168.9.0/24".parse().unwrap()],
             nat_rules_present: true,
+            tunnel_mtu: Some(1420),
         }
     }
 
@@ -361,6 +367,39 @@ mod tests {
             needs_apply(&state, &no_peer, &p).reason,
             Reason::KernelDrift
         );
+    }
+
+    #[test]
+    fn planned_mtu_mismatch_counts_as_drift() {
+        // 内核读数与计划不符（手工改动 / 半途失败）→ 必须重放纠回（#51）。
+        let mut p = plan("hash-a", false);
+        p.tunnel.mtu = Some(1380);
+
+        let wrong = NetworkSnapshot {
+            tunnel_mtu: Some(1420),
+            ..healthy()
+        };
+        assert_eq!(
+            needs_apply(&state_of(&p), &wrong, &p).reason,
+            Reason::KernelDrift
+        );
+
+        let matching = NetworkSnapshot {
+            tunnel_mtu: Some(1380),
+            ..healthy()
+        };
+        assert!(!needs_apply(&state_of(&p), &matching, &p).needs_apply);
+    }
+
+    #[test]
+    fn kernel_mtu_is_not_judged_when_plan_leaves_it_unset() {
+        // 计划未配置 MTU：内核读多少都行（默认 1420 或管理员有意设置）。
+        let p = plan("hash-a", false);
+        let other = NetworkSnapshot {
+            tunnel_mtu: Some(1300),
+            ..healthy()
+        };
+        assert!(!needs_apply(&state_of(&p), &other, &p).needs_apply);
     }
 
     #[test]

@@ -36,6 +36,19 @@ use crate::{
 pub const MESHLET_NAT_COMMENT_PREFIX: &str = "meshlet alias";
 pub const MESHLET_FILTER_COMMENT: &str = "meshlet tunnel";
 
+/// 从 `ip link show <if>` 输出解析实际 MTU 读数（首行形如
+/// `3: wg0: <...> mtu 1420 qdisc noqueue ...`）。读不到 `mtu` 字段或无法
+/// 解析时返回 `None`——调用方按「读数不可得」处理，不臆测默认值。
+fn parse_link_mtu(link_show: &str) -> Option<u32> {
+    let mut tokens = link_show.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "mtu" {
+            return tokens.next().and_then(|v| v.parse().ok());
+        }
+    }
+    None
+}
+
 /// Linux 网络后端：命令执行器 + 对账式幂等应用。
 pub struct LinuxNetworkBackend {
     /// 测试钩子：命令在此 netns 内执行（`ip netns exec <ns> ...`）。
@@ -267,7 +280,11 @@ impl LinuxNetworkBackend {
 impl LinuxNetworkBackend {
     /// 同步检查快照（inspect 的命令核心；服务端同步 backend 直接调用）。
     pub fn inspect_sync(&self) -> Result<NetworkSnapshot, NetworkError> {
-        let tunnel_exists = self.run(&["ip", "link", "show", &self.interface]).is_ok();
+        let link = self.run(&["ip", "link", "show", &self.interface]).ok();
+        let tunnel_exists = link.is_some();
+        let tunnel_mtu = link
+            .as_ref()
+            .and_then(|out| parse_link_mtu(&String::from_utf8_lossy(&out.stdout)));
         let forwarding_enabled = self
             .run(&["sysctl", "-n", "net.ipv4.ip_forward"])
             .ok()
@@ -293,6 +310,7 @@ impl LinuxNetworkBackend {
             peer_count,
             installed_routes,
             nat_rules_present,
+            tunnel_mtu,
         })
     }
 
@@ -605,6 +623,21 @@ mod tests {
         assert_eq!(tokens[1], "PREROUTING");
         let idx = tokens.iter().position(|t| t == "--comment").unwrap();
         assert_eq!(tokens[idx + 1], "meshlet alias al-1");
+    }
+
+    #[test]
+    fn parse_link_mtu_reads_the_first_mtu_field() {
+        let link_show = "7: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1380 \
+            qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n\
+            \x20   link/none";
+        assert_eq!(parse_link_mtu(link_show), Some(1380));
+
+        // 读数不可得（缺字段 / 非数字）时按 None 处理，不臆测默认值。
+        assert_eq!(
+            parse_link_mtu("7: wg0: <...> state UNKNOWN\n link/none"),
+            None
+        );
+        assert_eq!(parse_link_mtu("7: wg0: mtu junk qdisc"), None);
     }
 
     #[test]
