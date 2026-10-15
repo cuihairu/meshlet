@@ -40,12 +40,15 @@ const TEST_GATEWAY: &str = "127.0.0.1";
 /// 不存在的接口名：真实 netsh 失败报文的取证探针。
 const MISSING_INTERFACE: &str = "meshlet-no-such-if-01";
 
-/// 回环怪癖（2026-10-16 CI runner 实测报文）：回环上 on-link 路由
-/// （不带 `nexthop=`）被 netsh 拒绝——`Invalid nexthop parameter (Loopback).
-/// It should be a valid IPv4 address.`（netsh 把缺失的 nexthop 推断成字面量
-/// "Loopback"）；真实错误文本经 `classify_netsh_route_failure` 正确落为
-/// `ApplyRejected`。规避：回环上显式 `nexthop=127.0.0.1`（普通接口的
-/// on-link 路由不受此影响）。
+/// 回环怪癖的实测取证（2026-10-16 CI runner，两轮报文同一根因）：计划层
+/// 早期版本给含空格接口名内嵌引号（`interface="…"`），经 std `Command`
+/// 转义成 `\"` 后 **netsh 自己的分词器不认**，词元被拆碎——碎词 `Loopback`
+/// 顺位落进 nexthop / siteprefixlength 槽位，先后报
+/// `Invalid nexthop parameter (Loopback)` 与
+/// `Invalid siteprefixlength parameter (Loopback)`；两轮真实文本均经
+/// `classify_netsh_route_failure` 正确落为 `ApplyRejected` 携带原文。
+/// 修复（见 `named_value` 注记）：键值对保持单个 argv 词元、不内嵌引号。
+/// 本测试带 `nexthop=127.0.0.1`（回环上恒可达）顺带覆盖 nexthop 渲染路径。
 fn test_route(interface: &str) -> RouteConfig {
     RouteConfig {
         destination: TEST_PREFIX.parse().unwrap(),

@@ -15,8 +15,8 @@
 //!
 //! - **受控命令**：只构造 `netsh interface ipv4 add/delete route` 的命名
 //!   参数形式（`prefix=` / `interface=` / `nexthop=` / `store=active`），
-//!   不拼接自由文本；接口名含空格时值整体加引号（WireGuard 隧道名允许
-//!   空格，而 netsh 命名参数必须是单个词元）；
+//!   不拼接自由文本；含空格的接口名（WireGuard 隧道名允许空格）保持单个
+//!   argv 词元，命令行引号交给进程生成器（见 [named_value] 的实测注记）；
 //! - **权限不足提示明确**：`requires elevation` / `access is denied` 文案
 //!   归入 [`NetworkError::InsufficientPrivileges`]，消息点名操作与接口；
 //! - **失败可清理**：删除目标不存在的路由（`element not found` 等）按
@@ -95,14 +95,16 @@ impl NetshRouteCommand {
     }
 }
 
-/// `key=value` 形式的 netsh 命名参数；值含空白时整体加引号
-/// （`interface="Meshlet Office"`——netsh 的命名参数是单个词元）。
+/// `key=value` 形式的 netsh 命名参数，**整个键值对是单个 argv 词元**（含空格
+/// 的接口名不拆词：`interface=Meshlet Office` 就是一个词元）。
+///
+/// 刻意**不内嵌引号**（2026-10-16 CI runner 实测报文）：netsh 自己的分词器
+/// 不认 `\"` 转义——内嵌引号会把 `interface="…"` 拆碎，`Loopback` 落到
+/// `siteprefixlength` 位（`Invalid siteprefixlength parameter (Loopback)`）。
+/// 命令行层的引号由进程生成器负责：std `Command::args` 对含空格的词元自动
+/// 整体加引号，netsh 认这种包住整个键值对的引号。
 fn named_value(key: &str, value: &str) -> String {
-    if value.split_whitespace().count() > 1 {
-        format!("{key}=\"{value}\"")
-    } else {
-        format!("{key}={value}")
-    }
+    format!("{key}={value}")
 }
 
 /// 修改一条路由 = **删除重建**（与控制面路由同习语：无 PATCH，修改 = 删除
@@ -298,16 +300,17 @@ mod tests {
         assert!(command.is_delete());
     }
 
-    /// 接口名含空格（WireGuard 隧道名允许）时值整体加引号——netsh 命名
-    /// 参数必须是单个词元。
+    /// 接口名含空格（WireGuard 隧道名允许）时**键值对仍是单个词元且不内嵌
+    /// 引号**——命令行引号由进程生成器加；netsh 分词器不认 `\"` 转义
+    /// （runner 实测报文见 named_value 注记）。
     #[test]
-    fn interface_names_with_spaces_are_quoted() {
+    fn interface_names_with_spaces_stay_one_unquoted_arg() {
         let command = NetshRouteCommand::Add {
             route: route("Meshlet Office", None),
         };
-        assert!(command
-            .args()
-            .contains(&"interface=\"Meshlet Office\"".to_string()));
+        let args = command.args();
+        assert!(args.contains(&"interface=Meshlet Office".to_string()));
+        assert!(!args.iter().any(|a| a.contains('"')));
         let plain = NetshRouteCommand::Add {
             route: route("meshlet", None),
         };
