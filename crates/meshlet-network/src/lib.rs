@@ -13,11 +13,17 @@
 //! [nat](nat) 模块是纯**计划**层（§9.4–§9.5）：从 Alias 映射确定性推导网关侧
 //! NAT 规则；执行随数据面接线（ADR-007）。
 //!
+//! [windows_routes](windows_routes) 是 Windows 路由的**计划层**（ADR-008）：
+//! netsh 命令参数构造、`show route` 解析与权限失败分类，Linux 上单测跑绿；
+//! 执行层 `#[cfg(windows)]` 只调计划层，**未在 Windows 上实测**（TODO #52
+//! 的环境走查仍卡），实测前 Windows 不接为 [SystemBackend]。
+//!
 //! [DevicePlan] 是 server → agent 的**结构化配置对象**（§16.4）：agent 只消费
 //! 类型化的隧道/路由/NAT 计划，绝不执行服务端下发的任意 Shell 命令。
 
 pub mod keys;
 pub mod nat;
+pub mod windows_routes;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
