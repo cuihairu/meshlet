@@ -57,6 +57,6 @@ CI 与本地开发按改动面三路分流——改一行文档不该全量编�
    `paths-ignore` 已跳过这些路径。
 2. **代码改动**：只跑改动子集，不全量。
    - `cargo test -p <改动 crate>`
-3. **全量**（`cargo test --workspace`）：仅以下情形触发——Cargo.toml / Cargo.lock / console/package-lock.json、
+3. **全量**（`cargo test --workspace`）：仅以下情形触发——Cargo.toml / Cargo.lock / console/pnpm-lock.yaml、
    `.github/**`、Docker/Compose 配置、发布前。
 

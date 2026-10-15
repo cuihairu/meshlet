@@ -1,6 +1,7 @@
 //! Agent 主体：拉计划 → 对账 → 应用 → 心跳，循环之。
 //!
-//! 一切内核操作都经 [`meshlet_network::linux::LinuxNetworkBackend`]（ADR-007）：
+//! 一切内核操作都经 [`meshlet_network::SystemBackend`]（ADR-007；非 Linux
+//! 平台为 ADR-008 的明确 Unsupported 占位，每个操作失败可见）：
 //! 本模块只负责**何时**调用它与**喂什么配置**（计划来自 server，绝非本地拼装
 //! 的 Shell 命令，§16.4）。
 
@@ -10,8 +11,7 @@ use std::time::Duration;
 
 use meshlet_config::{AgentConfig, DataplaneConfig};
 use meshlet_domain::DataplaneEvidence;
-use meshlet_network::linux::LinuxNetworkBackend;
-use meshlet_network::{DevicePlan, DEFAULT_TUNNEL_MTU};
+use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
 use crate::server;
@@ -26,7 +26,7 @@ pub struct Agent {
     server_url: String,
     token: String,
     dataplane: DataplaneConfig,
-    backend: LinuxNetworkBackend,
+    backend: SystemBackend,
     private_key: Option<String>,
     /// 账本状态文件（`{state_dir}/applied.json`）。
     state_path: std::path::PathBuf,
@@ -36,7 +36,7 @@ impl Agent {
     /// 生产构造：默认 `sudo -n` 后端（agent 通常以 root 运行；`sudo -n` 在
     /// 已是 root 或已免密的环境下同样成立）。
     pub fn new(config: AgentConfig, private_key: Option<String>) -> Self {
-        let backend = LinuxNetworkBackend::new()
+        let backend = SystemBackend::new()
             .with_interface(config.dataplane.interface.clone())
             .with_sudo();
         Self::with_backend(config, private_key, backend)
@@ -46,7 +46,7 @@ impl Agent {
     pub fn with_backend(
         config: AgentConfig,
         private_key: Option<String>,
-        backend: LinuxNetworkBackend,
+        backend: SystemBackend,
     ) -> Self {
         Self {
             server_url: config.server_url,

@@ -7,7 +7,8 @@
 //!
 //! 数据面接线（ADR-007）：`[dataplane] enabled = true` 时 apply 走
 //! [`HubDataPlaneBackend`]——按当前期望配置快照在本机执行 WireGuard/路由
-//! （Linux [`meshlet_network::linux::LinuxNetworkBackend`]）。默认（未配置或
+//! （平台后端 [`meshlet_network::SystemBackend`]：Linux 真实内核执行；其他
+//! 平台每个操作显式 `Unsupported`，ADR-008 Windows 后端待接入）。默认（未配置或
 //! `enabled = false`）仍是 [`UnconfiguredBackend`] 显式失败：失败可见、状态
 //! 可区分，升级不悄悄接管内核。网关侧 NAT（ADR-006）在网关设备上执行，随
 //! agent 数据面交付（server 只下 hub 侧转发面）。
@@ -27,8 +28,7 @@ use meshlet_config::DataPlaneConfig;
 use meshlet_domain::{
     AliasMapping, ConfigApplyBackend, ConfigRevision, DeviceStatus, Ipv4Cidr, NetworkId, RouteMode,
 };
-use meshlet_network::linux::LinuxNetworkBackend;
-use meshlet_network::{PeerConfig, RouteConfig, TunnelConfig};
+use meshlet_network::{PeerConfig, RouteConfig, SystemBackend, TunnelConfig};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -122,9 +122,9 @@ pub struct HubDataPlaneBackend {
     plan: Result<HubPlan, String>,
     interface: String,
     private_key_file: Option<String>,
-    /// 后端构造（生产 `LinuxNetworkBackend::new()`；netns 集成测试注入指定
+    /// 后端构造（生产 `SystemBackend::new()`；netns 集成测试注入指定
     /// netns 的后端，同一 hub 期望翻译跑进沙箱内核）。
-    make_backend: Arc<dyn Fn() -> LinuxNetworkBackend + Send + Sync>,
+    make_backend: Arc<dyn Fn() -> SystemBackend + Send + Sync>,
 }
 
 impl HubDataPlaneBackend {
@@ -135,7 +135,7 @@ impl HubDataPlaneBackend {
         network_id: &str,
         cfg: &DataPlaneConfig,
         tunnel_mtu: Option<u32>,
-        make_backend: Arc<dyn Fn() -> LinuxNetworkBackend + Send + Sync>,
+        make_backend: Arc<dyn Fn() -> SystemBackend + Send + Sync>,
     ) -> Self {
         Self {
             plan: hub_plan(mesh, network_id, cfg, tunnel_mtu),
@@ -302,7 +302,7 @@ fn host_cidr(addr: std::net::Ipv4Addr) -> Ipv4Cidr {
 /// 数据面工厂（`[dataplane] enabled = true`）：apply/rollback 真实执行
 /// （生产路径：后端在本机 root namespace 构造）。
 pub fn hub_backend_factory(dataplane: DataPlaneConfig, tunnel_mtu: Option<u32>) -> BackendFactory {
-    hub_backend_factory_with(dataplane, tunnel_mtu, LinuxNetworkBackend::new)
+    hub_backend_factory_with(dataplane, tunnel_mtu, SystemBackend::new)
 }
 
 /// 同 [`hub_backend_factory`]，后端构造可注入——netns 集成测试把 hub 数据面
@@ -310,7 +310,7 @@ pub fn hub_backend_factory(dataplane: DataPlaneConfig, tunnel_mtu: Option<u32>) 
 pub fn hub_backend_factory_with(
     dataplane: DataPlaneConfig,
     tunnel_mtu: Option<u32>,
-    make_backend: impl Fn() -> LinuxNetworkBackend + Send + Sync + 'static,
+    make_backend: impl Fn() -> SystemBackend + Send + Sync + 'static,
 ) -> BackendFactory {
     let make_backend = Arc::new(make_backend);
     Arc::new(move |mesh, network_id| {

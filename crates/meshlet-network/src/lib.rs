@@ -3,7 +3,9 @@
 //!
 //! Linux 实现在 [linux](linux) 模块（受控执行 `ip` / `wg` / `iptables` 命令，
 //! ADR-007 的降级路径先行落地，通路已在 netns 集成测试中真机验证）；
-//! Windows 实现按 ADR-008 后续接入。
+//! Windows 实现按 ADR-008 后续接入——在那之前，非 Linux 平台得到
+//! [unsupported] 模块的**明确占位**（每个数据面操作显式报
+//! [NetworkError::Unsupported]，绝不静默假装生效）。
 //!
 //! 注意：使用原生 `async fn` trait（Rust 1.75+）。原生 async trait 暂不支持
 //! `dyn` 分发；如后续需要对象安全，再评估 `async-trait`（存档 §15.1 已预留该决策点）。
@@ -18,6 +20,21 @@ pub mod nat;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+
+#[cfg(not(target_os = "linux"))]
+pub mod unsupported;
+
+/// 平台默认后端：Linux 为真实内核后端（[linux] 模块，ADR-007）；非 Linux
+/// 为 [unsupported] 模块的明确占位（ADR-008 Windows 后端待接入）。
+///
+/// 调用方一律经本别名构造（`SystemBackend::new()` + `with_*` 装配），平台
+/// 差异收敛在这里：Linux 真实执行，其他平台每个数据面操作都失败可见。
+#[cfg(target_os = "linux")]
+pub type SystemBackend = linux::LinuxNetworkBackend;
+
+/// 平台默认后端（非 Linux）：见上方 Linux 版别的文档。
+#[cfg(not(target_os = "linux"))]
+pub type SystemBackend = unsupported::UnsupportedBackend;
 
 use meshlet_domain::Ipv4Cidr;
 
@@ -131,8 +148,8 @@ pub struct NetworkSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NetworkError {
-    #[error("operation not supported on this platform")]
-    Unsupported,
+    #[error("operation not supported on this platform: {0}")]
+    Unsupported(String),
     #[error("insufficient privileges: {0}")]
     InsufficientPrivileges(String),
     #[error("backend io failure: {0}")]

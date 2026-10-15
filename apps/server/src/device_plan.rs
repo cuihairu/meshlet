@@ -17,9 +17,8 @@ use meshlet_domain::{
     desired_config_hash, peer_routes::client_hub_peer_allowed_ips, AliasMapping,
     DesiredStateStatus, Device, DeviceId, RouteMode,
 };
-use meshlet_network::linux::LinuxNetworkBackend;
 use meshlet_network::nat::alias_nat_rules;
-use meshlet_network::{DevicePlan, PeerConfig, RouteConfig, TunnelConfig};
+use meshlet_network::{DevicePlan, PeerConfig, RouteConfig, SystemBackend, TunnelConfig};
 
 use crate::service::MeshState;
 
@@ -41,7 +40,7 @@ pub fn hub_public_key(dataplane: &DataPlaneConfig) -> Result<String, String> {
     if key.is_empty() {
         return Err(format!("private_key_file {path} is empty"));
     }
-    LinuxNetworkBackend::new()
+    SystemBackend::new()
         .public_key_from_private(&key)
         .map_err(|e| format!("derive hub public key from private_key_file {path}: {e}"))
 }
