@@ -442,18 +442,55 @@ async fn no_secret_material_in_audit() {
     assert_eq!(status, StatusCode::CREATED);
     let api_token = token["token"].as_str().unwrap().to_string();
 
+    // 自举注册流的两份秘密材料同样不得入审计：原始自举码（公开端点即凭证）
+    // 与注册期签发的 agent_token。
+    let (status, bt) = write(
+        &c,
+        "POST",
+        &format!("/api/v1/networks/{network_id}/bootstrap-tokens"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{bt}");
+    let bootstrap_token = bt["token"].as_str().unwrap().to_string();
+    let (status, registered) = call(
+        &c,
+        "POST",
+        "/api/v1/device-registrations",
+        None,
+        false,
+        Some(json!({
+            "bootstrap_token": bootstrap_token,
+            "device_name": "edge-audit",
+            "public_key": "pub-audit-selfreg",
+            "platform": "linux",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    let registered_token = registered["agent_token"].as_str().unwrap().to_string();
+
     let page = audit_events(&c).await;
     let dumped = serde_json::to_string(&page).unwrap();
-    for secret in [PASSWORD, &invite_token, &agent_token, &api_token] {
+    for secret in [
+        PASSWORD,
+        &invite_token,
+        &agent_token,
+        &api_token,
+        &bootstrap_token,
+        &registered_token,
+    ] {
         assert!(
             !dumped.contains(secret),
             "audit must not contain raw secret material"
         );
     }
-    // 事件本身仍在：三张凭证的签发痕迹可追溯。
+    // 事件本身仍在：各凭证的签发痕迹可追溯。
     assert!(!events_with(&page, "invite.created").is_empty());
     assert!(!events_with(&page, "device.enrolled").is_empty());
     assert!(!events_with(&page, "api_token.created").is_empty());
+    assert!(!events_with(&page, "bootstrap_token.created").is_empty());
+    assert!(!events_with(&page, "device.registered").is_empty());
 }
 
 /// 审计是管理数据：未认证不得读取。

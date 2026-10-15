@@ -68,7 +68,10 @@ async fn app() -> Ctx {
 
 async fn res_body(res: axum::response::Response) -> serde_json::Value {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
+    // 提取器拒绝（如 deny_unknown_fields 的 422）是纯文本体：原样包成
+    // 字符串，保持断言消息可见。
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&bytes).to_string()))
 }
 
 /// 管理端写请求（Cookie + CSRF 头）。
@@ -557,6 +560,15 @@ async fn invalid_input_is_rejected_before_token_use() {
         let (status, resp) = register(ctx.clone(), body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
     }
+
+    // 私钥字段在 API 边界即被拒（deny_unknown_fields → 422，与 enroll 同
+    // 纪律：私钥不出设备），同样不消耗使用次数。
+    let (status, resp) = register(
+        ctx.clone(),
+        serde_json::json!({ "bootstrap_token": raw, "device_name": "x", "public_key": "k", "platform": "linux", "private_key": "priv" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
 
     // 有效注册仍成功（max_uses 未被无效请求消耗——不限次场景下断言 used_count）。
     let (status, _) = register(ctx.clone(), reg_body(&raw, "ok")).await;
