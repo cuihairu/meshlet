@@ -101,7 +101,7 @@
 
 agent 只消费**类型化配置对象**（§16.4）：服务端不向 agent 下发任何 Shell 命令，
 agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
-[openapi.yaml](../../public/api/openapi.yaml)）：
+[openapi.yaml](/api/openapi.yaml)）：
 
 - `tunnel`：本设备虚拟 IP + **到 hub 的单一 peer**；AllowedIPs = Overlay +
   **他人**已发布的 LAN/Alias 前缀（自己发布的本地网段不回灌，避免环路，§7.2），
