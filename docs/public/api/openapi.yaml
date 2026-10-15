@@ -237,39 +237,6 @@ paths:
               schema: { $ref: "#/components/schemas/Network" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
-  /networks/{network_id}:
-    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
-    get:
-      tags: [networks]
-      summary: Network detail
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Network" }
-        "404": { $ref: "#/components/responses/NotFound" }
-    patch:
-      tags: [networks]
-      summary: Update network (name only in v1; CIDR immutable)
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name: { type: string }
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Network" }
-    delete:
-      tags: [networks]
-      summary: Delete network
-      responses:
-        "204": { description: No content }
   /networks/{network_id}/devices:
     parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
     get:
@@ -407,46 +374,6 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
-  /networks/{network_id}/devices/{device_id}:
-    parameters:
-      - { $ref: "#/components/parameters/NetworkId" }
-      - { $ref: "#/components/parameters/DeviceId" }
-    get:
-      tags: [devices]
-      summary: Device detail
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Device" }
-    patch:
-      tags: [devices]
-      summary: Update device (rename)
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Device" }
-    delete:
-      tags: [devices]
-      summary: Delete device
-      responses:
-        "204": { description: No content }
-  /networks/{network_id}/devices/{device_id}/rotate-key:
-    parameters:
-      - { $ref: "#/components/parameters/NetworkId" }
-      - { $ref: "#/components/parameters/DeviceId" }
-    post:
-      tags: [devices]
-      summary: Rotate device key (verifiable completion state)
-      responses:
-        "202":
-          description: Accepted; carries revision
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/RevisionRef" }
   /networks/{network_id}/devices/{device_id}/revoke:
     parameters:
       - { $ref: "#/components/parameters/NetworkId" }
@@ -518,15 +445,6 @@ paths:
     get:
       tags: [routes]
       summary: Route detail
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/LanRoute" }
-    patch:
-      tags: [routes]
-      summary: Update route (e.g. return-path mode)
       responses:
         "200":
           description: OK
@@ -688,25 +606,6 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SystemStatus" }
-  /networks/{network_id}/status:
-    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
-    get:
-      tags: [status]
-      summary: Network status
-      responses:
-        "200": { description: OK }
-  /networks/{network_id}/diagnostics:
-    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
-    get:
-      tags: [status]
-      summary: Latest diagnostics results (13 checks, section 12.7)
-      responses:
-        "200": { description: OK }
-    post:
-      tags: [status]
-      summary: Trigger diagnostics run
-      responses:
-        "202": { description: Accepted }
   /networks/{network_id}/config-revisions:
     parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
     get:

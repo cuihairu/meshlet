@@ -12,6 +12,9 @@
 - 敏感可重试操作提供幂等语义；
 - **Agent API 与管理 API 认证边界清晰分离**（§13.7）。
 
+
+> **契约 ↔ 实现对账（2026-10-15）**：本表与 [openapi.yaml](/api/openapi.yaml) 已与 `apps/server` 注册的 27 条路由逐一对齐——规格先行的端点（网络/设备详情与更新删除、 `rotate-key`、逐网络 `status`、路由 `PATCH`）从未实现且不在第一版验收（§22）内， 已从机器契约移除，避免代码生成出 404 客户端；重复的 `diagnostics` 路径块已去重（保留与实现一致的一份：`POST` 返回 `200` + 报告，非 `202`）。
+
 ## 统一错误响应
 
 ```json
@@ -30,27 +33,25 @@
 | GET | `/api/v1/auth/tokens` | 当前用户的 Token 列表（不含任何 Token 材料）🔒 |
 | DELETE | `/api/v1/auth/tokens/{token_id}` | 撤销 API Token（即失效；仅属主可撤）🔒 |
 | GET/POST | `/api/v1/networks` | 网络列表 / 创建（CIDR 验证，ADR-004）🔒 |
-| GET/PATCH/DELETE | `/api/v1/networks/{network_id}` | 网络详情 / 更新 / 删除 🔒 |
 | GET | `/api/v1/networks/{network_id}/devices` | 设备列表 🔒 |
 | POST | `/api/v1/networks/{network_id}/invites` | 生成一次性邀请（ADR-010）🔒 |
 | DELETE | `/api/v1/networks/{network_id}/invites/{invite_id}` | 撤销邀请（ADR-010）🔒 |
 | POST | `/api/v1/enroll` | 设备加入（邀请 Token + 公钥；私钥不出客户端，§11.2） |
 | POST | `/api/v1/agent/heartbeat` | Agent 心跳/状态上报（Bearer agent_token；可带 `last_handshake_at`，§14.1） |
 | GET | `/api/v1/agent/device/desired` | 本设备的期望数据面计划（Bearer agent_token；**结构化配置对象**：隧道/路由/NAT + `desired_config_hash`，**绝无 Shell 命令**，§16.4；`private_key` 恒为 `null`，ADR-010；服务端 `[dataplane] enabled = false` → `503 dataplane_not_configured`，agent 重试而非把「未配置」当「已生效」） |
-| GET/PATCH/DELETE | `/api/v1/networks/{network_id}/devices/{device_id}` | 设备详情 / 更新 / 删除 🔒 |
-| POST | `/api/v1/networks/{network_id}/devices/{device_id}/rotate-key` | 密钥轮换 🔒 |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5）🔒 |
 | GET/POST | `/api/v1/networks/{network_id}/routes` | LAN Route 列表 / 创建（含返回路径模式，ADR-005）；与 overlay/既有路由重叠 → `409 conflict` 且**消息点名冲突对端**（既有路由 id + 网段），拒绝发生在任何状态变更前——既有路由绝不被覆盖，客户端应提示改用 Alias 等长前缀映射（§8.3 不静默）。**例外（ADR-006 旗舰场景）**：新路由与既有路由**均为 Alias 模式**时允许真实前缀重叠——两个站点各有一个 `192.168.1.0/24`，经各自不同 Alias 前缀区分可达；对外可见的转发前缀是 Alias（唯一性由 Alias 创建时的互叠拒绝保证），真实前缀不进隧道转发表面 🔒 |
-| GET/PATCH/DELETE | `/api/v1/networks/{network_id}/routes/{route_id}` | 详情 / 更新 / 删除 🔒 |
+| GET/DELETE | `/api/v1/networks/{network_id}/routes/{route_id}` | 详情 / 删除（无更新路径——修改 = 删除后重建，各记一个修订）🔒 |
 | GET/POST | `/api/v1/networks/{network_id}/aliases` | Alias 列表 / 创建（等长前缀校验，ADR-006；**已实现**）：绑定本网络 `alias` 模式路由（每路由一映射）、网关须 Active；`target_cidr` 服务端由绑定路由推导、**客户端不可指定**；前缀不等长或与 target 相同 → `400`；Alias 前缀与 overlay / 既有 Alias / 既有路由目的网段重叠 → `409 conflict` 且**消息点名对端**（计入路由冲突指标，§17.2）；拒绝发生在任何状态变更前。**协议边界**：只覆盖 IP 单播路由层——广播/组播/二层发现（ARP/NDP、mDNS、DHCP 广播域）不跨 Alias 透传，协议负载内嵌 IP 的应用可能失效（§9.6，详见 [ADR-006](../decisions/adr-006-alias-prefix-nat.md)）；内核侧 NAT 执行随数据面（ADR-007），未接线时修订 apply 确定性失败可见（§10.3）🔒 |
 | GET/DELETE | `/api/v1/networks/{network_id}/aliases/{alias_id}` | 详情 / 删除（**已实现**）：删除 = **整单元清理**（§12.6）——映射与其绑定路由同删、记录**一个**修订；内核侧 NAT 规则移除随该修订 apply 交 backend；反向同理：删除绑定路由级联删除 Alias；无更新路径——修改 = 删除后重建（各记一个修订）🔒 |
 | GET | `/api/v1/system/status` | 服务端状态（公开） |
-| GET | `/api/v1/networks/{network_id}/status` | 网络状态 🔒 |
 | GET/POST | `/api/v1/networks/{network_id}/diagnostics` | 诊断结果 / 触发诊断（§12.7 十三项检查）🔒 |
 | GET | `/api/v1/networks/{network_id}/config-revisions` | 配置版本列表 🔒 |
 | GET | `/api/v1/networks/{network_id}/config-revisions/{revision}` | 版本详情（含 apply_status）🔒 |
 | POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/apply` | 应用指定版本到实际环境（响应即该版本视图）🔒 |
 | POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/rollback` | 回滚失败版本（仅删除/恢复 Meshlet 自有对象，ADR-007；只允许回滚当前修订，被取代者 409，§10.4）🔒 |
+| GET | `/api/v1/audit` | 审计事件列表（§16.5：敏感操作全记录，秘密材料不入表）🔒 |
+| GET | `/api/v1/system/metrics` | 运行指标（§17.2 八项，Prometheus 文本格式）🔒 |
 | POST | `/api/v1/system/backup` | 一致性本地备份（SQLite 在线备份语义；只写 `[backup] dir`，不覆盖既有文件 → 409；目录未配置 → 503 `backup_not_configured`；响应含备份文件内容摘要）🔒 |
 
 - 撤销设备语义（§11.5，已实现）：`POST .../devices/{device_id}/revoke`
