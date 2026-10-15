@@ -36,6 +36,7 @@
 | DELETE | `/api/v1/networks/{network_id}/invites/{invite_id}` | 撤销邀请（ADR-010）🔒 |
 | POST | `/api/v1/enroll` | 设备加入（邀请 Token + 公钥；私钥不出客户端，§11.2） |
 | POST | `/api/v1/agent/heartbeat` | Agent 心跳/状态上报（Bearer agent_token；可带 `last_handshake_at`，§14.1） |
+| GET | `/api/v1/agent/device/desired` | 本设备的期望数据面计划（Bearer agent_token；**结构化配置对象**：隧道/路由/NAT + `desired_config_hash`，**绝无 Shell 命令**，§16.4；`private_key` 恒为 `null`，ADR-010；服务端 `[dataplane] enabled = false` → `503 dataplane_not_configured`，agent 重试而非把「未配置」当「已生效」） |
 | GET/PATCH/DELETE | `/api/v1/networks/{network_id}/devices/{device_id}` | 设备详情 / 更新 / 删除 🔒 |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/rotate-key` | 密钥轮换 🔒 |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5）🔒 |
@@ -56,6 +57,33 @@
   返回 `202` + `RevisionRef`（新修订号）；设备状态转 `revoked`（列表可见），
   该设备的 agent 凭证**立即失效**，且**其已发布的全部 LAN Route 一并移除**
   （不给 AllowedIPs 推导留下指向已撤销 Peer 的网段）；重复撤销 → `409 conflict`。
+
+## 设备数据面计划（`GET /api/v1/agent/device/desired`，已实现）
+
+agent 只消费**类型化配置对象**（§16.4）：服务端不向 agent 下发任何 Shell 命令，
+agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
+[openapi.yaml](../../public/api/openapi.yaml)）：
+
+- `tunnel`：本设备虚拟 IP + **到 hub 的单一 peer**；AllowedIPs = Overlay +
+  **他人**已发布的 LAN/Alias 前缀（自己发布的本地网段不回灌，避免环路，§7.2），
+  推导复用域层唯一入口 `peer_routes::client_hub_peer_allowed_ips`；
+- `routes`：他人网关发布的 LAN（`direct` → 真实目的段）或 Alias 前缀
+  （`alias` → 绑定映射的 alias 前段），经该网关设备虚拟 IP；
+- `nat_rules`：**本设备作为网关**时按 Alias 映射渲染的规则（DNAT NETMAP +
+  受控 SNAT），每条带所有权注释 `meshlet alias {id}`（§12.6）——映射删除即整单元清理；
+- `desired_config_hash`：与修订簿记同一来源（§10.1「有变更才重放」）；
+- `tunnel.private_key` 恒为 `null`（ADR-010：私钥不出设备，agent 本地注入）；
+  hub 公钥由服务端在请求时从 `[dataplane] private_key_file` 现算（`wg pubkey`，
+  不落库、不出站）。
+
+**期望项状态 = 已下发内核**：路由/Alias 映射的 `status` 在 apply/rollback 结论
+处收敛（`service::settle_desired_state`）——只有真下发到内核的前缀才转 `applied`，
+其余转 `failed`。因此「已记录但未应用」的期望配置不进计划（失败可见，不假装生效），
+失败或回滚后计划随之撤下这些前缀。
+
+失败语义：`503 dataplane_not_configured`（服务端数据面未开启，agent 退避重试）、
+`401`（凭证无效/已撤销）、`404`（设备不在册）、`500`（hub 私钥文件缺失或
+`wg pubkey` 失败——明确报错，不返回空计划）。
 
 ## 备份与恢复（§17.4，已实现）
 
@@ -113,7 +141,8 @@
 - 密码 Argon2id 哈希存储（32 MiB/2 轮/4 并行）；**无默认管理员密码**，
   首个管理员仅经空库 `POST /api/v1/auth/bootstrap` 创建；
 - `/api/v1/enroll`（邀请 Token 即凭证）、`/api/v1/system/status` 与
-  `/api/v1/agent/heartbeat`（Bearer `agent_token`）不属于管理 API；agent_token
+  `/api/v1/agent/heartbeat` 与 `GET /api/v1/agent/device/desired`（Bearer
+  `agent_token`）不属于管理 API；agent_token
   由加入时签发、原始 Token 仅返回一次，服务端只存 SHA-256 摘要（`agent_tokens`
   表，migration 003）——agent 凭证与控制台会话是两条互不交叉的认证边界（§13.7）。
 
@@ -138,8 +167,9 @@
   节流记录使用时刻（60s 内不重复写）；`DELETE /api/v1/auth/tokens/{token_id}`
   撤销后立即失效（`401`），撤销后的 Token 仍留在列表中并带 `revoked_at`；
   列表/撤销仅限属主，未知或不属于自己的 id → `404 not_found`；
-- **边界分离**：API Token 只对管理 API 有效；`/api/v1/agent/heartbeat`
-  仍只认 agent_token，反之 agent_token 也过不了管理 API 认证（§13.7）。
+- **边界分离**：API Token 只对管理 API 有效；`/api/v1/agent/heartbeat` 与
+  `GET /api/v1/agent/device/desired` 仍只认 agent_token，反之 agent_token 也过不了
+  管理 API 认证（§13.7）。
 
 ## 在线状态判定（已实现）
 
@@ -203,4 +233,4 @@
 
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`、`POST /api/v1/system/backup`（§17.4）；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,device_revoke,audit,observability,recovery,backup}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。
+`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/agent/device/desired`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`、`POST /api/v1/system/backup`（§17.4）；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,aliases,agent_plan,device_revoke,audit,observability,recovery,backup}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。

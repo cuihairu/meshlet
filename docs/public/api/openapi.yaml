@@ -377,6 +377,36 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /agent/device/desired:
+    get:
+      security:
+        - agentToken: []
+      tags: [devices]
+      summary: Desired data plane plan for the calling device (§16.4)
+      description: >
+        Returns the calling device's structured data plane plan: tunnel, routes,
+        gateway-side NAT rules and the desired config hash. The server never
+        sends shell commands — the agent consumes this typed object and replays
+        its local backend only when something changed (ADR-007).
+        `private_key` is always null (ADR-010: the private key never leaves the
+        device). Returns 503 `dataplane_not_configured` when the server has
+        `[dataplane] enabled = false`, so an agent retries instead of treating
+        "not configured" as "already effective".
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          schema: { type: string }
+          description: Bearer <agent_token>
+      responses:
+        "200":
+          description: Desired plan for the calling device
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevicePlan" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /networks/{network_id}/devices/{device_id}:
     parameters:
       - { $ref: "#/components/parameters/NetworkId" }
@@ -769,8 +799,9 @@ components:
         systems. Scopes: "read" (read endpoints only) or "write" (read+write).
         Revocable by its owner; the server stores only the SHA-256 digest and
         records throttled last_used_at for audit attribution. Valid only on the
-        management API, never on /agent/heartbeat. Mutating requests must still
-        send X-Requested-With: XMLHttpRequest (same CSRF guard as sessions).
+        management API, never on /agent/heartbeat or /agent/device/desired.
+        Mutating requests must still send X-Requested-With: XMLHttpRequest
+        (same CSRF guard as sessions).
   parameters:
     NetworkId: { name: network_id, in: path, required: true, schema: { type: string } }
     DeviceId: { name: device_id, in: path, required: true, schema: { type: string } }
@@ -823,7 +854,7 @@ components:
           properties:
             code:
               type: string
-              enum: [unauthorized, forbidden, not_found, conflict, validation_failed, too_many_requests, apply_failed, backup_not_configured, internal]
+              enum: [unauthorized, forbidden, not_found, conflict, validation_failed, too_many_requests, apply_failed, backup_not_configured, dataplane_not_configured, internal]
             message: { type: string }
             details: { type: object, additionalProperties: true }
     Session:
@@ -1003,6 +1034,85 @@ components:
         online_state: { type: string, enum: [online, tunnel_only, offline] }
         presence_source: { type: string, enum: [agent_report, handshake, enrollment, none] }
         last_seen_at: { type: string, format: date-time }
+    PeerConfig:
+      type: object
+      required: [public_key, allowed_ips]
+      properties:
+        public_key: { type: string, description: Peer public key (hub key on devices) }
+        allowed_ips:
+          type: array
+          items: { type: string }
+          description: CIDRs routed to this peer; on a device = overlay + other devices' published LAN/alias prefixes (never its own, §7.2)
+        endpoint: { type: string, nullable: true, description: "host:port, or null when the agent uses its local [dataplane] hub_endpoint" }
+        persistent_keepalive_secs: { type: integer, nullable: true }
+    TunnelConfig:
+      type: object
+      required: [name, address, address_prefix, peers]
+      properties:
+        name: { type: string, description: Managed WireGuard interface }
+        address: { type: string, description: This device's overlay address (a.b.c.d) }
+        address_prefix: { type: integer, description: Overlay prefix length }
+        listen_port: { type: integer, nullable: true, description: Always null on devices }
+        peers:
+          type: array
+          items: { $ref: "#/components/schemas/PeerConfig" }
+        mtu: { type: integer, nullable: true }
+        private_key:
+          type: string
+          nullable: true
+          description: Always null — the server never carries a private key (ADR-010); the agent injects its own key locally.
+    RouteConfig:
+      type: object
+      required: [destination, interface]
+      properties:
+        destination: { type: string, description: Destination CIDR }
+        interface: { type: string }
+        gateway:
+          type: string
+          nullable: true
+          description: Next hop (a gateway device's overlay address), or null to route straight into the tunnel
+    NatRule:
+      type: object
+      required: [chain, match_dest, action, owner]
+      properties:
+        chain: { type: string, enum: [prerouting, postrouting] }
+        match_dest: { type: string, description: Destination CIDR the rule matches }
+        action:
+          description: >
+            `{"net_map": {"to": "<cidr>"}}` for 1:1 equal-length prefix rewrite
+            (NETMAP), or `"snat_to_gateway_lan"` for controlled SNAT whose source
+            the gateway resolves locally from its interfaces.
+          oneOf:
+            - type: object
+              required: [net_map]
+              properties:
+                net_map:
+                  type: object
+                  required: [to]
+                  properties:
+                    to: { type: string }
+            - type: string
+              enum: [snat_to_gateway_lan]
+        owner:
+          type: string
+          description: Ownership comment (`meshlet alias {id}`) used to remove exactly this unit's rules (§12.6)
+    DevicePlan:
+      type: object
+      required: [tunnel, routes, nat_rules, desired_config_hash]
+      properties:
+        tunnel: { $ref: "#/components/schemas/TunnelConfig" }
+        routes:
+          type: array
+          items: { $ref: "#/components/schemas/RouteConfig" }
+        nat_rules:
+          type: array
+          items: { $ref: "#/components/schemas/NatRule" }
+        desired_config_hash:
+          type: string
+          description: >
+            SHA-256 of the desired config, identical to the revision ledger's
+            hash — the agent compares it against its local ledger to decide
+            whether anything changed (§10.1).
     LanRoute:
       type: object
       required: [id, network_id, gateway_device_id, destination_cidr, route_mode, return_path_mode, status, revision_id, apply_status]

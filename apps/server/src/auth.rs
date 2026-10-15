@@ -64,6 +64,9 @@ pub struct AppState {
     /// 计划隧道 MTU（§7.5「MTU 可配置」）：`None` = 未显式配置，诊断按
     /// WireGuard 默认 1420 解释大包/分片风险；诊断第 13 项据此判读。
     pub tunnel_mtu: Option<u32>,
+    /// 服务端 `[dataplane]` 配置（设备计划下发用：接口名/私钥文件）；
+    /// `enabled = false` 时 `GET /agent/device/desired` 返回 503。
+    pub dataplane: meshlet_config::DataPlaneConfig,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -91,6 +94,7 @@ impl AppState {
             persist: Arc::new(tokio::sync::Mutex::new(())),
             backup_dir: None,
             tunnel_mtu: None,
+            dataplane: meshlet_config::DataPlaneConfig::default(),
         }
     }
 
@@ -109,6 +113,13 @@ impl AppState {
     /// 注入计划隧道 MTU（§7.5；生产来自 `tunnel_mtu`，测试注入以验证诊断分支）。
     pub fn with_tunnel_mtu(mut self, mtu: Option<u32>) -> Self {
         self.tunnel_mtu = mtu;
+        self
+    }
+
+    /// 注入服务端 `[dataplane]` 配置（生产来自 `config.dataplane`；测试注入以
+    /// 验证设备计划下发与未配置分支）。
+    pub fn with_dataplane(mut self, dataplane: meshlet_config::DataPlaneConfig) -> Self {
+        self.dataplane = dataplane;
         self
     }
 

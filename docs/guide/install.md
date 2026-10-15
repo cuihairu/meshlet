@@ -5,9 +5,9 @@
 >
 > **诚实边界（2026-10-15）**：本指南的构建、配置、systemd 单元已在开发机
 > 真验（见文末验证清单）；**真实空 VPS 的端到端部署**（含设备 agent 建立
-> WireGuard 隧道、LAN 路由互通）**待真机验证**——设备端数据面尚未实装
-> （ADR-007：开发环境无 CAP_NET_ADMIN，见 TODO 对应条目）。相关小节均
-> 标注了这一点，不会假装完成。
+> WireGuard 隧道、LAN 路由互通）**待真机验证**——agent 数据面已实装并有
+> netns 集成测试覆盖（拉计划 → 对账 → 应用 → 心跳，含主机重启后重放），
+> 但真机走查尚未做（ADR-007）。相关小节均标注了这一点，不会假装完成。
 
 ## 0. 已验证 / 待真机验证
 
@@ -17,15 +17,17 @@
 | systemd 单元 `systemd-analyze verify` | ✅ 已真验（语法/依赖/硬化项组合） |
 | 控制台静态构建 `pnpm run build` | ✅ 已真验 |
 | 服务启动 / bootstrap / 控制台 / 备份（服务端控制面） | ⏳ 待真机（逻辑有 246 项测试覆盖，未在真实 VPS 走查） |
-| agent 加入并建立 WireGuard 隧道、LAN Route/Alias 互通 | ⛔ 待数据面实装 + 真机（ADR-007 卡点） |
+| agent 数据面逻辑（拉计划 / 对账 / 应用 / NAT 所有权清理） | ✅ 已实装（netns 集成测试 `apps/agent/tests/agent_reconcile.rs`） |
+| agent 加入并建立 WireGuard 隧道、LAN Route/Alias 互通 | ⏳ 待真机（逻辑已实装，真实设备走查未做，ADR-007） |
 
 ## 1. 前置条件
 
 - **服务器**：Linux x86_64 + systemd（Ubuntu 22.04+ / Debian 12 口径），root 或 sudo；
 - **构建机**（可与服务器同一台）：Rust stable（`rustup`）；
 - **控制台**（可选，建议要）：Node 20+ 与 pnpm（`corepack enable`）；
-- **对外端口**：443/TCP（HTTPS 反代）。WireGuard 的 UDP 端口（默认预留
-  51820/udp）在数据面实装后才需要开放——现在开了也没有进程在听。
+- **对外端口**：443/TCP（HTTPS 反代）+ WireGuard 的 UDP 端口
+  （默认 51820/udp，`[dataplane] listen_port` 可改）——数据面开启后 hub
+  在该端口监听，设备端 endpoint 指向它。
 
 ## 2. 构建 release 产物
 
@@ -36,7 +38,7 @@ cd meshlet
 # 服务端 + agent（release profile 启用 thin LTO）
 cargo build --release --bin meshlet-server --bin meshlet-agent
 # → target/release/meshlet-server
-# → target/release/meshlet-agent（数据面骨架，见 §5 agent 一节）
+# → target/release/meshlet-agent（设备端数据面，见 §4 agent 配置）
 
 # 控制台静态文件（可选）
 cd console && corepack enable && pnpm install && pnpm run build
@@ -52,7 +54,7 @@ useradd --system --home-dir /var/lib/meshlet-agent --shell /usr/sbin/nologin mes
 
 # 二进制与控制台
 install -m 0755 target/release/meshlet-server /usr/local/bin/meshlet-server
-install -m 0755 target/release/meshlet-agent  /usr/local/bin/meshlet-agent   # 模板，暂不启用
+install -m 0755 target/release/meshlet-agent  /usr/local/bin/meshlet-agent   # 设备端（§4 配置后启用）
 mkdir -p /usr/local/share/meshlet
 cp -r console/dist /usr/local/share/meshlet/console
 
@@ -112,13 +114,41 @@ console_dir = "/usr/local/share/meshlet/console"
 # interval_secs = 86400              # 定时间隔（秒）
 ```
 
-设备端 `/etc/meshlet/agent.toml`（agent 数据面实装前仅作占位）：
+设备端 `/etc/meshlet/agent.toml`：
 
 ```toml
 # 控制面地址（走 HTTPS 反代域名）。
 server_url = "https://meshlet.example.com"
-# agent 本地状态目录。
+# agent 本地状态目录（账本 applied.json 落在这里，用于启动对账）。
 state_dir = "/var/lib/meshlet-agent"
+# 设备凭证：加入（POST /api/v1/enroll）返回的 agent_token，仅此一次可见。
+# 写入本机文件（0600）；服务端只存 SHA-256 摘要，撤销即失效（ADR-010）。
+device_token = "…enroll 响应里的 agent_token…"
+
+# 数据面（ADR-007）：默认**全关**——关闭时 agent 只打印状态、不碰内核。
+# 打开后 agent 启动即用 device_token 拉取自身计划
+# （GET /api/v1/agent/device/desired），与本机内核对账：期望哈希变化或
+# 隧道/路由/NAT 漂移（含主机重启后隧道消失）才重放，然后周期心跳上报。
+# agent 只消费结构化配置对象，绝不执行服务端下发的 Shell 命令（§16.4）。
+# [dataplane]
+# enabled = true                                 # 打开才真实操作内核
+# interface = "wg0"                              # 受管 WireGuard 接口名
+# private_key_file = "/etc/meshlet/agent.key"    # 本设备私钥（首装必须，0600）
+# hub_endpoint = "203.0.113.10:51820"            # hub 可达地址（服务端未通告时兜底）
+# poll_interval_secs = 30                        # 轮询间隔（秒）
+```
+
+**服务端必须先开数据面**，否则计划端点返回 `503 dataplane_not_configured`
+（agent 退避重试，不会把「未配置」当成「已生效」）。hub 侧
+`[dataplane] private_key_file` 首装必须配置：设备计划里的 hub 公钥由服务端
+在请求时从该文件现算（`wg pubkey`，不落库、不出站，ADR-010）。
+
+```bash
+# 手动核对 agent 看到的计划（诊断用；需要 root 读私钥）
+sudo -u meshlet-agent curl -s -H "Authorization: Bearer $TOKEN" \
+  https://meshlet.example.com/api/v1/agent/device/desired
+# 账本（上次真正应用的哈希/路由/NAT 所有权）
+sudo cat /var/lib/meshlet-agent/applied.json
 ```
 
 ## 5. systemd 服务（自启动）
@@ -148,10 +178,12 @@ journalctl -u meshlet-server -f
 由 `Restart=on-failure` 拉起；重启后按 §17.3 从 SQLite 重建期望状态（日志见
 `mesh state rebuilt from database`）。
 
-**agent 单元是模板**（`deploy/systemd/meshlet-agent.service`）：当前 agent
-二进制是 Phase 1 骨架（无网络后端，启动即退出），**现在不要 enable**——
-数据面实装（ADR-007 卡点解除）后按同法安装启用，届时其需要且仅需要
-`CAP_NET_ADMIN`。**此段整体待真机验证。**
+**agent 单元**（`deploy/systemd/meshlet-agent.service`）：agent 二进制已实装
+数据面（拉计划 → 对账 → 应用 → 心跳），但单元的**真机部署走查尚未做**——
+安装启用前请确认：`[dataplane] enabled = true`、`device_token` 已写入
+`/etc/meshlet/agent.toml`（0600）、`private_key_file` 存在（0600），
+并按单元注释授予 `CAP_NET_ADMIN`。启动后核对 `applied.json` 与
+`wg show` 即可确认是否已按期望重放。**此段待真机验证。**
 
 ## 6. 反向代理（HTTPS）
 
@@ -185,10 +217,24 @@ curl -s -X POST https://meshlet.example.com/api/v1/auth/bootstrap \
 随后浏览器打开 `https://meshlet.example.com`：登录 → 创建网络 → 生成邀请 →
 （设备端流程见下）。
 
-**设备加入与互通（⛔ 待真机验证）**：控制面流程（邀请 → enroll → 设备入列 →
-虚拟 IP 分配）已实现并有测试，但设备侧 agent 尚不会建立 WireGuard 接口与
-路由（ADR-007 卡点），因此「两台设备经 VPS 互通」的端到端验收未达成——
-对应 TODO 条目保持未勾。
+**设备加入与互通（⏳ 待真机验证）**：控制面流程（邀请 → enroll → 设备入列 →
+虚拟 IP 分配）与 agent 数据面（拉计划 → 对账 → 应用隧道/路由/NAT → 心跳）均
+已实现并有测试覆盖（netns 集成测试真跑 WireGuard 握手与双向互通，含主机重启后
+按账本重放）。设备端流程：
+
+```bash
+# 1. 设备上放好本设备私钥（0600），写 /etc/meshlet/agent.toml（§4）
+# 2. enroll 拿到 agent_token（仅此一次），写入 device_token
+curl -s -X POST https://meshlet.example.com/api/v1/enroll \
+  -H 'content-type: application/json' \
+  -d '{"invite_token":"<邀请>","device_name":"edge-1","public_key":"<设备公钥>","platform":"linux"}'
+# 3. 启动 agent：systemctl enable --now meshlet-agent
+# 4. 控制台发布 LAN Route / Alias 映射后：应用对应修订（apply）
+#    → agent 下轮轮询取到新计划并重放；主机重启后启动即对账重放
+```
+
+端到端「两台设备经 VPS 互通」的**真实设备**验收仍未做（ADR-007 真机走查），
+因此对应 TODO 条目保持未勾。
 
 ## 8. 备份（可选，默认关）
 

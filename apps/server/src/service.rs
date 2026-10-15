@@ -446,6 +446,87 @@ pub fn require_network(state: &MeshState, network_id: &str) -> Result<(), Servic
     state.network(network_id).map(|_| ())
 }
 
+/// 期望项状态收敛结果：状态**发生变化**的路由/映射 id 与新状态（供落库）。
+#[derive(Debug, Default, Clone)]
+pub struct DesiredStateSettle {
+    pub routes: Vec<(String, DesiredStateStatus)>,
+    pub aliases: Vec<(String, DesiredStateStatus)>,
+}
+
+/// 把一次 apply / rollback 的结论收敛到每条期望项的 `status`
+/// （§10.1「DB 写入 ≠ 显示生效」的路由/映射层镜像）。
+///
+/// - `applied = true`（backend 成功把配置下发到内核）：网关设备 Active 的路由
+///   转 `Applied`，其绑定 Alias 同步转 `Applied`——此时这些前缀才真的可被
+///   agent 数据面取用（[`meshlet_domain::peer_routes`] 只采纳 `Applied`）；
+/// - 网关设备非 Active（无对端可发）或 apply 失败 / 已回滚：转 `Failed`——
+///   失败可见，且 agent 计划随之撤下这些前缀，不会继续按未生效配置转发；
+/// - 状态未变的不上报（幂等重放不产生无谓落库）。
+pub fn settle_desired_state(
+    state: &mut MeshState,
+    network_id: &str,
+    applied: bool,
+) -> DesiredStateSettle {
+    let mut settle = DesiredStateSettle::default();
+    // 先在不可变借用下算好每条路由的网关可用性与目标状态，再统一写回。
+    let wanted: Vec<(String, bool, DesiredStateStatus)> = state
+        .lan_routes
+        .get(network_id)
+        .map(|routes| {
+            routes
+                .iter()
+                .map(|r| {
+                    let gateway_ready = state
+                        .registry
+                        .find_by_id(&r.gateway_device_id)
+                        .map(|d| d.is_active())
+                        .unwrap_or(false);
+                    let want = if applied && gateway_ready {
+                        DesiredStateStatus::Applied
+                    } else {
+                        DesiredStateStatus::Failed
+                    };
+                    (r.id.to_string(), r.status == want, want)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(routes) = state.lan_routes.get_mut(network_id) {
+        for (id, _, want) in &wanted {
+            if let Some(route) = routes.iter_mut().find(|r| r.id.to_string() == *id) {
+                if route.status != *want {
+                    route.status = *want;
+                    settle.routes.push((id.clone(), *want));
+                }
+            }
+        }
+    }
+    // Alias 随其绑定路由：路由已生效则映射生效，否则映射 `Failed`（翻译未下发）。
+    let route_status: HashMap<String, DesiredStateStatus> = state
+        .lan_routes
+        .get(network_id)
+        .map(|routes| {
+            routes
+                .iter()
+                .map(|r| (r.id.to_string(), r.status))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(aliases) = state.aliases.get_mut(network_id) {
+        for alias in aliases.iter_mut() {
+            let want = match route_status.get(&alias.lan_route_id.to_string()) {
+                Some(DesiredStateStatus::Applied) => DesiredStateStatus::Applied,
+                _ => DesiredStateStatus::Failed,
+            };
+            if alias.status != want {
+                alias.status = want;
+                settle.aliases.push((alias.id.to_string(), want));
+            }
+        }
+    }
+    settle
+}
+
 /// 记录一次期望配置修订（§10.1/§10.4）：对当前网络配置取哈希并写入簿记，
 /// 版本号网络内单调递增，初始状态 `Pending`——此时只完成了 DB 写入，
 /// **尚未**应用到实际网络环境。

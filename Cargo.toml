@@ -32,6 +32,7 @@ rand = "0.9"
 chrono = "0.4"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 argon2 = "0.5"
+ureq = "2"
 
 meshlet-domain = { path = "crates/meshlet-domain" }
 meshlet-api-types = { path = "crates/meshlet-api-types" }

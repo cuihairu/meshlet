@@ -84,6 +84,41 @@ Linux 侧需要管理 WireGuard 接口、路由、IP 转发、防火墙与 Alias
   [routing-optimization.md](../architecture/routing-optimization.md)，属性
   能优化非正确性）。
 
+## 实施记录（2026-10-15 agent 侧交付）
+
+hub 侧接线落地后，设备侧走同一条 `LinuxNetworkBackend` 路径，**服务端仍然
+不向 agent 下发任何 Shell 命令**（§16.4）：
+
+- **契约**：agent 用 enrollment 凭证调 `GET /api/v1/agent/device/desired`
+  取回**自身**的结构化计划 `DevicePlan`（隧道 / 路由 / 网关侧 NAT 规则 +
+  `desired_config_hash`，`private_key` 恒 `null`）；服务端 hub 公钥在请求时从
+  `[dataplane] private_key_file` 现算（`wg pubkey`，不落库、不出站）。
+  推导与 hub 侧同源（域层 `peer_routes::client_hub_peer_allowed_ips`），
+  两端不会漂移（`apps/server/src/device_plan.rs`）。
+- **对账与重放**（`apps/agent/src/reconcile.rs`，纯逻辑）：比较账本
+  哈希 / 内核实际快照 / 服务端期望三者的差异——期望哈希变了、无账本
+  （首装或状态文件损坏）、或内核漂移（隧道没了、路由缺失、peer 减少、
+  NAT 规则消失）任一成立即重放 `apply_device_plan_sync`；都不成立则
+  **不重放**（有变更才改，§10.1）。这覆盖了「主机重启后隧道消失但账本仍
+  记 applied」的现场（TODO #32）。
+- **所有权清理**：账本记 `nat_owners`（`meshlet alias {id}`）；映射从计划里
+  消失时按注释精确移除该单元规则，绝不触碰非 Meshlet 规则（§12.6）。
+- **期望项状态收敛**（`apps/server/src/service.rs::settle_desired_state`）：
+  apply / rollback 的结论同步收敛到每条路由与 Alias 映射的 `status`——
+  只有真下发到内核的前缀才转 `applied`，其余转 `failed`（与结论同事务
+  落库）。否则「已记录未应用」的网段会出现在设备计划里，agent 会照着
+  转发现网从未生效的前缀。
+- **心跳**：每轮对账后带本地 `wg show` 握手时间上报（§14.1）；上报失败
+  不影响数据面（计划对账是唯一事实源）。
+- **验证**：`apps/agent/tests/agent_reconcile.rs`（真实内核 + netns，对象名
+  `mlg<pid>`——前缀既不与既有 netns 测试互删，也不与崩溃残留/并行进程撞名）
+  覆盖：首装应用 → A↔B 互通 →
+  无变更不重放 → 新修订重放 → **模拟主机重启（删隧道）后按账本重放并恢复
+  互通** → 网关侧 Alias NAT 下发与映射删除后的整单元清理（用户规则幸存）。
+  纯逻辑部分另有 15 项单测（`reconcile` / `server` / `agent`）。
+- **未落地**：真机部署走查（systemd 单元 + 真实设备）未做，见
+  [安装指南](../guide/install.md) 的诚实边界与 TODO。
+
 ## 重新评估条件
 
 - Netlink crate 维护性或平台覆盖不达预期；

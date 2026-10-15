@@ -42,7 +42,11 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// 本测试创建的所有对象（netns / veth / 网桥）共用的名称前缀。
-const PREFIX: &str = "mlt";
+///
+/// 各 netns 测试的前缀必须**互不为前缀**：`preflight_cleanup` 按
+/// `starts_with` 批量清理，"mlt" 会连带删掉 "mlta"/"mltb"/"mltd" 的对象，
+/// `cargo test --workspace` 并行跑时互相清场（对象跑到一半被删掉）。
+const PREFIX: &str = "mltw";
 /// 客户端路由经由 hub 的 Overlay 网段。
 const OVERLAY_CIDR: &str = "10.240.0.0/16";
 /// 握手等待上限。

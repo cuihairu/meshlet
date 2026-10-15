@@ -25,10 +25,10 @@ use meshlet_domain::Ipv4Cidr;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
-use crate::nat::{NatChain, NatRule};
+use crate::nat::{NatAction, NatChain, NatRule};
 use crate::{
-    ApplyResult, ConfigRevisionRef, NetworkBackend, NetworkError, NetworkSnapshot, RouteConfig,
-    TunnelConfig,
+    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
+    RouteConfig, TunnelConfig,
 };
 
 /// iptables 所有权注释前缀：nat 规则带 `meshlet alias {id}`（§12.6），filter
@@ -414,6 +414,101 @@ impl LinuxNetworkBackend {
         Ok(ApplyResult::ok())
     }
 
+    /// 私钥 → 公钥（`wg pubkey`，密钥走 stdin、不进 argv）。服务端据此填充
+    /// 下发给设备的 hub peer 公钥，无需额外持久化公钥（ADR-010）。
+    pub fn public_key_from_private(&self, private_key: &str) -> Result<String, NetworkError> {
+        // `wg pubkey` 从 stdin 读私钥（不像 `wg set private-key` 那样走 argv）。
+        let out = self.run_bash_stdin("wg pubkey", &format!("{private_key}\n"))?;
+        let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if key.is_empty() {
+            return Err(NetworkError::Io("wg pubkey returned an empty key".into()));
+        }
+        Ok(key)
+    }
+
+    /// 本机（含 netns）接口上落在 `cidr` 内的首个 IPv4 地址：网关侧受控 SNAT
+    /// 的源地址由本机自己解析（服务端不知道设备 LAN 地址）。
+    pub fn lan_addr_in(&self, cidr: Ipv4Cidr) -> Result<Option<Ipv4Addr>, NetworkError> {
+        let out = self.run(&["ip", "-4", "addr", "show"])?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut tokens = line.split_whitespace();
+            while let Some(tok) = tokens.next() {
+                if tok != "inet" {
+                    continue;
+                }
+                let Some(spec) = tokens.next() else { continue };
+                let Some(addr) = spec.split('/').next() else {
+                    continue;
+                };
+                let Ok(ip) = addr.parse::<Ipv4Addr>() else {
+                    continue;
+                };
+                if cidr.contains(ip) {
+                    return Ok(Some(ip));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// 设备数据面计划的同步应用入口：agent（§16.4 结构化配置对象）与测试共
+    /// 用同一条执行路径。失败即报错，绝不返回「已应用」。
+    ///
+    /// - `private_key` = 本设备本地私钥（服务端不携带）；
+    /// - `gateway_lan_addr` = `Some` 显式给定 SNAT 源地址；`None` = 从本机
+    ///   接口自动解析（计划里没有 SNAT 规则时无需地址，直接跳过）。
+    pub fn apply_device_plan_sync(
+        &self,
+        plan: &DevicePlan,
+        private_key: Option<String>,
+        gateway_lan_addr: Option<Ipv4Addr>,
+    ) -> Result<(), NetworkError> {
+        let mut tunnel = plan.tunnel.clone();
+        tunnel.private_key = private_key;
+        let tunnel_result = self.apply_tunnel_sync(&tunnel)?;
+        if !tunnel_result.applied {
+            return Err(NetworkError::ApplyRejected(
+                tunnel_result.error.unwrap_or_default(),
+            ));
+        }
+        let routes_result = self.apply_routes_sync(&plan.routes)?;
+        if !routes_result.applied {
+            return Err(NetworkError::ApplyRejected(
+                routes_result.error.unwrap_or_default(),
+            ));
+        }
+        if plan.nat_rules.is_empty() {
+            return Ok(());
+        }
+        let lan_addr = match gateway_lan_addr {
+            Some(addr) => addr,
+            None => match Self::snat_target_cidr(&plan.nat_rules).and_then(|cidr| self.lan_addr_in(cidr).ok().flatten()) {
+                Some(addr) => addr,
+                None => return Err(NetworkError::ApplyRejected(format!(
+                    "nat rules require a gateway lan address, but no interface address was found in {}",
+                    Self::snat_target_cidr(&plan.nat_rules)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default()
+                ))),
+            },
+        };
+        let nat_result = self.apply_nat_sync(&plan.nat_rules, lan_addr)?;
+        if !nat_result.applied {
+            return Err(NetworkError::ApplyRejected(
+                nat_result.error.unwrap_or_default(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 计划中受控 SNAT 规则的匹配前缀（= 真实 LAN 网段，§9.5）。
+    fn snat_target_cidr(rules: &[NatRule]) -> Option<Ipv4Cidr> {
+        rules.iter().find_map(|rule| match rule.action {
+            NatAction::SnatToGatewayLan => Some(rule.match_dest),
+            NatAction::NetMap { .. } => None,
+        })
+    }
+
     /// 同步回滚（[NetworkBackend::rollback] 的命令核心）。
     pub fn rollback_sync(&self) -> Result<ApplyResult, NetworkError> {
         // §10.3：只删 Meshlet 自有对象——本后端拥有的隧道接口上的全部数据面
@@ -552,5 +647,35 @@ mod tests {
         };
         let result = backend.apply_tunnel(config).await;
         assert!(matches!(result, Err(NetworkError::ApplyRejected(_))));
+    }
+
+    #[test]
+    fn snat_target_cidr_picks_only_the_controlled_snat_rule() {
+        use crate::nat::{alias_nat_rules, NatChain};
+        use meshlet_domain::{AliasMappingId, LanRouteId, NetworkId, TranslationMode};
+
+        let mapping = meshlet_domain::AliasMapping::new(
+            AliasMappingId("al-9".into()),
+            NetworkId("net-1".into()),
+            LanRouteId("rt-9".into()),
+            "10.241.9.0/24".parse().unwrap(),
+            "192.168.9.0/24".parse().unwrap(),
+            TranslationMode::DnatSnat,
+        )
+        .unwrap();
+        let rules = alias_nat_rules(&mapping);
+        // 计划含两条：DNAT 匹配 alias，SNAT 匹配 target（真实 LAN 段）。
+        assert_eq!(
+            LinuxNetworkBackend::snat_target_cidr(&rules),
+            Some("192.168.9.0/24".parse().unwrap())
+        );
+
+        // dnat_only 计划无 SNAT 规则——网关 LAN 地址不适用（§9.5）。
+        let dnat_only: Vec<NatRule> = rules
+            .iter()
+            .filter(|r| r.chain == NatChain::Prerouting)
+            .cloned()
+            .collect();
+        assert!(LinuxNetworkBackend::snat_target_cidr(&dnat_only).is_none());
     }
 }

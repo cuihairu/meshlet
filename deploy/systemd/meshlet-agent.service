@@ -1,9 +1,17 @@
-# meshlet-agent systemd unit 模板（安装指南：docs/guide/install.md）。
+# meshlet-agent systemd unit（安装指南：docs/guide/install.md）。
 #
-# 现状（2026-10-15）：agent 数据面（WireGuard 接口/路由/NAT）尚未实装
-# （ADR-007：待 CAP_NET_ADMIN 特权环境接入；见 TODO「WireGuard 中心转发
-# 原型」条）。本 unit 是**模板**——硬化项就位、CAP_NET_ADMIN 显式授权，
-# 待数据面落地后即可启用；提前 enable 会因骨架二进制退出而反复重启。
+# agent 数据面已实装（ADR-007）：用 [dataplane] device_token 拉取自身结构化
+# 计划 → 与本机内核对账 → 有变更/漂移才经 LinuxNetworkBackend 应用隧道/路由/
+# NAT → 周期心跳。**绝不在服务端下发 Shell 命令**（§16.4）。
+#
+# 启用前必须具备（见安装指南 §4/§5）：
+#   [dataplane] enabled = true、device_token 已写入 /etc/meshlet/agent.toml
+#   （0600）、private_key_file 存在（0600）。缺任一项 agent 拒绝启动并说明
+#   原因（[dataplane] 未开则只打印状态后正常退出，不碰内核）。
+#
+# 硬化项已逐项注释；真机走查尚未做——尤其 `PrivateDevices=true` 与
+# `ProtectKernelTunables=true` 对本机数据面路径（wg/ip/iptables）的影响需要在
+# 真实设备上验证，发现冲突时以最小放宽为原则调整并在此处记录。
 #
 # sysctl（如 net.ipv4.ip_forward）不由 agent 写 /proc/sys（单元层已锁
 # ProtectKernelTunables）：网关转发开关走 /etc/sysctl.d/（见安装指南）。

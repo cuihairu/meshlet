@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 meshlet-domain = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+serde_json = { workspace = true }

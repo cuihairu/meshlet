@@ -10,6 +10,9 @@
 //!
 //! [nat](nat) 模块是纯**计划**层（§9.4–§9.5）：从 Alias 映射确定性推导网关侧
 //! NAT 规则；执行随数据面接线（ADR-007）。
+//!
+//! [DevicePlan] 是 server → agent 的**结构化配置对象**（§16.4）：agent 只消费
+//! 类型化的隧道/路由/NAT 计划，绝不执行服务端下发的任意 Shell 命令。
 
 pub mod nat;
 
@@ -19,7 +22,7 @@ pub mod linux;
 use meshlet_domain::Ipv4Cidr;
 
 /// Peer 配置：AllowedIPs 与目标路由一致（§7.2），不得全量指隧道。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PeerConfig {
     pub public_key: String,
     pub allowed_ips: Vec<Ipv4Cidr>,
@@ -27,7 +30,7 @@ pub struct PeerConfig {
     pub persistent_keepalive_secs: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TunnelConfig {
     /// 接口名（Linux）或隧道名（Windows）。
     pub name: String,
@@ -42,13 +45,32 @@ pub struct TunnelConfig {
     pub private_key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RouteConfig {
     pub destination: Ipv4Cidr,
     /// 下一跳接口名。
     pub interface: String,
     /// 下一跳网关地址（对端设备虚拟 IP）；`None` = 直连路由。
     pub gateway: Option<std::net::Ipv4Addr>,
+}
+
+/// 设备数据面计划：服务端下发给 agent 的**结构化配置对象**（§16.4：agent 只
+/// 执行类型化对象，绝不执行服务端下发的任意 Shell 命令）。
+///
+/// - `tunnel`：本设备隧道（私钥由 agent 本地注入，服务端永不携带——私钥不
+///   出客户端，ADR-010）；
+/// - `routes`：本设备经隧道转发的目的段（Overlay + 他人已发布 LAN/Alias，
+///   自己本地网段不回灌）；
+/// - `nat_rules`：本设备作为网关时应下发的 NAT 规则（计划层渲染，所有权
+///   注释 `meshlet alias {id}`）；为空 = 非网关或映射已删；
+/// - `desired_config_hash`：本计划对应的期望配置哈希——agent 据此判断「有
+///   变更才重放」（§10.1）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DevicePlan {
+    pub tunnel: TunnelConfig,
+    pub routes: Vec<RouteConfig>,
+    pub nat_rules: Vec<nat::NatRule>,
+    pub desired_config_hash: String,
 }
 
 /// 应用结果：**applied=false 时必须携带错误说明**，不得假装成功（§10.3）。
@@ -237,5 +259,71 @@ mod tests {
             persistent_keepalive_secs: Some(25),
         };
         assert_eq!(peer.allowed_ips.len(), 2);
+    }
+
+    #[test]
+    fn device_plan_round_trips_as_a_structured_object() {
+        // §16.4：server→agent 传的是类型化对象（CIDR 序列化为 a.b.c.d/p 字符串）。
+        let plan = DevicePlan {
+            tunnel: TunnelConfig {
+                name: "wg0".into(),
+                address: "10.240.0.3".parse().unwrap(),
+                address_prefix: 16,
+                listen_port: None,
+                peers: vec![PeerConfig {
+                    public_key: "hub-pub".into(),
+                    allowed_ips: vec!["10.240.0.0/16".parse().unwrap()],
+                    endpoint: Some("203.0.113.10:51820".into()),
+                    persistent_keepalive_secs: Some(25),
+                }],
+                mtu: None,
+                private_key: None,
+            },
+            routes: vec![RouteConfig {
+                destination: "10.241.1.0/24".parse().unwrap(),
+                interface: "wg0".into(),
+                gateway: None,
+            }],
+            nat_rules: vec![],
+            desired_config_hash: "meshlet-desired-v3:ab".into(),
+        };
+        let value = serde_json::to_value(&plan).unwrap();
+        assert_eq!(value["tunnel"]["address_prefix"], 16);
+        assert_eq!(
+            value["tunnel"]["peers"][0]["allowed_ips"][0],
+            "10.240.0.0/16"
+        );
+        assert_eq!(value["routes"][0]["destination"], "10.241.1.0/24");
+        let round = serde_json::from_value::<DevicePlan>(value).unwrap();
+        assert_eq!(round, plan);
+    }
+
+    #[test]
+    fn device_plan_rejects_a_non_canonical_cidr() {
+        // 反序列化同样走校验：主机位非零的网段不是合法计划输入（§6.1）。
+        let plan = DevicePlan {
+            tunnel: TunnelConfig {
+                name: "wg0".into(),
+                address: "10.240.0.3".parse().unwrap(),
+                address_prefix: 16,
+                listen_port: None,
+                peers: vec![],
+                mtu: None,
+                private_key: None,
+            },
+            routes: vec![RouteConfig {
+                destination: "10.240.0.0/16".parse().unwrap(),
+                interface: "wg0".into(),
+                gateway: None,
+            }],
+            nat_rules: vec![],
+            desired_config_hash: "h".into(),
+        };
+        let mut value = serde_json::to_value(&plan).unwrap();
+        value["routes"][0]["destination"] = serde_json::Value::String("10.240.0.1/16".into());
+        assert!(
+            serde_json::from_value::<DevicePlan>(value).is_err(),
+            "host bits set must be rejected"
+        );
     }
 }

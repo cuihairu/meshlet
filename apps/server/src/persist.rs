@@ -326,6 +326,37 @@ pub async fn delete_routes_of_device(
     Ok(())
 }
 
+/// 回写收敛后的期望项状态（apply / rollback 结论，§10.1）。
+///
+/// 与 [`update_revision_status`] 同一条纪律：修订结论落库后，路由/映射的
+/// `status` 也必须落库——重启后 [`load`] 重建的账本不得把「已生效」说成
+/// `pending`，也不得让「已回滚」继续显示为 `applied`。
+pub async fn update_desired_status(
+    pool: &SqlitePool,
+    settle: &crate::service::DesiredStateSettle,
+) -> Result<(), sqlx::Error> {
+    if settle.routes.is_empty() && settle.aliases.is_empty() {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await?;
+    for (id, status) in &settle.routes {
+        sqlx::query("UPDATE lan_routes SET status = ? WHERE id = ?")
+            .bind(desired_status_to_str(*status))
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    for (id, status) in &settle.aliases {
+        sqlx::query("UPDATE alias_mappings SET status = ? WHERE id = ?")
+            .bind(desired_status_to_str(*status))
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// 落库一个新修订（`record` 产生，恒 `pending`）。
 pub async fn insert_revision(pool: &SqlitePool, r: &ConfigRevision) -> Result<(), sqlx::Error> {
     sqlx::query(

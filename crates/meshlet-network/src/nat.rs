@@ -13,7 +13,8 @@ use meshlet_domain::{AliasMapping, Ipv4Cidr, TranslationMode};
 
 /// NAT 表链：目的重写在路由决策前（PREROUTING），源重写在离开网关前
 /// （POSTROUTING）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NatChain {
     Prerouting,
     Postrouting,
@@ -29,8 +30,10 @@ impl NatChain {
     }
 }
 
-/// 规则动作。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 规则动作。序列化用 snake_case（计划经 agent API 下发，字段形状与控制面
+/// 其余 snake_case 契约一致：`{"net_map":{"to":"…"}}` / `"snat_to_gateway_lan"`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NatAction {
     /// 1:1 等长前缀重写（iptables `NETMAP` 语义）。ADR-006 的等长约束保证
     /// alias 与 target 两侧地址一一对应（`AliasMapping::translate` 同一套
@@ -42,7 +45,7 @@ pub enum NatAction {
 }
 
 /// 一条计划态 NAT 规则。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NatRule {
     pub chain: NatChain,
     /// 按**目的**前缀匹配：DNAT 匹配 alias 前缀；受控 SNAT 匹配 target

@@ -17,6 +17,7 @@ pub enum ErrorCode {
     TooManyRequests,
     ApplyFailed,
     BackupNotConfigured,
+    DataplaneNotConfigured,
     Internal,
 }
 

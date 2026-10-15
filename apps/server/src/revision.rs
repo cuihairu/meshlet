@@ -12,6 +12,10 @@
 //! 可区分，升级不悄悄接管内核。网关侧 NAT（ADR-006）在网关设备上执行，随
 //! agent 数据面交付（server 只下 hub 侧转发面）。
 //!
+//! apply / rollback 的结论同时收敛到每条期望项的 `status`
+//! （[`service::settle_desired_state`]）：只有真下发到内核的路由与 Alias 映射
+//! 才转 `applied`，其余转 `failed`——agent 数据面据此取计划（§10.1）。
+//!
 //! 并发语义（§10.4）：修订版本号网络内单调递增，同一网络的配置修改由
 //! 「先记录修订、再应用修订」串行化；非法跃迁（如对失败修订原地重试）返回
 //! 409，重试路径是记录新修订。
@@ -370,12 +374,12 @@ pub async fn apply_revision_handler(
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
     let _persist = state.persist.lock().await;
-    let applied = {
+    let (applied, settle) = {
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
         // backend 在网络级互斥内按当前期望配置构造快照（§10.4 串行化）。
         let mut backend = (state.apply_backend)(&guard, &network_id);
-        guard
+        let applied = guard
             .ledger
             .apply(
                 &network_id_of(&network_id),
@@ -383,10 +387,21 @@ pub async fn apply_revision_handler(
                 backend.as_mut(),
                 service::now(),
             )
-            .map_err(ServiceError::from_ledger)?
+            .map_err(ServiceError::from_ledger)?;
+        // 结论收敛到每条期望项（§10.1 的路由/映射层镜像）：只有真下发到内核
+        // 的前缀才转 `applied`，agent 数据面据此取计划。
+        let settle = service::settle_desired_state(
+            &mut guard,
+            &network_id,
+            applied.apply_status == meshlet_domain::ApplyStatus::Applied,
+        );
+        (applied, settle)
     };
     // 应用结论（applied/failed 均含）落库：重启后状态不回退（§17.3）。
     crate::persist::update_revision_status(state.auth.pool(), &applied)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::persist::update_desired_status(state.auth.pool(), &settle)
         .await
         .map_err(crate::persist::internal)?;
     // 应用失败必留痕（§16.5）；结果以 apply_status 为准（`applied` 即成功，
@@ -453,17 +468,24 @@ pub async fn rollback_revision_handler(
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
     let _persist = state.persist.lock().await;
-    let rolled = {
+    let (rolled, settle) = {
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
         let mut backend = (state.apply_backend)(&guard, &network_id);
-        guard
+        let rolled = guard
             .ledger
             .rollback(&network_id_of(&network_id), revision, backend.as_mut())
-            .map_err(ServiceError::from_ledger)?
+            .map_err(ServiceError::from_ledger)?;
+        // 回滚清理了 hub 侧对象 → 期望项不得继续显示 `applied`（§10.3）：
+        // 回滚确认即转 `failed`，未确认（rollback_pending）同样不算生效。
+        let settle = service::settle_desired_state(&mut guard, &network_id, false);
+        (rolled, settle)
     };
     // 回滚结论落库（`rolled_back` / 未确认的 `rollback_pending` 都如实持久化）。
     crate::persist::update_revision_status(state.auth.pool(), &rolled)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::persist::update_desired_status(state.auth.pool(), &settle)
         .await
         .map_err(crate::persist::internal)?;
     // 回滚失败同样留痕（§16.5）：无 backend 的回滚停在 `rollback_pending`

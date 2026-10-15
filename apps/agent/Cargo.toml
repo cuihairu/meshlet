@@ -1,9 +1,17 @@
 [package]
 name = "meshlet-agent"
-description = "Meshlet device agent (Phase 1: config bootstrap only)"
+description = "Meshlet device agent (fetches its plan, reconciles, applies the local data plane)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 meshlet-config = { workspace = true }
+meshlet-network = { workspace = true }
+meshlet-domain = { workspace = true }
+ureq = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

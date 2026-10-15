@@ -219,10 +219,23 @@ impl ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawDataplaneConfig {
+    enabled: Option<bool>,
+    interface: Option<String>,
+    private_key_file: Option<String>,
+    hub_endpoint: Option<String>,
+    poll_interval_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct RawAgentConfig {
     server_url: Option<String>,
     state_dir: Option<String>,
+    device_token: Option<String>,
+    dataplane: RawDataplaneConfig,
 }
 
 /// Agent 配置。
@@ -230,6 +243,38 @@ struct RawAgentConfig {
 pub struct AgentConfig {
     pub server_url: String,
     pub state_dir: String,
+    /// 设备凭证（enrollment 返回的 agent token，仅此一次下发）：拉取期望配置
+    /// 用；`[dataplane] enabled` 且未配置时启动即报失败。
+    pub device_token: Option<String>,
+    pub dataplane: DataplaneConfig,
+}
+
+/// Agent 数据面配置（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）：
+/// **默认全关**——关闭时 agent 只打印状态、不碰内核。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataplaneConfig {
+    pub enabled: bool,
+    /// 受管 WireGuard 接口名。
+    pub interface: String,
+    /// 本设备 WireGuard 私钥文件（本地注入，服务端永不携带——ADR-010）。
+    pub private_key_file: Option<String>,
+    /// hub 的可达 endpoint（`host:port`）兜底：server 未通过 `[dataplane]
+    /// advertise_ip` + `listen_port` 通告时使用。
+    pub hub_endpoint: Option<String>,
+    /// 轮询间隔（秒）：到期向 server 拉取期望配置，有变更才重放（§10.1）。
+    pub poll_interval_secs: u64,
+}
+
+impl Default for DataplaneConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interface: "wg0".into(),
+            private_key_file: None,
+            hub_endpoint: None,
+            poll_interval_secs: 30,
+        }
+    }
 }
 
 impl Default for AgentConfig {
@@ -237,6 +282,8 @@ impl Default for AgentConfig {
         Self {
             server_url: "https://127.0.0.1".into(),
             state_dir: "/var/lib/meshlet".into(),
+            device_token: None,
+            dataplane: DataplaneConfig::default(),
         }
     }
 }
@@ -250,9 +297,41 @@ impl AgentConfig {
         if !(server_url.starts_with("http://") || server_url.starts_with("https://")) {
             return Err(ConfigError::InvalidServerUrl(server_url));
         }
+        let dataplane = raw.dataplane;
+        let dp_interface = dataplane
+            .interface
+            .map(|s| s.trim().to_string())
+            .unwrap_or(default.dataplane.interface);
+        if dp_interface.is_empty() {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.interface must not be empty".into(),
+            ));
+        }
+        let poll_interval_secs = dataplane
+            .poll_interval_secs
+            .unwrap_or(default.dataplane.poll_interval_secs);
+        if poll_interval_secs < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.poll_interval_secs must be at least 1".into(),
+            ));
+        }
         Ok(Self {
             server_url,
             state_dir: raw.state_dir.unwrap_or(default.state_dir),
+            device_token: raw
+                .device_token
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            dataplane: DataplaneConfig {
+                enabled: dataplane.enabled.unwrap_or(default.dataplane.enabled),
+                interface: dp_interface,
+                private_key_file: dataplane.private_key_file,
+                hub_endpoint: dataplane
+                    .hub_endpoint
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+                poll_interval_secs,
+            },
         })
     }
 }
@@ -449,5 +528,65 @@ interval_secs = 3600
         // 默认值可用。
         let d = AgentConfig::from_toml("").unwrap();
         assert_eq!(d, AgentConfig::default());
+    }
+
+    #[test]
+    fn agent_dataplane_defaults_off_and_parses_explicit_section() {
+        // 默认全关：agent 不碰内核（§10.3 接线前确定性失败可见）。
+        let d = AgentConfig::default();
+        assert!(!d.dataplane.enabled);
+        assert_eq!(d.dataplane.interface, "wg0");
+        assert_eq!(d.dataplane.private_key_file, None);
+        assert_eq!(d.dataplane.hub_endpoint, None);
+        assert_eq!(d.dataplane.poll_interval_secs, 30);
+
+        let c = AgentConfig::from_toml(
+            r#"
+server_url = "https://vps.example.com"
+device_token = "tok-abc"
+
+[dataplane]
+enabled = true
+interface = "mesh0"
+private_key_file = "/etc/meshlet/device.key"
+hub_endpoint = "vps.example.com:51820"
+poll_interval_secs = 10
+"#,
+        )
+        .unwrap();
+        assert_eq!(c.device_token.as_deref(), Some("tok-abc"));
+        assert!(c.dataplane.enabled);
+        assert_eq!(c.dataplane.interface, "mesh0");
+        assert_eq!(
+            c.dataplane.private_key_file.as_deref(),
+            Some("/etc/meshlet/device.key")
+        );
+        assert_eq!(
+            c.dataplane.hub_endpoint.as_deref(),
+            Some("vps.example.com:51820")
+        );
+        assert_eq!(c.dataplane.poll_interval_secs, 10);
+
+        // 只开 enabled：其余默认。
+        let c = AgentConfig::from_toml("[dataplane]\nenabled = true").unwrap();
+        assert!(c.dataplane.enabled);
+        assert_eq!(c.dataplane.interface, "wg0");
+        assert_eq!(c.dataplane.poll_interval_secs, 30);
+    }
+
+    #[test]
+    fn agent_dataplane_rejects_empty_interface_and_zero_poll() {
+        let err = AgentConfig::from_toml(
+            r#"
+[dataplane]
+enabled = true
+interface = "  "
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err = AgentConfig::from_toml("[dataplane]\npoll_interval_secs = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
     }
 }

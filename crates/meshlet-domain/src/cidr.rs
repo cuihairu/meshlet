@@ -138,6 +138,23 @@ impl fmt::Display for Ipv4Cidr {
     }
 }
 
+/// 序列化形态为 `a.b.c.d/p` 字符串（与 [FromStr](std::str::FromStr) 同一语法，
+/// 校验同样拒绝主机位非零）：设备数据面计划（§16.4 结构化配置对象）跨
+/// server/agent 边界传递时用这个形态。
+impl serde::Serialize for Ipv4Cidr {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Ipv4Cidr {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

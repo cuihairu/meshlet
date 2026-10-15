@@ -84,6 +84,7 @@ async fn main() {
         )
         .with_backup_dir(config.backup.dir.clone().map(std::path::PathBuf::from))
         .with_tunnel_mtu(config.tunnel_mtu)
+        .with_dataplane(config.dataplane.clone())
         .with_apply_backend(if config.dataplane.enabled {
             // ADR-007 接线：本机 WireGuard/路由真实执行（需 NET_ADMIN）。
             meshlet_server::revision::hub_backend_factory(

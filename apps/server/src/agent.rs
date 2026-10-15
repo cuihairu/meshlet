@@ -114,6 +114,9 @@ pub enum AgentApiError {
     Unauthorized,
     InvalidInput(String),
     NotFound(String),
+    /// 服务端 `[dataplane] enabled = false`：不向 agent 下发数据面计划
+    /// （503，可重试——管理员开启后计划即可用）。
+    DataplaneNotConfigured(String),
     Internal(String),
 }
 
@@ -129,6 +132,11 @@ impl IntoResponse for AgentApiError {
                 (StatusCode::BAD_REQUEST, ErrorCode::ValidationFailed, m)
             }
             AgentApiError::NotFound(m) => (StatusCode::NOT_FOUND, ErrorCode::NotFound, m),
+            AgentApiError::DataplaneNotConfigured(m) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::DataplaneNotConfigured,
+                m,
+            ),
             AgentApiError::Internal(m) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, ErrorCode::Internal, m)
             }
@@ -239,4 +247,58 @@ pub async fn heartbeat_handler(
         presence_source: presence.source.as_str().to_string(),
         last_seen_at: Some(now),
     }))
+}
+
+/// `GET /api/v1/agent/device/desired`：本设备的期望数据面计划。
+///
+/// 返回 [`meshlet_network::DevicePlan`]——**结构化配置对象**（§16.4）：类型化
+/// 的隧道/路由/NAT 计划 + `desired_config_hash`。服务端**从不**下发 Shell
+/// 命令；agent 只消费类型化对象并按需重放本地后端。计划里的 `private_key` 恒为
+/// `null`（ADR-010：私钥不出设备，agent 本地注入）。
+///
+/// 服务端 `[dataplane] enabled = false` 时返回 503（管理员开启后计划即可用，
+/// agent 可重试），不返回空计划——避免 agent 把「未配置」误当成「已生效」。
+pub async fn desired_device_plan_handler(
+    State(state): State<SharedAppState>,
+    AuthorizedAgent(device_id): AuthorizedAgent,
+) -> Result<Json<meshlet_network::DevicePlan>, AgentApiError> {
+    if !state.dataplane.enabled {
+        return Err(AgentApiError::DataplaneNotConfigured(
+            "server dataplane is disabled: set [dataplane] enabled = true to distribute device \
+             plans"
+                .into(),
+        ));
+    }
+    let hub_public_key =
+        crate::device_plan::hub_public_key(&state.dataplane).map_err(AgentApiError::Internal)?;
+    let (plan, network_id) = {
+        let guard = state.mesh.lock().unwrap();
+        let Some(device) = guard.registry.find_by_id(&device_id) else {
+            return Err(AgentApiError::NotFound(format!(
+                "device {device_id} not found"
+            )));
+        };
+        let network_id = device.network_id.to_string();
+        let plan = crate::device_plan::build_device_plan(
+            &guard,
+            &network_id,
+            &device_id,
+            &state.dataplane,
+            state.tunnel_mtu,
+            &hub_public_key,
+        )
+        .map_err(AgentApiError::Internal)?;
+        (plan, network_id)
+    };
+    crate::op_log!(
+        info,
+        "agent",
+        "desired_plan",
+        &network_id,
+        &device_id.0,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
+    Ok(Json(plan))
 }

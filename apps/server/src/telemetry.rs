@@ -121,6 +121,8 @@ impl From<&crate::agent::AgentApiError> for ErrorCategory {
             crate::agent::AgentApiError::Unauthorized => ErrorCategory::Unauthorized,
             crate::agent::AgentApiError::InvalidInput(_) => ErrorCategory::Validation,
             crate::agent::AgentApiError::NotFound(_) => ErrorCategory::NotFound,
+            // 服务端数据面未开启（503）：请求本身合法，按服务端配置缺失归类。
+            crate::agent::AgentApiError::DataplaneNotConfigured(_) => ErrorCategory::Internal,
             crate::agent::AgentApiError::Internal(_) => ErrorCategory::Internal,
         }
     }
