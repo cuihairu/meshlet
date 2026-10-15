@@ -63,7 +63,8 @@ export default defineConfig({
             { text: 'ADR-007 Linux 网络后端', link: '/decisions/adr-007-linux-network-backend' },
             { text: 'ADR-008 Windows 网络后端', link: '/decisions/adr-008-windows-network-backend' },
             { text: 'ADR-009 配置版本与回滚', link: '/decisions/adr-009-config-revision-rollback' },
-            { text: 'ADR-010 认证与注册安全', link: '/decisions/adr-010-console-auth-enrollment' }
+            { text: 'ADR-010 认证与注册安全', link: '/decisions/adr-010-console-auth-enrollment' },
+            { text: 'ADR-011 设备自举注册与中心审批', link: '/decisions/adr-011-device-self-registration' }
           ]
         }
       ],
