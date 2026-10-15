@@ -557,19 +557,22 @@ fn check_nat_rules(routes: &[&LanRoute], mesh: &service::MeshState) -> Diagnosti
         .collect();
     // 只评判「上报了证据」的网关：证据缺失（agent 未运行 / 旧版本）不等于
     // 规则不存在，也不等于存在（§12.2 判读纪律）。
-    let mut reporting: Vec<(String, bool)> = Vec::new();
+    let mut reporting: Vec<(String, bool, Option<bool>)> = Vec::new();
     for route in &alias_routes {
         let Some(gateway) = mesh.registry.find_by_id(&route.gateway_device_id) else {
             continue;
         };
-        let Some(present) = gateway
-            .dataplane_evidence
-            .as_ref()
-            .and_then(|e| e.nat_rules_present)
-        else {
+        let Some(evidence) = gateway.dataplane_evidence.as_ref() else {
             continue;
         };
-        reporting.push((gateway.name.clone(), present));
+        let Some(present) = evidence.nat_rules_present else {
+            continue;
+        };
+        reporting.push((
+            gateway.name.clone(),
+            present,
+            evidence.nat_snat_rules_present,
+        ));
     }
     if reporting.is_empty() {
         return unavailable(
@@ -589,8 +592,8 @@ fn check_nat_rules(routes: &[&LanRoute], mesh: &service::MeshState) -> Diagnosti
     }
     let broken: Vec<String> = reporting
         .iter()
-        .filter(|(_, present)| !present)
-        .map(|(name, _)| name.clone())
+        .filter(|(_, present, _)| !present)
+        .map(|(name, _, _)| name.clone())
         .collect();
     if !broken.is_empty() {
         return check(
@@ -605,15 +608,45 @@ fn check_nat_rules(routes: &[&LanRoute], mesh: &service::MeshState) -> Diagnosti
             "check the gateway agent is running (`systemctl status meshlet-agent`) and can reach the server; a healthy agent detects the missing rules and replays them on its next reconcile (§12.6)".into(),
         );
     }
-    let names: Vec<String> = reporting.iter().map(|(name, _)| name.clone()).collect();
+    let names: Vec<String> = reporting.iter().map(|(name, _, _)| name.clone()).collect();
+    // SNAT 读数按内核实测分开表述：`dnat_only` 映射本就不下发 SNAT 规则
+    // （ADR-005 模式 A），规则在场 ≠ SNAT 在场，不混为一谈。
+    let snat_confirmed: Vec<String> = reporting
+        .iter()
+        .filter(|(_, _, snat)| *snat == Some(true))
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    let snat_absent: Vec<String> = reporting
+        .iter()
+        .filter(|(_, present, snat)| *present && *snat != Some(true))
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    let snat_note = if snat_absent.is_empty() {
+        format!(
+            "controlled SNAT kernel-confirmed by {}",
+            snat_confirmed.join(", ")
+        )
+    } else if snat_confirmed.is_empty() {
+        format!(
+            "no meshlet SNAT rule observed on {} (dnat_only mappings keep original sources, ADR-005)",
+            snat_absent.join(", ")
+        )
+    } else {
+        format!(
+            "controlled SNAT kernel-confirmed by {}; no meshlet SNAT rule observed on {} (dnat_only mappings keep original sources, ADR-005)",
+            snat_confirmed.join(", "),
+            snat_absent.join(", ")
+        )
+    };
     check(
         "nat_rules_effective",
         "NAT rules effective",
         layer::ALIAS,
         "pass",
         format!(
-            "gateway(s) {} report the ownership-commented NAT rules present in their kernel (controlled SNAT confirmed by the device that owns them)",
-            names.join(", ")
+            "gateway(s) {} report the ownership-commented NAT rules present in their kernel ({})",
+            names.join(", "),
+            snat_note
         ),
         String::new(),
     )

@@ -26,7 +26,8 @@
 //!    才进 hub 路由/AllowedIPs，真实前缀不进（重叠时两个 peer 的 AllowedIPs
 //!    保持互斥，cryptkey 路由无歧义）；
 //! 3. **证据回传闭环（§7.5/§12.4）**——设备视图里网关上报
-//!    `nat_rules_present = true`、客户端上报 MTU 大包探测 `1392`。
+//!    `nat_rules_present = true`、`nat_snat_rules_present = true`（内核实测
+//!    受控 SNAT 在场，§8.2 模式判读）、客户端上报 MTU 大包探测 `1392`。
 
 #![cfg(target_os = "linux")]
 
@@ -877,6 +878,10 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
         assert_eq!(
             ev["nat_rules_present"], true,
             "gateway {name} must report its meshlet nat rules: {ev}"
+        );
+        assert_eq!(
+            ev["nat_snat_rules_present"], true,
+            "gateway {name} runs dnat_snat: controlled snat rule kernel-verified: {ev}"
         );
     }
     let ev = evidence_of("laptop-a");

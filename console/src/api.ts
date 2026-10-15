@@ -33,6 +33,8 @@ export interface DataplaneEvidence {
   tunnel_mtu: number | null;
   /** Whether ownership-commented meshlet NAT rules exist in the kernel (gateway devices). */
   nat_rules_present: boolean | null;
+  /** Whether meshlet SNAT rules exist in the kernel (POSTROUTING chain; distinguishes dnat_snat from dnat_only). */
+  nat_snat_rules_present: boolean | null;
   /** Payload size of the successful DF probe (`ping -M do`); null = not verified. */
   mtu_probe_payload: number | null;
 }

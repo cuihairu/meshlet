@@ -156,6 +156,7 @@ impl Agent {
         DataplaneEvidence {
             tunnel_mtu: snapshot.as_ref().and_then(|s| s.tunnel_mtu),
             nat_rules_present: snapshot.as_ref().map(|s| s.nat_rules_present),
+            nat_snat_rules_present: snapshot.as_ref().map(|s| s.nat_snat_rules_present),
             mtu_probe_payload: plan.and_then(|p| {
                 let (target, payload) = probe_decision(p)?;
                 self.backend

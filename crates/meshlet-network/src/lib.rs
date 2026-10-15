@@ -120,6 +120,10 @@ pub struct NetworkSnapshot {
     pub peer_count: u32,
     pub installed_routes: Vec<Ipv4Cidr>,
     pub nat_rules_present: bool,
+    /// 内核中存在 Meshlet 受控 SNAT 规则（POSTROUTING 链按所有权注释扫描）。
+    /// 与 `nat_rules_present` 组合区分 `dnat_snat`（有 SNAT）与 `dnat_only`
+    /// （仅 DNAT，保留原始源，ADR-005）。
+    pub nat_snat_rules_present: bool,
     /// 隧道接口的实际 MTU 读数（`ip link show` 解析；计划显式配置 MTU
     /// 时用于漂移判定：内核读数与计划不符即重放纠回）。
     pub tunnel_mtu: Option<u32>,
@@ -195,6 +199,7 @@ mod tests {
                 peer_count: 2,
                 installed_routes: vec!["10.240.0.0/16".parse().unwrap()],
                 nat_rules_present: false,
+                nat_snat_rules_present: false,
                 tunnel_mtu: Some(1420),
             })
         }

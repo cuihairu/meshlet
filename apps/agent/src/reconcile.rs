@@ -292,6 +292,7 @@ mod tests {
             peer_count: 1,
             installed_routes: vec!["192.168.9.0/24".parse().unwrap()],
             nat_rules_present: true,
+            nat_snat_rules_present: true,
             tunnel_mtu: Some(1420),
         }
     }

@@ -118,6 +118,10 @@ pub struct DataplaneEvidence {
     pub tunnel_mtu: Option<u32>,
     /// 本机内核存在 Meshlet NAT 规则（按所有权注释扫描；网关设备相关）。
     pub nat_rules_present: Option<bool>,
+    /// 本机内核存在 Meshlet 受控 SNAT 规则（POSTROUTING 链；与
+    /// `nat_rules_present` 组合区分 `dnat_snat` 与 `dnat_only`——后者保留
+    /// 原始源地址，ADR-005；内核实测读数，`None` = 未上报或不可观测）。
+    pub nat_snat_rules_present: Option<bool>,
     /// 大包探测：`ping -M do` 以该载荷尺寸到达一个 overlay 对端成功
     /// （`None` = 未探测或探测失败——计划 MTU 在路径上不可用或对端不可达）。
     pub mtu_probe_payload: Option<u32>,

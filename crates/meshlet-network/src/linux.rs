@@ -250,30 +250,48 @@ impl LinuxNetworkBackend {
     fn meshlet_nat_rules(&self, owner: Option<&str>) -> Result<Vec<Vec<String>>, NetworkError> {
         let mut deletions = Vec::new();
         for chain in [NatChain::Prerouting, NatChain::Postrouting] {
-            let out = self.run(&["iptables", "-t", "nat", "-S", chain.as_str()])?;
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                let tokens = Self::split_iptables_line(line);
-                if tokens.len() < 2 || tokens[0] != "-A" {
-                    continue;
-                }
-                let comment = tokens
-                    .iter()
-                    .position(|t| t == "--comment")
-                    .and_then(|i| tokens.get(i + 1));
-                let matches = comment
-                    .map(|c| match owner {
-                        Some(o) => *c == o,
-                        None => c.starts_with(MESHLET_NAT_COMMENT_PREFIX),
-                    })
-                    .unwrap_or(false);
-                if matches {
-                    let mut del = vec!["-D".to_string(), tokens[1].clone()];
-                    del.extend(tokens[2..].iter().cloned());
-                    deletions.push(del);
-                }
+            deletions.extend(self.meshlet_nat_rules_in(chain, owner)?);
+        }
+        Ok(deletions)
+    }
+
+    /// 单条链上的 Meshlet 所有权规则（[meshlet_nat_rules] 的链级拆分）。
+    fn meshlet_nat_rules_in(
+        &self,
+        chain: NatChain,
+        owner: Option<&str>,
+    ) -> Result<Vec<Vec<String>>, NetworkError> {
+        let out = self.run(&["iptables", "-t", "nat", "-S", chain.as_str()])?;
+        let mut deletions = Vec::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(del) = Self::meshlet_rule_deletion(line, owner) {
+                deletions.push(del);
             }
         }
         Ok(deletions)
+    }
+
+    /// 单行 `-A CHAIN ...` 若为匹配的 Meshlet 所有权规则，返回其删除参数
+    /// （`-A` 换成 `-D`）；否则 `None`。纯函数，单测直接覆盖。
+    fn meshlet_rule_deletion(line: &str, owner: Option<&str>) -> Option<Vec<String>> {
+        let tokens = Self::split_iptables_line(line);
+        if tokens.len() < 2 || tokens[0] != "-A" {
+            return None;
+        }
+        let comment = tokens
+            .iter()
+            .position(|t| t == "--comment")
+            .and_then(|i| tokens.get(i + 1))?;
+        let matches = match owner {
+            Some(o) => *comment == o,
+            None => comment.starts_with(MESHLET_NAT_COMMENT_PREFIX),
+        };
+        if !matches {
+            return None;
+        }
+        let mut del = vec!["-D".to_string(), tokens[1].clone()];
+        del.extend(tokens[2..].iter().cloned());
+        Some(del)
     }
 }
 
@@ -304,12 +322,16 @@ impl LinuxNetworkBackend {
             Vec::new()
         };
         let nat_rules_present = !self.meshlet_nat_rules(None)?.is_empty();
+        let nat_snat_rules_present = !self
+            .meshlet_nat_rules_in(NatChain::Postrouting, None)?
+            .is_empty();
         Ok(NetworkSnapshot {
             tunnel_exists,
             forwarding_enabled,
             peer_count,
             installed_routes,
             nat_rules_present,
+            nat_snat_rules_present,
             tunnel_mtu,
         })
     }
@@ -645,6 +667,40 @@ mod tests {
         assert_eq!(tokens[1], "PREROUTING");
         let idx = tokens.iter().position(|t| t == "--comment").unwrap();
         assert_eq!(tokens[idx + 1], "meshlet alias al-1");
+    }
+
+    #[test]
+    fn meshlet_rule_deletion_matches_ownership_comment() {
+        let line = "-A POSTROUTING -d 192.168.1.0/24 -j SNAT --to-source 192.168.1.1 \
+            -m comment --comment \"meshlet alias al-1\"";
+        let del = LinuxNetworkBackend::meshlet_rule_deletion(line, None).unwrap();
+        assert_eq!(del[0], "-D");
+        assert_eq!(del[1], "POSTROUTING");
+        assert_eq!(del[2], "-d");
+
+        // 精确 owner 匹配：al-1 的规则不被 al-2 的清理命中。
+        assert!(
+            LinuxNetworkBackend::meshlet_rule_deletion(line, Some("meshlet alias al-2")).is_none()
+        );
+        assert!(
+            LinuxNetworkBackend::meshlet_rule_deletion(line, Some("meshlet alias al-1")).is_some()
+        );
+
+        // 非 Meshlet 规则（无注释 / 用户注释）不命中。
+        assert!(LinuxNetworkBackend::meshlet_rule_deletion(
+            "-A PREROUTING -d 203.0.113.0/24 -j ACCEPT -m comment --comment \"user rule\"",
+            None
+        )
+        .is_none());
+        assert!(LinuxNetworkBackend::meshlet_rule_deletion(
+            "-A PREROUTING -d 10.241.1.0/24 -j NETMAP --to 192.168.1.0/24",
+            None
+        )
+        .is_none());
+        // 非规则行（注释头 / 链声明）不命中。
+        assert!(
+            LinuxNetworkBackend::meshlet_rule_deletion(":PREROUTING ACCEPT [0:0]", None).is_none()
+        );
     }
 
     #[test]

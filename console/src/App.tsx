@@ -355,7 +355,13 @@ function DevicesSection({
                         `mtu ${d.dataplane_evidence.tunnel_mtu ?? '?'}`,
                         `probe ${d.dataplane_evidence.mtu_probe_payload ?? '—'}`,
                         d.dataplane_evidence.nat_rules_present != null
-                          ? `nat ${d.dataplane_evidence.nat_rules_present ? '✓' : '✗'}`
+                          ? [
+                              `nat ${d.dataplane_evidence.nat_rules_present ? '✓' : '✗'}`,
+                              d.dataplane_evidence.nat_rules_present &&
+                              d.dataplane_evidence.nat_snat_rules_present != null
+                                ? `snat ${d.dataplane_evidence.nat_snat_rules_present ? '✓' : '✗'}`
+                                : null,
+                            ]
                           : null,
                       ]
                         .filter(Boolean)

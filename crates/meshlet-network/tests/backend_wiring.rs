@@ -646,6 +646,15 @@ fn backend_driven_tunnel_routes_and_nat() {
     );
     assert!(!snap.nat_rules_present, "hub carries no NAT rules");
 
+    // 网关 G 的快照：规则在场 + 受控 SNAT 读数在场（dnat_snat 模式，
+    // §8.2「内核实测所采用模式」的证据源）。
+    let gw_snap = gw_backend.inspect_sync().expect("gw inspect");
+    assert!(gw_snap.nat_rules_present, "gw carries meshlet NAT rules");
+    assert!(
+        gw_snap.nat_snat_rules_present,
+        "dnat_snat mode: controlled SNAT rule kernel-verified"
+    );
+
     // ---- 2. A -> B 经 hub 转发可达（双向） --------------------------------
     assert!(topo.ping(&topo.a.netns, &topo.b.overlay), "A -> B via hub");
     assert!(topo.ping(&topo.b.netns, &topo.a.overlay), "B -> A via hub");
@@ -769,6 +778,51 @@ fn backend_driven_tunnel_routes_and_nat() {
     assert!(
         !topo.ping(&topo.b.netns, &topo.a.overlay),
         "data path must be down after rollback"
+    );
+
+    // ---- 9. 模式判读（§8.2、ADR-005）：inspect 快照按链区分返回路径模式
+    // ——`dnat_only` 只有 PREROUTING（无 SNAT 读数），`dnat_snat` 追加
+    // POSTROUTING；证据通道据此内核实测所采用模式，不靠路由记录的字段值
+    // 冒充生效状态。同文件只有一个 netns 前缀（并发测试互踩），故并入本
+    // 测试末尾而非独立用例。
+    gw_backend
+        .remove_nat_sync(ALIAS_OWNER)
+        .expect("gw remove_nat before mode switch");
+    let dnat_only = AliasMapping::new(
+        AliasMappingId("al-2".into()),
+        NetworkId("net-1".into()),
+        LanRouteId("rt-1".into()),
+        "10.241.1.0/24".parse().unwrap(),
+        "192.168.1.0/24".parse().unwrap(),
+        TranslationMode::DnatOnly,
+    )
+    .unwrap();
+    gw_backend
+        .apply_nat_sync(
+            &meshlet_network::nat::alias_nat_rules(&dnat_only),
+            "192.168.1.1".parse().unwrap(),
+        )
+        .expect("gw apply_nat dnat_only");
+    let snap = gw_backend.inspect_sync().expect("gw inspect dnat_only");
+    assert!(snap.nat_rules_present, "dnat rules present in kernel");
+    assert!(
+        !snap.nat_snat_rules_present,
+        "dnat_only: no meshlet SNAT rule in kernel (original sources preserved)"
+    );
+    gw_backend
+        .remove_nat_sync("meshlet alias al-2")
+        .expect("gw remove_nat dnat_only");
+    gw_backend
+        .apply_nat_sync(
+            &meshlet_network::nat::alias_nat_rules(&alias_mapping()),
+            "192.168.1.1".parse().unwrap(),
+        )
+        .expect("gw apply_nat dnat_snat");
+    let snap = gw_backend.inspect_sync().expect("gw inspect dnat_snat");
+    assert!(snap.nat_rules_present);
+    assert!(
+        snap.nat_snat_rules_present,
+        "dnat_snat: controlled SNAT rule kernel-verified"
     );
 
     // teardown 并断言「跑完不留垃圾」。
