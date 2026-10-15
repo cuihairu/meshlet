@@ -3,6 +3,7 @@ import {
   api,
   ApiError,
   type ConfigRevision,
+  type DataplaneEvidence,
   type Network,
   type SessionUser,
 } from './api';
@@ -503,7 +504,10 @@ function RoutesSection({
         Desired state only: a published route waits for the config apply
         (ADR-005/ADR-009). Destinations inside the overlay{' '}
         <code>{overlayCidr}</code> are refused — overlay traffic never goes
-        through a LAN route.
+        through a LAN route. <strong>Gateway kernel</strong> is the gateway
+        device's own reading from its agent (§7.5): the kernel scan is per
+        device, so one reading covers every route and alias that gateway
+        serves — it points at the gateway, it does not certify this row.
       </p>
       {routes === null ? (
         <p className="muted">Loading…</p>
@@ -517,6 +521,7 @@ function RoutesSection({
               <th>Gateway</th>
               <th>Destination</th>
               <th>Return path</th>
+              <th>Gateway kernel</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -535,6 +540,12 @@ function RoutesSection({
                   <code>{r.destination_cidr}</code>
                 </td>
                 <td>{r.return_path_mode}</td>
+                <td className="muted">
+                  {natReading(
+                    devices.find((d) => d.id === r.gateway_device_id)
+                      ?.dataplane_evidence ?? null,
+                  )}
+                </td>
                 <td>{r.status}</td>
                 <td>
                   <button
@@ -614,6 +625,25 @@ function formatTime(iso: string | null): string {
 }
 
 /**
+ * The gateway's kernel-verified dataplane reading, as reported by its agent
+ * (§7.5 evidence). The ownership scan is per device, not per route — one
+ * reading covers every route and alias the gateway serves — so this is a
+ * row-level pointer, never a per-route verdict.
+ */
+function natReading(evidence: DataplaneEvidence | null): string {
+  if (!evidence || evidence.nat_rules_present == null) {
+    return 'not reported';
+  }
+  if (!evidence.nat_rules_present) {
+    return 'rules absent';
+  }
+  if (evidence.nat_snat_rules_present == null) {
+    return 'nat';
+  }
+  return evidence.nat_snat_rules_present ? 'nat + snat' : 'nat (sources kept)';
+}
+
+/**
  * Alias mappings (ADR-006/§12.6). Creating one publishes an alias-mode route
  * and binds the mapping to it — the target is derived server-side and shown
  * back. Deleting removes the mapping AND its route in one revision; the
@@ -628,6 +658,7 @@ function AliasesSection({
 }) {
   const [aliases, setAliases] = useState<import('./api').AliasMapping[] | null>(null);
   const [devices, setDevices] = useState<import('./api').Device[]>([]);
+  const [routes, setRoutes] = useState<import('./api').LanRoute[]>([]);
   const [gateway, setGateway] = useState('');
   const [target, setTarget] = useState('');
   const [aliasCidr, setAliasCidr] = useState('');
@@ -643,7 +674,16 @@ function AliasesSection({
       .listDevices(networkId)
       .then((rows) => setDevices(rows.filter((d) => d.status === 'active')))
       .catch(() => setDevices([]));
+    api.listRoutes(networkId).then(setRoutes).catch(() => setRoutes([]));
   }, [networkId]);
+
+  /** The mapping's bound route decides which gateway must carry its rules. */
+  const gatewayEvidenceOf = (mapping: import('./api').AliasMapping): DataplaneEvidence | null => {
+    const route = routes.find((r) => r.id === mapping.lan_route_id);
+    if (!route) return null;
+    return devices.find((d) => d.id === route.gateway_device_id)
+      ?.dataplane_evidence ?? null;
+  };
 
   useEffect(() => {
     load();
@@ -711,7 +751,10 @@ function AliasesSection({
         with overlapping LAN space can still reach each other (ADR-006). Each
         mapping owns its route: deleting one removes both in a single revision.
         The virtual prefix must stay disjoint from the overlay and every other
-        LAN prefix; broadcasts and L2 discovery do not cross an alias (§9.6).
+        LAN prefix; broadcasts and L2 discovery do not cross an alias (§9.6).{' '}
+        <strong>Gateway kernel</strong> is that gateway's own reading (§7.5):
+        the kernel scan is per device, so one reading covers every alias it
+        serves — mixed modes on one gateway show the same reading on both rows.
       </p>
       {aliases === null ? (
         <p className="muted">Loading…</p>
@@ -724,6 +767,7 @@ function AliasesSection({
               <th>Alias</th>
               <th>Real target</th>
               <th>NAT mode</th>
+              <th>Gateway kernel</th>
               <th>Status</th>
               <th>Route</th>
               <th></th>
@@ -739,6 +783,7 @@ function AliasesSection({
                   <code>{a.target_cidr}</code>
                 </td>
                 <td>{a.translation_mode}</td>
+                <td className="muted">{natReading(gatewayEvidenceOf(a))}</td>
                 <td>{a.status}</td>
                 <td>
                   <code>{a.lan_route_id}</code>
