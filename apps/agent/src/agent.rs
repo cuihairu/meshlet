@@ -4,12 +4,14 @@
 //! 本模块只负责**何时**调用它与**喂什么配置**（计划来自 server，绝非本地拼装
 //! 的 Shell 命令，§16.4）。
 
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::Duration;
 
 use meshlet_config::{AgentConfig, DataplaneConfig};
+use meshlet_domain::DataplaneEvidence;
 use meshlet_network::linux::LinuxNetworkBackend;
-use meshlet_network::DevicePlan;
+use meshlet_network::{DevicePlan, DEFAULT_TUNNEL_MTU};
 
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
 use crate::server;
@@ -86,7 +88,7 @@ impl Agent {
     pub fn tick(&self) -> Result<(), String> {
         let plan = server::fetch_plan(&self.server_url, &self.token)?;
         self.reconcile(&plan)?;
-        if let Err(e) = self.heartbeat() {
+        if let Err(e) = self.heartbeat(Some(&plan)) {
             // 上报失败不影响数据面：计划已按期望对账完毕。
             tracing::warn!(error = %e, "heartbeat not delivered");
         }
@@ -128,11 +130,35 @@ impl Agent {
         Ok(decision)
     }
 
-    /// 心跳上报（§12.4/§14.1）：带本地读到的最近握手时间。
-    pub fn heartbeat(&self) -> Result<(), String> {
-        server::heartbeat(&self.server_url, &self.token, self.last_handshake())
-            .map(|_| ())
-            .map_err(|e| format!("heartbeat failed: {e}"))
+    /// 心跳上报（§12.4/§14.1）：带本地读到的最近握手时间 + 数据面实测证据
+    /// （§7.5：内核读数 + 计划 MTU 大包探测）。
+    pub fn heartbeat(&self, plan: Option<&DevicePlan>) -> Result<(), String> {
+        let evidence = self.collect_evidence(plan);
+        server::heartbeat(
+            &self.server_url,
+            &self.token,
+            self.last_handshake(),
+            Some(evidence),
+        )
+        .map(|_| ())
+        .map_err(|e| format!("heartbeat failed: {e}"))
+    }
+
+    /// 数据面实测证据（§7.5）：内核读数 + 大包探测。读数失败按 `None` 上报
+    /// （证据缺失可见），绝不臆测默认值——探测失败与未探测在服务端同形，
+    /// 都按「未证实」处理。
+    pub fn collect_evidence(&self, plan: Option<&DevicePlan>) -> DataplaneEvidence {
+        let snapshot = self.backend.inspect_sync().ok();
+        DataplaneEvidence {
+            tunnel_mtu: snapshot.as_ref().and_then(|s| s.tunnel_mtu),
+            nat_rules_present: snapshot.as_ref().map(|s| s.nat_rules_present),
+            mtu_probe_payload: plan.and_then(|p| {
+                let (target, payload) = probe_decision(p)?;
+                self.backend
+                    .mtu_probe_sync(target, payload)
+                    .then_some(payload)
+            }),
+        }
     }
 
     /// `wg show <if> latest-handshakes` → 最近握手时刻（ISO-8601）；取不到则
@@ -171,6 +197,19 @@ pub fn read_private_key(dp: &DataplaneConfig) -> Result<Option<String>, String> 
         return Err(format!("private_key_file {path} is empty"));
     }
     Ok(Some(key))
+}
+
+/// 大包探测决策（纯逻辑）：目标 = hub 的 overlay 地址（自 ping 不经过隧道，
+/// 证据失真，跳过）；载荷 = 计划 MTU − 28B（IP 头 20B + ICMP 头 8B），
+/// 计划未配置 MTU 按默认 1420。hub 未知或载荷为 0 则不探测。
+fn probe_decision(plan: &DevicePlan) -> Option<(Ipv4Addr, u32)> {
+    let hub = plan.hub_address.filter(|h| *h != plan.tunnel.address)?;
+    let payload = plan
+        .tunnel
+        .mtu
+        .unwrap_or(DEFAULT_TUNNEL_MTU)
+        .saturating_sub(28);
+    (payload > 0).then_some((hub, payload))
 }
 
 #[cfg(test)]
@@ -235,7 +274,49 @@ mod tests {
     fn heartbeat_against_a_dead_server_fails_visibly() {
         // 拉不到服务端时报错（可见），而不是静默「成功」——tick 据此退避重试。
         let agent = Agent::new(config("/tmp/meshlet-agent-dead"), None);
-        let err = agent.heartbeat().expect_err("dead server");
+        let err = agent.heartbeat(None).expect_err("dead server");
         assert!(!err.is_empty(), "failure must be reported: {err}");
+    }
+
+    fn probe_plan(mtu: Option<u32>, hub: Option<&str>, own: &str) -> DevicePlan {
+        DevicePlan {
+            tunnel: meshlet_network::TunnelConfig {
+                name: "wg0".into(),
+                address: own.parse().unwrap(),
+                address_prefix: 16,
+                listen_port: None,
+                peers: vec![],
+                mtu,
+                private_key: None,
+            },
+            routes: vec![],
+            nat_rules: vec![],
+            hub_address: hub.map(|h| h.parse().unwrap()),
+            desired_config_hash: "hash".into(),
+        }
+    }
+
+    #[test]
+    fn probe_decision_targets_the_hub_with_the_planned_payload() {
+        let p = probe_plan(Some(1380), Some("10.240.0.1"), "10.240.0.7");
+        assert_eq!(
+            probe_decision(&p),
+            Some(("10.240.0.1".parse().unwrap(), 1352))
+        );
+
+        // 计划未配置 MTU：按默认 1420 探测（1420 − 28 = 1392）。
+        let p = probe_plan(None, Some("10.240.0.1"), "10.240.0.7");
+        assert_eq!(
+            probe_decision(&p),
+            Some(("10.240.0.1".parse().unwrap(), 1392))
+        );
+
+        // hub 未知 / hub 就是自己（自 ping 不经过隧道）/ 载荷为 0：不探测。
+        let p = probe_plan(Some(1380), None, "10.240.0.7");
+        assert_eq!(probe_decision(&p), None);
+        let p = probe_plan(Some(1380), Some("10.240.0.7"), "10.240.0.7");
+        assert_eq!(probe_decision(&p), None);
+        let p = probe_plan(Some(28), Some("10.240.0.1"), "10.240.0.7");
+        assert_eq!(probe_decision(&p), None);
     }
 }

@@ -167,13 +167,21 @@ pub async fn insert_network(pool: &SqlitePool, n: &Network) -> Result<(), sqlx::
     Ok(())
 }
 
+/// 数据面证据 → JSON 列值（`None` → NULL）。
+fn evidence_json(d: &Device) -> Option<String> {
+    d.dataplane_evidence
+        .as_ref()
+        .map(|e| serde_json::to_string(e).expect("DataplaneEvidence serialization cannot fail"))
+}
+
 /// 落库一台设备行（enroll）。
 pub async fn insert_device(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO devices
            (id, network_id, name, virtual_ipv4, public_key, platform, status,
-            last_seen_at, last_handshake_at, last_report_at, created_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
+            created_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(d.id.to_string())
     .bind(d.network_id.to_string())
@@ -185,6 +193,7 @@ pub async fn insert_device(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Er
     .bind(&d.last_seen_at)
     .bind(&d.last_handshake_at)
     .bind(&d.last_report_at)
+    .bind(evidence_json(d))
     .bind(&d.created_at)
     .bind(&d.revoked_at)
     .execute(pool)
@@ -203,15 +212,16 @@ pub async fn update_device_status(pool: &SqlitePool, d: &Device) -> Result<(), s
     Ok(())
 }
 
-/// 回写在线证据时间戳（心跳路径，§14.1）。
+/// 回写在线证据时间戳 + 数据面实测证据（心跳路径，§14.1/§7.5）。
 pub async fn update_device_presence(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE devices SET last_seen_at = ?, last_handshake_at = ?, last_report_at = ? \
-         WHERE id = ?",
+        "UPDATE devices SET last_seen_at = ?, last_handshake_at = ?, last_report_at = ?, \
+         dataplane_evidence = ? WHERE id = ?",
     )
     .bind(&d.last_seen_at)
     .bind(&d.last_handshake_at)
     .bind(&d.last_report_at)
+    .bind(evidence_json(d))
     .bind(d.id.to_string())
     .execute(pool)
     .await?;
@@ -474,17 +484,24 @@ pub async fn load(
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
             String,
             Option<String>,
         ),
     >(
         "SELECT id, network_id, name, virtual_ipv4, public_key, platform, status,
-                last_seen_at, last_handshake_at, last_report_at, created_at, revoked_at
+                last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
+                created_at, revoked_at
          FROM devices ORDER BY created_at, id",
     )
     .fetch_all(pool)
     .await?;
     for row in device_rows {
+        let evidence = row
+            .10
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .map_err(|e| corrupt("device dataplane_evidence", e))?;
         let device = Device {
             id: DeviceId(row.0),
             network_id: NetworkId(row.1),
@@ -499,8 +516,9 @@ pub async fn load(
             last_seen_at: row.7,
             last_handshake_at: row.8,
             last_report_at: row.9,
-            created_at: row.10,
-            revoked_at: row.11,
+            dataplane_evidence: evidence,
+            created_at: row.11,
+            revoked_at: row.12,
         };
         state
             .restore_device(device)

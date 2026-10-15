@@ -3,13 +3,15 @@
 //! 两个端点，都只读/只写**类型化对象**：
 //! - `GET /api/v1/agent/device/desired` → [`DevicePlan`]（隧道/路由/NAT +
 //!   `desired_config_hash`；`private_key` 恒为 `null`）；
-//! - `POST /api/v1/agent/heartbeat` → 上报本地上报时间 + 可选握手时间。
+//! - `POST /api/v1/agent/heartbeat` → 上报本地时间 + 可选握手时间 + 数据面
+//!   实测证据（内核读数 + 大包探测，§7.5/§12.4）。
 //!
 //! 认证边界（§13.5）：agent API 用 Bearer 凭证，与管理 API 的 Cookie + CSRF
 //! 完全分离；凭证缺失/失效一律 401，**不得**回退到任何其他认证方式。
 //! 服务端数据面未开启时返回 503（`dataplane_not_configured`）——agent 视为
 //! 「计划暂不可用」重试，绝不把空计划当成「已生效」。
 
+use meshlet_domain::DataplaneEvidence;
 use meshlet_network::DevicePlan;
 
 /// 拉取本设备的期望数据面计划。
@@ -32,12 +34,17 @@ pub fn heartbeat(
     server_url: &str,
     token: &str,
     last_handshake_at: Option<String>,
+    dataplane: Option<DataplaneEvidence>,
 ) -> Result<String, String> {
     let url = format!(
         "{}/api/v1/agent/heartbeat",
         server_url.trim_end_matches('/')
     );
-    let payload = serde_json::json!({ "last_handshake_at": last_handshake_at }).to_string();
+    let payload = serde_json::json!({
+        "last_handshake_at": last_handshake_at,
+        "dataplane": dataplane,
+    })
+    .to_string();
     let req = ureq::post(&url)
         .set("authorization", &format!("Bearer {token}"))
         .set("content-type", "application/json")

@@ -475,7 +475,7 @@ async fn presence_is_conservative_after_restart() {
         assert_eq!(st, StatusCode::CREATED);
         let agent_token = agent_dev["agent_token"].as_str().unwrap().to_string();
 
-        // 心跳（带握手证据）→ online。
+        // 心跳（带握手证据 + 数据面实测证据，§7.5）→ online。
         let res = c
             .app
             .clone()
@@ -486,7 +486,15 @@ async fn presence_is_conservative_after_restart() {
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {agent_token}"))
                     .body(Body::from(
-                        json!({"last_handshake_at": meshlet_server::service::now()}).to_string(),
+                        json!({
+                            "last_handshake_at": meshlet_server::service::now(),
+                            "dataplane": {
+                                "tunnel_mtu": 1380,
+                                "nat_rules_present": false,
+                                "mtu_probe_payload": 1352,
+                            },
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -496,6 +504,17 @@ async fn presence_is_conservative_after_restart() {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         let hb: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(hb["online_state"], "online");
+
+        // 实测证据已落库：重启后同源可见（§17.3 逐字段恢复）。
+        let (_, before) = json_get(&c, &format!("/api/v1/networks/{network_id}/devices")).await;
+        let laptop = before
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == "laptop")
+            .unwrap();
+        assert_eq!(laptop["dataplane_evidence"]["tunnel_mtu"], 1380);
+        assert_eq!(laptop["dataplane_evidence"]["mtu_probe_payload"], 1352);
 
         // 模拟「重启后时间流逝」：把证据时间戳改到远古（直接改 DB 等价于
         // 服务停了很久——判定在读取时刻做，不由启动时刻虚构）。
@@ -522,6 +541,15 @@ async fn presence_is_conservative_after_restart() {
             "source of last evidence shown"
         );
     }
+    // 数据面证据随设备行恢复（重启不清零读数；staleness 由 presence 承载）。
+    let laptop = devices
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "laptop")
+        .unwrap();
+    assert_eq!(laptop["dataplane_evidence"]["tunnel_mtu"], 1380);
+    assert_eq!(laptop["dataplane_evidence"]["nat_rules_present"], false);
 
     c.pool.close().await;
     cleanup_db(&db);

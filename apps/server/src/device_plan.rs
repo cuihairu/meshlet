@@ -155,6 +155,8 @@ pub fn build_device_plan(
         },
         routes,
         nat_rules,
+        // hub overlay 地址只作 agent 本地诊断目标（MTU 大包探测），不进内核。
+        hub_address: Some(hub),
         desired_config_hash: hash,
     })
 }
@@ -194,6 +196,7 @@ mod tests {
             last_seen_at: None,
             last_handshake_at: None,
             last_report_at: None,
+            dataplane_evidence: None,
             created_at: T0.into(),
             revoked_at: None,
         }

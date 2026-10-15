@@ -330,6 +330,7 @@ function DevicesSection({
               <th>Virtual IP</th>
               <th>Status</th>
               <th>Online</th>
+              <th>Tunnel</th>
               <th>Fingerprint</th>
               <th></th>
             </tr>
@@ -346,6 +347,23 @@ function DevicesSection({
                   <span className={`dot ${d.online_state}`}>{d.online_state}</span>
                   <span className="muted"> · {SOURCE_LABELS[d.presence_source] ?? d.presence_source}</span>
                   <span className="muted"> · updated {formatTime(d.last_seen_at)}</span>
+                </td>
+                <td>
+                  <span className="muted" title="dataplane readings from the device's last heartbeat">
+                    {d.dataplane_evidence ? (
+                      [
+                        `mtu ${d.dataplane_evidence.tunnel_mtu ?? '?'}`,
+                        `probe ${d.dataplane_evidence.mtu_probe_payload ?? '—'}`,
+                        d.dataplane_evidence.nat_rules_present != null
+                          ? `nat ${d.dataplane_evidence.nat_rules_present ? '✓' : '✗'}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
+                    ) : (
+                      'no evidence'
+                    )}
+                  </span>
                 </td>
                 <td>
                   <code className="fingerprint">{d.fingerprint.slice(0, 16)}…</code>

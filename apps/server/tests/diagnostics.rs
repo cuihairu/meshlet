@@ -89,6 +89,17 @@ async fn ctx_with_mtu(mtu: Option<u32>) -> Ctx {
     ctx_from(state, pool).await
 }
 
+/// 带可 apply 的修订 backend + 计划隧道 MTU（证据驱动的 ⑪⑬ 用）。
+async fn ctx_with_backend_and_mtu(backend: revision::BackendFactory, mtu: Option<u32>) -> Ctx {
+    let pool = meshlet_server::store::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let state = build_state(&pool)
+        .with_apply_backend(backend)
+        .with_tunnel_mtu(mtu);
+    ctx_from(state, pool).await
+}
+
 /// 共享同一池的完整 AppState（审计与凭证同库，见 auth.rs）。
 fn build_state(pool: &sqlx::SqlitePool) -> meshlet_server::auth::AppState {
     meshlet_server::auth::AppState::new(
@@ -214,6 +225,16 @@ async fn net_with_device(c: &Ctx) -> (String, String, String) {
 
 /// agent 心跳（Bearer 凭证 + 本地握手读数）。
 async fn heartbeat(c: &Ctx, agent_token: &str, handshake_at: &str) -> Value {
+    heartbeat_with_evidence(c, agent_token, handshake_at, serde_json::Value::Null).await
+}
+
+/// agent 心跳 + 数据面实测证据（§7.5：内核读数 + 大包探测）。
+async fn heartbeat_with_evidence(
+    c: &Ctx,
+    agent_token: &str,
+    handshake_at: &str,
+    evidence: Value,
+) -> Value {
     let res = c
         .app
         .clone()
@@ -224,7 +245,11 @@ async fn heartbeat(c: &Ctx, agent_token: &str, handshake_at: &str) -> Value {
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {agent_token}"))
                 .body(Body::from(
-                    json!({ "last_handshake_at": handshake_at }).to_string(),
+                    json!({
+                        "last_handshake_at": handshake_at,
+                        "dataplane": evidence,
+                    })
+                    .to_string(),
                 ))
                 .unwrap(),
         )
@@ -467,6 +492,150 @@ async fn mtu_check_follows_server_config() {
     assert_eq!(item["status"], "pass", "{item}");
     assert!(item["detail"].as_str().unwrap().contains("1380"));
     assert_eq!(item["suggestion"], "");
+}
+
+// ---------------------------------------------------------------------------
+// 设备侧实测证据驱动 ⑪⑬（§7.5/§12.4：心跳回传内核读数）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn device_evidence_drives_nat_and_mtu_checks() {
+    let c = ctx_with_backend_and_mtu(
+        Arc::new(|_, _| Box::new(OkBackend) as Box<dyn meshlet_domain::ConfigApplyBackend + Send>),
+        Some(1380),
+    )
+    .await;
+    let (network_id, device_id, token) = net_with_device(&c).await;
+
+    // alias 路由 + 映射 + apply：⑪ 有了评判对象（Applied 的 Alias 路由）。
+    let (st, route) = json_post(
+        &c,
+        &format!("/api/v1/networks/{network_id}/routes"),
+        json!({
+            "gateway_device_id": device_id,
+            "destination_cidr": "192.168.1.0/24",
+            "route_mode": "alias",
+            "return_path_mode": "dual_route",
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{route}");
+    let (st, alias) = json_post(
+        &c,
+        &format!("/api/v1/networks/{network_id}/aliases"),
+        json!({"lan_route_id": route["id"], "alias_cidr": "10.241.1.0/24"}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{alias}");
+    let (st, revs) = json_get(
+        &c,
+        &format!("/api/v1/networks/{network_id}/config-revisions"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let last = revs.as_array().unwrap().last().unwrap()["revision"].clone();
+    let (st, applied) = json_post(
+        &c,
+        &format!("/api/v1/networks/{network_id}/config-revisions/{last}/apply"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{applied}");
+
+    // 无证据：⑪ 恒 unavailable（控制面不可观测），⑬ 只评计划（pass）。
+    let report = run(&c, &network_id).await;
+    let nat = check_of(&report, "nat_rules_effective");
+    assert_eq!(nat["status"], "unavailable", "{nat}");
+    assert!(nat["detail"].as_str().unwrap().contains("cannot"));
+    assert_eq!(check_of(&report, "mtu_planned")["status"], "pass");
+
+    // 网关证据「内核里没有 Meshlet NAT 规则」→ ⑪ fail（如实点出）；
+    // 接口读数 1300 ≠ 计划 1380 → ⑬ fail。证据同时落在设备视图上。
+    heartbeat_with_evidence(
+        &c,
+        &token,
+        &now_stamp(),
+        json!({"nat_rules_present": false, "tunnel_mtu": 1300}),
+    )
+    .await;
+    let report = run(&c, &network_id).await;
+    let nat = check_of(&report, "nat_rules_effective");
+    assert_eq!(nat["status"], "fail", "{nat}");
+    assert!(
+        nat["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no meshlet NAT rules"),
+        "{nat}"
+    );
+    let mtu = check_of(&report, "mtu_planned");
+    assert_eq!(mtu["status"], "fail", "{mtu}");
+    assert!(
+        mtu["detail"].as_str().unwrap().contains("1300"),
+        "reading must be named: {mtu}"
+    );
+
+    // 健康证据：规则在内核 + 读数与计划一致 + 大包探测通过 → ⑪⑬ pass。
+    heartbeat_with_evidence(
+        &c,
+        &token,
+        &now_stamp(),
+        json!({"nat_rules_present": true, "tunnel_mtu": 1380, "mtu_probe_payload": 1352}),
+    )
+    .await;
+    let report = run(&c, &network_id).await;
+    assert_eq!(check_of(&report, "nat_rules_effective")["status"], "pass");
+    let mtu = check_of(&report, "mtu_planned");
+    assert_eq!(mtu["status"], "pass", "{mtu}");
+    assert!(mtu["detail"].as_str().unwrap().contains("1352"), "{mtu}");
+
+    // 读数一致但大包探测未证实 → ⑬ warning（路径未验证，给实测命令）。
+    heartbeat_with_evidence(
+        &c,
+        &token,
+        &now_stamp(),
+        json!({"nat_rules_present": true, "tunnel_mtu": 1380}),
+    )
+    .await;
+    let report = run(&c, &network_id).await;
+    let mtu = check_of(&report, "mtu_planned");
+    assert_eq!(mtu["status"], "warning", "{mtu}");
+    assert!(
+        mtu["suggestion"].as_str().unwrap().contains("ping -M do"),
+        "{mtu}"
+    );
+
+    // 设备视图带出最近一次证据（控制台/诊断同源）。
+    let (st, devices) = json_get(&c, &format!("/api/v1/networks/{network_id}/devices")).await;
+    assert_eq!(st, StatusCode::OK);
+    let view = devices
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == device_id.as_str())
+        .unwrap();
+    assert_eq!(view["dataplane_evidence"]["tunnel_mtu"], 1380);
+    assert_eq!(view["dataplane_evidence"]["nat_rules_present"], true);
+}
+
+#[tokio::test]
+async fn heartbeat_without_evidence_keeps_previous_readings() {
+    // 证据与握手时间同一纪律：请求未携带时保留上次读数（最后已知读数）。
+    let c = ctx_with_mtu(Some(1380)).await;
+    let (network_id, _device_id, token) = net_with_device(&c).await;
+    heartbeat_with_evidence(
+        &c,
+        &token,
+        &now_stamp(),
+        json!({"tunnel_mtu": 1380, "mtu_probe_payload": 1352}),
+    )
+    .await;
+    heartbeat(&c, &token, &now_stamp()).await; // 不带 dataplane 字段
+    let (st, devices) = json_get(&c, &format!("/api/v1/networks/{network_id}/devices")).await;
+    assert_eq!(st, StatusCode::OK);
+    let view = devices.as_array().unwrap().first().unwrap();
+    assert_eq!(view["dataplane_evidence"]["tunnel_mtu"], 1380);
+    assert_eq!(view["dataplane_evidence"]["mtu_probe_payload"], 1352);
 }
 
 // ---------------------------------------------------------------------------

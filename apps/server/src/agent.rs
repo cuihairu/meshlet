@@ -14,7 +14,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use meshlet_api_types::{ErrorCode, ErrorResponse};
-use meshlet_domain::{generate_token, token_hash, DeviceId, Timestamp};
+use meshlet_domain::{generate_token, token_hash, DataplaneEvidence, DeviceId, Timestamp};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
@@ -180,6 +180,9 @@ impl FromRequestParts<SharedAppState> for AuthorizedAgent {
 pub struct HeartbeatRequest {
     /// agent 本地 `wg show` 读到的最近握手时间（ISO-8601）；缺省表示未取到。
     pub last_handshake_at: Option<String>,
+    /// 设备侧数据面实测证据（内核读数 + 大包探测，§7.5）；缺省表示未上报。
+    #[serde(default)]
+    pub dataplane: Option<DataplaneEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,6 +216,7 @@ pub async fn heartbeat_handler(
             &mut guard,
             &device_id,
             req.last_handshake_at.clone(),
+            req.dataplane,
             now.clone(),
         )
         .map_err(|e| match e {

@@ -329,11 +329,11 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
         c.pool.close().await;
     }
 
-    // 备份文件独立可打开：14 表 + 6 个迁移齐全；内容停留在备份时刻
+    // 备份文件独立可打开：14 表 + 7 个迁移齐全；内容停留在备份时刻
     // （路由 1 条、route_seq=1），不随活动库后续变更回写。
     let (tables, migrations, routes, seq) = inspect_backup(&backup_path).await;
     assert_eq!(tables, 14, "schema complete in backup");
-    assert_eq!(migrations, 6, "migrations 001-006 recorded in backup");
+    assert_eq!(migrations, 7, "migrations 001-007 recorded in backup");
     assert_eq!(routes, 1, "backup frozen at snapshot moment");
     assert_eq!(seq.as_deref(), Some("1"));
 

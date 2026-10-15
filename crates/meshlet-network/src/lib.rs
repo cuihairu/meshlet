@@ -63,6 +63,8 @@ pub struct RouteConfig {
 ///   自己本地网段不回灌）；
 /// - `nat_rules`：本设备作为网关时应下发的 NAT 规则（计划层渲染，所有权
 ///   注释 `meshlet alias {id}`）；为空 = 非网关或映射已删；
+/// - `hub_address`：hub 的 overlay 地址（服务端 IPAM 分配）——只作 agent
+///   本地诊断（计划 MTU 的大包探测目标），不是内核配置的一部分；
 /// - `desired_config_hash`：本计划对应的期望配置哈希——agent 据此判断「有
 ///   变更才重放」（§10.1）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -70,8 +72,15 @@ pub struct DevicePlan {
     pub tunnel: TunnelConfig,
     pub routes: Vec<RouteConfig>,
     pub nat_rules: Vec<nat::NatRule>,
+    /// hub overlay 地址；缺省（旧服务端）表示未知——探测随之省略。
+    #[serde(default)]
+    pub hub_address: Option<std::net::Ipv4Addr>,
     pub desired_config_hash: String,
 }
+
+/// 隧道 MTU 缺省值（WireGuard 默认）：计划未显式配置时的有效计划值，
+/// 也是大包探测的默认尺寸来源（1420 − 28 = 1392）。
+pub const DEFAULT_TUNNEL_MTU: u32 = 1420;
 
 /// 应用结果：**applied=false 时必须携带错误说明**，不得假装成功（§10.3）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +298,7 @@ mod tests {
                 gateway: None,
             }],
             nat_rules: vec![],
+            hub_address: Some("10.240.0.1".parse().unwrap()),
             desired_config_hash: "meshlet-desired-v3:ab".into(),
         };
         let value = serde_json::to_value(&plan).unwrap();
@@ -300,6 +310,16 @@ mod tests {
         assert_eq!(value["routes"][0]["destination"], "10.241.1.0/24");
         let round = serde_json::from_value::<DevicePlan>(value).unwrap();
         assert_eq!(round, plan);
+
+        // 缺 hub_address 的计划仍能解析（旧服务端下发的计划向前兼容）。
+        let without_hub = serde_json::json!({
+            "tunnel": plan.tunnel,
+            "routes": [],
+            "nat_rules": [],
+            "desired_config_hash": "h",
+        });
+        let old: DevicePlan = serde_json::from_value(without_hub).unwrap();
+        assert_eq!(old.hub_address, None);
     }
 
     #[test]
@@ -321,6 +341,7 @@ mod tests {
                 gateway: None,
             }],
             nat_rules: vec![],
+            hub_address: None,
             desired_config_hash: "h".into(),
         };
         let mut value = serde_json::to_value(&plan).unwrap();

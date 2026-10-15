@@ -27,6 +27,16 @@ export interface ConfigRevision {
   error_summary: string | null;
 }
 
+/** Device-side dataplane readings reported via heartbeat (§7.5); null fields = not read. */
+export interface DataplaneEvidence {
+  /** Interface MTU reading from `ip link show`. */
+  tunnel_mtu: number | null;
+  /** Whether ownership-commented meshlet NAT rules exist in the kernel (gateway devices). */
+  nat_rules_present: boolean | null;
+  /** Payload size of the successful DF probe (`ping -M do`); null = not verified. */
+  mtu_probe_payload: number | null;
+}
+
 export interface Device {
   id: string;
   network_id: string;
@@ -42,6 +52,8 @@ export interface Device {
   online_state: string;
   /** agent_report | handshake | enrollment | none — the data source behind the state. */
   presence_source: string;
+  /** Last heartbeat dataplane evidence; null = no agent has reported yet. */
+  dataplane_evidence: DataplaneEvidence | null;
 }
 
 export interface InviteCreated {

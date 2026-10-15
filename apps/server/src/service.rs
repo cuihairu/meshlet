@@ -8,9 +8,10 @@
 
 use meshlet_api_types::ErrorResponse;
 use meshlet_domain::{
-    generate_token, AliasError, AliasMapping, AliasMappingId, DesiredStateStatus, Device, DeviceId,
-    DeviceRegistry, Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network, Platform, RegistryError,
-    ReturnPathMode, RouteMode, Timestamp, TranslationMode,
+    generate_token, AliasError, AliasMapping, AliasMappingId, DataplaneEvidence,
+    DesiredStateStatus, Device, DeviceId, DeviceRegistry, Invite, Ipam, Ipv4Cidr, LanRoute,
+    LanRouteId, Network, Platform, RegistryError, ReturnPathMode, RouteMode, Timestamp,
+    TranslationMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -56,6 +57,8 @@ pub struct DeviceView {
     pub online_state: String,
     /// 状态的数据来源：`agent_report` / `handshake` / `enrollment` / `none`（§12.2）。
     pub presence_source: String,
+    /// 最近一次心跳回传的数据面实测证据（§7.5）；`None` = 尚无上报。
+    pub dataplane_evidence: Option<DataplaneEvidence>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -728,6 +731,7 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         last_seen_at: Some(ts.clone()),
         last_handshake_at: None,
         last_report_at: None,
+        dataplane_evidence: None,
         created_at: ts.clone(),
         revoked_at: None,
     };
@@ -755,20 +759,30 @@ pub fn record_agent_report(
     state: &mut MeshState,
     device_id: &DeviceId,
     last_handshake_at: Option<String>,
+    dataplane: Option<DataplaneEvidence>,
     now: Timestamp,
 ) -> Result<meshlet_domain::Presence, ServiceError> {
     let device = state
         .registry
         .find_by_id_mut(device_id)
         .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
-    apply_agent_report(device, last_handshake_at, &now);
+    apply_agent_report(device, last_handshake_at, dataplane, &now);
     Ok(evaluate_presence(device, &now, &state.presence_thresholds))
 }
 
-/// 把一次上报写到设备记录（内部共享）。
-fn apply_agent_report(device: &mut Device, last_handshake_at: Option<String>, now: &Timestamp) {
+/// 把一次上报写到设备记录（内部共享）。证据与握手时间同一纪律：请求未携带
+/// 时保留上次读数（「最后已知读数」， staleness 由 last_report_at 承载）。
+fn apply_agent_report(
+    device: &mut Device,
+    last_handshake_at: Option<String>,
+    dataplane: Option<DataplaneEvidence>,
+    now: &Timestamp,
+) {
     if let Some(ts) = last_handshake_at {
         device.last_handshake_at = Some(ts);
+    }
+    if let Some(evidence) = dataplane {
+        device.dataplane_evidence = Some(evidence);
     }
     device.last_report_at = Some(now.clone());
     device.last_seen_at = Some(now.clone());
@@ -1355,5 +1369,6 @@ fn to_device_view(
         last_seen_at: d.last_seen_at.clone(),
         online_state: presence.state.as_str().to_string(),
         presence_source: presence.source.as_str().to_string(),
+        dataplane_evidence: d.dataplane_evidence.clone(),
     }
 }

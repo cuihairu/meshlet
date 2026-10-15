@@ -102,8 +102,25 @@ pub struct Device {
     pub last_handshake_at: Option<Timestamp>,
     /// 最近一次 agent 心跳/状态上报时刻（§14.1）。
     pub last_report_at: Option<Timestamp>,
+    /// 最近一次心跳回传的数据面实测证据（§7.5：内核读数 + 大包探测）；
+    /// `None` = 尚无 agent 上报过（旧 agent / 未运行）。
+    pub dataplane_evidence: Option<DataplaneEvidence>,
     pub created_at: Timestamp,
     pub revoked_at: Option<Timestamp>,
+}
+
+/// 设备侧数据面实测证据（agent 心跳回传，§7.5/§12.4）：内核读数 + 大包
+/// 探测。每个字段 `None` 表示「本机未取到」（工具缺失 / 探测不可达），
+/// 服务端按「证据缺失」处理，绝不臆测默认值。
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct DataplaneEvidence {
+    /// 隧道接口实际 MTU（`ip link show` 本机读数）。
+    pub tunnel_mtu: Option<u32>,
+    /// 本机内核存在 Meshlet NAT 规则（按所有权注释扫描；网关设备相关）。
+    pub nat_rules_present: Option<bool>,
+    /// 大包探测：`ping -M do` 以该载荷尺寸到达一个 overlay 对端成功
+    /// （`None` = 未探测或探测失败——计划 MTU 在路径上不可用或对端不可达）。
+    pub mtu_probe_payload: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -494,6 +511,7 @@ mod tests {
             last_seen_at: None,
             last_handshake_at: None,
             last_report_at: None,
+            dataplane_evidence: None,
             created_at: T0.into(),
             revoked_at: None,
         };
@@ -641,6 +659,7 @@ mod tests {
             last_seen_at: None,
             last_handshake_at: None,
             last_report_at: None,
+            dataplane_evidence: None,
             created_at: T0.into(),
             revoked_at: None,
         };
@@ -671,6 +690,7 @@ mod tests {
             last_seen_at: None,
             last_handshake_at: None,
             last_report_at: None,
+            dataplane_evidence: None,
             created_at: T0.into(),
             revoked_at: None,
         };

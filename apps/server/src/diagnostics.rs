@@ -17,7 +17,8 @@ use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use meshlet_domain::{
-    AliasMapping, ApplyStatus, ConfigRevision, DesiredStateStatus, Device, LanRoute, PresenceState,
+    AliasMapping, ApplyStatus, ConfigRevision, DataplaneEvidence, DesiredStateStatus, Device,
+    LanRoute, PresenceState, RouteMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -167,7 +168,7 @@ pub fn run_checks(
             check_gateway_online(&routes, mesh, now),
             check_route_published(&routes, latest.as_ref()),
             check_alias_conflict(aliases, &routes, &overlay),
-            check_nat_rules(),
+            check_nat_rules(&routes, mesh),
             check_revision_consistent(latest.as_ref()),
             check_mtu_planned(tunnel_mtu, &active),
         ],
@@ -546,14 +547,75 @@ fn check_alias_conflict(
     )
 }
 
-/// ⑪ NAT 规则生效（Alias）：网关机 NAT 规则与计数器，控制面不可观测。
-fn check_nat_rules() -> DiagnosticCheck {
-    unavailable(
+/// ⑪ NAT 规则生效（Alias）：网关 agent 心跳回传的内核扫描（按所有权注释，
+/// §12.6）。没有任何网关上报证据时控制面如实「不可观测」——那部分不假装。
+fn check_nat_rules(routes: &[&LanRoute], mesh: &service::MeshState) -> DiagnosticCheck {
+    let alias_routes: Vec<&LanRoute> = routes
+        .iter()
+        .copied()
+        .filter(|r| r.route_mode == RouteMode::Alias && r.status == DesiredStateStatus::Applied)
+        .collect();
+    // 只评判「上报了证据」的网关：证据缺失（agent 未运行 / 旧版本）不等于
+    // 规则不存在，也不等于存在（§12.2 判读纪律）。
+    let mut reporting: Vec<(String, bool)> = Vec::new();
+    for route in &alias_routes {
+        let Some(gateway) = mesh.registry.find_by_id(&route.gateway_device_id) else {
+            continue;
+        };
+        let Some(present) = gateway
+            .dataplane_evidence
+            .as_ref()
+            .and_then(|e| e.nat_rules_present)
+        else {
+            continue;
+        };
+        reporting.push((gateway.name.clone(), present));
+    }
+    if reporting.is_empty() {
+        return unavailable(
+            "nat_rules_effective",
+            "NAT rules effective",
+            layer::ALIAS,
+            if alias_routes.is_empty() {
+                "the control plane cannot read the gateway's NAT rules or their traffic counters; no gateway agent has reported kernel evidence yet".to_string()
+            } else {
+                format!(
+                    "the control plane cannot read the gateway's NAT rules; {} alias route(s) registered but no gateway agent has reported kernel evidence yet (agent not running or an older agent without evidence reporting)",
+                    alias_routes.len()
+                )
+            },
+            "on the LAN gateway run `iptables -t nat -L -n -v` — for each alias mapping check the DNAT/SNAT rules exist and their packet counters grow with traffic; zero counters on an active mapping means the rule exists but no traffic matches (wrong prefix or interface). An up-to-date agent reports this reading via its heartbeat (§12.4)".into(),
+        );
+    }
+    let broken: Vec<String> = reporting
+        .iter()
+        .filter(|(_, present)| !present)
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !broken.is_empty() {
+        return check(
+            "nat_rules_effective",
+            "NAT rules effective",
+            layer::ALIAS,
+            "fail",
+            format!(
+                "at their last heartbeat, gateway(s) {} reported no meshlet NAT rules in the kernel — the rules do not survive reboots and the alias path is broken until the agent re-applies them",
+                broken.join(", ")
+            ),
+            "check the gateway agent is running (`systemctl status meshlet-agent`) and can reach the server; a healthy agent detects the missing rules and replays them on its next reconcile (§12.6)".into(),
+        );
+    }
+    let names: Vec<String> = reporting.iter().map(|(name, _)| name.clone()).collect();
+    check(
         "nat_rules_effective",
         "NAT rules effective",
         layer::ALIAS,
-        "the control plane cannot read the gateway's NAT rules or their traffic counters".into(),
-        "on the LAN gateway run `iptables -t nat -L -n -v` — for each alias mapping check the DNAT/SNAT rules exist and their packet counters grow with traffic; zero counters on an active mapping means the rule exists but no traffic matches (wrong prefix or interface)".into(),
+        "pass",
+        format!(
+            "gateway(s) {} report the ownership-commented NAT rules present in their kernel (controlled SNAT confirmed by the device that owns them)",
+            names.join(", ")
+        ),
+        String::new(),
     )
 }
 
@@ -597,9 +659,10 @@ fn check_revision_consistent(latest: Option<&ConfigRevision>) -> DiagnosticCheck
     )
 }
 
-/// ⑬ 计划隧道 MTU（隧道）：控制面只掌握**计划**值——实际接口 MTU 与路径 MTU
-/// 仍需设备侧观测（那部分不假装）。未显式配置时按 WireGuard 默认 1420 解释
-/// 大包/分片风险（§7.5：PPPoE/4G 底层会黑洞大包）。
+/// ⑬ 隧道 MTU（隧道）：计划值 + 设备侧实测证据（§7.5）。计划值来自 server
+/// 配置（未显式配置时按 WireGuard 默认 1420 解释黑洞风险）；实测来自 agent
+/// 心跳回传的接口 MTU 读数与大包探测（`ping -M do`）。没有设备上报证据时
+/// 只评计划——内核里是什么、路径是否承载，控制面不假装知道。
 fn check_mtu_planned(tunnel_mtu: Option<u32>, active: &[&Device]) -> DiagnosticCheck {
     if active.is_empty() {
         return not_applicable(
@@ -609,26 +672,106 @@ fn check_mtu_planned(tunnel_mtu: Option<u32>, active: &[&Device]) -> DiagnosticC
             "no active devices in this network — no tunnel to size".into(),
         );
     }
-    match tunnel_mtu {
-        Some(mtu) => check(
+    let planned = tunnel_mtu.unwrap_or(meshlet_network::DEFAULT_TUNNEL_MTU);
+    let planned_note = match tunnel_mtu {
+        Some(mtu) => format!("tunnel_mtu = {mtu} is explicitly configured"),
+        None => format!(
+            "tunnel_mtu is not configured — devices fall back to the WireGuard default {planned}, which blackholes large packets on PPPoE/4G underlays unless the path is verified"
+        ),
+    };
+    let evidence: Vec<(&Device, &DataplaneEvidence)> = active
+        .iter()
+        .filter_map(|d| d.dataplane_evidence.as_ref().map(|e| (*d, e)))
+        .collect();
+    if evidence.is_empty() {
+        return match tunnel_mtu {
+            Some(_) => check(
+                "mtu_planned",
+                "Tunnel MTU planned",
+                layer::TUNNEL,
+                "pass",
+                format!(
+                    "{planned_note} (planned value; WireGuard adds ~80B overhead per packet, keep mtu + overhead <= underlay MTU)"
+                ),
+                String::new(),
+            ),
+            None => check(
+                "mtu_planned",
+                "Tunnel MTU planned",
+                layer::TUNNEL,
+                "warning",
+                planned_note,
+                "set tunnel_mtu in the server config for a deliberate value, or verify the path from a device: `ping -M do -s 1392 <overlay-peer-ip>` (1420-28) — failures mean the effective MTU is smaller and packets fragment or vanish (§7.5)".into(),
+            ),
+        };
+    }
+    // 设备读数与计划不符 → fail（点名设备与读数；agent 会对漂移重放纠回）。
+    let mismatched: Vec<String> = evidence
+        .iter()
+        .filter(|(_, e)| e.tunnel_mtu.is_some() && e.tunnel_mtu != Some(planned))
+        .map(|(d, e)| format!("{} reports interface mtu {}", d.name, e.tunnel_mtu.unwrap()))
+        .collect();
+    if !mismatched.is_empty() {
+        return check(
             "mtu_planned",
             "Tunnel MTU planned",
             layer::TUNNEL,
-            "pass",
+            "fail",
             format!(
-                "tunnel_mtu = {mtu} is explicitly configured (planned value; WireGuard adds ~80B overhead per packet, keep mtu + overhead <= underlay MTU)"
+                "{planned_note}, but device readings disagree: {}",
+                mismatched.join("; ")
             ),
-            String::new(),
-        ),
-        None => check(
+            "the agent replays the planned MTU on drift — if a reading stays off, check that device's agent is running and reconciling; alternatively adjust tunnel_mtu in the server config and record a new revision".into(),
+        );
+    }
+    // 读数一致但大包探测未证实（失败与未探测同形）→ warning，给出实测命令。
+    let unverified: Vec<&str> = evidence
+        .iter()
+        .filter(|(_, e)| e.mtu_probe_payload.is_none())
+        .map(|(d, _)| d.name.as_str())
+        .collect();
+    if !unverified.is_empty() {
+        return check(
             "mtu_planned",
             "Tunnel MTU planned",
             layer::TUNNEL,
             "warning",
-            "tunnel_mtu is not configured — devices fall back to the WireGuard default 1420, which blackholes large packets on PPPoE/4G underlays unless the path is verified".into(),
-            "set tunnel_mtu in the server config for a deliberate value, or verify the path from a device: `ping -M do -s 1392 <overlay-peer-ip>` (1420-28) — failures mean the effective MTU is smaller and packets fragment or vanish (§7.5)".into(),
-        ),
+            format!(
+                "{planned_note}; interface readings match the plan, but no successful large-packet probe was reported by {} — the path may not carry the planned MTU (probe failed) or the probe peer was unreachable",
+                unverified.join(", ")
+            ),
+            format!(
+                "verify from a device: `ping -M do -s {} <overlay-peer-ip>` ({planned}-28) — failures mean the effective MTU is smaller and packets fragment or vanish (§7.5)",
+                planned - 28
+            ),
+        );
     }
+    let readings: Vec<String> = evidence
+        .iter()
+        .map(|(d, e)| {
+            format!(
+                "{} reading {} probe {}",
+                d.name,
+                e.tunnel_mtu
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "?".into()),
+                e.mtu_probe_payload
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "?".into())
+            )
+        })
+        .collect();
+    check(
+        "mtu_planned",
+        "Tunnel MTU planned",
+        layer::TUNNEL,
+        "pass",
+        format!(
+            "{planned_note}; device evidence confirms the plan: {} (probe = largest payload carried end-to-end)",
+            readings.join("; ")
+        ),
+        String::new(),
+    )
 }
 
 fn desired_status(s: DesiredStateStatus) -> &'static str {

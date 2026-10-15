@@ -314,6 +314,28 @@ impl LinuxNetworkBackend {
         })
     }
 
+    /// 大包探测（§7.5）：以 DF 位（`ping -M do`）向 `target` 发一个载荷
+    /// `payload` 字节的 ICMP echo——成功即路径可承载「payload + 28B」（IP
+    /// 头 20B + ICMP 头 8B）的数据报。只读诊断，不写任何内核状态；ping
+    /// 不可用或无应答返回 `false`（证据按「未证实」处理，不臆测）。
+    pub fn mtu_probe_sync(&self, target: std::net::Ipv4Addr, payload: u32) -> bool {
+        match self.run(&[
+            "ping",
+            "-c",
+            "1",
+            "-W",
+            "2",
+            "-M",
+            "do",
+            "-s",
+            &payload.to_string(),
+            &target.to_string(),
+        ]) {
+            Ok(out) => out.status.success(),
+            Err(_) => false,
+        }
+    }
+
     /// 同步隧道应用（[NetworkBackend::apply_tunnel] 的命令核心）。
     pub fn apply_tunnel_sync(&self, config: &TunnelConfig) -> Result<ApplyResult, NetworkError> {
         let ifname = config.name.clone();

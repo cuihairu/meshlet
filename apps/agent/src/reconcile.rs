@@ -279,6 +279,7 @@ mod tests {
             } else {
                 Vec::new()
             },
+            hub_address: None,
             desired_config_hash: hash.into(),
         }
     }

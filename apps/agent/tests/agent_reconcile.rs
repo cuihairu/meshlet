@@ -465,6 +465,7 @@ fn hub_plan(topo: &Topology) -> DevicePlan {
             },
         ],
         nat_rules: Vec::new(),
+        hub_address: Some(topo.hub.overlay.parse().unwrap()),
         desired_config_hash: "hub-hash".into(),
     }
 }
@@ -523,6 +524,7 @@ fn leaf_plan(
             })
             .collect(),
         nat_rules,
+        hub_address: Some(hub.overlay.parse().unwrap()),
         desired_config_hash: hash.into(),
     }
 }
@@ -739,6 +741,16 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "replay restores the planned MTU"
     );
 
+    // 设备侧实测证据（#51②）：内核读数 + 大包探测（`ping -M do`，载荷 =
+    // 计划 MTU − 28）随心跳回传——探测目标 = hub overlay 地址，走真实隧道。
+    let evidence = a_agent.collect_evidence(Some(&mtu_plan));
+    assert_eq!(evidence.tunnel_mtu, Some(1380), "kernel reading reported");
+    assert_eq!(
+        evidence.mtu_probe_payload,
+        Some(1352),
+        "large-packet probe must pass at planned MTU - 28 via the tunnel"
+    );
+
     // ---- 4. 网关侧：Alias NAT 随计划下发，映射删除即整单元清理（§12.6）----
     let gw_dir = temp_state_dir("state-gw");
     let gw_agent = agent_in(&topo.gw, &gw_dir);
@@ -754,6 +766,13 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         .reconcile(&gw_plan)
         .expect("gateway applies nat rules");
     assert!(topo.wait_handshake(&topo.gw.netns), "G handshake");
+    // 网关证据（#57②）：心跳回传的 NAT 读数反映内核实际（有规则 → true）。
+    let gw_evidence = gw_agent.collect_evidence(Some(&gw_plan));
+    assert_eq!(
+        gw_evidence.nat_rules_present,
+        Some(true),
+        "gateway must report its meshlet NAT rules as present"
+    );
     // Direct 模式（非 Alias）路由：计划里的 `192.168.1.0/24 via 网关` 让远端
     // 真实 LAN 直接可达（§8.1 验收「发布 CIDR 后远端可访问」）。
     assert!(
@@ -817,6 +836,13 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
     assert!(
         topo.ping_within(&topo.a.netns, &topo.b.overlay, HANDSHAKE_TIMEOUT),
         "overlay must stay unaffected by the mapping removal"
+    );
+    // 清理后的证据如实翻转（#57②）：内核实际没有 Meshlet NAT 规则 → false。
+    let gw_evidence = gw_agent.collect_evidence(Some(&gw_plan_v2));
+    assert_eq!(
+        gw_evidence.nat_rules_present,
+        Some(false),
+        "evidence must report the kernel after the ownership cleanup"
     );
 
     // teardown 并断言「跑完不留垃圾」（按本进程标签计，历史残留由
