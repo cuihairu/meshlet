@@ -6,7 +6,7 @@
 //! - `Unverifiable`：无法确认（客户端报告缺失）→ **仅警告，不宣称网络可用**。
 
 use crate::cidr::Ipv4Cidr;
-use crate::entities::{AliasMapping, LanRoute};
+use crate::entities::{AliasMapping, LanRoute, RouteMode};
 
 /// 冲突认知来源（§6.3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,12 +131,20 @@ pub fn alias_alias_overlap(aliases: &[AliasMapping]) -> Vec<Conflict> {
 }
 
 /// 检查 4：同一网络内 LAN Route 冲突（目标重叠即冲突——同一目的地不能有两个并行转发者）。
+///
+/// 例外（ADR-006 旗舰场景）：两条 **Alias 模式**路由的真实 LAN 前缀允许重叠——
+/// 两个站点各有一个 `192.168.1.0/24`，经各自不同的 Alias 前缀同时可达。对外
+/// 可见的转发前缀是 Alias（唯一性由 `alias_alias_overlap` 保证），真实前缀
+/// 不进任何隧道 AllowedIPs 的确定路径，内核里不存在并行转发者。Direct 路由
+/// 与任何重叠目的仍然冲突（真实前缀直连只有一个转发者）。
 pub fn lan_route_conflicts(routes: &[LanRoute]) -> Vec<Conflict> {
     let mut out = Vec::new();
     for i in 0..routes.len() {
         for j in (i + 1)..routes.len() {
             let (a, b) = (&routes[i], &routes[j]);
-            if a.destination_cidr.overlaps(&b.destination_cidr) {
+            if a.destination_cidr.overlaps(&b.destination_cidr)
+                && !(a.route_mode == RouteMode::Alias && b.route_mode == RouteMode::Alias)
+            {
                 out.push(Conflict {
                     code: ConflictCode::LanRouteConflict,
                     kind: ConflictKind::ServerKnown,
@@ -221,10 +229,17 @@ mod tests {
             network_id: NetworkId("net-1".into()),
             gateway_device_id: DeviceId(gw.into()),
             destination_cidr: dest.parse().unwrap(),
-            route_mode: RouteMode::Alias,
+            route_mode: RouteMode::Direct,
             return_path_mode: ReturnPathMode::ControlledSnat,
             status: DesiredStateStatus::Applied,
             created_at: "2026-10-14T08:00:00Z".into(),
+        }
+    }
+
+    fn alias_route(id: &str, dest: &str, gw: &str) -> LanRoute {
+        LanRoute {
+            route_mode: RouteMode::Alias,
+            ..route(id, dest, gw)
         }
     }
 
@@ -287,6 +302,25 @@ mod tests {
         assert_eq!(out[0].code, ConflictCode::LanRouteConflict);
         // 同一网关发布不同网段不冲突。
         assert!(lan_route_conflicts(&[r1, r3]).is_empty());
+    }
+
+    #[test]
+    fn dual_alias_routes_with_the_same_lan_do_not_conflict() {
+        // ADR-006 旗舰场景：两个站点各有一个 192.168.1.0/24，经不同 Alias 同时
+        // 可达——真实前缀重叠不是冲突，对外可见的转发前缀是各自的 Alias。
+        let s1 = alias_route("r-1", "192.168.1.0/24", "gw-site1");
+        let s2 = alias_route("r-2", "192.168.1.0/24", "gw-site2");
+        assert!(
+            lan_route_conflicts(&[s1, s2]).is_empty(),
+            "dual alias sites with the same real lan must coexist"
+        );
+
+        // 但 Direct 与 Alias 的真实前缀重叠仍是冲突：真实前缀直连只有一个转发者。
+        let direct = route("r-3", "192.168.1.0/24", "gw-office");
+        let alias_one = alias_route("r-4", "192.168.1.0/24", "gw-home");
+        let out = lan_route_conflicts(&[direct, alias_one]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].code, ConflictCode::LanRouteConflict);
     }
 
     #[test]

@@ -111,32 +111,41 @@ async fn create_network(c: &Ctx, name: &str, overlay: &str) -> String {
     body["id"].as_str().unwrap().to_string()
 }
 
-/// 建网络 + 邀请 + 加入一台设备，返回 (network_id, device_id)。
-async fn net_with_device(c: &Ctx, name: &str, overlay: &str) -> (String, String) {
-    let network_id = create_network(c, name, overlay).await;
+/// 建邀请 + 加入一台设备，返回 device_id（同一网络可重复调用）。
+async fn enroll(c: &Ctx, network_id: &str, name: &str, public_key: &str) -> String {
     let (st, invite) = json_post(
         c,
         &format!("/api/v1/networks/{network_id}/invites"),
-        json!({}),
+        json!({"max_uses": 1}),
     )
     .await;
-    assert_eq!(st, StatusCode::CREATED);
+    assert_eq!(st, StatusCode::CREATED, "{invite}");
     let (st, device) = json_post(
         c,
         "/api/v1/enroll",
         json!({
             "invite_token": invite["token"].as_str().unwrap(),
-            "device_name": format!("gw-{name}"),
-            "public_key": "pub-key-route-gateway",
+            "device_name": name,
+            "public_key": public_key,
             "platform": "linux",
         }),
     )
     .await;
-    assert_eq!(st, StatusCode::CREATED);
-    (
-        network_id,
-        device["device_id"].as_str().unwrap().to_string(),
+    assert_eq!(st, StatusCode::CREATED, "{device}");
+    device["device_id"].as_str().unwrap().to_string()
+}
+
+/// 建网络 + 邀请 + 加入一台设备，返回 (network_id, device_id)。
+async fn net_with_device(c: &Ctx, name: &str, overlay: &str) -> (String, String) {
+    let network_id = create_network(c, name, overlay).await;
+    let device_id = enroll(
+        c,
+        &network_id,
+        &format!("gw-{name}"),
+        "pub-key-route-gateway",
     )
+    .await;
+    (network_id, device_id)
 }
 
 fn route_body(gateway: &str, destination: &str) -> Value {
@@ -258,6 +267,48 @@ async fn overlapping_destination_in_same_network_is_conflict() {
     )
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+/// ADR-006 旗舰场景：两个站点各有一个 192.168.1.0/24，经各自 Alias 同时可达。
+/// 两条 Alias 模式的同真实前缀路由必须都被接受——对外可见的转发前缀是 Alias
+///（唯一性由创建 Alias 时的 `alias_alias_overlap` 保证），真实前缀不进隧道路
+/// 转表面；但同前缀的 Direct 路由仍是冲突（真实前缀直连只有一个转发者）。
+#[tokio::test]
+async fn dual_alias_routes_share_the_same_real_lan() {
+    let c = ctx().await;
+    let network_id = create_network(&c, "home", OVERLAY).await;
+    let uri = format!("/api/v1/networks/{network_id}/routes");
+
+    // 两个网关设备：各自独立邀请（邀请单次使用）。
+    let site1 = enroll(&c, &network_id, "site1-gw", "pub-key-site1").await;
+    let site2 = enroll(&c, &network_id, "site2-gw", "pub-key-site2").await;
+    let alias_body = |gateway: &str| {
+        json!({
+            "gateway_device_id": gateway,
+            "destination_cidr": "192.168.1.0/24",
+            "return_path_mode": "controlled_snat",
+            "route_mode": "alias",
+        })
+    };
+
+    let (st, r1) = json_post(&c, &uri, alias_body(&site1)).await;
+    assert_eq!(st, StatusCode::CREATED, "{r1}");
+    let (st, r2) = json_post(&c, &uri, alias_body(&site2)).await;
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "same real lan at a second site: {r2}"
+    );
+    assert_ne!(r1["id"], r2["id"], "each site keeps its own route");
+
+    // 第三条同前缀路由若为 Direct → 409 点名冲突对端（真实前缀直连唯一转发者）。
+    let (st, body) = json_post(&c, &uri, route_body(&site2, "192.168.1.0/24")).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("192.168.1.0/24") && message.contains("rt-1"),
+        "conflict message must name the existing route: {message}"
+    );
 }
 
 /// §8.3「不覆盖已有路由」：被拒绝的创建不留下任何痕迹——路由列表不变、

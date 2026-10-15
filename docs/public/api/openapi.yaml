@@ -486,7 +486,13 @@ paths:
         overlaps the overlay or an existing LAN route answers 409 naming the
         conflicting counterpart (existing route id and CIDR) and mutates
         nothing — existing routes are never overwritten. Clients should offer
-        an equal-prefix Alias mapping for the remote LAN instead.
+        an equal-prefix Alias mapping for the remote LAN instead. Exception
+        (ADR-006 flagship scenario): when both the new and the existing route
+        are alias-mode, overlapping real LAN prefixes are accepted — two sites
+        may each own a 192.168.1.0/24 reached through their distinct Alias
+        prefixes; the externally visible forwarding prefixes are the Aliases
+        (uniqueness enforced at Alias creation), and real prefixes never enter
+        the tunnel forwarding plane.
       requestBody:
         required: true
         content:

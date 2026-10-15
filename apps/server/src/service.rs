@@ -899,6 +899,10 @@ pub fn create_route(
     // 同网络目的网段互斥（重叠即冲突，不做超集合并）。拒绝发生在任何状态
     // 变更之前：既有路由绝不被覆盖（§8.3 不静默）。错误消息点名冲突对端
     // （既有路由 id + 网段），控制台据此展示「跟哪条路由冲突」。
+    // 例外（ADR-006 旗舰场景）：新路由与既有路由**都是 Alias 模式**时允许
+    // 真实前缀重叠——两个站点各有一个 192.168.1.0/24，经各自 Alias 前缀区分
+    // 可达；对外可见的转发前缀是 Alias（唯一性由创建 Alias 时的
+    // `alias_alias_overlap` 拒绝保证），真实前缀不进任何隧道 AllowedIPs。
     if let Some(existing) = state
         .lan_routes
         .get(network_id)
@@ -909,10 +913,13 @@ pub fn create_route(
         })
         .cloned()
     {
-        return Err(ServiceError::RouteConflict(format!(
-            "destination {destination} overlaps existing route {} ({}) in network {network_id}",
-            existing.id, existing.destination_cidr
-        )));
+        let both_alias = existing.route_mode == RouteMode::Alias && route_mode == RouteMode::Alias;
+        if !both_alias {
+            return Err(ServiceError::RouteConflict(format!(
+                "destination {destination} overlaps existing route {} ({}) in network {network_id}",
+                existing.id, existing.destination_cidr
+            )));
+        }
     }
 
     // 网关必须是本网络的 Active 设备。
