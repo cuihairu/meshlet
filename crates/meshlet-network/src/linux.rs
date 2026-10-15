@@ -49,6 +49,24 @@ fn parse_link_mtu(link_show: &str) -> Option<u32> {
     None
 }
 
+/// §18.3：判读 `ip route show exact <dst>` 的一行是否为「不经受管接口的
+/// 外来路由」。返回 `Some(行原文)` 表示冲突——目标前缀已被指往别的路径，
+/// `ip route replace` 会静默接管它，必须改为显式拒绝；`None` 表示经受管
+/// 接口的既有路由（Meshlet 自有对象，幂等改写属正常计划变更）。解析不出
+/// `dev` 的行（blackhole / 输出格式变化）按冲突处理——fail closed，不放过
+/// 未知对象。
+fn foreign_route_line(line: &str, interface: &str) -> Option<String> {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    match tokens
+        .iter()
+        .position(|t| *t == "dev")
+        .and_then(|i| tokens.get(i + 1))
+    {
+        Some(dev) if *dev == interface => None,
+        _ => Some(line.trim().to_string()),
+    }
+}
+
 /// Linux 网络后端：命令执行器 + 对账式幂等应用。
 pub struct LinuxNetworkBackend {
     /// 测试钩子：命令在此 netns 内执行（`ip netns exec <ns> ...`）。
@@ -210,6 +228,13 @@ impl LinuxNetworkBackend {
         let out = self.run(&["ip", "-4", "route", "show", "dev", &self.interface])?;
         let mut dsts = Vec::new();
         for line in String::from_utf8_lossy(&out.stdout).lines() {
+            // `proto kernel` 是接口地址自带的 connected 路由（内核所有权，
+            // 随地址生灭）：不是 Meshlet 安装的对象——rollback 不得删除
+            // （删了会破坏 on-link 可达、地址却还在），inspect 也不计入
+            // installed_routes（§10.3 只动自有对象）。
+            if line.contains("proto kernel") {
+                continue;
+            }
             let dst = line.split_whitespace().next().unwrap_or("");
             if dst.is_empty() || dst == "default" {
                 continue;
@@ -402,6 +427,17 @@ impl LinuxNetworkBackend {
 
     /// 同步路由/ip_forward/FORWARD 应用（[NetworkBackend::apply_routes] 核心）。
     pub fn apply_routes_sync(&self, routes: &[RouteConfig]) -> Result<ApplyResult, NetworkError> {
+        // §18.3 冲突预检：目标前缀已有指向其他接口的路由时显式拒绝——
+        // `ip route replace` 会静默接管外来路由，这里改为点名冲突对象并
+        // 拒绝，且拒绝发生在任何内核状态（sysctl/iptables）改动之前。
+        for route in routes {
+            if let Some(line) = self.foreign_route_conflict(&route.destination, &route.interface)? {
+                return Err(NetworkError::ApplyRejected(format!(
+                    "route {} already exists on another path ({}): meshlet does not take over foreign routes",
+                    route.destination, line
+                )));
+            }
+        }
         self.run(&["sysctl", "-w", "net.ipv4.ip_forward=1"])?;
         // FORWARD 放行：进出受管隧道接口的流量（注释标记所有权，回滚可精确定位）。
         for dir in ["-i", "-o"] {
@@ -439,6 +475,26 @@ impl LinuxNetworkBackend {
             self.run(&argv)?;
         }
         Ok(ApplyResult::ok())
+    }
+
+    /// §18.3 冲突预检：`ip route show exact <dst>` 有任何一行指向非受管
+    /// 接口即冲突，返回该行原文供拒绝信息点名。无既有路由或全部经受管
+    /// 接口（Meshlet 自有对象，幂等改写属正常计划变更）则返回 None。
+    fn foreign_route_conflict(
+        &self,
+        destination: &Ipv4Cidr,
+        interface: &str,
+    ) -> Result<Option<String>, NetworkError> {
+        let out = self.run(&["ip", "route", "show", "exact", &destination.to_string()])?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Some(conflict) = foreign_route_line(line, interface) {
+                return Ok(Some(conflict));
+            }
+        }
+        Ok(None)
     }
 
     /// 同步 NAT 规则下发（[NetworkBackend::apply_nat] 的命令核心）。
@@ -788,5 +844,38 @@ mod tests {
             .cloned()
             .collect();
         assert!(LinuxNetworkBackend::snat_target_cidr(&dnat_only).is_none());
+    }
+
+    #[test]
+    fn foreign_route_line_flags_routes_on_other_paths() {
+        // 指向别的接口（带 via / 不带 via）都是冲突，原文点名。
+        let via = "10.244.0.0/24 via 10.99.0.1 dev eth0";
+        assert_eq!(foreign_route_line(via, "wg0").as_deref(), Some(via));
+        assert_eq!(
+            foreign_route_line("10.244.0.0/24 dev eth0", "wg0").as_deref(),
+            Some("10.244.0.0/24 dev eth0")
+        );
+
+        // 经受管接口：Meshlet 自有对象，幂等改写不冲突。
+        assert!(foreign_route_line("10.241.1.0/24 via 10.240.0.4 dev wg0", "wg0").is_none());
+    }
+
+    #[test]
+    fn foreign_route_line_fails_closed_without_a_dev_field() {
+        // blackhole / 输出格式变化：解析不出 dev 即按冲突处理，不放过
+        // 未知对象（fail closed）。
+        assert_eq!(
+            foreign_route_line("blackhole 10.244.0.0/24", "wg0").as_deref(),
+            Some("blackhole 10.244.0.0/24")
+        );
+        assert!(foreign_route_line("10.244.0.0/24", "wg0").is_some());
+    }
+
+    #[test]
+    fn connected_route_line_is_not_a_conflict_on_its_own_interface() {
+        // connected 路由（proto kernel，地址自带）：dev 字段在 exact 输出
+        // 里照常出现，经受管接口则不算冲突。
+        let line = "10.240.0.0/24 proto kernel scope link src 10.240.0.1 dev wg0";
+        assert!(foreign_route_line(line, "wg0").is_none());
     }
 }

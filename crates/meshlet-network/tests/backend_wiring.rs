@@ -825,6 +825,50 @@ fn backend_driven_tunnel_routes_and_nat() {
         "dnat_snat: controlled SNAT rule kernel-verified"
     );
 
+    // ---- 10. 已存在本地路由的冲突检测（§18.3）：`ip route replace` 不得静默
+    // 接管非 Meshlet 的路由——冲突时显式拒绝并点名冲突对象，外部路由原样保留；
+    // 而经受管接口的既有路由是 Meshlet 自有对象（上次 apply 留下的），幂等
+    // 重放与计划变更照常改写。同文件只有一个 netns 前缀，故并入本测试末尾。
+    let foreign = "10.244.0.0/24";
+    require_ok(
+        &netns_exec(
+            &topo.hub.netns,
+            &["ip", "route", "add", foreign, "dev", &topo.hub.veth_ns],
+        ),
+        "seed foreign route",
+    );
+    let conflicted = hub_backend.apply_routes_sync(&[RouteConfig {
+        destination: foreign.parse().unwrap(),
+        interface: "wg0".into(),
+        gateway: Some("10.240.0.4".parse().unwrap()),
+    }]);
+    match conflicted {
+        Err(meshlet_network::NetworkError::ApplyRejected(message)) => {
+            assert!(
+                message.contains(foreign) && message.contains("already exists"),
+                "conflict must name the destination: {message}"
+            );
+        }
+        other => panic!("foreign route must be rejected, got {other:?}"),
+    }
+    let shown = String::from_utf8_lossy(
+        &netns_exec(&topo.hub.netns, &["ip", "route", "show", "exact", foreign]).stdout,
+    )
+    .to_string();
+    assert!(
+        shown.contains(&topo.hub.veth_ns),
+        "foreign route must be left untouched: {shown}"
+    );
+    assert!(
+        !shown.contains("wg0"),
+        "foreign route must not be retargeted onto the tunnel: {shown}"
+    );
+    // 既有经 wg0 的路由是 Meshlet 自己的：再 apply 一次照常成功（幂等不被
+    // 冲突检测误伤）。
+    hub_backend
+        .apply_routes_sync(&hub_routes())
+        .expect("hub apply_routes idempotent");
+
     // teardown 并断言「跑完不留垃圾」。
     drop(topo);
     let netns_left = sudo(&["ip", "netns", "list"]);
