@@ -22,6 +22,7 @@
 | [config-security.md](config-security.md) | 配置状态机、身份认证、安全边界、测试策略 | §10、§11、§16、§18 |
 | [agent-platform.md](agent-platform.md) | Agent 通信、跨平台后端、可观测性 | §14、§15、§17 |
 | [roadmap.md](roadmap.md) | 分阶段计划、协作规则、ADR、验收标准 | §19–§23 |
+| [consistency-audit.md](consistency-audit.md) | 全仓一致性审计（docs ↔ code ↔ tests）——**非存档章节**，是本仓自查产物 | 全仓 |
 
 ## 三个高风险点（外部意见明确要求优先审查）
 

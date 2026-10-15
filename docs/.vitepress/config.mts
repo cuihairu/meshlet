@@ -30,7 +30,8 @@ export default defineConfig({
             { text: '网络设计', link: '/analysis/network' },
             { text: '配置状态机与安全', link: '/analysis/config-security' },
             { text: 'Agent、跨平台与可观测性', link: '/analysis/agent-platform' },
-            { text: '实施路线', link: '/analysis/roadmap' }
+            { text: '实施路线', link: '/analysis/roadmap' },
+            { text: '一致性审计', link: '/analysis/consistency-audit' }
           ]
         }
       ],
@@ -81,7 +82,8 @@ export default defineConfig({
           text: '指南',
           items: [
             { text: '安装指南', link: '/guide/install' },
-            { text: '外部调用方指南', link: '/guide/external-caller' }
+            { text: '外部调用方指南', link: '/guide/external-caller' },
+            { text: '真机走查', link: '/guide/walkthrough' }
           ]
         }
       ]
