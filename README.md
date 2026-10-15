@@ -15,11 +15,13 @@
 Self-hosted private networking on your own VPS — Rust + WireGuard.
 
 > [!NOTE]
-> Early stage: the Rust workspace and a minimal control-plane server exist (network,
-> invite and device-enrollment API over in-memory state). WireGuard transport is not
-> wired yet — see [TODO](TODO.md) for tracked items and acceptance criteria.
+> Implemented and CI-green: control plane, WireGuard dataplane (hub relay + agent), LAN routing and
+> Alias NAT, React console, session auth + API tokens + audit, backup/restore, diagnostics, and
+> ZeroTier-style device self-registration with center approval. Still pending real-hardware
+> walkthroughs (a real VPS, two physical machines, Windows) — see [TODO](TODO.md) for the tracked
+> items and acceptance criteria.
 
-## What it is (planned)
+## What it is
 
 Run the meshlet server on a VPS with a public IPv4 address, install agents on your Linux/Windows devices, and get a private virtual network you fully control:
 
@@ -39,7 +41,16 @@ Not in scope for v1: public relay networks, P2P/NAT hole punching, L2 bridging, 
 
 ## Status
 
-Phase 0 done (analysis, ADRs, docs). Phase 1 in progress: domain crates (CIDR/IPAM/conflict/entities/invites), a control-plane server with network/invite/enrollment API, console auth (Argon2id, sessions, rate limiting, CSRF), SQLite migrations, a React console (served by the server via console_dir), online-status verdicts with source + update-time annotation, a config-revision state machine where a DB write never claims to be effective until applied (failures stay visible), machine credentials for external callers (mlt_ API tokens, read/write scopes, revocable, audit-attributed), and LAN-route create/delete plus device-revoke endpoints, 191 tests green. Three high-risk areas remain for validation: WireGuard routing under VPS relay, alias DNAT/SNAT for overlapping subnets, and Windows/Linux network config with safe rollback.
+Control plane (networks, invites, device enrollment, LAN routes, Alias mappings, diagnostics,
+backup/restore) and the WireGuard dataplane (hub relay + agent: pull plan → reconcile → apply
+tunnel/routes/NAT → heartbeat) are implemented and covered by the workspace test suite, including
+privileged netns tests that drive a real kernel WireGuard and real iptables. Session auth, CSRF,
+API tokens, audit logging, presence, the config-revision state machine (a DB write never claims
+to be effective until applied), and ZeroTier-style device self-registration (bootstrap token →
+pending → approve/deny) are in place.
+
+Still open: real-hardware walkthroughs — deploying on a real VPS, two real Linux clients
+interoperating, and the Windows dataplane backend (ADR-008). See [TODO](TODO.md).
 
 ## License
 

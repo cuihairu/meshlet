@@ -15,9 +15,12 @@
 基于自有 VPS 的自托管私人虚拟网络 —— Rust + WireGuard。
 
 > [!NOTE]
-> 早期设计阶段：Phase 0 已完成（分析、ADR、文档），Phase 1 进行中（控制平面 + 迁移已落地）。文档站当前内容是一份外部设计基线的结构化分析，保留完整溯源。
+> 已实现并通过 CI：控制平面、WireGuard 数据面（hub 中继 + agent）、LAN 路由与 Alias NAT、
+> React 控制台、会话认证 + API Token + 审计、备份恢复、诊断，以及 ZeroTier 式设备自举注册
+> （自举码 → 待审批 → 批准/拒绝）。仍待真实硬件走查（真实 VPS、两台真机、Windows）——
+> 见 [TODO](TODO.md) 的落地条目与验收标准。
 
-## 产品定义（规划中）
+## 产品定义
 
 在一台拥有公网 IPv4 的 VPS 上部署 meshlet server，在 Linux/Windows 设备上安装 agent，即可得到一个完全由自己管理的私人虚拟网络：
 
@@ -37,7 +40,14 @@
 
 ## 状态
 
-Phase 0 完成（分析、ADR、文档）；Phase 1 进行中：域 crate（CIDR/IPAM/冲突检测/实体/邀请）、控制平面服务（网络/邀请/设备加入 API）、控制台认证（Argon2id、会话、限流、CSRF）、SQLite migrations、React 控制台（server 经 console_dir 静态托管）、带数据来源标注的在线状态判定，以及「DB 写入 ≠ 生效、失败可见」的配置修订状态机、外部机器凭据（`mlt_` API Token，read/write scope、可撤销、审计归属）、LAN 路由增删与设备撤销端点，191 项测试全绿。三个待验证高风险点：VPS 中继下的 WireGuard 路由、重叠网段的 Alias DNAT/SNAT、Windows/Linux 网络配置与安全回滚。
+控制平面（网络、邀请、设备加入、LAN 路由、Alias 映射、诊断、备份恢复）与 WireGuard 数据面
+（hub 中继 + agent：拉计划 → 对账 → 应用隧道/路由/NAT → 心跳）均已实现，并由 workspace 测试
+套件覆盖，含驱动真实内核 WireGuard 与真实 iptables 的特权 netns 测试。会话认证、CSRF、API Token、
+审计、在线状态判定、配置修订状态机（DB 写入 ≠ 生效）、ZeroTier 式设备自举注册
+（自举码 → 待审批 → 批准/拒绝）均已就位。
+
+仍未完成：真实硬件走查——在真实 VPS 上部署、两台真实 Linux 客户端互通，以及 Windows 数据面后端
+（ADR-008）。见 [TODO](TODO.md)。
 
 ## 许可证
 
