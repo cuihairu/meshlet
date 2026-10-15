@@ -5,7 +5,7 @@
 //! 此前该验收只有拆分证据：`alias_nat.rs`（后端执行层，双站点但无控制面）与
 //! `agent_reconcile.rs`（agent 交付层，单站点且计划手工构造）。本测试把两半
 //! 接成一条链：真实 axum 服务（真实 socket，netns 内可达）+ 真实 enroll/路由/
-//! Alias/修订 apply + 三个 agent `tick()`（真实 HTTP 拉计划 → 对账 → 应用）
+//! Alias/修订 apply + 四个 agent `tick()`（真实 HTTP 拉计划 → 对账 → 应用）
 //! + 真实内核转发。
 //!
 //! 拓扑（6 netns，underlay `10.99.0.0/24` 桥接；host 桥地址 `10.99.0.250`
@@ -15,7 +15,9 @@
 //!           ┌── HUB (server 数据面 wg0 = 10.240.0.1，underlay .10，listen 51830)
 //!  bridge ──┼── G1  (网关 10.240.0.2，underlay .20) ── LAN1 192.168.1.0/24 (L1 = .5)
 //!           ├── G2  (网关 10.240.0.3，underlay .30) ── LAN2 192.168.1.0/24 (L2 = .5)
-//!           └── A   (客户端 10.240.0.4，underlay .40)        ↑ 两个真实前缀完全重叠
+//!           ├── A   (客户端 10.240.0.4，underlay .40)        ↑ 两个真实前缀完全重叠
+//!           ├── H2  (net-B hub wg0 = 10.242.0.1，underlay .50，listen 51830)
+//!           └── B   (net-B 客户端，underlay .60)             ↑ overlay 完全不相交
 //! ```
 //!
 //! 断言对应验收：
@@ -27,7 +29,12 @@
 //!    保持互斥，cryptkey 路由无歧义）；
 //! 3. **证据回传闭环（§7.5/§12.4）**——设备视图里网关上报
 //!    `nat_rules_present = true`、`nat_snat_rules_present = true`（内核实测
-//!    受控 SNAT 在场，§8.2 模式判读）、客户端上报 MTU 大包探测 `1392`。
+//!    受控 SNAT 在场，§8.2 模式判读）、客户端上报 MTU 大包探测 `1392`；
+//! 4. **跨网络隔离（§18.2.12）**——net-B 是同一部署（同一 DB、同管理面）下
+//!    的另一个 Network，`10.242.0.0/16` 与 net-A 完全不相交。B 与 net-B hub
+//!    真实握手可达（排除「B 没起来」），但 A ping 不到 B；两侧期望计划的
+//!    peer AllowedIPs 只含本网络 overlay，双方内核路由表里都没有对端网络的
+//!    路由（TODO #68）。
 
 #![cfg(target_os = "linux")]
 
@@ -46,6 +53,12 @@ const SERVER_BRIDGE_IP: &str = "10.99.0.250"; // host 侧桥地址：承载 HTTP
 const HUB_UNDERLAY_IP: &str = "10.99.0.10"; // hub wg endpoint（agent hub_endpoint）
 const HUB_LISTEN_PORT: u16 = 51830;
 const OVERLAY: &str = "10.240.0.0/16";
+// 第二个网络（跨网络隔离验收，§18.2.12）：overlay 与 net-A 完全不相交，
+// 由第二个服务端实例接管 hub 数据面（同库同管理面，独立 hub 密钥与 netns）。
+const OVERLAY_B: &str = "10.242.0.0/16";
+const HUB_B_UNDERLAY_IP: &str = "10.99.0.50";
+// net-B 的 hub overlay 地址 = 池内首个可用地址（IPAM 保留给 hub，ADR-004）。
+const HUB_B_VIP: &str = "10.242.0.1";
 
 fn tag() -> String {
     format!("{PREFIX}{}", std::process::id())
@@ -203,6 +216,8 @@ struct Topology {
     g1: Node,
     g2: Node,
     a: Node,
+    hub2: Node,
+    b: Node,
     lan1: String,
     lan2: String,
 }
@@ -220,7 +235,7 @@ impl Topology {
         preflight_cleanup();
 
         let mut keys = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..6 {
             let private = match wg_genkey() {
                 Some(k) => k,
                 None => {
@@ -244,12 +259,15 @@ impl Topology {
             bridge: None,
         };
 
-        // HUB / G1 / G2 / A：underlay 全在 10.99.0.0/24 桥上。
+        // HUB / G1 / G2 / A（net-A）+ H2 / B（net-B）：underlay 全在
+        // 10.99.0.0/24 桥上，overlay 互不相交。
         let defs = [
             ("H", "10.99.0.10"),
             ("1", "10.99.0.20"),
             ("2", "10.99.0.30"),
             ("A", "10.99.0.40"),
+            ("H2", "10.99.0.50"),
+            ("B", "10.99.0.60"),
         ];
         let tag = tag();
         let mut nodes = Vec::new();
@@ -341,7 +359,7 @@ impl Topology {
         }
 
         // 两个**真实前缀完全重叠**的站点 LAN（ADR-006 旗舰场景的前提）。
-        let [hub, g1, g2, a] = nodes.try_into().ok()?;
+        let [hub, g1, g2, a, hub2, b] = nodes.try_into().ok()?;
         let (lan1, lan2) = (format!("{tag}L1"), format!("{tag}L2"));
         for (lan_netns, gw, suffix) in [(lan1.clone(), &g1, "1"), (lan2.clone(), &g2, "2")] {
             let (host_end, lan_end) = (format!("{tag}X{suffix}0"), format!("{tag}X{suffix}1"));
@@ -398,6 +416,8 @@ impl Topology {
             g1,
             g2,
             a,
+            hub2,
+            b,
             lan1,
             lan2,
         })
@@ -462,9 +482,15 @@ fn start_server(db: PathBuf, hub_key: PathBuf, hub_netns: String) -> String {
             let pool = meshlet_server::store::connect(&db_url)
                 .await
                 .expect("store connect");
+            // 走真实启动路径（§17.3）：从 DB 重建期望状态。两个服务端实例
+            // 共库时，后启动的那个据此看到先启动的那个写入的网络与设备。
+            let boot =
+                meshlet_server::persist::load(&pool, meshlet_domain::PresenceThresholds::default())
+                    .await
+                    .expect("boot load");
             let state = Arc::new(
                 meshlet_server::auth::AppState::new(
-                    meshlet_server::service::SharedState::default(),
+                    Arc::new(std::sync::Mutex::new(boot.mesh)),
                     meshlet_server::auth::AuthStore::new(pool.clone()),
                     meshlet_server::agent::AgentTokenStore::new(pool.clone()),
                     meshlet_server::api_token::ApiTokenStore::new(pool),
@@ -702,6 +728,83 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     let (g2_id, g2_token) = tokens[1].clone();
     let (_a_id, a_token) = tokens[2].clone();
 
+    // ---- 网络 B（overlay 与 A 完全不相交，跨网络隔离验收 §18.2.12）--------
+    // net-B 是**另一个 hub**：本模型里 hub 数据面归服务端管理（设备计划里 hub
+    // 是唯一 peer，hub 私钥只在服务端 `private_key_file`，ADR-010），所以
+    // net-B 的 hub 由第二个服务端实例接管（见下）。hub 自身**不作为设备
+    // 入网**——hub 的 overlay 地址由 IPAM 预留（`hub_plan` 取 `hub_address`），
+    // 与 net-A 的 hub 同一形态。
+    let net_b = admin(
+        &base,
+        &cookie,
+        "POST",
+        "/api/v1/networks",
+        Some(json!({"name": "dual-b", "overlay_cidr": OVERLAY_B})),
+    );
+    let network_b_id = net_b["id"].as_str().unwrap().to_string();
+    let invite_b = admin(
+        &base,
+        &cookie,
+        "POST",
+        &format!("/api/v1/networks/{network_b_id}/invites"),
+        Some(json!({"max_uses": 1})),
+    );
+    let invite_token_b = invite_b["token"].as_str().unwrap().to_string();
+
+    let (code, device_b) = http_json(
+        "POST",
+        &format!("{base}/api/v1/enroll"),
+        None,
+        None,
+        Some(json!({
+            "invite_token": invite_token_b,
+            "device_name": "laptop-b",
+            "public_key": topo.b.public_key,
+            "platform": "linux",
+        })),
+    );
+    assert_eq!(code, 201, "enroll net-b laptop-b: {device_b}");
+    let b_token = device_b["agent_token"].as_str().unwrap().to_string();
+    let b_vip = device_b["virtual_ipv4"].as_str().unwrap().to_string();
+
+    // ---- net-B 的 hub 数据面：第二个服务端实例 ----------------------------
+    // 与 net-A 同库、同管理面（一个部署管两个网络），但 hub 后端注入 H2
+    // netns、hub 私钥独立（`private_key_file` 指向 H2 的真实密钥）。启动走
+    // 真实 boot 路径 `persist::load`，所以它能看到先前经 `base` 写入的
+    // net-B 设备（§17.3）。
+    let hub_b_key_path = dir.join("hub-b.key");
+    std::fs::write(&hub_b_key_path, format!("{}\n", topo.hub2.private_key)).unwrap();
+    let base_b = start_server(
+        dir.join("db.sqlite3"),
+        hub_b_key_path,
+        topo.hub2.netns.clone(),
+    );
+    wait_server_up(&base_b);
+
+    // apply net-B 最新修订：net-B 的 hub wg0 真实落进 H2 netns（监听端口与
+    // net-A 相同无妨——不同 netns 的接口互不相干）。
+    let revisions_b = admin(
+        &base_b,
+        &cookie,
+        "GET",
+        &format!("/api/v1/networks/{network_b_id}/config-revisions"),
+        None,
+    );
+    let latest_b = revisions_b.as_array().unwrap().last().unwrap()["revision"]
+        .as_u64()
+        .unwrap();
+    let applied_b = admin(
+        &base_b,
+        &cookie,
+        "POST",
+        &format!("/api/v1/networks/{network_b_id}/config-revisions/{latest_b}/apply"),
+        Some(json!({})),
+    );
+    assert_eq!(
+        applied_b["apply_status"], "applied",
+        "hub-b apply: {applied_b}"
+    );
+
     // 控制面发布：两条 **alias 模式** 路由，真实前缀完全重叠（ADR-006 例外）。
     let routes_uri = format!("/api/v1/networks/{network_id}/routes");
     let aliases_uri = format!("/api/v1/networks/{network_id}/aliases");
@@ -760,37 +863,37 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     );
     assert_eq!(applied["apply_status"], "applied", "hub apply: {applied}");
 
-    // ---- 三个 agent：真实 HTTP 拉计划 → 对账 → 应用 → 心跳 ----------------
+    // ---- 四个 agent：真实 HTTP 拉计划 → 对账 → 应用 → 心跳 ----------------
     let hub_endpoint = format!("{HUB_UNDERLAY_IP}:{HUB_LISTEN_PORT}");
     for (node, token, name) in [
         (&topo.g1, g1_token.as_str(), "g1"),
         (&topo.g2, g2_token.as_str(), "g2"),
         (&topo.a, a_token.as_str(), "a"),
     ] {
-        let state_dir = dir.join(format!("agent-{name}"));
-        let config = meshlet_config::AgentConfig {
-            server_url: base.clone(),
-            state_dir: state_dir.to_string_lossy().to_string(),
-            device_token: Some(token.to_string()),
-            dataplane: meshlet_config::DataplaneConfig {
-                enabled: true,
-                hub_endpoint: Some(hub_endpoint.clone()),
-                ..meshlet_config::DataplaneConfig::default()
-            },
-        };
-        let backend = LinuxNetworkBackend::new()
-            .with_netns(&node.netns)
-            .with_sudo()
-            .with_interface("wg0");
-        let agent =
-            meshlet_agent::Agent::with_backend(config, Some(node.private_key.clone()), backend);
-        agent
-            .tick()
-            .unwrap_or_else(|e| panic!("agent {name} first tick: {e}"));
+        tick_agent(&dir, &base, name, node, token, Some(&hub_endpoint));
     }
+    // net-B 的客户端：必须向 `base_b` 拉计划——计划里唯一 peer 的公钥取自
+    // 服务端实例自身的 `private_key_file`（`hub_public_key`），`base` 的密钥
+    // 文件指向 net-A 的 hub，用它下发 net-B 计划会让客户端握不上 hand。
+    // hub 入口另指 net-B 的 hub underlay 地址。
+    let hub_b_endpoint = format!("{HUB_B_UNDERLAY_IP}:{HUB_LISTEN_PORT}");
+    tick_agent(
+        &dir,
+        &base_b,
+        "laptop-b",
+        &topo.b,
+        b_token.as_str(),
+        Some(&hub_b_endpoint),
+    );
 
-    // ---- 握手 + 第二轮 tick（证据探测此刻才会成功） -----------------------
-    for ns in [&topo.g1.netns, &topo.g2.netns, &topo.a.netns] {
+    // ---- 握手（两网络各自成链）-------------------------------------------
+    for ns in [
+        &topo.g1.netns,
+        &topo.g2.netns,
+        &topo.a.netns,
+        &topo.hub2.netns,
+        &topo.b.netns,
+    ] {
         assert!(
             topo.wait_handshake(ns),
             "handshake did not complete in {ns}"
@@ -834,28 +937,7 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
         (&topo.g2, g2_token.as_str(), "g2"),
         (&topo.a, a_token.as_str(), "a"),
     ] {
-        let config = meshlet_config::AgentConfig {
-            server_url: base.clone(),
-            state_dir: dir
-                .join(format!("agent-{name}"))
-                .to_string_lossy()
-                .to_string(),
-            device_token: Some(token.to_string()),
-            dataplane: meshlet_config::DataplaneConfig {
-                enabled: true,
-                hub_endpoint: Some(hub_endpoint.clone()),
-                ..meshlet_config::DataplaneConfig::default()
-            },
-        };
-        let backend = LinuxNetworkBackend::new()
-            .with_netns(&node.netns)
-            .with_sudo()
-            .with_interface("wg0");
-        let agent =
-            meshlet_agent::Agent::with_backend(config, Some(node.private_key.clone()), backend);
-        agent
-            .tick()
-            .unwrap_or_else(|e| panic!("agent {name} evidence tick: {e}"));
+        tick_agent(&dir, &base, name, node, token, Some(&hub_endpoint));
     }
 
     let devices = admin(
@@ -891,7 +973,110 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     );
     assert_eq!(ev["tunnel_mtu"], 1420, "kernel mtu reading: {ev}");
 
+    // ---- 验收④：跨网络隔离（§18.2.12）------------------------------------
+    // net-B 自身是活的（B ↔ net-B hub 可达），所以 A → B 的失败只能归因于
+    // 隔离，而不是 B 没起来。
+    assert!(
+        topo.ping_within(&topo.b.netns, HUB_B_VIP, HANDSHAKE_TIMEOUT),
+        "net-b must be alive: laptop-b -> net-b hub"
+    );
+    assert!(
+        !topo.ping_within(&topo.a.netns, &b_vip, Duration::from_secs(10)),
+        "net-a device must not reach net-b device (isolation)"
+    );
+    // 结构性根因：期望计划里 peer AllowedIPs 只含本网络 overlay——A 的计划
+    // 不含 10.242、B 的计划不含 10.240，隧道里根本没有对端网络的路由。
+    let plan_of = |base: &str, token: &str| -> Value {
+        let (code, v) = http_json(
+            "GET",
+            &format!("{base}/api/v1/agent/device/desired"),
+            None,
+            Some(token),
+            None,
+        );
+        assert!(code < 300, "desired plan fetch -> {code}: {v}");
+        v
+    };
+    let a_plan = plan_of(&base, &a_token);
+    let b_plan = plan_of(&base_b, &b_token);
+    // 正向锚点：计划确实带本网络 overlay，否则「不含对端网络」是空断言。
+    assert!(
+        a_plan.to_string().contains("10.240.0.0/16"),
+        "net-a plan carries its own overlay: {a_plan}"
+    );
+    assert!(
+        b_plan.to_string().contains("10.242.0.0/16"),
+        "net-b plan carries its own overlay: {b_plan}"
+    );
+    assert!(
+        !a_plan.to_string().contains("10.242"),
+        "net-a plan must not carry net-b's overlay: {a_plan}"
+    );
+    assert!(
+        !b_plan.to_string().contains("10.240"),
+        "net-b plan must not carry net-a's overlay: {b_plan}"
+    );
+    // 内核路由表同样没有对端网络的路由（双保险，不只在计划层）。
+    let routes_in = |ns: &str| -> String {
+        let out = netns_exec(ns, &["ip", "route"]);
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    assert!(
+        routes_in(&topo.a.netns).contains("10.240.0.0/16"),
+        "net-a kernel route carries its own overlay: {}",
+        routes_in(&topo.a.netns)
+    );
+    assert!(
+        routes_in(&topo.b.netns).contains("10.242.0.0/16"),
+        "net-b kernel route carries its own overlay: {}",
+        routes_in(&topo.b.netns)
+    );
+    assert!(
+        !routes_in(&topo.a.netns).contains("10.242"),
+        "net-a kernel routes must not reach net-b: {}",
+        routes_in(&topo.a.netns)
+    );
+    assert!(
+        !routes_in(&topo.b.netns).contains("10.240"),
+        "net-b kernel routes must not reach net-a: {}",
+        routes_in(&topo.b.netns)
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 构造一个真实 socket 连服务端、netns 内下数据的 agent 并跑一轮 tick
+/// （拉计划 → 对账 → 应用 → 心跳）。`hub_endpoint` 为客户端侧 hub 端点
+/// 兜底（服务端计划不带端点）；hub 设备自身为 `None`。
+fn tick_agent(
+    dir: &std::path::Path,
+    base: &str,
+    name: &str,
+    node: &Node,
+    token: &str,
+    hub_endpoint: Option<&str>,
+) {
+    let config = meshlet_config::AgentConfig {
+        server_url: base.to_string(),
+        state_dir: dir
+            .join(format!("agent-{name}"))
+            .to_string_lossy()
+            .to_string(),
+        device_token: Some(token.to_string()),
+        dataplane: meshlet_config::DataplaneConfig {
+            enabled: true,
+            hub_endpoint: hub_endpoint.map(str::to_string),
+            ..meshlet_config::DataplaneConfig::default()
+        },
+    };
+    let backend = LinuxNetworkBackend::new()
+        .with_netns(&node.netns)
+        .with_sudo()
+        .with_interface("wg0");
+    let agent = meshlet_agent::Agent::with_backend(config, Some(node.private_key.clone()), backend);
+    agent
+        .tick()
+        .unwrap_or_else(|e| panic!("agent {name} tick: {e}"));
 }
 
 /// 登录拿会话 Cookie（bootstrap 409 后的兜底路径）。
