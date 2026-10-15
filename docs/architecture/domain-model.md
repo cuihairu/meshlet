@@ -16,6 +16,9 @@ erDiagram
     NETWORK ||--o{ CONFIG_REVISION : produces
     DEVICE ||--o{ DEVICE_STATUS : reports
     USER ||--o{ AUDIT_EVENT : performs
+    NETWORK ||--o{ BOOTSTRAP_TOKEN : issues
+    BOOTSTRAP_TOKEN ||--o{ DEVICE_REGISTRATION : authorizes
+    NETWORK ||--o{ DEVICE_REGISTRATION : holds
 ```
 
 ## User（控制台用户）
@@ -46,14 +49,53 @@ erDiagram
 | `id` / `network_id` / `name` | 标识与归属 |
 | `virtual_ipv4` | 网络内唯一；hub 保留地址不可分配（ADR-004） |
 | `public_key` | 绑定设备身份；密钥与 Device 记录分离（DeviceKey） |
-| `platform` / `status` | 平台与生命周期状态（`pending` / `active` / `revoked`） |
+| `platform` / `status` | 平台与生命周期状态（`active` / `revoked`，由 `revoked_at` 承载；枚举另留 `Pending` 仅用于持久化往返，**运行期从不构造**——待审批状态在 `DeviceRegistration` 上，不在 Device 上） |
 | `last_seen_at` | 最后证据时间（加入/心跳/上报到达时刻）——控制台「最后在线时间」 |
 | `last_handshake_at` | 最近一次 WireGuard 握手（agent 从本地 `wg show` 读取后随心跳上报） |
 | `last_report_at` | 最近一次 agent 心跳/状态上报（§14.1） |
 | `created_at` / `revoked_at` | 创建与撤销时间 |
+| `approved_at` | 自举注册路径的审批时刻（NULL = 一次性邀请入会，见 ADR-011） |
 
 约束：撤销后服务端必须移除其有效 Peer 与授权；离线状态不能只看数据库旧值
 （须按证据时间戳实时判定，见 §7.3）。
+
+## 设备注册的两条入口（ADR-011）
+
+设备进入网络有两条路径，**共用同一套摘要存储纪律与 agent 凭证体系**：
+
+- **一次性邀请**（ADR-010）：管理员逐台生成邀请 Token，含目标 Network + 有效期 +
+  次数上限；设备即入册（`active`），立即分配虚拟 IP 与记修订；
+- **自举注册**（ADR-011）：控制台签发**长期**自举码，设备自助注册 →
+  落 `DeviceRegistration`（Pending）→ 控制中心批准（入册 + 分配 IP + 记修订）
+  或拒绝（纯清理）。准入与授权分离：泄漏的自举码只能制造待审批排队，
+  不能直接获得数据面访问权。
+
+### BootstrapToken（自举码）
+
+| 字段 | 说明 |
+|---|---|
+| `id` / `network_id` | 标识与归属网络 |
+| `token_hash` | **只存 SHA-256 摘要**（§11.3）：原始码仅在签发响应返回一次，不入列表与日志 |
+| `max_uses` / `used_count` | `NULL` = 不限次（长期入口，不是一次性邀请）；有效注册才递增 |
+| `created_at` / `revoked_at` | 签发与撤销时间（撤销后立即失效，`401`） |
+
+约束：错误面分离——设备出示无效/撤销/耗尽的码 `401 unauthorized`，
+管理侧对未知 id 操作 `404 not_found`（不泄露存在性）。
+
+### DeviceRegistration（注册申请，Pending）
+
+| 字段 | 说明 |
+|---|---|
+| `id` / `network_id` | 申请 id（`dev-reg-N`，独立单调序列）；**批准后沿用同一 id 转入 `devices`**，外键引用无需迁移 |
+| `name` / `public_key` / `platform` | 设备自述信息；批准前无法核实（管理员人工核对） |
+| `requested_at` | 申请时刻（同时是 Pending 期的首次上报） |
+| `last_report_at` / `dataplane_evidence` | **Pending 期心跳证据的唯一落点**——Pending 不进 `devices`，心跳无处可落 |
+
+约束：**Pending 不写入 `devices` 表**（migration 008）——① `devices.virtual_ipv4`
+为 `NOT NULL` 而 IP 在批准时刻才分配（提前占地址会让可用容量虚低、拒绝后还得回收）；
+② 不占地址 = 不进期望配置、不进 Peer AllowedIPs（`device_plan` 只读 `devices`），
+Pending 设备对数据面完全不可见。计划端点对 Pending 设备 `404` 且消息点名
+`pending approval`；批准记录**恰好一个**修订，拒绝记录**零个**修订。
 
 ## Peer 与在线状态判定（§7.3、§12.4）
 
