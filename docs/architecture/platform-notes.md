@@ -28,8 +28,8 @@
 
 - [ ] wireguard-nt 嵌入式使用的许可与 API 稳定性
 - [ ] tunnel service 的自动化编排（无人值守安装/启停/更新配置）
-- [ ] 权限不足时的错误提示与半配置清理
-- [ ] 已存在本地路由时的冲突检测表现
+- [ ] 权限不足时的错误提示与半配置清理 ⚠️ 2026-10-16 路由原语级已验证：错误映射（`requires elevation` / `access is denied` → `InsufficientPrivileges`，消息点名操作与接口并带 netsh 原文）与路由清理（删除已不存在 = 幂等成功；add→读回→delete→re-delete 全程）在 CI windows-latest 真跑 netsh 通过（`crates/meshlet-network/src/windows_routes.rs` 计划层 + `tests/windows_netsh.rs`，TODO #52）；**剩余**：真实 elevation 拒绝报文（提权 runner 无法自然产生）与隧道服务级半配置清理（依赖上面 tunnel service 编排项）
+- [ ] 已存在本地路由时的冲突检测表现 ⚠️ 2026-10-16 已知 Windows 行为补充（CI runner 实测）：netsh 分词器不认 `\"` 转义（含空格接口名必须单 argv 词元）、回环接口拒绝 `nexthop=` 参数（用 on-link 形式）——见 `windows_routes.rs` 与 `windows_netsh.rs` 注记；外来路由冲突检测（Linux 侧 `ip route show exact` 预检的对位）仍待真实环境验证
 
 ## Linux 侧已确认约束（ADR-007）
 
