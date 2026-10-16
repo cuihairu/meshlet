@@ -1,6 +1,8 @@
 //! Linux desktop D-Bus adapter. All failures are non-fatal: the agent loop must not
 //! back off because a tray host or notification service is unavailable.
 
+#![cfg(target_os = "linux")]
+
 use zbus::{block_on, connection, zvariant};
 
 use crate::desktop::{

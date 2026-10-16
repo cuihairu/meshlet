@@ -13,13 +13,14 @@ use meshlet_config::{AgentConfig, DataplaneConfig};
 use meshlet_domain::DataplaneEvidence;
 use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 
+#[cfg(target_os = "linux")]
+use crate::dbus::DesktopClient;
+use crate::desktop::{desktop_trigger, DesktopPublish, DesktopTrigger};
+#[cfg(not(target_os = "linux"))]
+use crate::desktop_unsupported::DesktopClient;
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
 use crate::server;
 use crate::tray::{TraySink, TrayState, TrayStatus};
-use crate::{
-    dbus::DesktopClient,
-    desktop::{desktop_trigger, DesktopPublish, DesktopTrigger},
-};
 use meshlet_config::TrayConfig;
 
 /// 拉取持续失败时的退避上限（秒）：服务端不可达时不打满日志。

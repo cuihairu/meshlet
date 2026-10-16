@@ -15,8 +15,11 @@
 
 pub mod agent;
 pub mod bootstrap;
+#[cfg(target_os = "linux")]
 pub mod dbus;
 pub mod desktop;
+#[cfg(not(target_os = "linux"))]
+pub mod desktop_unsupported;
 pub mod reconcile;
 pub mod server;
 pub mod tray;

@@ -15,4 +15,6 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.19.0", default-features = false, features = ["async-io"] }
