@@ -4,7 +4,7 @@
 //! that a D-Bus notification or StatusNotifierItem was published.
 
 use crate::desktop::DesktopPublish;
-use crate::tray::{EnvProbe, TrayState, TrayStatus};
+use crate::tray::{EnvProbe, TrayStatus};
 
 #[derive(Default)]
 pub struct DesktopClient;
@@ -27,6 +27,7 @@ impl DesktopClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tray::TrayState;
 
     #[test]
     fn disabled_configuration_is_reported_without_desktop_io() {

@@ -58,6 +58,7 @@ impl Agent {
     }
 
     /// 注入后端（netns 集成测试用；生产走 [`Agent::new`]）。
+    #[allow(clippy::default_constructed_unit_structs)]
     pub fn with_backend(
         config: AgentConfig,
         private_key: Option<String>,
