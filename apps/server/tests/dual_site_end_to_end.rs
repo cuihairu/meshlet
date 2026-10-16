@@ -1065,6 +1065,7 @@ fn tick_agent(
         device_token: Some(token.to_string()),
         bootstrap_token: None,
         device_name: None,
+        tray: meshlet_config::TrayConfig::OFF,
         dataplane: meshlet_config::DataplaneConfig {
             enabled: true,
             hub_endpoint: hub_endpoint.map(str::to_string),
