@@ -25,6 +25,8 @@ export default defineConfig({
           text: '分析整理',
           items: [
             { text: '总览', link: '/analysis/' },
+            { text: '架构与 TODO 审查', link: '/analysis/architecture-review-2026-10-17' },
+            { text: '个人组网功能对比', link: '/analysis/personal-networking-comparison' },
             { text: '产品边界与范围', link: '/analysis/scope' },
             { text: '总体架构与技术选型', link: '/analysis/architecture' },
             { text: '网络设计', link: '/analysis/network' },
@@ -40,6 +42,8 @@ export default defineConfig({
           text: '架构文档',
           items: [
             { text: '领域模型', link: '/architecture/domain-model' },
+            { text: '模块化与库复用提案', link: '/architecture/modularity-and-library-design' },
+            { text: '网关、冲突与端口转发', link: '/architecture/gateways-conflicts-and-port-forwarding' },
             { text: 'API 契约', link: '/architecture/api-contract' },
             { text: '可观测性', link: '/architecture/observability' },
             { text: '平台差异清单', link: '/architecture/platform-notes' },

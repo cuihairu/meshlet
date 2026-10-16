@@ -17,9 +17,10 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > [!NOTE]
 > Implemented and CI-green: control plane, WireGuard dataplane (hub relay + agent), LAN routing and
 > Alias NAT, React console, session auth + API tokens + audit, backup/restore, diagnostics, and
-> ZeroTier-style device self-registration with center approval. Still pending real-hardware
-> walkthroughs (a real VPS, two physical machines, Windows) — see [TODO](TODO.md) for the tracked
-> items and acceptance criteria.
+> ZeroTier-style device self-registration with center approval. The 2026-10-17 architecture review
+> identifies remaining work in single-instance multi-network isolation, device apply confirmation,
+> hub recovery, rollback, Direct LAN SNAT, and deployment permissions, alongside Windows support
+> and real-hardware validation. See [TODO](TODO.md) for the current scope and acceptance criteria.
 
 ## What it is
 
@@ -35,6 +36,8 @@ Not in scope for v1: public relay networks, P2P/NAT hole punching, L2 bridging, 
 ## Documentation
 
 - [Analysis overview](https://cuihairu.github.io/meshlet/analysis/) — structured breakdown by topic
+- [Architecture and TODO review](docs/analysis/architecture-review-2026-10-17.md) — verified implementation gaps and proposed priorities (Chinese)
+- [Personal networking comparison](docs/analysis/personal-networking-comparison.md) — 61 capabilities compared with ZeroTier and Tailscale, with sources and feasibility (Chinese)
 - [External review archive (2026-10-13)](https://cuihairu.github.io/meshlet/review/chatgpt-2026-10-13.html) — verbatim archive of the external conversation; opinions only, verify against code before acting on anything
 - [TODO](TODO.md) — tracked items with phase and acceptance criteria
 - [Logo color options](https://cuihairu.github.io/meshlet/design/logo-preview.html)
@@ -49,8 +52,11 @@ API tokens, audit logging, presence, the config-revision state machine (a DB wri
 to be effective until applied), and ZeroTier-style device self-registration (bootstrap token →
 pending → approve/deny) are in place.
 
-Still open: real-hardware walkthroughs — deploying on a real VPS, two real Linux clients
-interoperating, and the Windows dataplane backend (ADR-008). See [TODO](TODO.md).
+The current implementation is not fully accepted for deployment. The latest review reopens
+multi-network isolation, distributed apply confirmation, hub kernel recovery, rollback,
+Direct LAN SNAT, and service permissions. The Windows dataplane backend (ADR-008) and real-hardware
+walkthroughs are also pending. See the current checklist at the top of [TODO](TODO.md);
+historical CI results do not establish end-to-end readiness.
 
 ## License
 

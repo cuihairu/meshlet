@@ -17,8 +17,9 @@
 > [!NOTE]
 > 已实现并通过 CI：控制平面、WireGuard 数据面（hub 中继 + agent）、LAN 路由与 Alias NAT、
 > React 控制台、会话认证 + API Token + 审计、备份恢复、诊断，以及 ZeroTier 式设备自举注册
-> （自举码 → 待审批 → 批准/拒绝）。仍待真实硬件走查（真实 VPS、两台真机、Windows）——
-> 见 [TODO](TODO.md) 的落地条目与验收标准。
+> （自举码 → 待审批 → 批准/拒绝）。2026-10-17 审查还发现单实例多网络隔离、设备应用确认、
+> hub 恢复、回滚、Direct LAN SNAT 与部署权限缺口；Windows 完整后端和真实硬件走查亦待完成。
+> 见 [TODO](TODO.md) 顶部的当前清单与验收标准。
 
 ## 产品定义
 
@@ -34,6 +35,8 @@
 ## 文档
 
 - [分析整理](https://cuihairu.github.io/meshlet/analysis/) —— 按主题结构化的要点提炼
+- [架构与 TODO 审查](docs/analysis/architecture-review-2026-10-17.md) —— 实现缺口、重新验收要求与建议优先级
+- [个人组网功能对比](docs/analysis/personal-networking-comparison.md) —— 与 ZeroTier、Tailscale 的 61 项能力对比、官方来源与开发可行性
 - [外部意见存档（2026-10-13）](https://cuihairu.github.io/meshlet/review/chatgpt-2026-10-13.html) —— 外部对话逐字存档；仅代表外部意见，任何主张行动前须对代码核验
 - [TODO](TODO.md) —— 落地跟踪条目，带期次与验收标准
 - [Logo 配色对比](https://cuihairu.github.io/meshlet/design/logo-preview.html)
@@ -46,8 +49,9 @@
 审计、在线状态判定、配置修订状态机（DB 写入 ≠ 生效）、ZeroTier 式设备自举注册
 （自举码 → 待审批 → 批准/拒绝）均已就位。
 
-仍未完成：真实硬件走查——在真实 VPS 上部署、两台真实 Linux 客户端互通，以及 Windows 数据面后端
-（ADR-008）。见 [TODO](TODO.md)。
+当前实现尚未完成整体部署验收。最新审查重开单实例多网络隔离、分布式配置确认、hub 内核恢复、
+回滚、Direct LAN SNAT 与服务权限；Windows 数据面后端（ADR-008）和真实设备走查亦待完成。
+当前工作以 [TODO](TODO.md) 顶部清单为准，历史 CI 结果不等于端到端可用性验收。
 
 ## 本地测试口径
 

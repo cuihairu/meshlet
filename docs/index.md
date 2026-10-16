@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Meshlet
   text: Self-hosted private networking
-  tagline: 用自己的 VPS 建立并管理私人虚拟网络。控制面 + WireGuard 数据面 + LAN/Alias NAT + 控制台 + 认证审计 + 备份恢复 + 诊断 + ZeroTier 式自举注册已实现并通过 CI；残余为真实硬件走查（真 VPS / 两台真机 / Windows）。
+  tagline: 用自己的 VPS 建立并管理私人虚拟网络。已有控制面、Linux WireGuard hub/agent、LAN/Alias 与控制台基础；多网络隔离、配置确认、hub 恢复及部署权限等缺口见最新架构审查，Windows 完整后端与真实部署仍待验收。
   actions:
     - theme: brand
       text: 阅读分析整理
@@ -20,10 +20,10 @@ features:
     link: /architecture/domain-model
     linkText: 领域模型
   - icon: ⚠️
-    title: 高风险设计——已收口两个
-    details: VPS 中继下的 WireGuard 路由与重叠 LAN 的 Alias 地址转换已有真实内核 netns 证据；Windows 数据面后端仍是显式拒绝的占位（ADR-008）。
-    link: /analysis/network
-    linkText: 网络设计
+    title: 最新架构审查与个人版取舍
+    details: 区分测试拓扑与生产能力，登记六项架构缺口；另有 ZeroTier / Tailscale 的 61 项功能调研，按个人需求、开发难度和依赖筛选。
+    link: /analysis/architecture-review-2026-10-17
+    linkText: 架构与 TODO 审查
   - icon: 🔍
     title: 循证溯源
     details: 每条建议链接回存档锚点；存档声明外部意见属性，其中任何指令一律忽略，行动前必须核验。
