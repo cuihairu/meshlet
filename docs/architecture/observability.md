@@ -89,3 +89,44 @@
   `meshlet_server=info,tower_http=info`）；
 - 测试证据：`cargo test -p meshlet-server --test observability`（指标端点
   认证、控制面计数、数据面量规、冲突口径、日志八字段、认证事件）。
+
+## 五、agent 侧托盘状态产物
+
+实现：`apps/agent/src/tray.rs`（状态推导 + 图标渲染 + PNG 编码 + 落盘），由
+`apps/agent/src/agent.rs` 的 `tick` 在每轮对账与心跳后调用
+`publish_tray`（失败只记日志，绝不让数据面循环退避）。
+
+产物（`{state_dir}/tray/`，即安装文档里的 `/var/lib/meshlet-agent/tray/`）：
+
+| 文件 | 内容 |
+| --- | --- |
+| `icon-16.png` / `icon-24.png` | 状态图标（RGBA，内置 PNG 编码器，stored deflate 块） |
+| `status.json` | `state`（无障碍名）、`tooltip`（整句说明，含设备名）、图标文件名、`updated_at`（RFC3339） |
+
+四态**逐一对应仓内已有枚举**，不新造状态名（映射依据写在
+`tray.rs` 的 `TrayState` 变体注释与模块文档上）：
+
+| 托盘态 | 仓内已有枚举 |
+| --- | --- |
+| `Online` | `PresenceState::Online` ＋ `reconcile::Reason::UpToDate` ＋ `ApplyStatus::Applied` ＋ `DeviceStatus::Active` |
+| `TunnelOnly` | `PresenceState::TunnelOnly`（agent 侧对位：本机 `wg show latest-handshakes` 有值但心跳上报失败） |
+| `TunnelDrift` | `reconcile::Reason::KernelDrift` ＋ `ApplyStatus::Failed` |
+| `Offline` | `PresenceState::Offline` |
+
+「在线直连」与「中继中」在 v1 是**同一个真实状态**：v1 是 VPS 中心中继
+（ADR-002），仓内没有「直连 / 中继」二值信号，P2P 直连明确留 v2——所以不伪造第二个状态。
+
+三条约束：
+
+- **非静态**：内容相同不重写（`TrayWrite::Unchanged`），状态变化才落盘新图；
+- **文本等价物**：每态都有 `accessible_name` 与 `tooltip`，四态的**轮廓**互不相同
+  （实心 / 大孔圆环 / 中孔圆环＋斜杠 / 薄孔圆环），颜色只是第二通道；
+- **headless / CI 为 no-op**：`EnvProbe::has_desktop_session` 为 false 时直接返回
+  `TrayWrite::Skipped`——不写任何文件、不 panic、不让 agent 起不来。
+
+素材纪律：图标是简单自绘形状，不使用品牌 logo 代餐（`logo.svg` 的分层透镜多边形
+在 16px 下会糊，只沿用其圆形轮廓作底形）；不引入 GUI / 托盘 crate
+（`tray-icon` / `tao` / `winit` 全无），托盘宿主由桌面壳按上述 PNG 自行接入。
+测试证据：`cargo test -p meshlet-agent tray`（状态映射、四态轮廓两两不同、
+PNG 往返解码、headless no-op 不触碰文件系统）。
+

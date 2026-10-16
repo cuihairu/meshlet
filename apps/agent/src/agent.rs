@@ -15,6 +15,7 @@ use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
 use crate::server;
+use crate::tray::{TraySink, TrayState, TrayStatus};
 
 /// 拉取持续失败时的退避上限（秒）：服务端不可达时不打满日志。
 pub const BACKOFF_MAX_SECS: u64 = 300;
@@ -30,6 +31,11 @@ pub struct Agent {
     private_key: Option<String>,
     /// 账本状态文件（`{state_dir}/applied.json`）。
     state_path: std::path::PathBuf,
+    /// 托盘状态落盘（`{state_dir}/tray/`）；headless 下 no-op，见
+    /// [`crate::tray`] 与 TODO「运行时系统托盘 icon」。
+    tray: TraySink,
+    /// 本机设备名（托盘 tooltip 的文本等价物用）。
+    device_name: Option<String>,
 }
 
 impl Agent {
@@ -52,6 +58,8 @@ impl Agent {
             server_url: config.server_url,
             token: config.device_token.unwrap_or_default(),
             state_path: state_path(&config.state_dir),
+            tray: TraySink::new(&config.state_dir),
+            device_name: config.device_name.clone(),
             dataplane: config.dataplane,
             private_key,
             backend,
@@ -92,18 +100,54 @@ impl Agent {
             // 服务端契约：Pending 申请的 desired 端点 404 且消息含
             // "pending approval"（migration 008 取舍：批准前不进期望配置）。
             Err(e) if e.contains("pending approval") => {
-                self.heartbeat(None)?;
+                self.report_heartbeat(None);
                 tracing::info!("registration pending approval: heartbeat sent, plan withheld");
+                // 待审批 = 隧道尚未建立：按「已断开」呈现（`PresenceState::Offline`
+                // 的对位），不用「在线」误导。
+                self.publish_tray(TrayState::Offline);
                 return Ok(());
             }
             Err(e) => return Err(e),
         };
-        self.reconcile(&plan)?;
-        if let Err(e) = self.heartbeat(Some(&plan)) {
-            // 上报失败不影响数据面：计划已按期望对账完毕。
-            tracing::warn!(error = %e, "heartbeat not delivered");
-        }
+        let decision = self.reconcile(&plan)?;
+        let control_ok = self.report_heartbeat(Some(&plan));
+        // 托盘态：reason × 控制通道 × 隧道握手（映射依据见 [`crate::tray`]）。
+        self.publish_tray(TrayState::derive(
+            decision.reason,
+            control_ok,
+            self.last_handshake().is_some(),
+        ));
         Ok(())
+    }
+
+    /// 心跳上报并返回是否送达（失败只记日志，不让数据面循环退避）。
+    fn report_heartbeat(&self, plan: Option<&DevicePlan>) -> bool {
+        match self.heartbeat(plan) {
+            Ok(()) => true,
+            Err(e) => {
+                // 上报失败不影响数据面：计划已按期望对账完毕。
+                tracing::warn!(error = %e, "heartbeat not delivered");
+                false
+            }
+        }
+    }
+
+    /// 托盘状态落盘（用户 2026-10-16：「运行时需要显示对应的 icon 的吧」「系统托盘
+    /// icon 最好能体现状态变化」）。headless / CI 下 [`TraySink::publish`] no-op
+    /// （不写文件、不 panic），失败同样只记日志——托盘永不影响数据面循环。
+    pub fn publish_tray(&self, state: TrayState) {
+        let status = TrayStatus::new(
+            state,
+            self.device_name.as_deref(),
+            &self.dataplane.interface,
+        );
+        if let Err(e) = self.tray.publish(&status) {
+            tracing::warn!(
+                error = %e,
+                state = state.accessible_name(),
+                "tray status not published"
+            );
+        }
     }
 
     /// 对账并按需重放（§10.1 + TODO #32）。

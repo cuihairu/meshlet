@@ -101,10 +101,10 @@
 - 本文件是外部建议的登记表，不代表承诺的路线图；每条落地前先与实际代码核验。
 - 按用户红线：**发布正式版本必须由用户明确给出版本号并触发**，验收未通过的二进制不进 Releases 页面。
 
-- [ ] 运行时系统托盘 icon（来源：用户 2026-10-16，原话「运行时需要显示对应的icon的吧」「系统托盘 icon 最好能体现状态变化」）
-  - 要求：**托盘图标随状态变化**，不是静态图
-  - 需覆盖的状态至少：在线直连 / 中继中 / 已断开 / 隧道异常；具体枚举**以本仓现有状态机为准，先核对再定**，不要新造状态名
-  - 图标要能在 16/24px 小尺寸下可辨，避免细节糊成一团
-  - 状态变化需有**文本等价物**（tooltip / 无障碍名），**不能只靠颜色区分**
-  - 现状核实：代码里 `icon` 关键词 **0 处命中**；`docs/index.md` 的 🛠️⚠️🔍 是文档首页卡片 emoji，非运行时 icon —— 属**未实现**
-  - 素材红线：不生成品牌 logo 代餐，图标需自制或用户提供
+- [ ] 运行时系统托盘 icon（来源：用户 2026-10-16，原话「运行时需要显示对应的icon的吧」「系统托盘 icon 最好能体现状态变化」）— 状态推导/图标/落盘已完成，**仍未在 OS 系统托盘里真正显示**（详见下方两条），故不勾选
+  - [x] 状态映射（2026-10-16 完成）：`apps/agent/src/tray.rs:66` 的 `TrayState` 四态**逐一映射仓内已有枚举，未新造状态名**，映射依据写在变体注释与 `derive`（`tray.rs:91`）：`Online` ← `PresenceState::Online`＋`Reason::UpToDate`＋`ApplyStatus::Applied`＋`DeviceStatus::Active`；`TunnelOnly` ← `PresenceState::TunnelOnly`（agent 侧对位：`wg show latest-handshakes` 有值但心跳上报失败）；`TunnelDrift` ← `Reason::KernelDrift`＋`ApplyStatus::Failed`；`Offline` ← `PresenceState::Offline`。**「在线直连 / 中继中」在 v1 是同一真实状态**：v1 是 VPS 中心中继（ADR-002），仓内没有直连信号、P2P 留 v2，故用一态表达不伪造第二个（已代决）
+  - [x] 非静态图标 ＋ 文本等价物 ＋ 小尺寸可辨（2026-10-16 完成）：`TraySink::publish_with`（`tray.rs:293`）内容相同不重写（`TrayWrite::Unchanged`）、变化才落新图；每态有 `accessible_name`＋`tooltip`（`tray.rs:106`/`tray.rs:116`），**四态轮廓互不相同**（实心 / 大孔圆环 / 中孔圆环＋斜杠 / 薄孔圆环），颜色只是第二通道；16/24px 均渲染。素材红线守住：简单自绘形状，未用品牌 logo 代餐（`logo.svg` 透镜多边形在 16px 会糊，仅沿用圆形轮廓作底形）；**未新增任何 GUI/托盘依赖**（`tray-icon`/`tao`/`winit` 全无，PNG 用内置 stored-deflate 编码器）（已代决）
+  - [x] headless / CI no-op（2026-10-16 完成）：`EnvProbe::has_desktop_session`（`tray.rs:240`）为 false 时返回 `TrayWrite::Skipped`——不建目录、不写文件、不 panic；桌面探测是注入的纯数据，测试不动进程环境变量。agent 集成在 `apps/agent/src/agent.rs:138` 的 `publish_tray`，失败只 `tracing::warn`，**绝不让数据面循环退避**
+  - [x] 门禁实测（2026-10-16）：`cargo test -p meshlet-agent` 40 passed/0 failed（`tray::tests` 17 项：状态映射 5 项、文本等价物与轮廓两两不同 3 项、PNG 往返解码与 IHDR/CRC32/Adler32 已知向量 3 项、headless no-op 与幂等落盘 3 项、两尺寸渲染与桌面会话判定等）；`cargo fmt --check` 通过；`cargo clippy --workspace --all-targets -- -D warnings` 通过；`pnpm run docs:build` 通过（新增 `docs/architecture/observability.md` §五 产物契约）
+  - [ ] **卡点 1（真实缺口）**：尚无 OS 系统托盘展示——产物是 `{state_dir}/tray/{icon-16.png,icon-24.png,status.json}`，**需要托盘宿主**（面板插件 / 脚本按 `status.json` 接图）才会真的出现在系统托盘。要真正进托盘需引入 GUI/托盘依赖（`tray-icon` 需 `tao`，Linux 上依赖 X11/Wayland 系统库）或自实现 StatusNotifierItem D-Bus 客户端，属**新增依赖决策**；且本机无桌面会话、CI 为 headless，无法在此验收显示效果 —— 需真机桌面环境
+  - [ ] **卡点 2**：状态变化未推送通知（无 `notify-send`/D-Bus 通知实现）；`status.json` 已含 `updated_at`（RFC3339，幂等比较只看 `state`+`tooltip` 语义字段，`updated_at` 不参与比较避免每轮重写）
