@@ -240,7 +240,15 @@ struct RawAgentConfig {
     bootstrap_token: Option<String>,
     /// 自举注册时上报的设备名（同网络内唯一，跨设备/待审批申请）。
     device_name: Option<String>,
+    tray: Option<RawTrayConfig>,
     dataplane: RawDataplaneConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawTrayConfig {
+    notifications: Option<bool>,
+    status_notifier_item: Option<bool>,
 }
 
 /// Agent 配置。
@@ -256,7 +264,24 @@ pub struct AgentConfig {
     pub bootstrap_token: Option<String>,
     /// 自举注册时的设备名（必须显式配置——注册名要可读，不能取默认值）。
     pub device_name: Option<String>,
+    /// 桌面集成（P1/P2）：两个能力独立开关，默认均关闭。
+    pub tray: TrayConfig,
     pub dataplane: DataplaneConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrayConfig {
+    /// Explicitly opt in to `org.freedesktop.Notifications`; no local popups by default.
+    pub notifications: bool,
+    /// Explicitly opt in to StatusNotifierItem registration.
+    pub status_notifier_item: bool,
+}
+
+impl TrayConfig {
+    pub const OFF: Self = Self {
+        notifications: false,
+        status_notifier_item: false,
+    };
 }
 
 /// Agent 数据面配置（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）：
@@ -295,6 +320,7 @@ impl Default for AgentConfig {
             device_token: None,
             bootstrap_token: None,
             device_name: None,
+            tray: TrayConfig::default(),
             dataplane: DataplaneConfig::default(),
         }
     }
@@ -310,6 +336,15 @@ impl AgentConfig {
             return Err(ConfigError::InvalidServerUrl(server_url));
         }
         let dataplane = raw.dataplane;
+        let tray = match raw.tray {
+            Some(raw_tray) => TrayConfig {
+                notifications: raw_tray.notifications.unwrap_or(default.tray.notifications),
+                status_notifier_item: raw_tray
+                    .status_notifier_item
+                    .unwrap_or(default.tray.status_notifier_item),
+            },
+            None => default.tray,
+        };
         let dp_interface = dataplane
             .interface
             .map(|s| s.trim().to_string())
@@ -342,6 +377,7 @@ impl AgentConfig {
                 .device_name
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
+            tray,
             dataplane: DataplaneConfig {
                 enabled: dataplane.enabled.unwrap_or(default.dataplane.enabled),
                 interface: dp_interface,
@@ -548,6 +584,24 @@ interval_secs = 3600
         // 默认值可用。
         let d = AgentConfig::from_toml("").unwrap();
         assert_eq!(d, AgentConfig::default());
+    }
+
+    #[test]
+    fn agent_tray_integrations_default_off_and_parse_independently() {
+        assert!(!AgentConfig::default().tray.notifications);
+        assert!(!AgentConfig::default().tray.status_notifier_item);
+        assert_eq!(
+            AgentConfig::from_toml("").unwrap().tray,
+            TrayConfig::default()
+        );
+
+        let config = AgentConfig::from_toml("[tray]\nnotifications = true\n").unwrap();
+        assert!(config.tray.notifications);
+        assert!(!config.tray.status_notifier_item);
+
+        let config = AgentConfig::from_toml("[tray]\nstatus_notifier_item = true\n").unwrap();
+        assert!(!config.tray.notifications);
+        assert!(config.tray.status_notifier_item);
     }
 
     #[test]

@@ -15,11 +15,14 @@
 
 pub mod agent;
 pub mod bootstrap;
+pub mod dbus;
+pub mod desktop;
 pub mod reconcile;
 pub mod server;
 pub mod tray;
 
 pub use agent::{read_private_key, Agent};
 pub use bootstrap::resolve_device_token;
+pub use desktop::{DesktopPublish, NotifyCall, StatusNotifierProperties};
 pub use reconcile::{needs_apply, stale_owners, AgentState, Decision, Reason};
 pub use tray::{IconSize, TraySink, TrayState, TrayStatus, TrayWrite};

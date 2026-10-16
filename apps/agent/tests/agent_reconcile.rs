@@ -555,6 +555,7 @@ fn agent_in(node: &Node, state_dir: &str) -> Agent {
         device_token: Some("test-token".into()),
         bootstrap_token: None,
         device_name: None,
+        tray: meshlet_config::TrayConfig::OFF,
         dataplane: DataplaneConfig {
             enabled: true,
             ..DataplaneConfig::default()

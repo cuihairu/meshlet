@@ -320,6 +320,48 @@ netsh interface ipv4 show route    # 预期：无 192.0.2.0/24
 
 ---
 
+## E — Linux 托盘与状态通知（#104 剩余桌面验收）
+
+**仓内已验证（bus 级/纯逻辑证据，不等于真实桌面显示）**
+
+- `zbus@5.19` 的 Notify 参数、SNI 属性、16/24 ARGB32 图标、默认关闭与
+  headless/no-bus/no-watcher 降级由 `apps/agent/src/desktop.rs` 单测覆盖。
+- `agent` 只在状态变化时请求通知；初始状态只导出 SNI、不发通知。相关
+  trigger 测试在 `apps/agent/src/desktop.rs::desktop_trigger`。
+- Linux 编译内含 `org.kde.StatusNotifierItem` 导出、watcher 注册、后续
+  `PropertiesChanged` 更新；无总线或 watcher 时降级为文件产物，不影响主循环。
+
+**真机桌面仍需以下全部实测后才可勾 #104**
+
+```bash
+# 1) 在 agent 配置文件显式开启（默认仍关闭）：
+printf '%s\n' '[tray]' 'status_notifier_item = true' 'notifications = true' >> /etc/meshlet/agent.toml
+
+# 2) 会话总线上核对宿主收到注册项
+busctl --user call org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+  org.freedesktop.DBus.Properties Get ss \
+  org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems
+# 预期：数组包含本进程 unique name + /org/meshlet/StatusNotifierItem
+
+# 3) 核对图标与状态文本
+busctl --user call <AGENT_UNIQUE_NAME> /org/meshlet/StatusNotifierItem \
+  org.freedesktop.DBus.Properties Get ss \
+  org.kde.StatusNotifierItem Title
+busctl --user call <AGENT_UNIQUE_NAME> /org/meshlet/StatusNotifierItem \
+  org.freedesktop.DBus.Properties Get ss \
+  org.kde.StatusNotifierItem IconPixmap
+# 预期：Title 为 Meshlet；IconPixmap 为 16x16 与 24x24 ARGB32 两条
+
+# 4) 制造状态变化（例如停止/恢复服务端可达性），观察托盘图标轮廓变化
+#    并核对收到一条本地通知；重复轮询同一状态不得再弹通知。
+
+# 5) 无 watcher 回归：关闭托盘宿主后重启 agent。
+#    预期：agent 正常运行，status.json 继续更新，无 panic、不退避数据面。
+```
+
+**判定**：2–5 全部符合才把 #104 的「真实 OS 托盘显示」标为通过；本机
+headless 只能给出上述 bus 级/编译期证据，不得把 `status.json` 当作已上托盘。
+
 ## 5. 结果回写模板与判定
 
 ### 5.1 汇总记录表
@@ -330,6 +372,7 @@ netsh interface ipv4 show route    # 预期：无 192.0.2.0/24
 | B 两客户端互通 | | | `git rev-parse --short HEAD` | 四项：互访 / 重启恢复 / 撤销失效 / IP 不重复 | |
 | C 网关发布 LAN | | | `git rev-parse --short HEAD` | 远端可达 / 返回路径 / 冲突不静默 | |
 | D Windows 权限与清理 | | `winver` + PowerShell | `git rev-parse --short HEAD` | 权限原文 / 幂等原文 / 清理 | |
+| E Linux 托盘与状态通知 | | Linux 桌面 + `busctl` | `git rev-parse --short HEAD` | watcher 注册 / 图标状态 / 变化通知 / 无 watcher 降级 | |
 
 ### 5.2 回写纪律
 

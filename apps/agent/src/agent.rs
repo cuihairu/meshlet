@@ -16,6 +16,11 @@ use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
 use crate::server;
 use crate::tray::{TraySink, TrayState, TrayStatus};
+use crate::{
+    dbus::DesktopClient,
+    desktop::{desktop_trigger, DesktopPublish, DesktopTrigger},
+};
+use meshlet_config::TrayConfig;
 
 /// 拉取持续失败时的退避上限（秒）：服务端不可达时不打满日志。
 pub const BACKOFF_MAX_SECS: u64 = 300;
@@ -34,6 +39,9 @@ pub struct Agent {
     /// 托盘状态落盘（`{state_dir}/tray/`）；headless 下 no-op，见
     /// [`crate::tray`] 与 TODO「运行时系统托盘 icon」。
     tray: TraySink,
+    desktop: std::cell::RefCell<DesktopClient>,
+    desktop_config: TrayConfig,
+    last_desktop_state: std::cell::RefCell<Option<TrayState>>,
     /// 本机设备名（托盘 tooltip 的文本等价物用）。
     device_name: Option<String>,
 }
@@ -59,6 +67,9 @@ impl Agent {
             token: config.device_token.unwrap_or_default(),
             state_path: state_path(&config.state_dir),
             tray: TraySink::new(&config.state_dir),
+            desktop: std::cell::RefCell::new(DesktopClient::default()),
+            desktop_config: config.tray,
+            last_desktop_state: std::cell::RefCell::new(None),
             device_name: config.device_name.clone(),
             dataplane: config.dataplane,
             private_key,
@@ -147,6 +158,21 @@ impl Agent {
                 state = state.accessible_name(),
                 "tray status not published"
             );
+        }
+
+        let trigger = desktop_trigger(*self.last_desktop_state.borrow(), state);
+        if trigger != DesktopTrigger::Unchanged {
+            let env = crate::tray::EnvProbe::from_env();
+            let result = self.desktop.borrow_mut().publish(
+                &status,
+                &env,
+                trigger == DesktopTrigger::Changed && self.desktop_config.notifications,
+                self.desktop_config.status_notifier_item,
+            );
+            *self.last_desktop_state.borrow_mut() = Some(state);
+            if !matches!(result, DesktopPublish::Published) {
+                tracing::debug!(result = ?result, "desktop status not shown");
+            }
         }
     }
 
@@ -297,6 +323,7 @@ mod tests {
             device_token: Some("tok".into()),
             bootstrap_token: None,
             device_name: None,
+            tray: TrayConfig::OFF,
             dataplane: DataplaneConfig {
                 enabled: true,
                 ..DataplaneConfig::default()
