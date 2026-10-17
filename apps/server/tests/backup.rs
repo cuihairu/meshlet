@@ -410,14 +410,30 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
         c.pool.close().await;
     }
 
-    // 离线恢复（与 meshlet-server restore 子命令同一函数）。
-    let report = meshlet_server::persist::restore_from_backup(
-        &backup_path,
-        &db,
-        meshlet_domain::PresenceThresholds::default(),
-    )
-    .await
-    .unwrap();
+    // 离线恢复（与 meshlet-server restore 子命令同一函数）。Windows 会短暂
+    // 延迟释放 SQLite/WAL 句柄，有限重试只吸收文件锁；业务结果仍强断言。
+    let mut report = None;
+    for _ in 0..10 {
+        match meshlet_server::persist::restore_from_backup(
+            &backup_path,
+            &db,
+            meshlet_domain::PresenceThresholds::default(),
+        )
+        .await
+        {
+            Ok(restored) => {
+                report = Some(restored);
+                break;
+            }
+            Err(meshlet_server::persist::BackupError::Io(error))
+                if error.raw_os_error() == Some(32) =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Err(error) => Err(error).unwrap(),
+        }
+    }
+    let report = report.expect("restore eventually acquires Windows file handles");
     assert_eq!(report.summary.networks, 1);
     assert_eq!(report.summary.devices, 1);
     assert_eq!(report.summary.routes, 1);

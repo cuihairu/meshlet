@@ -238,16 +238,18 @@ mod tests {
 
         async fn apply_routes(
             &mut self,
-            _routes: Vec<RouteConfig>,
+            routes: Vec<RouteConfig>,
         ) -> Result<ApplyResult, NetworkError> {
+            assert_eq!(routes.len(), 1);
             Ok(ApplyResult::ok())
         }
 
         async fn apply_nat(
             &self,
-            _rules: Vec<nat::NatRule>,
+            rules: Vec<nat::NatRule>,
             _gateway_lan_addr: std::net::Ipv4Addr,
         ) -> Result<ApplyResult, NetworkError> {
+            assert_eq!(rules.len(), 1);
             Ok(ApplyResult::ok())
         }
 
@@ -271,6 +273,36 @@ mod tests {
         let snap = use_backend(&DummyBackend).await;
         assert!(snap.tunnel_exists);
         assert_eq!(snap.peer_count, 2);
+
+        let mut mutable_backend = DummyBackend;
+        mutable_backend
+            .apply_routes(vec![RouteConfig {
+                destination: "10.241.1.0/24".parse().unwrap(),
+                interface: "wg0".into(),
+                gateway: None,
+            }])
+            .await
+            .unwrap();
+        mutable_backend
+            .apply_nat(
+                vec![nat::NatRule {
+                    source_cidr: None,
+                    incoming_interface: None,
+                    chain: nat::NatChain::Prerouting,
+                    match_dest: "10.241.1.0/24".parse().unwrap(),
+                    action: nat::NatAction::NetMap {
+                        to: "192.168.1.0/24".parse().unwrap(),
+                    },
+                    owner: "meshlet alias test".into(),
+                }],
+                "192.168.1.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        mutable_backend
+            .remove_nat("meshlet alias test")
+            .await
+            .unwrap();
 
         let result = DummyBackend
             .rollback(ConfigRevisionRef {

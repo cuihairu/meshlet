@@ -86,6 +86,7 @@ P0 验收完成前，不以旧的“25/27 有测试证据”口径判断可发�
 Segment 实测：`cargo check --workspace --all-targets --offline` 通过；`cargo test -p meshlet-domain -p meshlet-server --offline` 全绿（domain 109 passed；server lib 21 passed，集成套件全部 0 failed，含迁移 12、recovery 5、审批注册 6、邀请加入 13、备份恢复 7、旧备份升级 7）；`pnpm docs:build`（VitePress 1.6.4）打包与页面渲染通过。IM-03 仅验收模型与启动恢复边界；策略执行和真实数据面仍不视为已验收。
 
 - CR-01…CR-05 已按 API / Linux netns 范围验收；AR-01…AR-06 已实现，实际 CI 已通过，空 VPS 验收保持待验证。
+- 覆盖率实测（`cargo llvm-cov --workspace --all-targets --offline --summary-only`）：workspace line coverage 90.98%；主要未覆盖项是进程入口、Linux/Windows 外壳、DBus 桌面集成和错误路径。当前未达到 98%，不标已验收；后续需要按可测边界拆出纯逻辑并注入平台依赖，而不是排除源码凑数。
 - 正式 server unit + drop-in 已在隔离 netns 以 uid 65534 执行；私钥 0600、WireGuard、转发、防火墙和应用读回通过。
 - x86_64 musl release 已构建并打包；console / 文档构建、ShellCheck、actionlint 通过。
 - 全仓严格测试通过：`MESHLET_REQUIRE_DATAPLANE=1 cargo test --locked --workspace -- --test-threads=1`，381 passed / 0 failed / 0 ignored，0 SKIP。首次 hosted nightly 双架构构建与发布已通过，归档和安装脚本下载校验通过；真实空 VPS 一键安装仍待验收。
