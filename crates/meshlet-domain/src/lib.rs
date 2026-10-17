@@ -16,6 +16,7 @@ pub mod invites;
 pub mod ipam;
 pub mod peer_routes;
 pub mod presence;
+pub mod segments;
 pub mod tokens;
 
 pub use cidr::{CidrError, Ipv4Cidr};
@@ -29,7 +30,10 @@ pub use entities::{
     ConfigRevision, DataplaneEvidence, DesiredStateStatus, Device, DeviceError, DeviceId,
     DeviceKey, DeviceRegistration, DeviceRegistry, DeviceStatus, InviteId, LanRoute, LanRouteId,
     Network, NetworkId, NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError,
-    RouteMode, Timestamp, TranslationMode, UserId,
+    RouteMode, SegmentId, Timestamp, TranslationMode, UserId,
+};
+pub use segments::{
+    validate_device_segment, Segment, SegmentError, SegmentGrant, SegmentGrantStatus, SegmentStatus,
 };
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};

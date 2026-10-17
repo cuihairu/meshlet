@@ -27,7 +27,8 @@
 use meshlet_domain::{
     AliasMapping, BootstrapToken, BootstrapTokenId, ConfigRevision, DesiredStateStatus, Device,
     DeviceId, DeviceRegistration, DeviceStatus, Invite, InviteId, Ipv4Cidr, LanRoute, LanRouteId,
-    Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode, TranslationMode,
+    Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode, SegmentId,
+    TranslationMode,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -689,11 +690,12 @@ pub async fn load(
             String,
             Option<String>,
             Option<String>,
+            Option<String>,
         ),
     >(
         "SELECT id, network_id, name, virtual_ipv4, public_key, platform, status,
                 last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
-                created_at, approved_at, revoked_at
+                created_at, approved_at, revoked_at, segment_id
          FROM devices ORDER BY created_at, id",
     )
     .fetch_all(pool)
@@ -722,6 +724,7 @@ pub async fn load(
             created_at: row.11,
             approved_at: row.12,
             revoked_at: row.13,
+            segment_id: SegmentId(row.14.unwrap_or_else(|| "seg-default".to_string())),
         };
         state
             .restore_device(device)

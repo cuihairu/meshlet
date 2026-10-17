@@ -202,6 +202,7 @@ mod tests {
     use crate::entities::{
         AliasMappingId, LanRouteId, NetworkId, ReturnPathMode, RouteMode, TranslationMode,
     };
+    use crate::SegmentId;
     use crate::Timestamp;
 
     fn ts() -> Timestamp {
@@ -490,6 +491,7 @@ mod tests {
             created_at: ts(),
             approved_at: None,
             revoked_at: None,
+            segment_id: SegmentId("seg-default".into()),
         };
         let devices = vec![device("dev-a", "10.240.0.2"), device("dev-b", "10.240.0.3")];
         let routes = vec![route(
@@ -534,6 +536,7 @@ mod tests {
             created_at: ts(),
             approved_at: None,
             revoked_at: None,
+            segment_id: SegmentId("seg-default".into()),
         }];
 
         let err = hub_device_peers(OVERLAY.parse().unwrap(), &devices, &[], &[]).unwrap_err();

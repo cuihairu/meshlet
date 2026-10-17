@@ -17,7 +17,6 @@ export default defineConfig({
       { text: '决策', link: '/decisions/', activeMatch: '/decisions/' },
       { text: '存档', link: '/review/chatgpt-2026-10-13', activeMatch: '/review/' },
       { text: '指南', link: '/guide/external-caller', activeMatch: '/guide/' },
-      { text: 'GitHub', link: 'https://github.com/cuihairu/meshlet' }
     ],
     sidebar: {
       '/analysis/': [

@@ -7,6 +7,7 @@
 
 use crate::cidr::Ipv4Cidr;
 use crate::entities::{AliasMapping, LanRoute, RouteMode};
+use crate::segments::Segment;
 
 /// 冲突认知来源（§6.3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,9 @@ pub enum ConflictCode {
     LanRouteConflict,
     AliasTargetMismatch,
     ClientRouteOverlap,
+    SegmentSegmentOverlap,
+    SegmentAliasOverlap,
+    SegmentOutsideOverlay,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +56,69 @@ impl Conflict {
 pub enum RouteSource {
     Server,
     Client,
+}
+
+/// 检查 1：Overlay CIDR 与任一 Alias CIDR 重叠。
+pub fn segment_segment_overlap(segments: &[Segment]) -> Vec<Conflict> {
+    let mut out = Vec::new();
+    for i in 0..segments.len() {
+        for j in (i + 1)..segments.len() {
+            if segments[i].cidr.overlaps(&segments[j].cidr) {
+                out.push(Conflict {
+                    code: ConflictCode::SegmentSegmentOverlap,
+                    kind: ConflictKind::ServerKnown,
+                    detail: format!(
+                        "segment {} overlaps segment {}",
+                        segments[i].cidr, segments[j].cidr
+                    ),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Segment prefixes share the tunnel-visible forwarding namespace with aliases.
+pub fn segment_alias_overlap(segments: &[Segment], aliases: &[AliasMapping]) -> Vec<Conflict> {
+    segments
+        .iter()
+        .flat_map(|segment| {
+            aliases
+                .iter()
+                .filter(|alias| segment.cidr.overlaps(&alias.alias_cidr))
+                .map(move |alias| Conflict {
+                    code: ConflictCode::SegmentAliasOverlap,
+                    kind: ConflictKind::ServerKnown,
+                    detail: format!(
+                        "segment {} overlaps alias {}",
+                        segment.cidr, alias.alias_cidr
+                    ),
+                })
+        })
+        .collect()
+}
+
+/// Strict overlay containment for non-default segments; the default segment
+/// may equal the overlay for zero-behavior-fork legacy backfill.
+pub fn segment_overlay_containment(
+    overlay: Ipv4Cidr,
+    segments: &[Segment],
+) -> Vec<Conflict> {
+    segments
+        .iter()
+        .filter(|segment| {
+            segment.name != "default"
+                && (!overlay.overlaps(&segment.cidr) || segment.cidr == overlay)
+        })
+        .map(|segment| Conflict {
+            code: ConflictCode::SegmentOutsideOverlay,
+            kind: ConflictKind::ServerKnown,
+            detail: format!(
+                "segment {} must be a strict subset of overlay {overlay}",
+                segment.cidr
+            ),
+        })
+        .collect()
 }
 
 /// 检查 1：Overlay CIDR 与任一 Alias CIDR 重叠。
@@ -183,6 +250,7 @@ pub fn check_network(
     overlay: Ipv4Cidr,
     aliases: &[AliasMapping],
     routes: &[LanRoute],
+    segments: &[Segment],
     server_routes: &[Ipv4Cidr],
     client_routes: Option<&[Ipv4Cidr]>,
 ) -> Vec<Conflict> {
@@ -195,6 +263,9 @@ pub fn check_network(
     ));
     out.extend(alias_alias_overlap(aliases));
     out.extend(lan_route_conflicts(routes));
+    out.extend(segment_segment_overlap(segments));
+    out.extend(segment_alias_overlap(segments, aliases));
+    out.extend(segment_overlay_containment(overlay, segments));
     for alias in aliases {
         if let Some(route) = routes.iter().find(|r| r.id == alias.lan_route_id) {
             out.extend(alias_target_mismatch(alias, route));
@@ -347,6 +418,7 @@ mod tests {
             overlay,
             &[a_bad.clone(), a_ok.clone()],
             &[r1.clone(), r2],
+            &[],
             &["10.240.16.0/20".parse().unwrap()], // 服务端已有路由与 overlay 重叠
             None,                                 // 客户端未上报
         );
@@ -363,6 +435,7 @@ mod tests {
             "10.240.0.0/16".parse().unwrap(),
             &[a_ok],
             &[r1],
+            &[],
             &[],
             Some(&[]),
         );

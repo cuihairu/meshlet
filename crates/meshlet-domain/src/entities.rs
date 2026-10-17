@@ -30,6 +30,8 @@ string_id!(AliasMappingId, "Alias 映射标识。");
 string_id!(UserId, "控制台用户标识。");
 string_id!(InviteId, "邀请标识。");
 string_id!(BootstrapTokenId, "自举码标识（设备自举注册入口凭据）。");
+string_id!(SegmentId, "段标识。");
+string_id!(SegmentGrantId, "段授权标识。");
 
 // ---------------------------------------------------------------------------
 // Network
@@ -110,6 +112,8 @@ pub struct Device {
     /// 批准时刻（自举注册路径，见 [DeviceRegistration]）；邀请入会路径为 `None`
     /// （`created_at` 即入会时刻）。
     pub approved_at: Option<Timestamp>,
+    /// 设备唯一所属段（ADR-012）。恢复旧库时由 migration 010 回填。
+    pub segment_id: SegmentId,
     pub revoked_at: Option<Timestamp>,
 }
 
@@ -606,6 +610,7 @@ mod tests {
             created_at: T0.into(),
             approved_at: None,
             revoked_at: None,
+            segment_id: SegmentId("seg-default".into()),
         };
         assert!(d.is_active());
         d.revoke(T1.into()).unwrap();
@@ -755,6 +760,7 @@ mod tests {
             created_at: T0.into(),
             approved_at: None,
             revoked_at: None,
+            segment_id: SegmentId("seg-default".into()),
         };
         let mut reg = DeviceRegistry::new();
         reg.add(mk("laptop", "10.240.0.2")).unwrap();
@@ -787,6 +793,7 @@ mod tests {
             created_at: T0.into(),
             approved_at: None,
             revoked_at: None,
+            segment_id: SegmentId("seg-default".into()),
         };
         let mut reg = DeviceRegistry::new();
         let laptop = mk("laptop", "10.240.0.2");
