@@ -36,8 +36,10 @@
 - `dual_site_end_to_end.rs`：保留双站点相同真实网段经不同 Alias 访问的真实 HTTP + agent 路径；历史双实例拓扑不再当作单实例隔离证据。
 - `agent_plan.rs`：精确 ACK、等待、失败、旧版本/错误哈希拒绝，状态更新不改变候选计划哈希。
 - `revisions.rs` / `auth_console.rs`：旧修订拒绝、幂等、并发首次引导单胜。
-- `backup.rs`：v8 备份升级、迁移失败保护活动库。首次 Windows CI 暴露迁移错误路径中连接池异步释放导致清理文件失败；`store::connect` 现显式等待关闭连接池后返回迁移错误，Windows 回归结果以最新 CI 为准。
+- `backup.rs`：v8 备份升级、迁移失败保护活动库。首次 Windows CI 暴露迁移错误路径中连接池异步释放导致清理文件失败；`store::connect` 现显式等待关闭连接池后返回迁移错误，修复后的 [Windows/Linux CI](https://github.com/cuihairu/meshlet/actions/runs/39024292854) 已通过。
 - `scripts/verify-systemd.py` 使用正式 server unit 与 drop-in，以 uid 65534 在独立 netns 实际运行，读取 0600 私钥、创建 WireGuard、配置转发/防火墙并持久化成功状态；测试后服务、命名空间和目录已清理。这不替代空 VPS 的公网安装走查。
 - 本地 x86_64 musl release 构建和归档检查已完成；控制台、VitePress、ShellCheck、actionlint、Clippy 已通过。最终 `MESHLET_REQUIRE_DATAPLANE=1 cargo test --locked --workspace -- --test-threads=1` 通过：381 passed / 0 failed / 0 ignored，0 SKIP。
 
-尚未完成：默认分支上的真实 nightly 发布、ARM64 实际构建、空 VPS 下载与安装、Windows / 手机数据面验收，以及当前执行清单中的后续 PN / MOD 功能。业务可达性未探测时仍显示 `not_probed`。
+首次 [hosted nightly](https://github.com/cuihairu/meshlet/actions/runs/39023899317) 已完成真实内核门禁、x86_64 / ARM64 构建和发布；下载两个归档与安装脚本后 SHA256SUMS 全部通过，必需文件齐全且不含配置、私钥或数据库，BUILD_INFO 标记 source_dirty=false。
+
+尚未完成：空 VPS 公网安装与升级走查、Windows / 手机数据面验收，以及当前执行清单中的后续 PN / MOD 功能。业务可达性未探测时仍显示 `not_probed`。
