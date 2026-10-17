@@ -71,6 +71,14 @@ impl Ipv4Cidr {
         u32::from(ip) & mask_of(self.prefix) == self.network
     }
 
+    /// Whether this CIDR wholly contains `other` (an equal CIDR also contains
+    /// itself). This is stricter than overlap, which cannot prove containment.
+    pub fn contains_cidr(&self, other: &Self) -> bool {
+        self.prefix <= other.prefix
+            && self.contains(other.network())
+            && self.contains(other.broadcast())
+    }
+
     /// 网段是否重叠（互为子网也算重叠）。
     pub fn overlaps(&self, other: &Self) -> bool {
         let min_prefix = self.prefix.min(other.prefix);
@@ -233,6 +241,16 @@ mod tests {
         assert!(a.overlaps(&cidr("10.240.0.0/16"))); // 自身
         assert!(!a.overlaps(&cidr("10.241.0.0/16")));
         assert!(!a.overlaps(&cidr("192.168.0.0/16")));
+    }
+
+    #[test]
+    fn contains_cidr_requires_the_whole_prefix() {
+        let overlay = cidr("10.240.0.0/16");
+        assert!(overlay.contains_cidr(&cidr("10.240.0.0/16")));
+        assert!(overlay.contains_cidr(&cidr("10.240.255.0/24")));
+        assert!(!overlay.contains_cidr(&cidr("10.0.0.0/8")));
+        assert!(!overlay.contains_cidr(&cidr("10.240.0.0/15")));
+        assert!(!overlay.contains_cidr(&cidr("10.241.0.0/24")));
     }
 
     #[test]

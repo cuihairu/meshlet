@@ -24,7 +24,7 @@ impl SegmentStatus {
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        match value {
+        match value.trim() {
             "active" => Some(Self::Active),
             "quarantined" => Some(Self::Quarantined),
             _ => None,
@@ -88,6 +88,16 @@ pub enum SegmentError {
     },
     #[error("non-default segment cannot equal overlay {segment}")]
     OverlayEqualNonDefault { segment: Ipv4Cidr },
+    #[error("device {device} is outside network {network}")]
+    DeviceOutsideNetwork {
+        device: std::net::Ipv4Addr,
+        network: Ipv4Cidr,
+    },
+    #[error("segment {segment} belongs to another network {network}")]
+    CrossNetworkSegment {
+        segment: SegmentId,
+        network: NetworkId,
+    },
     #[error("device {device} is outside segment {segment}")]
     DeviceOutsideSegment {
         device: std::net::Ipv4Addr,
@@ -97,36 +107,65 @@ pub enum SegmentError {
 
 impl Segment {
     pub fn validate_cidr(&self, overlay: Ipv4Cidr) -> Result<(), SegmentError> {
-        if !overlay.overlaps(&self.cidr) {
+        let is_default = self.name == "default";
+        if is_default && self.cidr != overlay {
             return Err(SegmentError::OutsideOverlay {
                 segment: self.cidr,
                 overlay,
             });
         }
-        if self.cidr == overlay && self.name != "default" {
+        if !is_default && !overlay.contains_cidr(&self.cidr) {
+            return Err(SegmentError::OutsideOverlay {
+                segment: self.cidr,
+                overlay,
+            });
+        }
+        if !is_default && self.cidr == overlay {
             return Err(SegmentError::OverlayEqualNonDefault { segment: self.cidr });
         }
         Ok(())
     }
 }
 
-/// Validate that a member address belongs to its assigned segment.
+/// Validate that a device is a member of this network's assigned segment.
+/// Segment membership implies overlay membership; the segment id must also
+/// belong to the same network so persisted state cannot bridge networks.
 pub fn validate_device_segment(
     address: std::net::Ipv4Addr,
+    network_id: &NetworkId,
     segment_id: &SegmentId,
+    overlay: Ipv4Cidr,
     segments: &[Segment],
 ) -> Result<(), SegmentError> {
-    let segment = segments.iter().find(|segment| &segment.id == segment_id);
-    if segment.is_some_and(|segment| segment.cidr.contains(address)) {
-        Ok(())
-    } else {
-        Err(SegmentError::DeviceOutsideSegment {
+    let segment = segments
+        .iter()
+        .find(|segment| &segment.id == segment_id)
+        .ok_or_else(|| SegmentError::DeviceOutsideSegment {
             device: address,
-            segment: segment
+            segment: segments
+                .first()
                 .map(|segment| segment.cidr)
-                .unwrap_or("0.0.0.0/32".parse().unwrap()),
-        })
+                .unwrap_or_else(|| "0.0.0.0/32".parse().unwrap()),
+        })?;
+    if !segment.cidr.contains(address) {
+        return Err(SegmentError::DeviceOutsideSegment {
+            device: address,
+            segment: segment.cidr,
+        });
     }
+    if segment.network_id != *network_id {
+        return Err(SegmentError::CrossNetworkSegment {
+            segment: segment.id.clone(),
+            network: network_id.clone(),
+        });
+    }
+    if !overlay.contains(address) {
+        return Err(SegmentError::DeviceOutsideNetwork {
+            device: address,
+            network: overlay,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -173,11 +212,82 @@ mod tests {
     }
 
     #[test]
+    fn segment_containment_and_default_rules_use_exact_boundaries() {
+        let overlay = "10.240.0.0/16".parse().unwrap();
+        assert!(segment("users", "10.240.0.0/14")
+            .validate_cidr(overlay)
+            .is_err());
+        assert!(segment("users", "10.240.0.0/15")
+            .validate_cidr(overlay)
+            .is_err());
+        assert!(segment("users", "10.240.0.0/16")
+            .validate_cidr(overlay)
+            .is_err());
+        assert!(segment("users", "10.240.255.0/24")
+            .validate_cidr(overlay)
+            .is_ok());
+        assert!(segment("users", "10.241.0.0/24")
+            .validate_cidr(overlay)
+            .is_err());
+        assert!(segment("default", "10.240.0.0/24")
+            .validate_cidr(overlay)
+            .is_err());
+    }
+
+    #[test]
     fn device_must_belong_to_assigned_segment() {
         let segments = [segment("users", "10.240.1.0/24")];
         let id = segments[0].id.clone();
-        assert!(validate_device_segment("10.240.1.9".parse().unwrap(), &id, &segments).is_ok());
-        assert!(validate_device_segment("10.240.2.9".parse().unwrap(), &id, &segments).is_err());
+        let network = NetworkId("net-1".into());
+        let overlay = "10.240.0.0/16".parse().unwrap();
+        assert!(validate_device_segment(
+            "10.240.1.9".parse().unwrap(),
+            &network,
+            &id,
+            overlay,
+            &segments
+        )
+        .is_ok());
+        assert!(validate_device_segment(
+            "10.240.2.9".parse().unwrap(),
+            &network,
+            &id,
+            overlay,
+            &segments
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn device_assignment_rejects_cross_network_segment_and_overlay_escape() {
+        let network = NetworkId("net-1".into());
+        let overlay = "10.240.0.0/16".parse().unwrap();
+        let mut foreign = segment("users", "10.241.1.0/24");
+        foreign.network_id = NetworkId("net-2".into());
+        let id = foreign.id.clone();
+        assert!(matches!(
+            validate_device_segment(
+                "10.241.1.9".parse().unwrap(),
+                &network,
+                &id,
+                overlay,
+                &[foreign]
+            ),
+            Err(SegmentError::CrossNetworkSegment { .. })
+        ));
+
+        let local = segment("users", "10.240.1.0/24");
+        let id = local.id.clone();
+        assert!(matches!(
+            validate_device_segment(
+                "10.240.1.9".parse().unwrap(),
+                &network,
+                &id,
+                "10.241.0.0/16".parse().unwrap(),
+                &[local]
+            ),
+            Err(SegmentError::DeviceOutsideNetwork { .. })
+        ));
     }
 
     #[test]

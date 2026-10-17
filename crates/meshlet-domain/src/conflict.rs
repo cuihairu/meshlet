@@ -104,14 +104,14 @@ pub fn segment_overlay_containment(overlay: Ipv4Cidr, segments: &[Segment]) -> V
     segments
         .iter()
         .filter(|segment| {
-            segment.name != "default"
-                && (!overlay.overlaps(&segment.cidr) || segment.cidr == overlay)
+            (segment.name == "default" && segment.cidr != overlay)
+                || (segment.name != "default" && !overlay.contains_cidr(&segment.cidr))
         })
         .map(|segment| Conflict {
             code: ConflictCode::SegmentOutsideOverlay,
             kind: ConflictKind::ServerKnown,
             detail: format!(
-                "segment {} must be a strict subset of overlay {overlay}",
+                "segment {} must be contained by overlay {overlay}",
                 segment.cidr
             ),
         })
@@ -276,8 +276,9 @@ mod tests {
     use super::*;
     use crate::entities::{
         AliasMappingId, DesiredStateStatus, DeviceId, LanRouteId, NetworkId, ReturnPathMode,
-        RouteMode, TranslationMode,
+        RouteMode, SegmentId, TranslationMode,
     };
+    use crate::segments::SegmentStatus;
 
     fn alias(id: &str, alias_cidr: &str, target_cidr: &str) -> AliasMapping {
         AliasMapping::new(
@@ -302,6 +303,39 @@ mod tests {
             status: DesiredStateStatus::Applied,
             created_at: "2026-10-14T08:00:00Z".into(),
         }
+    }
+
+    fn segment(id: &str, name: &str, cidr: &str) -> Segment {
+        Segment {
+            id: SegmentId(id.into()),
+            network_id: NetworkId("net-1".into()),
+            name: name.into(),
+            cidr: cidr.parse().unwrap(),
+            status: SegmentStatus::Active,
+            created_at: "2026-10-17T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn segment_containment_conflict_covers_parent_default_and_child_rules() {
+        let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
+        let out = segment_overlay_containment(
+            overlay,
+            &[
+                segment("seg-parent", "users", "10.240.0.0/14"),
+                segment("seg-partial", "guests", "10.241.0.0/24"),
+                segment("seg-default-child", "default", "10.240.0.0/24"),
+                segment("seg-user", "servers", "10.240.255.0/24"),
+                segment("seg-default", "default", "10.240.0.0/16"),
+            ],
+        );
+        let details: Vec<_> = out
+            .iter()
+            .map(|conflict| conflict.detail.as_str())
+            .collect();
+        assert_eq!(details.len(), 3);
+        assert!(details.iter().all(|detail| detail.contains("contained by")));
+        assert!(!details.iter().any(|detail| detail.contains("seg-user")));
     }
 
     fn alias_route(id: &str, dest: &str, gw: &str) -> LanRoute {

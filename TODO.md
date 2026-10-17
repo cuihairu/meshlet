@@ -6,7 +6,7 @@
 - [Meshlet / ZeroTier / Tailscale 个人组网调研](docs/analysis/personal-networking-comparison.md)：61 项功能对比、官方来源、个人必要性、开发难度与实测方案。
 - [模块化与库复用提案](docs/architecture/modularity-and-library-design.md)：依赖边界、公共库与渐进迁移；常规虚拟网卡为主，无网卡服务入口按需评估。
 - [网关、网段冲突与端口转发专题](docs/architecture/gateways-conflicts-and-port-forwarding.md)：分网段选网关、Alias 冲突域和 A 端口到 B 服务的完整场景与验收。
-- [网段即信任组设计](docs/design/network-segment-trust.md)：ADR-012 已采纳 Network 内 Segment、同段互信、跨段默认拒绝与单向授权契约；IM-01 的模型字段与编译接线已完成，默认段创建/持久化由 IM-02、包含关系与边界规则由 IM-03 跟进。
+- [网段即信任组设计](docs/design/network-segment-trust.md)：ADR-012 已采纳 Network 内 Segment、同段互信、跨段默认拒绝与单向授权契约；IM-01 的模型字段与编译接线、IM-02 的默认段创建/持久化、IM-03 的模型与启动恢复边界校验均已完成；内核策略执行仍由 PN-02 验收。
 
 ## 当前执行清单（2026-10-17）
 
@@ -58,9 +58,9 @@ P0 验收完成前，不以旧的“25/27 有测试证据”口径判断可发�
 |---|---|---|---|
 | IM-01 | P0 / 已完成 | 接齐 Segment 字段与测试构造：修复 Device 加载缺 `segment_id`、BootstrapToken 误填字段、domain 内测试 crate 引用及漏字段；离线 workspace check、domain 测试与 server lib 测试通过 | PN-01；`apps/server/src/persist.rs`、`service.rs`、`crates/meshlet-domain/src/peer_routes.rs`；本轮验证：check 通过，domain 105 passed，server lib 17 passed |
 | IM-02 | P0 / 已完成 | 统一默认 Segment ID 为 `seg-<network_id>`；新网络在同一事务创建默认段，邀请加入与审批转正写入设备段归属，启动加载校验网络归属；迁移、空库建网、审批/邀请加入、重启及备份恢复回归通过 | IM-01、PN-01；`migrations/010_segments.sql`、`011_segment_defaults.sql`、`apps/server/src/service.rs`、`persist.rs`；server 全套测试通过 |
-| IM-03 | P0 / 待实现 | 修正 Segment 包含关系与默认段规则：不能用重叠代替包含；拒绝覆盖 Overlay 的更大前缀、越界段、跨网络成员与非法设备地址；明确默认段与新增子段的共存/迁移规则，覆盖边界测试 | IM-01、PN-01；`crates/meshlet-domain/src/segments.rs`、`conflict.rs`；策略编译、跨段默认拒绝和单向授权仍由 PN-02 验收 |
-| IM-04 | P0 / 待实现 | 修复 `/32` Host Forward 的 SNAT 源地址选择：目标主机地址与网关本机地址不同也能应用；评估按实际出口路由解析源地址，应用与读回使用一致逻辑；验真实 agent 的 API 创建→NETMAP/SNAT→双向通信→删除，并覆盖多 LAN、无出口与 dnat_only | PN-07、AR-05、CR-03；`crates/meshlet-network/src/linux.rs` 的 `lan_addr_in`、`apply_device_plan_sync`、`device_plan_matches_sync`；现有计划断言不覆盖此执行失败 |
-| IM-05 | P0 / 待实现 | 统一 Host Forward / Alias / Direct 的地址冲突校验：复用共享转发空间检查，拒绝与其他网络 Overlay/Direct/Alias 以及本网络已有转发前缀冲突；验不同创建入口及先后顺序结果一致、拒绝后无部分状态 | RG-03、AR-01；`apps/server/src/service.rs` 的 `create_host_forward` 未调用 `check_forward_prefix`，校验与 `create_alias` 不一致 |
+| IM-03 | P0 / 已完成（模型与启动恢复边界） | Segment 采用完整 CIDR 包含而非重叠判断：默认段必须精确等于 Overlay，非默认段必须严格包含且不得等于 Overlay；启动加载拒绝更大/越界/非默认整 Overlay 段与跨网络或越界设备地址，含边界回归。默认段与新增子段的共存/迁移策略以及内核策略编译仍未实现，不代表 PN-02 验收 | IM-01、PN-01；`crates/meshlet-domain/src/cidr.rs::contains_cidr`、`segments.rs::Segment::validate_cidr`、`validate_device_segment`、`conflict.rs::segment_overlay_containment`、`apps/server/src/service.rs::restore_segment/restore_device`、`apps/server/src/persist.rs`；域边界与持久化测试通过；跨段默认拒绝和单向授权仍由 PN-02 验收 |
+| IM-04 | P0 / 已完成（实现与 Linux netns 测试） | `/32` Host Forward 按实际出口路由选择 SNAT 源，应用与读回共用解析逻辑；真实 agent 的 API 创建→NETMAP/SNAT→双向通信→删除已覆盖多 LAN、无出口与 dnat_only。结论限当前 Linux netns/API 场景，不扩大到真实 VPS 或 PN-07 全量端口转发验收 | PN-07、AR-05、CR-03；commit `5f73809`；`crates/meshlet-network/src/linux.rs::lan_source_for/route_source/apply_device_plan_sync/device_plan_matches_sync`、`crates/meshlet-network/tests/lan_source.rs`、`apps/server/tests/single_instance.rs::host_forward_agent_roundtrip_sources_and_cleanup` |
+| IM-05 | P0 / 已完成（控制面冲突语义） | `check_new_forward_prefix` 统一 Host Forward / Alias / Direct 新建入口的共享转发空间与本网络已有转发前缀检查；Alias 先完成 ADR-006 目标推导、等长与目标不同校验，再进入前缀冲突检查；不同入口和顺序拒绝时无部分状态。完整跨端/客户端冲突发现仍归 RG-03 | RG-03、AR-01；commit `5f73809`；`apps/server/src/service.rs::check_new_forward_prefix` 与 Host Forward / Alias / Direct 入口、`routes.rs::host_forward_conflicts_do_not_write_partial_state`、`service.rs::forwarding_prefix_entrypoints_reject_each_other_atomically`、`aliases.rs::prefix_length_must_equal_target_and_must_differ` |
 | IM-06 | P1 / 待设计 | 明确设备撤销的生效契约：分别定义凭证失效与内核 Peer 阻断；决定是否要求即时阻断，以及持久化失败、进程重启和旧成功计划恢复时的行为；验被撤销设备不能在约定时限后继续旧流量或被恢复任务重新放行 | AR-01、AR-03、AR-04；`apps/server/src/lib.rs` 的 `revoke_device_handler` 当前仅生成 Pending 修订并撤销 Token，切断 WireGuard 需另行 apply |
 | IM-07 | P1 / 待设计 | 补 Agent 应用失败的恢复边界：评估保存并重放上次成功完整计划；在隧道、路由、NAT 各阶段注入失败，验证恢复旧通路或明确安全失败，回执不得标成功，重试能收敛且不破坏其他网络/外来规则 | AR-04、MOD-04；`apps/agent/src/agent.rs` 的 `reconcile`、`crates/meshlet-network/src/linux.rs` 的 `apply_device_plan_sync`；目前按步骤修改，无完整旧计划恢复 |
 | IM-08 | P1 / 待实现 | 本地账本丢失时仍清理内核旧对象：枚举有明确 Meshlet 所有权的 NAT/路由，与期望集合对账；验账本缺失/损坏、映射删除后重启及部分应用失败，不残留旧入口，不删除外来对象 | IM-07、CR-05；`apps/agent/src/reconcile.rs` 的 `AgentState` / `stale_owners`；目前旧 NAT 清理依赖账本中的 owner 集合 |
@@ -69,7 +69,7 @@ P0 验收完成前，不以旧的“25/27 有测试证据”口径判断可发�
 | IM-11 | P1 / 待设计 | 缩小控制面阻塞范围：将应用/回滚的同步内核操作移出 async worker，评估按网络串行并保留共享宿主资源协调；认证密码哈希/校验使用阻塞任务并限制并发；验慢命令/慢认证下其他网络查询可响应，同网络修订不乱序，失败与取消可追踪 | MOD-03、MOD-04、IM-09；`apps/server/src/revision.rs`、`auth.rs`、`crates/meshlet-network/src/linux.rs`；恢复任务已有 `spawn_blocking`，请求应用路径仍持全局锁同步执行 |
 | IM-12 | P2 / 待实现 | 控制台正确展示加载失败并刷新收敛状态：修订请求失败不能显示成空列表；等待设备 ACK 时周期刷新并在卸载/切网时取消或忽略旧请求；验 401、500、空列表、延迟 ACK、设备失败及切网，不串状态且不误报生效 | AR-02；`console/src/App.tsx` 的 `RevisionsSection` 当前吞加载错误并只在挂载/操作后刷新 |
 
-建议执行批次：IM-01…IM-03 完成 Segment 基础接线；IM-04…IM-05 修复现有转发链路；IM-06…IM-08 明确撤销与端点恢复；IM-09…IM-11 收紧一致性和执行边界；IM-12 完成控制台状态闭环。可独立推进的条目按依赖安排，PN-02 的内核策略验收不能因模型或迁移完成而勾选。
+建议执行批次：IM-01…IM-03 已完成 Segment 模型与启动边界接线；IM-04…IM-05 已修复现有转发链路；IM-06…IM-08 明确撤销与端点恢复；IM-09…IM-11 收紧一致性和执行边界；IM-12 完成控制台状态闭环。可独立推进的条目按依赖安排，PN-02 的内核策略验收不能因模型或迁移完成而勾选。
 
 后续能力继续沿用已有条目：逐端口 TCP/UDP 映射与监听入口归 PN-07，Windows 完整后端归 PN-03，共享 DTO/协议归 MOD-02，模块拆分归 MOD-01/MOD-03。多用户逐网络授权维持个人自托管边界，随 PN-10 的访客需求再设计；本次不新增多租户承诺。
 
@@ -83,7 +83,7 @@ P0 验收完成前，不以旧的“25/27 有测试证据”口径判断可发�
 
 详见 [P0 修复与 nightly 实施记录](docs/implementation/fixes-and-nightly-2026-10-17.md)。
 
-Segment 实测：`cargo check --workspace --offline` 通过；`cargo test -p meshlet-domain --lib --offline` 105 passed；`cargo test -p meshlet-server --offline` 全套 177 passed / 0 failed；迁移 12、recovery 5、审批注册 6、邀请加入 13、备份恢复 7 均通过。`pnpm docs:build`（VitePress 1.6.4）打包与页面渲染通过，未报告 broken link。IM-03 的包含关系边界仍待实现；以上结果不代表策略执行或真实数据面已验收。
+Segment 实测：`cargo check --workspace --all-targets --offline` 通过；`cargo test -p meshlet-domain -p meshlet-server --offline` 全绿（domain 109 passed；server lib 21 passed，集成套件全部 0 failed，含迁移 12、recovery 5、审批注册 6、邀请加入 13、备份恢复 7、旧备份升级 7）；`pnpm docs:build`（VitePress 1.6.4）打包与页面渲染通过。IM-03 仅验收模型与启动恢复边界；策略执行和真实数据面仍不视为已验收。
 
 - CR-01…CR-05 已按 API / Linux netns 范围验收；AR-01…AR-06 已实现，实际 CI 已通过，空 VPS 验收保持待验证。
 - 正式 server unit + drop-in 已在隔离 netns 以 uid 65534 执行；私钥 0600、WireGuard、转发、防火墙和应用读回通过。

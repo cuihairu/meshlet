@@ -11,7 +11,7 @@ use meshlet_domain::{
     generate_token, token_hash, AliasError, AliasMapping, AliasMappingId, BootstrapToken,
     DataplaneEvidence, DesiredStateStatus, Device, DeviceId, DeviceRegistration, DeviceRegistry,
     Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network, Platform, RegistryError, ReturnPathMode,
-    RouteMode, Timestamp, TranslationMode,
+    RouteMode, Segment, Timestamp, TranslationMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -413,6 +413,9 @@ pub struct MeshState {
     /// 所有权归属——删除即整单元清理（alias + 绑定路由），内核规则由修订
     /// apply 交 backend 执行）。
     pub(crate) aliases: HashMap<String, Vec<AliasMapping>>,
+    /// Segment trust groups (ADR-012), restored for startup validation and
+    /// policy-plan work that follows.
+    segments: HashMap<String, Vec<Segment>>,
     /// 路由 id 序列（全局单调，删除不复用）。
     route_seq: u64,
     /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
@@ -440,6 +443,7 @@ impl MeshState {
             registry: DeviceRegistry::new(),
             lan_routes: HashMap::new(),
             aliases: HashMap::new(),
+            segments: HashMap::new(),
             route_seq: 0,
             presence_thresholds,
             ledger: meshlet_domain::ConfigLedger::new(),
@@ -506,6 +510,10 @@ impl MeshState {
         self.registry.registrations().len()
     }
 
+    pub(crate) fn segment_count(&self) -> usize {
+        self.segments.values().map(Vec::len).sum()
+    }
+
     /// 启动重建：灌回一条待审批的注册申请（不进 IPAM、不进期望配置）。
     pub(crate) fn restore_registration(
         &mut self,
@@ -534,6 +542,23 @@ impl MeshState {
 
     /// 启动重建：灌回一台设备（IPAM 保留其虚拟 IP，注册表查重如常）。
     pub(crate) fn restore_device(&mut self, device: Device) -> Result<(), ServiceError> {
+        let segments = self
+            .segments
+            .get(&device.network_id.to_string())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let network = self
+            .networks
+            .get(&device.network_id.to_string())
+            .ok_or_else(|| ServiceError::Internal("network missing for device restore".into()))?;
+        meshlet_domain::validate_device_segment(
+            device.virtual_ipv4,
+            &device.network_id,
+            &device.segment_id,
+            network.overlay_cidr,
+            segments,
+        )
+        .map_err(|e| ServiceError::Internal(e.to_string()))?;
         let ipam = self
             .ipams
             .get_mut(&device.network_id.to_string())
@@ -557,6 +582,21 @@ impl MeshState {
             .entry(alias.network_id.to_string())
             .or_default()
             .push(alias);
+    }
+
+    pub(crate) fn restore_segment(&mut self, segment: Segment) -> Result<(), ServiceError> {
+        let network = self
+            .networks
+            .get(&segment.network_id.to_string())
+            .ok_or_else(|| ServiceError::Internal("network missing for segment restore".into()))?;
+        segment
+            .validate_cidr(network.overlay_cidr)
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        self.segments
+            .entry(segment.network_id.to_string())
+            .or_default()
+            .push(segment);
+        Ok(())
     }
 
     /// 启动重建：灌回一份邀请（摘要索引；撤销/耗尽状态如常保留）。

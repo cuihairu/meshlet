@@ -203,7 +203,7 @@ mod tests {
     use super::*;
     use meshlet_domain::{
         AliasMappingId, Device, DeviceStatus, LanRouteId, Network, NetworkId, Platform,
-        PresenceThresholds, RouteMode, TranslationMode,
+        PresenceThresholds, RouteMode, Segment, TranslationMode,
     };
     use std::net::Ipv4Addr;
 
@@ -217,6 +217,15 @@ mod tests {
             "10.240.0.0/16".parse().unwrap(),
             T0.into(),
         ))
+        .unwrap();
+        mesh.restore_segment(Segment {
+            id: meshlet_domain::default_segment_id(&NetworkId("net-1".into())),
+            network_id: NetworkId("net-1".into()),
+            name: "default".into(),
+            cidr: "10.240.0.0/16".parse().unwrap(),
+            status: meshlet_domain::SegmentStatus::Active,
+            created_at: T0.into(),
+        })
         .unwrap();
         mesh
     }

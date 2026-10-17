@@ -27,7 +27,7 @@
 use meshlet_domain::{
     AliasMapping, BootstrapToken, BootstrapTokenId, ConfigRevision, DesiredStateStatus, Device,
     DeviceId, DeviceRegistration, DeviceStatus, Invite, InviteId, Ipv4Cidr, LanRoute, LanRouteId,
-    Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode, SegmentId,
+    Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode, Segment, SegmentId,
     TranslationMode,
 };
 use sqlx::sqlite::SqlitePoolOptions;
@@ -61,6 +61,7 @@ pub struct MeshStatePersistedView {
     pub registrations: usize,
     pub routes: usize,
     pub aliases: usize,
+    pub segments: usize,
     pub invites: usize,
     pub revisions: usize,
 }
@@ -112,6 +113,10 @@ fn desired_status_parse(s: &str) -> Result<DesiredStateStatus, String> {
         "failed" => Ok(DesiredStateStatus::Failed),
         other => Err(format!("unknown desired status {other:?}")),
     }
+}
+
+fn segment_status_parse(value: &str) -> Result<meshlet_domain::SegmentStatus, String> {
+    meshlet_domain::SegmentStatus::parse(value).ok_or_else(|| format!("unknown status {value:?}"))
 }
 
 fn apply_status_parse(s: &str) -> Result<meshlet_domain::ApplyStatus, String> {
@@ -715,6 +720,27 @@ pub async fn load(
     }
     let networks = state.network_count();
 
+    let segment_rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
+        "SELECT id, network_id, name, cidr, status, created_at
+         FROM segments ORDER BY created_at, id",
+    )
+    .fetch_all(pool)
+    .await?;
+    for (id, network_id, name, cidr, status, created_at) in segment_rows {
+        let segment = Segment {
+            id: SegmentId(id),
+            network_id: NetworkId(network_id),
+            name,
+            cidr: cidr.parse().map_err(|e| corrupt("segment cidr", e))?,
+            status: segment_status_parse(&status).map_err(|e| corrupt("segment status", e))?,
+            created_at,
+        };
+        state
+            .restore_segment(segment)
+            .map_err(|e| corrupt("restore segment", e.to_string()))?;
+    }
+    let segments = state.segment_count();
+
     // 设备：注册表顺序 = 加入顺序（created_at, id）；IPAM 逐一保留地址。
     let device_rows = sqlx::query_as::<
         _,
@@ -1052,6 +1078,7 @@ pub async fn load(
             registrations,
             routes,
             aliases,
+            segments,
             invites,
             revisions: state.revision_count(),
         },
@@ -1238,12 +1265,18 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
         return Err(BackupError::IncompleteSchema { missing });
     }
 
+    let has_segments = tables.iter().any(|table| table == "segments");
     Ok(MeshStatePersistedView {
         networks: count(pool, "networks").await?,
         devices: count(pool, "devices").await?,
         registrations: count(pool, "device_registrations").await?,
         routes: count(pool, "lan_routes").await?,
         aliases: count(pool, "alias_mappings").await?,
+        segments: if has_segments {
+            count(pool, "segments").await?
+        } else {
+            0
+        },
         invites: count(pool, "invitations").await?,
         revisions: count(pool, "config_revisions").await?,
     })
@@ -1691,6 +1724,35 @@ mod tests {
             .find_by_id(&DeviceId("dev-1".into()))
             .unwrap();
         assert_eq!(restored.segment_id, custom_segment);
+        assert_eq!(boot.summary.segments, 2);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn load_rejects_overlapping_segment_containment() {
+        let pool = crate::store::connect("sqlite::memory:").await.unwrap();
+        let network_id = NetworkId("net-1".into());
+        let network = Network::new(
+            network_id.clone(),
+            "home",
+            "10.240.0.0/16".parse().unwrap(),
+            "2026-10-17T00:00:00Z".into(),
+        );
+        insert_network(&pool, &network).await.unwrap();
+        sqlx::query(
+            "INSERT INTO segments (id, network_id, name, cidr, status, created_at)
+             VALUES ('seg-net-1-lab', ?, 'lab', '10.240.0.0/15', 'active', ?)",
+        )
+        .bind(network_id.to_string())
+        .bind(&network.created_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = match load(&pool, meshlet_domain::PresenceThresholds::default()).await {
+            Ok(_) => panic!("overlapping segment containment must fail load"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("outside overlay"), "{error}");
         pool.close().await;
     }
 }
