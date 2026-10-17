@@ -125,7 +125,10 @@ impl NetworkBackend for UnsupportedBackend {
         self.apply_tunnel_sync(&config)
     }
 
-    async fn apply_routes(&self, routes: Vec<RouteConfig>) -> Result<ApplyResult, NetworkError> {
+    async fn apply_routes(
+        &mut self,
+        routes: Vec<RouteConfig>,
+    ) -> Result<ApplyResult, NetworkError> {
         self.apply_routes_sync(&routes)
     }
 
