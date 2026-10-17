@@ -36,7 +36,7 @@
 - `dual_site_end_to_end.rs`：保留双站点相同真实网段经不同 Alias 访问的真实 HTTP + agent 路径；历史双实例拓扑不再当作单实例隔离证据。
 - `agent_plan.rs`：精确 ACK、等待、失败、旧版本/错误哈希拒绝，状态更新不改变候选计划哈希。
 - `revisions.rs` / `auth_console.rs`：旧修订拒绝、幂等、并发首次引导单胜。
-- `backup.rs`：v8 备份升级、迁移失败保护活动库。
+- `backup.rs`：v8 备份升级、迁移失败保护活动库。首次 Windows CI 暴露迁移错误路径中连接池异步释放导致清理文件失败；`store::connect` 现显式等待关闭连接池后返回迁移错误，Windows 回归结果以最新 CI 为准。
 - `scripts/verify-systemd.py` 使用正式 server unit 与 drop-in，以 uid 65534 在独立 netns 实际运行，读取 0600 私钥、创建 WireGuard、配置转发/防火墙并持久化成功状态；测试后服务、命名空间和目录已清理。这不替代空 VPS 的公网安装走查。
 - 本地 x86_64 musl release 构建和归档检查已完成；控制台、VitePress、ShellCheck、actionlint、Clippy 已通过。最终 `MESHLET_REQUIRE_DATAPLANE=1 cargo test --locked --workspace -- --test-threads=1` 通过：381 passed / 0 failed / 0 ignored，0 SKIP。
 

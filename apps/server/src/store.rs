@@ -52,6 +52,11 @@ pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
         })
         .connect_with(options)
         .await?;
-    MIGRATIONS.run(&pool).await?;
+    if let Err(error) = MIGRATIONS.run(&pool).await {
+        // Release file handles before returning, including on Windows where a
+        // dropped pool can otherwise keep a failed restore's staging file open.
+        pool.close().await;
+        return Err(error.into());
+    }
     Ok(pool)
 }
