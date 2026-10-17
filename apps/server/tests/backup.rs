@@ -430,7 +430,7 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
             {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
-            Err(error) => Err(error).unwrap(),
+            Err(error) => panic!("{error:?}"),
         }
     }
     let report = report.expect("restore eventually acquires Windows file handles");
