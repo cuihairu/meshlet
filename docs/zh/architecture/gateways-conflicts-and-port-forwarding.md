@@ -69,7 +69,7 @@ C → WireGuard → VPS hub → WireGuard → G1 → 192.168.10.50
 
 沿用 [ADR-006](../decisions/adr-006-alias-prefix-nat.md)：Alias 与真实前缀等长；转换在各自目标网关；hub 按 Alias 区分站点，不能将两个真实重叠前缀交给不同 Peer 作为可见转发目的。
 
-计划必须明确区分“网关本地真实目标”与“隧道中可见前缀”。静态核对发现 `meshlet-domain/src/peer_routes.rs` 的现有辅助推导会把已发布 Alias 路由的真实目的也加入返回集合，而 `device_plan.rs` 的路由生成按 `RouteMode` 选择 Alias。这种输入口径需要在 RG-02 对客户端/hub 实际计划逐一核验并收敛，不能只检验 UI 配置无冲突。
+计划必须明确区分“网关本地真实目标”与“隧道中可见前缀”。2026-10-18 复核时，`meshlet-domain/src/peer_routes.rs` 已仅在 Direct 模式发布真实目的，`device_plan.rs` 与 `revision.rs` 也按 `RouteMode` 选择真实或 Alias 前缀；此前“辅助推导仍泄漏真实前缀”的描述已过时。RG-02 仍需通过正式 API/Agent 入口同时验证双站点与客户端本地同前缀，不能只检验 UI 配置无冲突。各端地址集合和待补验收详见 [RG-02 设计](../design/overlapping-lan-alias.md)。
 
 Tailscale 的 4via6 使用独立 IPv6 地址区分重叠 IPv4 站点，目标相同但地址表达方式不同。Meshlet 可继续保留 IPv4 Alias，不必为了功能对齐改成 4via6。[4via6 官方说明](https://tailscale.com/docs/features/subnet-routers/4via6-subnets)
 

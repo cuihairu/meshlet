@@ -69,6 +69,7 @@ export default defineConfig({
           ] }],
           '/design/': [{ text: 'Design', items: [
             { text: 'Network Segment Trust', link: '/design/network-segment-trust' },
+            { text: 'Overlapping LAN Aliases', link: '/design/overlapping-lan-alias' },
           ] }],
           '/guide/': [{ text: 'Guides', items: [
             { text: 'Installation', link: '/guide/install' },
@@ -141,6 +142,7 @@ export default defineConfig({
           ] }],
           '/zh/design/': [{ text: '设计', items: [
             { text: '网段信任组', link: '/zh/design/network-segment-trust' },
+            { text: '重叠 LAN Alias 设计', link: '/zh/design/overlapping-lan-alias' },
           ] }],
           '/zh/guide/': [{ text: '指南', items: [
             { text: '安装指南', link: '/zh/guide/install' },

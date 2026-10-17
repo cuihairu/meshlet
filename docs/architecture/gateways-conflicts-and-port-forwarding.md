@@ -17,3 +17,5 @@ A host forward maps a virtual host address to a real LAN host, while a port forw
 ## Acceptance
 
 The proposed matrix covers creation order, duplicate routes, gateway loss, return paths, NAT behavior, and rejection without partial state. The proposal does not claim that every item is implemented.
+
+The [RG-02 design](../design/overlapping-lan-alias.md) specifies independent Alias prefixes for two remote sites that overlap the client LAN, including per-Peer address sets, return modes, lifecycle rules, and remaining acceptance work. Source inspection confirms that Alias real prefixes are already excluded from published tunnel destinations.
