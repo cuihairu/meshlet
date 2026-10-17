@@ -338,6 +338,36 @@ mod tests {
         assert!(!details.iter().any(|detail| detail.contains("seg-user")));
     }
 
+    #[test]
+    fn segment_conflicts_detect_pairwise_alias_and_clean_containment() {
+        let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
+        let users = segment("seg-users", "users", "10.240.1.0/24");
+        let users_child = segment("seg-users-child", "users-child", "10.240.1.128/25");
+        let other = segment("seg-other", "other", "10.240.2.0/24");
+
+        let out = segment_segment_overlap(&[users.clone(), users_child.clone(), other.clone()]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].code, ConflictCode::SegmentSegmentOverlap);
+        assert_eq!(out[0].kind, ConflictKind::ServerKnown);
+        assert!(out[0].is_blocking());
+        assert!(segment_segment_overlap(&[users.clone(), other.clone()]).is_empty());
+
+        let mapped_alias = alias("a-1", "10.241.1.0/24", "192.168.1.0/24");
+        let conflicting_alias = alias("a-2", "10.240.2.0/25", "192.168.2.0/25");
+        let out = segment_alias_overlap(
+            &[users.clone(), other.clone()],
+            &[mapped_alias.clone(), conflicting_alias],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].code, ConflictCode::SegmentAliasOverlap);
+        assert_eq!(out[0].kind, ConflictKind::ServerKnown);
+        assert!(segment_alias_overlap(&[users, other], &[mapped_alias]).is_empty());
+
+        let default = segment("seg-default", "default", "10.240.0.0/16");
+        let child = segment("seg-child", "servers", "10.240.3.0/24");
+        assert!(segment_overlay_containment(overlay, &[default, child]).is_empty());
+    }
+
     fn alias_route(id: &str, dest: &str, gw: &str) -> LanRoute {
         LanRoute {
             route_mode: RouteMode::Alias,
@@ -441,15 +471,18 @@ mod tests {
     fn aggregate_check_network_reports_all_categories() {
         let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
         let a_bad = alias("a-1", "10.240.9.0/24", "192.168.1.0/24"); // 与 overlay 重叠
-        let a_ok = alias("a-2", "10.241.1.0/24", "192.168.1.0/24");
+        let a_ok = alias("a-2", "10.241.1.0/24", "192.168.9.0/24");
         let r1 = route("r-1", "192.168.1.0/24", "gw-home");
         let r2 = route("r-2", "192.168.1.64/26", "gw-office"); // 与 r-1 重叠
+        let parent = segment("seg-parent", "users", "10.240.0.0/14");
+        let parent_child = segment("seg-parent-child", "guests", "10.240.1.0/24");
+        let clean_child = segment("seg-clean-child", "servers", "10.240.2.0/24");
 
         let out = check_network(
             overlay,
             &[a_bad.clone(), a_ok.clone()],
             &[r1.clone(), r2],
-            &[],
+            &[parent, parent_child, clean_child],
             &["10.240.16.0/20".parse().unwrap()], // 服务端已有路由与 overlay 重叠
             None,                                 // 客户端未上报
         );
@@ -461,10 +494,18 @@ mod tests {
                                                                     // 无一 ClientLocal（客户端未上报数据），且存在非阻断项。
         assert!(out.iter().all(|c| c.kind != ConflictKind::ClientLocal));
         assert!(out.iter().any(|c| !c.is_blocking()));
+        assert!(codes.contains(&ConflictCode::SegmentOutsideOverlay));
+        assert!(codes.contains(&ConflictCode::SegmentAliasOverlap));
+        assert!(codes.contains(&ConflictCode::SegmentSegmentOverlap));
+        assert!(codes.contains(&ConflictCode::AliasTargetMismatch));
         // 清洁场景：服务端无冲突、客户端已上报且干净 → 无任何冲突。
         let clean = check_network(
             "10.240.0.0/16".parse().unwrap(),
-            &[a_ok],
+            &[{
+                let mut valid_alias = a_ok.clone();
+                valid_alias.target_cidr = "192.168.1.0/24".parse().unwrap();
+                valid_alias
+            }],
             &[r1],
             &[],
             &[],

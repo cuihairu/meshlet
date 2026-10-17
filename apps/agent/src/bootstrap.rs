@@ -189,4 +189,54 @@ mod tests {
             Some("tok".into())
         );
     }
+
+    #[test]
+    fn saved_device_token_short_circuits_registration() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "meshlet-agent-token-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let token_path = device_token_path(state_dir.to_str().unwrap());
+        write_secret_file(&token_path, " saved-token \n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let config = AgentConfig {
+            state_dir: state_dir.to_str().unwrap().into(),
+            ..AgentConfig::default()
+        };
+        let resolved = resolve_device_token(config).unwrap();
+        assert_eq!(resolved.device_token.as_deref(), Some("saved-token"));
+        let _ = std::fs::remove_file(&token_path);
+        let _ = std::fs::remove_dir(&state_dir);
+    }
+
+    #[test]
+    fn self_registration_requires_key_and_name_before_network_call() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "meshlet-agent-bootstrap-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let config = AgentConfig {
+            state_dir: state_dir.to_str().unwrap().into(),
+            bootstrap_token: Some("bootstrap".into()),
+            ..AgentConfig::default()
+        };
+        let error = resolve_device_token(config).unwrap_err();
+        assert!(error.contains("device_name"), "{error}");
+        let _ = std::fs::remove_dir(&state_dir);
+    }
 }

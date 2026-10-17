@@ -197,6 +197,38 @@ mod tests {
     }
 
     #[test]
+    fn segment_statuses_and_grant_statuses_have_exact_persistence_encoding() {
+        assert_eq!(SegmentStatus::Active.as_str(), "active");
+        assert_eq!(SegmentStatus::Quarantined.as_str(), "quarantined");
+        assert_eq!(
+            SegmentStatus::parse(" active \n"),
+            Some(SegmentStatus::Active)
+        );
+        assert_eq!(
+            SegmentStatus::parse("quarantined"),
+            Some(SegmentStatus::Quarantined)
+        );
+        assert_eq!(SegmentStatus::parse("disabled"), None);
+
+        assert_eq!(SegmentGrantStatus::Pending.as_str(), "pending");
+        assert_eq!(SegmentGrantStatus::Applied.as_str(), "applied");
+        assert_eq!(SegmentGrantStatus::Revoked.as_str(), "revoked");
+        assert_eq!(
+            SegmentGrantStatus::parse("pending"),
+            Some(SegmentGrantStatus::Pending)
+        );
+        assert_eq!(
+            SegmentGrantStatus::parse("applied"),
+            Some(SegmentGrantStatus::Applied)
+        );
+        assert_eq!(
+            SegmentGrantStatus::parse("revoked"),
+            Some(SegmentGrantStatus::Revoked)
+        );
+        assert_eq!(SegmentGrantStatus::parse("issued"), None);
+    }
+
+    #[test]
     fn default_segment_may_equal_overlay_but_user_segment_may_not() {
         let overlay = "10.240.0.0/16".parse().unwrap();
         assert!(segment("default", "10.240.0.0/16")
@@ -256,6 +288,23 @@ mod tests {
             &segments
         )
         .is_err());
+    }
+
+    #[test]
+    fn missing_device_segment_reports_zero_host_fallback() {
+        let error = validate_device_segment(
+            "10.240.1.9".parse().unwrap(),
+            &NetworkId("net-1".into()),
+            &SegmentId("seg-missing".into()),
+            "10.240.0.0/16".parse().unwrap(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SegmentError::DeviceOutsideSegment { segment, .. }
+                if segment == "0.0.0.0/32".parse().unwrap()
+        ));
     }
 
     #[test]

@@ -404,6 +404,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn backend_recovery_default_fails_closed_until_configured() {
+        let mut unconfigured = OkBackend;
+        assert_eq!(
+            unconfigured.reconcile().unwrap_err(),
+            "backend recovery is not configured"
+        );
+
+        struct ConfiguredBackend;
+
+        impl ConfigApplyBackend for ConfiguredBackend {
+            fn apply(&mut self, _r: &ConfigRevision) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn rollback(&mut self, _r: &ConfigRevision) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn reconcile(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        assert!(ConfiguredBackend.reconcile().is_ok());
+    }
+
     struct BrokenBackend {
         apply_error: String,
         rollback_error: String,
@@ -507,6 +534,97 @@ mod tests {
             r.error_summary.as_deref(),
             Some("result unknown: connection lost while applying")
         );
+    }
+
+    #[test]
+    fn uncertain_durable_outcomes_stay_explicitly_unconfirmed() {
+        let mut ledger = ConfigLedger::new();
+        let network = net("net-1");
+        ledger.record(&network, "h1".into(), T0.into());
+        ledger
+            .apply(&network, 1, &mut OkBackend, T1.into())
+            .unwrap();
+        ledger.mark_apply_unconfirmed(&network, 1, "apply commit io failed".into());
+        let revision = ledger.get(&network, 1).unwrap().clone();
+        assert_eq!(revision.apply_status, ApplyStatus::Failed);
+        assert_eq!(revision.applied_at, None);
+        assert_eq!(
+            revision.error_summary.as_deref(),
+            Some("apply commit io failed")
+        );
+
+        ledger.mark_rollback_unconfirmed(&network, 1, "pending state ignored".into());
+        assert_eq!(
+            ledger.get(&network, 1).unwrap().apply_status,
+            ApplyStatus::Failed
+        );
+
+        let rollback = ledger.rollback(&network, 1, &mut OkBackend).unwrap();
+        assert_eq!(rollback.apply_status, ApplyStatus::RolledBack);
+        ledger.mark_rollback_unconfirmed(&network, 1, "rollback commit io failed".into());
+        let revision = ledger.get(&network, 1).unwrap();
+        assert_eq!(revision.apply_status, ApplyStatus::RollbackPending);
+        assert_eq!(
+            revision.error_summary.as_deref(),
+            Some("apply commit io failed; rollback commit io failed")
+        );
+
+        ledger.mark_apply_unconfirmed(&network, 99, "missing".into());
+        ledger.mark_rollback_unconfirmed(&network, 99, "missing".into());
+    }
+
+    #[test]
+    fn unknown_or_superseded_revisions_are_refused_before_touching_backends() {
+        let mut ledger = ConfigLedger::new();
+        let network = net("net-1");
+        ledger.record(&network, "h1".into(), T0.into());
+        ledger
+            .apply(
+                &network,
+                1,
+                &mut BrokenBackend::new("apply failed", "unused"),
+                T1.into(),
+            )
+            .unwrap();
+        let mut backend = CountingBackend { calls: 0 };
+
+        assert!(matches!(
+            ledger.apply(&network, 404, &mut backend, T1.into()),
+            Err(LedgerError::RevisionNotFound { revision: 404, .. })
+        ));
+        assert!(matches!(
+            ledger.rollback(&network, 404, &mut backend),
+            Err(LedgerError::RevisionNotFound { revision: 404, .. })
+        ));
+
+        ledger.record(&network, "h1".into(), T1.into());
+        assert!(matches!(
+            ledger.apply(&network, 1, &mut backend, T2.into()),
+            Err(LedgerError::SupersededRevision {
+                revision: 1,
+                latest: 2,
+                ..
+            })
+        ));
+
+        ledger
+            .apply(
+                &network,
+                2,
+                &mut BrokenBackend::new("apply failed", "unused"),
+                T2.into(),
+            )
+            .unwrap();
+        assert_eq!(backend.calls, 0);
+        assert!(matches!(
+            ledger.rollback(&network, 1, &mut backend),
+            Err(LedgerError::SupersededRevision {
+                revision: 1,
+                latest: 2,
+                ..
+            })
+        ));
+        assert_eq!(backend.calls, 0);
     }
 
     #[test]

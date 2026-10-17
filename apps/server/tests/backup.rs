@@ -11,6 +11,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::response::IntoResponse;
 use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -811,6 +812,32 @@ async fn backup_endpoint_auth_and_configuration_gates() {
         body["error"]["message"].as_str().unwrap(),
         "backup directory is not configured ([backup] dir in server config)"
     );
+    let api_errors = [
+        meshlet_server::backup::BackupApiError::TargetExists("/tmp/taken.db".into()),
+        meshlet_server::backup::BackupApiError::Internal("disk unavailable".into()),
+    ];
+    for error in api_errors {
+        let response = error.into_response();
+        assert!(response.status().is_client_error() || response.status().is_server_error());
+    }
+    assert!(matches!(
+        meshlet_server::backup::BackupApiError::from(
+            meshlet_server::persist::BackupError::TargetExists("/tmp/taken.db".into())
+        ),
+        meshlet_server::backup::BackupApiError::TargetExists(_)
+    ));
+    assert!(matches!(
+        meshlet_server::backup::BackupApiError::from(meshlet_server::persist::BackupError::Locked(
+            "server is running".into()
+        )),
+        meshlet_server::backup::BackupApiError::Internal(_)
+    ));
+    assert!(matches!(
+        meshlet_server::backup::BackupApiError::from(
+            meshlet_server::persist::BackupError::Corrupt("bad header".into())
+        ),
+        meshlet_server::backup::BackupApiError::Internal(_)
+    ));
     c.pool.close().await;
     cleanup(&db);
 }

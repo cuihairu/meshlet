@@ -132,6 +132,13 @@ fn describe(e: ureq::Error) -> String {
     }
 }
 
+fn status_error(code: u16, body: &str) -> ureq::Error {
+    ureq::Error::Status(
+        code,
+        ureq::Response::new(code, "error", body).expect("static response"),
+    )
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -172,5 +179,23 @@ mod tests {
         assert_eq!(truncate("short", 10), "short");
         let long = "x".repeat(30);
         assert_eq!(truncate(&long, 10).chars().count(), 11); // 10 + ellipsis
+    }
+
+    #[test]
+    fn non_2xx_responses_keep_status_and_a_bounded_body() {
+        let body = "x".repeat(500);
+        let error = describe(status_error(401, &body));
+        assert!(error.starts_with("server returned 401: "));
+        assert!(error.ends_with('…'));
+        assert_eq!(
+            error.chars().count(),
+            "server returned 401: ".chars().count() + 201
+        );
+
+        let error = describe(ureq::Error::Status(
+            503,
+            ureq::Response::new(503, "error", "unavailable").expect("static response"),
+        ));
+        assert_eq!(error, "server returned 503: unavailable");
     }
 }

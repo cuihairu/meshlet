@@ -126,6 +126,21 @@ mod tests {
     }
 
     #[test]
+    fn pool_snapshot_reserve_and_count_are_consistent() {
+        let pool: Ipv4Cidr = "10.240.0.0/24".parse().unwrap();
+        let mut ipam = Ipam::new(pool, "10.240.0.1".parse().unwrap()).unwrap();
+        assert_eq!(ipam.pool(), pool);
+        assert_eq!(ipam.allocated_count(), 1);
+        let reserved: Ipv4Addr = "10.240.0.9".parse().unwrap();
+        ipam.reserve(reserved).unwrap();
+        assert_eq!(ipam.allocated_count(), 2);
+        assert!(ipam.is_taken(reserved));
+        ipam.release(reserved);
+        assert_eq!(ipam.allocated_count(), 1);
+        assert!(!ipam.is_taken(reserved));
+    }
+
+    #[test]
     fn allocation_never_duplicates() {
         let mut ipam = Ipam::new(
             "10.240.0.0/24".parse().unwrap(),
