@@ -32,14 +32,15 @@ pub use entities::{
     Network, NetworkId, NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError,
     RouteMode, SegmentId, Timestamp, TranslationMode, UserId,
 };
-pub use segments::{
-    validate_device_segment, Segment, SegmentError, SegmentGrant, SegmentGrantStatus, SegmentStatus,
-};
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};
 pub use presence::{
     evaluate, evaluate_with_defaults, Presence, PresenceInput, PresenceSource, PresenceState,
     PresenceThresholds,
+};
+pub use segments::{
+    default_segment_id, validate_device_segment, Segment, SegmentError, SegmentGrant,
+    SegmentGrantStatus, SegmentStatus,
 };
 
 #[cfg(test)]

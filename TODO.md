@@ -56,8 +56,8 @@ P0 验收完成前，不以旧的“25/27 有测试证据”口径判断可发�
 
 | ID | 优先级 / 状态 | 拆分任务与验收 | 关联 / 代码依据 |
 |---|---|---|---|
-| IM-01 | P0 / 已完成 | 接齐 Segment 字段与测试构造：修复 Device 加载缺 `segment_id`、BootstrapToken 误填字段、domain 内测试 crate 引用及漏字段；离线 workspace check、domain 测试与 server lib 测试通过 | PN-01；`apps/server/src/persist.rs`、`service.rs`、`crates/meshlet-domain/src/peer_routes.rs`；本轮验证：check 通过，domain 104 passed，server 16 passed |
-| IM-02 | P0 / 待实现 | 统一默认 Segment ID、创建与持久化：消除 `seg-default` 与迁移 `seg-net-N` 的差异；设备写入/加载保留归属，新网络也创建默认段；验旧库迁移、新库、审批/邀请加入、重启及备份恢复，段归属不丢失且不串网络 | IM-01、PN-01；`migrations/010_segments.sql`、`apps/server/src/service.rs`、`persist.rs` |
+| IM-01 | P0 / 已完成 | 接齐 Segment 字段与测试构造：修复 Device 加载缺 `segment_id`、BootstrapToken 误填字段、domain 内测试 crate 引用及漏字段；离线 workspace check、domain 测试与 server lib 测试通过 | PN-01；`apps/server/src/persist.rs`、`service.rs`、`crates/meshlet-domain/src/peer_routes.rs`；本轮验证：check 通过，domain 105 passed，server lib 17 passed |
+| IM-02 | P0 / 已完成 | 统一默认 Segment ID 为 `seg-<network_id>`；新网络在同一事务创建默认段，邀请加入与审批转正写入设备段归属，启动加载校验网络归属；迁移、空库建网、审批/邀请加入、重启及备份恢复回归通过 | IM-01、PN-01；`migrations/010_segments.sql`、`011_segment_defaults.sql`、`apps/server/src/service.rs`、`persist.rs`；server 全套测试通过 |
 | IM-03 | P0 / 待实现 | 修正 Segment 包含关系与默认段规则：不能用重叠代替包含；拒绝覆盖 Overlay 的更大前缀、越界段、跨网络成员与非法设备地址；明确默认段与新增子段的共存/迁移规则，覆盖边界测试 | IM-01、PN-01；`crates/meshlet-domain/src/segments.rs`、`conflict.rs`；策略编译、跨段默认拒绝和单向授权仍由 PN-02 验收 |
 | IM-04 | P0 / 待实现 | 修复 `/32` Host Forward 的 SNAT 源地址选择：目标主机地址与网关本机地址不同也能应用；评估按实际出口路由解析源地址，应用与读回使用一致逻辑；验真实 agent 的 API 创建→NETMAP/SNAT→双向通信→删除，并覆盖多 LAN、无出口与 dnat_only | PN-07、AR-05、CR-03；`crates/meshlet-network/src/linux.rs` 的 `lan_addr_in`、`apply_device_plan_sync`、`device_plan_matches_sync`；现有计划断言不覆盖此执行失败 |
 | IM-05 | P0 / 待实现 | 统一 Host Forward / Alias / Direct 的地址冲突校验：复用共享转发空间检查，拒绝与其他网络 Overlay/Direct/Alias 以及本网络已有转发前缀冲突；验不同创建入口及先后顺序结果一致、拒绝后无部分状态 | RG-03、AR-01；`apps/server/src/service.rs` 的 `create_host_forward` 未调用 `check_forward_prefix`，校验与 `create_alias` 不一致 |
@@ -83,7 +83,7 @@ P0 验收完成前，不以旧的“25/27 有测试证据”口径判断可发�
 
 详见 [P0 修复与 nightly 实施记录](docs/implementation/fixes-and-nightly-2026-10-17.md)。
 
-本轮 Segment 接线实测：`cargo check --workspace --offline` 通过；`cargo test -p meshlet-domain --lib --offline` 104 passed / 0 failed；`cargo test -p meshlet-server --lib --offline` 16 passed / 0 failed。`pnpm docs:build`（VitePress 1.6.4）打包与页面渲染通过，未报告 broken link。IM-02 的默认段创建、统一 ID 与持久化恢复验收，以及 IM-03 的包含关系边界仍待实现；这些结果不代表策略执行或真实数据面已验收。
+Segment 实测：`cargo check --workspace --offline` 通过；`cargo test -p meshlet-domain --lib --offline` 105 passed；`cargo test -p meshlet-server --offline` 全套 177 passed / 0 failed；迁移 12、recovery 5、审批注册 6、邀请加入 13、备份恢复 7 均通过。`pnpm docs:build`（VitePress 1.6.4）打包与页面渲染通过，未报告 broken link。IM-03 的包含关系边界仍待实现；以上结果不代表策略执行或真实数据面已验收。
 
 - CR-01…CR-05 已按 API / Linux netns 范围验收；AR-01…AR-06 已实现，实际 CI 已通过，空 VPS 验收保持待验证。
 - 正式 server unit + drop-in 已在隔离 netns 以 uid 65534 执行；私钥 0600、WireGuard、转发、防火墙和应用读回通过。

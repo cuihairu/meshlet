@@ -3,6 +3,12 @@
 use crate::cidr::Ipv4Cidr;
 use crate::entities::{NetworkId, SegmentGrantId, SegmentId, Timestamp};
 
+/// Canonical id for a network's built-in default segment.
+/// Keep in sync with the SQL migrations (`'seg-' || network_id`).
+pub fn default_segment_id(network_id: &NetworkId) -> SegmentId {
+    SegmentId(format!("seg-{network_id}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentStatus {
     Active,
@@ -76,7 +82,10 @@ pub struct SegmentGrant {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SegmentError {
     #[error("segment {segment} is outside overlay {overlay}")]
-    OutsideOverlay { segment: Ipv4Cidr, overlay: Ipv4Cidr },
+    OutsideOverlay {
+        segment: Ipv4Cidr,
+        overlay: Ipv4Cidr,
+    },
     #[error("non-default segment cannot equal overlay {segment}")]
     OverlayEqualNonDefault { segment: Ipv4Cidr },
     #[error("device {device} is outside segment {segment}")]
@@ -95,9 +104,7 @@ impl Segment {
             });
         }
         if self.cidr == overlay && self.name != "default" {
-            return Err(SegmentError::OverlayEqualNonDefault {
-                segment: self.cidr,
-            });
+            return Err(SegmentError::OverlayEqualNonDefault { segment: self.cidr });
         }
         Ok(())
     }
@@ -115,7 +122,9 @@ pub fn validate_device_segment(
     } else {
         Err(SegmentError::DeviceOutsideSegment {
             device: address,
-            segment: segment.map(|segment| segment.cidr).unwrap_or("0.0.0.0/32".parse().unwrap()),
+            segment: segment
+                .map(|segment| segment.cidr)
+                .unwrap_or("0.0.0.0/32".parse().unwrap()),
         })
     }
 }
@@ -137,12 +146,26 @@ mod tests {
     }
 
     #[test]
+    fn default_segment_id_is_stable_and_network_scoped() {
+        assert_eq!(
+            default_segment_id(&NetworkId("net-12".into())),
+            SegmentId("seg-net-12".into())
+        );
+        assert_ne!(
+            default_segment_id(&NetworkId("net-12".into())),
+            default_segment_id(&NetworkId("net-13".into()))
+        );
+    }
+
+    #[test]
     fn default_segment_may_equal_overlay_but_user_segment_may_not() {
         let overlay = "10.240.0.0/16".parse().unwrap();
         assert!(segment("default", "10.240.0.0/16")
             .validate_cidr(overlay)
             .is_ok());
-        assert!(segment("users", "10.240.1.0/24").validate_cidr(overlay).is_ok());
+        assert!(segment("users", "10.240.1.0/24")
+            .validate_cidr(overlay)
+            .is_ok());
         assert!(matches!(
             segment("users", "10.240.0.0/16").validate_cidr(overlay),
             Err(SegmentError::OverlayEqualNonDefault { .. })
@@ -153,12 +176,8 @@ mod tests {
     fn device_must_belong_to_assigned_segment() {
         let segments = [segment("users", "10.240.1.0/24")];
         let id = segments[0].id.clone();
-        assert!(
-            validate_device_segment("10.240.1.9".parse().unwrap(), &id, &segments).is_ok()
-        );
-        assert!(
-            validate_device_segment("10.240.2.9".parse().unwrap(), &id, &segments).is_err()
-        );
+        assert!(validate_device_segment("10.240.1.9".parse().unwrap(), &id, &segments).is_ok());
+        assert!(validate_device_segment("10.240.2.9".parse().unwrap(), &id, &segments).is_err());
     }
 
     #[test]
@@ -175,9 +194,6 @@ mod tests {
             revoked_at: None,
         };
         assert_eq!(grant.source_segment_id, SegmentId("seg-a".into()));
-        assert_eq!(
-            grant.destination_segment_id,
-            SegmentId("seg-b".into())
-        );
+        assert_eq!(grant.destination_segment_id, SegmentId("seg-b".into()));
     }
 }

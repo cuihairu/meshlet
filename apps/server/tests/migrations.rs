@@ -60,6 +60,8 @@ async fn migrations_create_all_core_tables() {
         "lan_routes",
         "networks",
         "sessions",
+        "segment_grants",
+        "segments",
         "users",
     ] {
         assert!(
@@ -67,6 +69,49 @@ async fn migrations_create_all_core_tables() {
             "missing table {expected}"
         );
     }
+}
+
+#[tokio::test]
+async fn segment_default_migration_repairs_missing_rows_and_assignments() {
+    let pool = db().await;
+    sqlx::query(
+        "INSERT INTO networks (id, name, overlay_cidr, created_at, updated_at)
+         VALUES ('net-legacy', 'legacy', '10.240.0.0/16', 't', 't')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO devices (id, network_id, name, virtual_ipv4, public_key, platform, status, created_at)
+         VALUES ('dev-legacy', 'net-legacy', 'legacy-device', '10.240.0.2', 'pub', 'linux', 'revoked', 't')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Model a pre-default row left by the earlier migration path, then apply
+    // 011 directly to verify both missing defaults and non-active devices.
+    let migration = include_str!("../../../migrations/011_segment_defaults.sql");
+    sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    let segment: (String, String, String) =
+        sqlx::query_as("SELECT id, name, cidr FROM segments WHERE network_id = 'net-legacy'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        segment,
+        (
+            "seg-net-legacy".into(),
+            "default".into(),
+            "10.240.0.0/16".into()
+        )
+    );
+    let assigned: String =
+        sqlx::query_scalar("SELECT segment_id FROM devices WHERE id = 'dev-legacy'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(assigned, "seg-net-legacy");
 }
 
 #[tokio::test]
@@ -318,7 +363,7 @@ async fn migrations_are_idempotent_across_reopens() {
     // diagnostics_runs（§12.7 诊断快照）；008 新增 bootstrap_tokens +
     // device_registrations（设备自举注册，Pending 不进 devices）。
     let tables = tables(&pool).await;
-    assert_eq!(tables.len(), 18);
+    assert_eq!(tables.len(), 20);
     assert!(tables.contains(&"mesh_meta".to_string()), "{tables:?}");
     assert!(
         tables.contains(&"diagnostics_runs".to_string()),

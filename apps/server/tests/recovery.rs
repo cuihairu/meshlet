@@ -598,6 +598,21 @@ async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
         .await;
         assert_eq!(st, StatusCode::CREATED);
         network_id = net["id"].as_str().unwrap().to_string();
+        let default_segment: (String, String, String) =
+            sqlx::query_as("SELECT id, name, cidr FROM segments WHERE network_id = ?")
+                .bind(&network_id)
+                .fetch_one(&c.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            default_segment,
+            (
+                format!("seg-{network_id}"),
+                "default".into(),
+                OVERLAY.into()
+            ),
+            "new networks persist the canonical default segment"
+        );
 
         // 自举码 → 设备自注册 → Pending 心跳（带数据面证据）。
         let (st, token) = json_post(
@@ -715,6 +730,12 @@ async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
     .await;
     assert_eq!(st, StatusCode::CREATED, "{approved}");
     assert!(approved["virtual_ipv4"].is_string());
+    let assigned_segment: String =
+        sqlx::query_scalar("SELECT segment_id FROM devices WHERE id = 'dev-reg-1'")
+            .fetch_one(&c.pool)
+            .await
+            .unwrap();
+    assert_eq!(assigned_segment, format!("seg-{network_id}"));
     let (_, revisions_after) = json_get(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions"),
@@ -726,6 +747,19 @@ async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
         "approve after restart records exactly one revision"
     );
 
+    c.pool.close().await;
+    // The restarted loader reconstructs the approved device using its stored
+    // segment assignment, which remains attached to the canonical row.
+    let c = open_app(&db).await;
+    let reloaded_segment: String =
+        sqlx::query_scalar("SELECT segment_id FROM devices WHERE id = 'dev-reg-1'")
+            .fetch_one(&c.pool)
+            .await
+            .unwrap();
+    assert_eq!(reloaded_segment, assigned_segment);
+    let (st, devices) = json_get(&c, &format!("/api/v1/networks/{network_id}/devices")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(devices.as_array().unwrap().len(), 1);
     c.pool.close().await;
     cleanup_db(&db);
 }

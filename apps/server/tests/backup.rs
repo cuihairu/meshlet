@@ -329,11 +329,11 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
         c.pool.close().await;
     }
 
-    // 备份文件独立可打开：16 表 + 8 个迁移齐全；内容停留在备份时刻
+    // 备份文件独立可打开：20 表 + 11 个迁移齐全；内容停留在备份时刻
     // （路由 1 条、route_seq=1），不随活动库后续变更回写。
     let (tables, migrations, routes, seq) = inspect_backup(&backup_path).await;
-    assert_eq!(tables, 18, "schema complete in backup");
-    assert_eq!(migrations, 9, "migrations 001-009 recorded in backup");
+    assert_eq!(tables, 20, "schema complete in backup");
+    assert_eq!(migrations, 11, "migrations 001-011 recorded in backup");
     assert_eq!(routes, 1, "backup frozen at snapshot moment");
     assert_eq!(seq.as_deref(), Some("1"));
 
@@ -426,6 +426,21 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
 
     // 恢复后逐字段一致（网络/设备/路由/修订序列与 desired_config_hash）。
     let c = open_app(&db, None).await;
+    let (default_segment_id, default_segment_cidr): (String, String) =
+        sqlx::query_as("SELECT id, cidr FROM segments WHERE network_id = ? AND name = 'default'")
+            .bind(&network_id)
+            .fetch_one(&c.pool)
+            .await
+            .unwrap();
+    assert_eq!(default_segment_id, format!("seg-{network_id}"));
+    assert_eq!(default_segment_cidr, OVERLAY);
+    let device_segment_id: String =
+        sqlx::query_scalar("SELECT segment_id FROM devices WHERE id = ?")
+            .bind(&device_id)
+            .fetch_one(&c.pool)
+            .await
+            .unwrap();
+    assert_eq!(device_segment_id, default_segment_id);
     assert_eq!(
         json_get(&c, "/api/v1/networks").await.1,
         snap_networks,
@@ -802,7 +817,19 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM _sqlx_migrations WHERE version=9")
+    sqlx::query("ALTER TABLE devices DROP COLUMN segment_id")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE segment_grants")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE segments")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 9")
         .execute(&pool)
         .await
         .unwrap();
@@ -833,7 +860,15 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 11);
+    let default_segments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        default_segments, 0,
+        "no network rows need defaults in empty v8 DB"
+    );
     pool.close().await;
     std::fs::remove_dir_all(dir).unwrap();
 }

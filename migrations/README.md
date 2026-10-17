@@ -1,6 +1,6 @@
 # migrations
 
-SQLx migrations 落库目录。当前版本：`009_deployments.sql`。
+SQLx migrations 落库目录。当前版本：`011_segment_defaults.sql`。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -12,8 +12,9 @@ SQLx migrations 落库目录。当前版本：`009_deployments.sql`。
 | 006_diagnostics | 诊断快照（`diagnostics_runs`） |
 | 007_dataplane_evidence | 心跳回传数据面证据（`devices.dataplane_evidence`） |
 | 008_device_registrations | 设备自举注册：`bootstrap_tokens`（自举码摘要）+ `device_registrations`（Pending 申请） |
-
 | 009_deployments | `hub_deployments`（公共成功计划、恢复错误）+ `device_apply_receipts`（设备版本/哈希回执） |
+| 010_segments | ADR-012 网段信任组：`segments`、`segment_grants` 与设备段归属回填 |
+| 011_segment_defaults | 补齐缺失默认段并回填全部设备；默认段 ID 统一为 `seg-<network_id>` |
 
 ## 应用方式
 

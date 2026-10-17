@@ -491,7 +491,7 @@ mod tests {
             created_at: ts(),
             approved_at: None,
             revoked_at: None,
-            segment_id: SegmentId("seg-default".into()),
+            segment_id: SegmentId("seg-net-1".into()),
         };
         let devices = vec![device("dev-a", "10.240.0.2"), device("dev-b", "10.240.0.3")];
         let routes = vec![route(
@@ -536,7 +536,7 @@ mod tests {
             created_at: ts(),
             approved_at: None,
             revoked_at: None,
-            segment_id: SegmentId("seg-default".into()),
+            segment_id: SegmentId("seg-net-1".into()),
         }];
 
         let err = hub_device_peers(OVERLAY.parse().unwrap(), &devices, &[], &[]).unwrap_err();

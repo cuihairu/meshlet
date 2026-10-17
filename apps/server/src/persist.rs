@@ -155,6 +155,7 @@ fn corrupt(what: &str, e: impl std::fmt::Display) -> sqlx::Error {
 
 /// 落库一个网络行。
 pub async fn insert_network(pool: &SqlitePool, n: &Network) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO networks (id, name, overlay_cidr, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)",
@@ -165,8 +166,19 @@ pub async fn insert_network(pool: &SqlitePool, n: &Network) -> Result<(), sqlx::
     .bind(network_status_to_str(n.status))
     .bind(&n.created_at)
     .bind(&n.updated_at)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    sqlx::query(
+        "INSERT INTO segments (id, network_id, name, cidr, status, created_at)
+         VALUES (?, ?, 'default', ?, 'active', ?)",
+    )
+    .bind(meshlet_domain::default_segment_id(&n.id).to_string())
+    .bind(n.id.to_string())
+    .bind(n.overlay_cidr.to_string())
+    .bind(&n.created_at)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -181,10 +193,10 @@ fn evidence_json(d: &Device) -> Option<String> {
 pub async fn insert_device(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO devices
-           (id, network_id, name, virtual_ipv4, public_key, platform, status,
+            (id, network_id, name, virtual_ipv4, public_key, platform, status, segment_id,
             last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
             created_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(d.id.to_string())
     .bind(d.network_id.to_string())
@@ -193,6 +205,7 @@ pub async fn insert_device(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Er
     .bind(&d.public_key)
     .bind(platform_to_str(d.platform))
     .bind(device_status_to_str(d.status))
+    .bind(d.segment_id.to_string())
     .bind(&d.last_seen_at)
     .bind(&d.last_handshake_at)
     .bind(&d.last_report_at)
@@ -377,10 +390,10 @@ pub async fn promote_registration(
     // （批准后 presence 连续，§7.5 证据不因转正而清零）。
     sqlx::query(
         "INSERT INTO devices
-           (id, network_id, name, virtual_ipv4, public_key, platform, status,
+            (id, network_id, name, virtual_ipv4, public_key, platform, status, segment_id,
             last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
             created_at, approved_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(device.id.to_string())
     .bind(device.network_id.to_string())
@@ -389,6 +402,7 @@ pub async fn promote_registration(
     .bind(&device.public_key)
     .bind(platform_to_str(device.platform))
     .bind(device_status_to_str(device.status))
+    .bind(device.segment_id.to_string())
     .bind(&device.last_seen_at)
     .bind(&device.last_handshake_at)
     .bind(&device.last_report_at)
@@ -647,6 +661,35 @@ pub async fn load(
 ) -> Result<BootState, sqlx::Error> {
     let mut state = MeshState::new(thresholds);
 
+    let missing_defaults: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM networks n
+         WHERE NOT EXISTS (
+             SELECT 1 FROM segments s
+             WHERE s.network_id = n.id AND s.name = 'default'
+         )",
+    )
+    .fetch_one(pool)
+    .await?;
+    if missing_defaults != 0 {
+        return Err(corrupt(
+            "default segments",
+            format!("{missing_defaults} network(s) have no default segment"),
+        ));
+    }
+    let invalid_assignments: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM devices d
+         LEFT JOIN segments s ON s.id = d.segment_id AND s.network_id = d.network_id
+         WHERE s.id IS NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+    if invalid_assignments != 0 {
+        return Err(corrupt(
+            "device segment assignments",
+            format!("{invalid_assignments} device(s) have no segment in their network"),
+        ));
+    }
+
     // 网络按创建顺序（net-N 序列决定插入序，列表展示稳定）。
     let network_rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
         "SELECT id, name, overlay_cidr, status, created_at, updated_at
@@ -724,7 +767,10 @@ pub async fn load(
             created_at: row.11,
             approved_at: row.12,
             revoked_at: row.13,
-            segment_id: SegmentId(row.14.unwrap_or_else(|| "seg-default".to_string())),
+            segment_id: SegmentId(
+                row.14
+                    .ok_or_else(|| corrupt("device segment_id", "NULL after migration"))?,
+            ),
         };
         state
             .restore_device(device)
@@ -1026,8 +1072,7 @@ pub fn internal(e: sqlx::Error) -> ServiceError {
 // 一致性备份与恢复（存档 §17.4）
 // ---------------------------------------------------------------------------
 
-/// 备份文件需要的完整表集合（schema 完整性校验，migrations 001–006）。
-const REQUIRED_TABLES: [&str; 16] = [
+const LEGACY_REQUIRED_TABLES: [&str; 16] = [
     "agent_tokens",
     "alias_mappings",
     "audit_events",
@@ -1153,7 +1198,7 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
     )
     .fetch_all(pool)
     .await?;
-    let base_missing: Vec<String> = REQUIRED_TABLES
+    let base_missing: Vec<String> = LEGACY_REQUIRED_TABLES
         .iter()
         .filter(|t| !tables.iter().any(|have| have == **t))
         .map(|t| t.to_string())
@@ -1163,13 +1208,26 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
             missing: base_missing,
         });
     }
+    let has_migration_history: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_migration_history {
+        return Err(BackupError::IncompleteSchema {
+            missing: vec!["_sqlx_migrations".into()],
+        });
+    }
     let latest: Option<i64> =
         sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success=1")
             .fetch_one(pool)
             .await?;
-    let mut required = REQUIRED_TABLES.to_vec();
+    let mut required = LEGACY_REQUIRED_TABLES.to_vec();
     if latest.is_some_and(|v| v >= 9) {
         required.extend(["hub_deployments", "device_apply_receipts"]);
+    }
+    if latest.is_some_and(|v| v >= 10) {
+        required.extend(["segments", "segment_grants"]);
     }
     let missing: Vec<String> = required
         .iter()
@@ -1192,7 +1250,7 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
 }
 
 async fn count(pool: &sqlx::SqlitePool, table: &str) -> Result<usize, BackupError> {
-    // 表名来自 REQUIRED_TABLES 白名单，不是用户输入。
+    // Callers use fixed schema table names, never user input.
     let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
         .fetch_one(pool)
         .await?;
@@ -1573,5 +1631,66 @@ mod tests {
             assert_eq!(platform_to_str(platform_parse(s).unwrap()), s);
         }
         assert!(device_status_parse("bogus").is_err());
+    }
+
+    #[tokio::test]
+    async fn device_segment_assignment_survives_database_reload() {
+        let pool = crate::store::connect("sqlite::memory:").await.unwrap();
+        let network_id = NetworkId("net-1".into());
+        let network = Network::new(
+            network_id.clone(),
+            "home",
+            "10.240.0.0/16".parse().unwrap(),
+            "2026-10-17T00:00:00Z".into(),
+        );
+        insert_network(&pool, &network).await.unwrap();
+        let default_id = meshlet_domain::default_segment_id(&network_id);
+        let persisted_default: String =
+            sqlx::query_scalar("SELECT id FROM segments WHERE network_id = ? AND name = 'default'")
+                .bind(network_id.to_string())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(persisted_default, default_id.to_string());
+
+        let custom_segment = SegmentId("seg-net-1-lab".into());
+        sqlx::query(
+            "INSERT INTO segments (id, network_id, name, cidr, status, created_at)
+             VALUES (?, ?, 'lab', '10.240.1.0/24', 'active', '2026-10-17T00:00:00Z')",
+        )
+        .bind(custom_segment.to_string())
+        .bind(network_id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let device = Device {
+            id: DeviceId("dev-1".into()),
+            network_id: network_id.clone(),
+            name: "lab-device".into(),
+            virtual_ipv4: "10.240.1.2".parse().unwrap(),
+            public_key: "public-key".into(),
+            platform: Platform::Linux,
+            status: DeviceStatus::Active,
+            last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
+            dataplane_evidence: None,
+            created_at: "2026-10-17T00:00:00Z".into(),
+            approved_at: None,
+            segment_id: custom_segment.clone(),
+            revoked_at: None,
+        };
+        insert_device(&pool, &device).await.unwrap();
+
+        let boot = load(&pool, meshlet_domain::PresenceThresholds::default())
+            .await
+            .unwrap();
+        let restored = boot
+            .mesh
+            .registry
+            .find_by_id(&DeviceId("dev-1".into()))
+            .unwrap();
+        assert_eq!(restored.segment_id, custom_segment);
+        pool.close().await;
     }
 }

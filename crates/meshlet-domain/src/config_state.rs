@@ -837,7 +837,7 @@ mod tests {
             dataplane_evidence: None,
             created_at: T0.into(),
             approved_at: None,
-            segment_id: crate::SegmentId("seg-default".into()),
+            segment_id: crate::SegmentId("seg-net-1".into()),
             revoked_at: None,
         }
     }
