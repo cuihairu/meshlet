@@ -68,7 +68,7 @@ Acceptance covers tested IPv4 unicast protocols. Broadcast discovery, embedded-a
 | `apps/server/src/service.rs` | Alias routes can overlap in real space; mappings require a same-network Alias route, one-to-one binding, and equal prefix length | Same-gateway ambiguity rejection, return-mode compatibility, RG-03 checks |
 | `crates/meshlet-network/tests/alias_nat.rs` | Existing topology covers two overlapping remote LANs, site identity, SNAT, and source preservation | Formal API/Agent entry points plus a matching client-local LAN |
 | `apps/server/tests/agent_plan.rs` | Gateway NAT and exclusion of its own LAN have coverage | Combined topology, single-site deletion, restart, failure recovery |
-| `apps/server/tests/dual_site_end_to_end.rs` | Formal API/Agent flow covers two remote LANs plus the client-local same-prefix LAN. UDP probes return local/site1/site2, the kernel keeps the client-local route, and the repeated real prefix is absent from tunnel routes | TCP identity, return-mode variation, deletion, restart, failure recovery, and RG-03 preflight remain open |
+| `apps/server/tests/dual_site_end_to_end.rs` | Formal API/Agent flow covers two remote LANs plus the client-local same-prefix LAN. UDP and TCP return local/site1/site2, packet captures record the three requested destination/port tuples, deletion removes site1 routes and NAT while preserving site2/local paths, and server/agent restart rebuilds the remaining plan | Return-mode variation, same-gateway ambiguity, business-side failure recovery, backup restore, and RG-03 preflight remain open |
 
 These findings include a local Linux netns run of `dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites`. This remains integration acceptance, not VPS deployment or full RG-02 acceptance.
 
@@ -76,13 +76,13 @@ These findings include a local Linux netns run of `dual_same_prefix_lans_publish
 
 | Case | Required result |
 |---|---|
-| RG02-01: two remote LANs and local LAN overlap | UDP returns local/site1/site2 in the available netns test; TCP identity remains open |
+| RG02-01: two remote LANs and local LAN overlap | UDP and TCP return local/site1/site2; tcpdump records the requested destination and port for each path |
 | RG02-02: plan consistency | Alias prefixes belong to the correct hub Peers and client routes/AllowedIPs; no repeated real or unpublished aggregate prefixes enter the tunnel |
 | RG02-03: return modes | SNAT exposes the correct gateway LAN address; preserved-source mode exposes Overlay source, fails without a return route, and succeeds when it is added |
 | RG02-04: missing or invalid mapping | No real-prefix fallback; reject orphan, cross-network, mismatched-target, or ambiguous same-gateway input without partial writes |
-| RG02-05: delete home Alias | Home entry fails; office and local access remain; remove only home-owned objects and its NAT |
-| RG02-06: G1 offline or application fails | No redirection to G2 or false success; deterministic failure/recovery |
-| RG02-07: restart and restore | Keep route/mapping/gateway references and actual NAT mode; do not resurrect deleted mappings |
+| RG02-05: delete home Alias | Deletion removes site1 route/NAT and site2/local TCP remain reachable; cleanup history must be checked after default-policy changes |
+| RG02-06: G1 offline or application fails | Still open for failure reporting, redirection prevention, and deterministic recovery |
+| RG02-07: restart and restore | Server/agent restart rebuilds the remaining route and NAT exactly; backup restore and actual NAT-mode persistence remain open |
 | RG02-08: conflicts and unknown occupancy | Reject occupied Alias space; display unknown offline-client checks; preflight preserves foreign routes, jointly with RG-03 |
 
 Implementation gates are domain peer-route tests, server plan/API regressions, and strict dataplane tests. Set `MESHLET_REQUIRE_DATAPLANE=1`: missing prerequisites fail rather than count a skip as success. Mark RG-02 accepted only after the combined scenario passes.

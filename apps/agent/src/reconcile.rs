@@ -128,12 +128,11 @@ pub fn needs_apply(state: &AgentState, snapshot: &NetworkSnapshot, plan: &Device
     }
 }
 
-/// 内核实际与期望的漂移判定。
+/// Kernel state versus desired drift.
 ///
 /// - 隧道：不存在，或地址与期望不是同一个 → 漂移（重启后接口消失是常态）；
 /// - peer 数：少于期望 peers 数 → 漂移（部分 peer 被手工删掉）；
-/// - 路由：期望里有的目的前缀没装上 → 漂移（只判「缺失」，多出来的自有
-///   对象由 [`stale_owners`] 与 backend 的对账处理，不在这里误判）；
+/// - 路由：期望里有的目的前缀没装上，或受管接口上出现不再期望的路由 → 漂移；
 /// - NAT：期望有规则而内核一条 Meshlet 规则都没有 → 漂移（重启清空 iptables）。
 fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) -> bool {
     if !snapshot.tunnel_exists || snapshot.forwarding_enabled != Some(true) {
@@ -161,6 +160,18 @@ fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) ->
         .map(|r| r.destination.to_string())
         .any(|d| !installed.contains(&d));
     if missing {
+        return true;
+    }
+    // A route previously installed by the same interface but no longer desired
+    // is Meshlet-owned drift. Applying routes then removes it without sweeping
+    // connected or foreign paths.
+    let extra = snapshot.installed_routes.iter().any(|installed| {
+        !plan
+            .routes
+            .iter()
+            .any(|route| &route.destination == installed)
+    });
+    if extra {
         return true;
     }
     (!plan.nat_rules.is_empty() && !snapshot.nat_rules_present)

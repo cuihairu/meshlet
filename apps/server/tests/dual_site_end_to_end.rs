@@ -41,6 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use meshlet_config::DataPlaneConfig;
@@ -135,6 +136,17 @@ fn prerequisites() -> Option<()> {
             return None;
         }
     }
+    match Command::new("tcpdump").arg("--version").output() {
+        Ok(o) if o.status.success() => {}
+        _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
+            eprintln!("SKIP: tcpdump not installed");
+            return None;
+        }
+    }
     Some(())
 }
 
@@ -171,6 +183,26 @@ fn kernel_routes(ns: &str) -> String {
     let out = netns_exec(ns, &["ip", "route"]);
     require_ok(&out, "ip route");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn iptables_save(ns: &str) -> String {
+    let out = netns_exec(ns, &["iptables-save"]);
+    require_ok(&out, "iptables-save");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn policy_rules(ns: &str) -> String {
+    let out = netns_exec(ns, &["ip", "rule"]);
+    require_ok(&out, "ip rule");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn managed_iptables(ns: &str) -> Vec<String> {
+    iptables_save(ns)
+        .lines()
+        .filter(|line| line.starts_with("-A "))
+        .map(str::to_string)
+        .collect()
 }
 
 // ---------------------------------------------------------------- 密钥
@@ -551,9 +583,11 @@ impl Topology {
 
 // ---------------------------------------------------------------- 服务端
 
-/// 起一个真实 axum 服务（host 桥地址上的 ephemeral 端口），hub 数据面经注入
-/// 的后端构造跑进 HUB netns。返回 base URL。
-fn start_server(db: PathBuf, hub_key: PathBuf, hub_netns: String) -> String {
+fn start_stoppable_server(
+    db: PathBuf,
+    hub_key: PathBuf,
+    hub_netns: String,
+) -> (String, ServerHandle) {
     let cfg = DataPlaneConfig {
         enabled: true,
         interface: "wg0".into(),
@@ -572,7 +606,8 @@ fn start_server(db: PathBuf, hub_key: PathBuf, hub_netns: String) -> String {
         .expect("listener nonblocking for tokio");
     let port = listener.local_addr().unwrap().port();
     let db_url = format!("sqlite:{}", db.to_string_lossy());
-    std::thread::spawn(move || {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let thread = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -581,8 +616,6 @@ fn start_server(db: PathBuf, hub_key: PathBuf, hub_netns: String) -> String {
             let pool = meshlet_server::store::connect(&db_url)
                 .await
                 .expect("store connect");
-            // 走真实启动路径（§17.3）：从 DB 重建期望状态。两个服务端实例
-            // 共库时，后启动的那个据此看到先启动的那个写入的网络与设备。
             let boot =
                 meshlet_server::persist::load(&pool, meshlet_domain::PresenceThresholds::default())
                     .await
@@ -599,12 +632,39 @@ fn start_server(db: PathBuf, hub_key: PathBuf, hub_netns: String) -> String {
                 .with_apply_backend(factory),
             );
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-            axum::serve(listener, meshlet_server::router(state))
-                .await
-                .unwrap();
+            let result = axum::serve(listener, meshlet_server::router(state))
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+            if let Err(error) = result {
+                eprintln!("test server stopped: {error}");
+            }
         });
     });
-    format!("http://{SERVER_BRIDGE_IP}:{port}")
+    (
+        format!("http://{SERVER_BRIDGE_IP}:{port}"),
+        ServerHandle {
+            shutdown: Some(shutdown_tx),
+            thread: Some(thread),
+        },
+    )
+}
+
+struct ServerHandle {
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl ServerHandle {
+    fn stop(mut self) {
+        if let Some(sender) = self.shutdown.take() {
+            let _ = sender.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("join server");
+        }
+    }
 }
 
 /// 等服务端开始应答（线程起来有一个窗口；任何 HTTP 状态都算「已应答」）。
@@ -676,6 +736,33 @@ s.settimeout(15)
 data, addr = s.recvfrom(2048)
 s.sendto(f'{site} seen={addr[0]}'.encode(), addr)
 ";
+
+/// TCP echo server: replies `{site} seen={source}` and logs the 5-tuple.
+const TCP_ECHO_PY: &str = r#"
+import socket, sys
+port, site = int(sys.argv[1]), sys.argv[2]
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(('0.0.0.0', port))
+s.listen(5)
+s.settimeout(15)
+conn, peer = s.accept()
+data = conn.recv(2048)
+local = conn.getsockname()
+print(f'{site} seen={peer[0]} tuple={peer[0]}:{peer[1]}->{local[0]}:{local[1]} tcp')
+conn.sendall(f'{site} seen={peer[0]} tuple={peer[0]}:{peer[1]}->{local[0]}:{local[1]} tcp'.encode())
+conn.close()
+"#;
+
+/// TCP client: sends a marker, returns the site identity and observed tuple.
+const TCP_SEND_PY: &str = r#"
+import socket, sys
+target, port = sys.argv[1], int(sys.argv[2])
+s = socket.create_connection((target, port), timeout=3)
+s.settimeout(3)
+s.sendall(b'tcp-probe')
+print(s.recv(2048).decode())
+s.close()
+"#;
 
 /// UDP 发送端：带重试（等 echo 服务起），打印应答源与应答体。
 const SEND_PY: &str = "\
@@ -765,6 +852,129 @@ fn local_udp_echo(topo: &Topology, script_dir: &Path, target: &str, port: u16) -
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn tcp_echo(
+    topo: &Topology,
+    script_dir: &Path,
+    source_ns: &str,
+    target: &str,
+    site: &str,
+    port: u16,
+) -> String {
+    let echo_py = script_dir.join("tcp-echo.py");
+    let send_py = script_dir.join("tcp-send.py");
+    let server_ns = if site == "local" {
+        &topo.local_lan
+    } else {
+        source_ns
+    };
+    let server = Command::new("sudo")
+        .arg("-n")
+        .args(["ip", "netns", "exec", server_ns, "python3"])
+        .arg(&echo_py)
+        .arg(port.to_string())
+        .arg(site)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn tcp echo server");
+    let out = netns_exec(
+        &topo.a.netns,
+        &[
+            "python3",
+            &send_py.to_string_lossy(),
+            target,
+            &port.to_string(),
+        ],
+    );
+    let server_output = server.wait_with_output().expect("tcp echo server output");
+    assert!(
+        out.status.success() && server_output.status.success(),
+        "tcp echo to {target}: client={} server={} client_error={} server_error={}",
+        out.status,
+        server_output.status,
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&server_output.stderr),
+    );
+    let reply = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let server_tuple = String::from_utf8_lossy(&server_output.stdout)
+        .trim()
+        .to_string();
+    assert!(
+        reply.contains(site),
+        "tcp reply must identify {site}: {reply}"
+    );
+    assert!(
+        reply == server_tuple,
+        "client and server must record the same TCP tuple: reply={reply}, server={server_tuple}"
+    );
+    reply
+}
+
+fn capture_packet(
+    topo: &Topology,
+    script_dir: &Path,
+    netns: &str,
+    interface: &str,
+    filter: &str,
+    target: &str,
+    port: u16,
+) -> String {
+    let capture = script_dir.join("capture.out");
+    let _ = std::fs::remove_file(&capture);
+    let server_ns = if target.starts_with("10.241.1.") {
+        &topo.lan1
+    } else if target.starts_with("10.241.2.") {
+        &topo.lan2
+    } else {
+        &topo.local_lan
+    };
+    let echo_py = script_dir.join("tcp-echo.py");
+    let mut server = Command::new("sudo")
+        .arg("-n")
+        .args(["ip", "netns", "exec", server_ns, "python3"])
+        .arg(&echo_py)
+        .arg(port.to_string())
+        .arg("capture")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn capture echo server");
+    std::thread::sleep(Duration::from_millis(200));
+    let mut tcpdump = Command::new("sudo")
+        .arg("-n")
+        .args([
+            "ip", "netns", "exec", netns, "tcpdump", "-l", "-c", "1", "-i", interface, filter,
+        ])
+        .stdout(Stdio::from(
+            std::fs::File::create(&capture).expect("create capture output"),
+        ))
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn tcpdump");
+    std::thread::sleep(Duration::from_millis(250));
+    let send_py = script_dir.join("tcp-send.py");
+    let probe = netns_exec(
+        netns,
+        &[
+            "python3",
+            &send_py.to_string_lossy(),
+            target,
+            &port.to_string(),
+        ],
+    );
+    let status = tcpdump.wait().expect("wait tcpdump");
+    let probe_status = probe.status;
+    let _ = server.wait();
+    let output = std::fs::read_to_string(&capture).unwrap_or_default();
+    assert!(probe_status.success(), "tcp probe for capture failed");
+    assert!(status.success(), "tcpdump exited unsuccessfully");
+    assert!(
+        output.contains(target) && output.contains(&port.to_string()),
+        "capture did not contain the requested TCP 5-tuple: {output}"
+    );
+    output
+}
+
 // ---------------------------------------------------------------- 测试
 
 #[test]
@@ -789,13 +999,15 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     std::fs::write(&echo_py, ECHO_PY).unwrap();
     let send_py = dir.join("send.py");
     std::fs::write(&send_py, SEND_PY).unwrap();
+    std::fs::write(dir.join("tcp-echo.py"), TCP_ECHO_PY).unwrap();
+    std::fs::write(dir.join("tcp-send.py"), TCP_SEND_PY).unwrap();
     let local_route_before = kernel_routes(&topo.a.netns);
     assert!(
         local_route_before.contains("192.168.1.0/24"),
         "client local LAN must have its existing route before apply: {local_route_before}"
     );
 
-    let base = start_server(
+    let (base, server_handle) = start_stoppable_server(
         dir.join("db.sqlite3"),
         hub_key_path.clone(),
         topo.hub.netns.clone(),
@@ -909,7 +1121,7 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     // net-B 设备（§17.3）。
     let hub_b_key_path = dir.join("hub-b.key");
     std::fs::write(&hub_b_key_path, format!("{}\n", topo.hub2.private_key)).unwrap();
-    let base_b = start_server(
+    let (base_b, server_b_handle) = start_stoppable_server(
         dir.join("db.sqlite3"),
         hub_b_key_path,
         topo.hub2.netns.clone(),
@@ -944,6 +1156,7 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     let routes_uri = format!("/api/v1/networks/{network_id}/routes");
     let aliases_uri = format!("/api/v1/networks/{network_id}/aliases");
     let mut route_ids = Vec::new();
+    let mut alias_ids = Vec::new();
     for (name, gateway, alias_cidr) in [
         ("gw1", g1_id.as_str(), "10.241.1.0/24"),
         ("gw2", g2_id.as_str(), "10.241.2.0/24"),
@@ -974,6 +1187,7 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
             })),
         );
         assert_eq!(code, 201, "alias for {name}: {alias}");
+        alias_ids.push(alias["id"].as_str().unwrap().to_string());
         route_ids.push(route_id);
     }
     assert_ne!(route_ids[0], route_ids[1], "each site keeps its own route");
@@ -1082,6 +1296,54 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
         "site2 gateway lan addr expected: {reply2}"
     );
 
+    let tcp_site1 = tcp_echo(&topo, &dir, &topo.lan1, "10.241.1.5", "site1", 7801);
+    let tcp_site2 = tcp_echo(&topo, &dir, &topo.lan2, "10.241.2.5", "site2", 7802);
+    let tcp_local = tcp_echo(&topo, &dir, &topo.local_lan, "192.168.1.5", "local", 7800);
+    for (name, identity) in [
+        ("site1", tcp_site1.as_str()),
+        ("site2", tcp_site2.as_str()),
+        ("local", tcp_local.as_str()),
+    ] {
+        assert!(
+            identity.contains(name) && identity.contains(" tcp"),
+            "TCP path must identify {name} with a tuple: {identity}"
+        );
+    }
+
+    let packet1 = capture_packet(
+        &topo,
+        &dir,
+        &topo.a.netns,
+        "wg0",
+        "tcp port 7803 and host 10.241.1.5",
+        "10.241.1.5",
+        7803,
+    );
+    let packet2 = capture_packet(
+        &topo,
+        &dir,
+        &topo.a.netns,
+        "wg0",
+        "tcp port 7804 and host 10.241.2.5",
+        "10.241.2.5",
+        7804,
+    );
+    let local_packet = capture_packet(
+        &topo,
+        &dir,
+        &topo.a.netns,
+        "any",
+        "tcp port 7805 and host 192.168.1.5",
+        "192.168.1.5",
+        7805,
+    );
+    assert!(packet1.contains("10.241.1.5.7803"), "wire tuple: {packet1}");
+    assert!(packet2.contains("10.241.2.5.7804"), "wire tuple: {packet2}");
+    assert!(
+        local_packet.contains("192.168.1.5.7805"),
+        "wire tuple: {local_packet}"
+    );
+
     // ---- 验收③：证据回传闭环（设备视图读到内核实测） ---------------------
     // 手工再跑一轮心跳（此刻握手已建立，探测才会成功）。
     for (node, token, name) in [
@@ -1125,7 +1387,80 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     );
     assert_eq!(ev["tunnel_mtu"], 1420, "kernel mtu reading: {ev}");
 
-    // ---- 验收④：跨网络隔离（§18.2.12）------------------------------------
+    // ---- Site deletion: the other site and the local prefix remain online.
+    let rules_before_delete = (
+        iptables_save(&topo.g1.netns),
+        iptables_save(&topo.g2.netns),
+        policy_rules(&topo.g1.netns),
+        policy_rules(&topo.g2.netns),
+    );
+    let (code, _) = http_json(
+        "DELETE",
+        &format!("{base}{routes_uri}/{}", route_ids[0]),
+        Some(&cookie),
+        None,
+        None,
+    );
+    assert_eq!(code, 204, "delete site1 route");
+    let revisions = admin(
+        &base,
+        &cookie,
+        "GET",
+        &format!("/api/v1/networks/{network_id}/config-revisions"),
+        None,
+    );
+    let latest = revisions.as_array().unwrap().last().unwrap()["revision"]
+        .as_u64()
+        .unwrap();
+    let applied = admin(
+        &base,
+        &cookie,
+        "POST",
+        &format!("/api/v1/networks/{network_id}/config-revisions/{latest}/apply"),
+        Some(json!({})),
+    );
+    assert_eq!(applied["apply_status"], "applied", "post-delete apply");
+    for (node, token, name) in [
+        (&topo.g1, g1_token.as_str(), "g1"),
+        (&topo.g2, g2_token.as_str(), "g2"),
+        (&topo.a, a_token.as_str(), "a"),
+    ] {
+        tick_agent(&dir, &base, name, node, token, Some(&hub_endpoint));
+    }
+    let g1_after = iptables_save(&topo.g1.netns);
+    let g2_after = iptables_save(&topo.g2.netns);
+    let expected_client_routes = kernel_routes(&topo.a.netns)
+        .lines()
+        .filter(|route| !route.contains("10.241.1.0/24"))
+        .map(|route| route.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(policy_rules(&topo.g1.netns), rules_before_delete.2);
+    assert_eq!(policy_rules(&topo.g2.netns), rules_before_delete.3);
+    assert!(
+        !g1_after.contains("10.241.1.0/24"),
+        "site1 alias rules must be absent after deletion: {g1_after}"
+    );
+    assert!(
+        !g1_after.contains(&format!("meshlet alias {}", alias_ids[0])),
+        "deleted alias owner must be absent after deletion: {g1_after}"
+    );
+    assert!(
+        g2_after.contains("10.241.2.0/24"),
+        "site2 NAT must remain after deleting site1: {g2_after}"
+    );
+    assert!(
+        !g2_after.contains("10.241.1.0/24"),
+        "site2 must not gain site1 rules: {g2_after}"
+    );
+    let tcp_after_delete = tcp_echo(&topo, &dir, &topo.local_lan, "192.168.1.5", "local", 7806);
+    assert!(tcp_after_delete.contains("local"), "{tcp_after_delete}");
+    let tcp_site2_after_delete = tcp_echo(&topo, &dir, &topo.lan2, "10.241.2.5", "site2", 7807);
+    assert!(
+        tcp_site2_after_delete.contains("site2"),
+        "{tcp_site2_after_delete}"
+    );
+    // ---- Cross-network isolation: this exercises site1's offline interval ---
     // net-B 自身是活的（B ↔ net-B hub 可达），所以 A → B 的失败只能归因于
     // 隔离，而不是 B 没起来。
     assert!(
@@ -1169,31 +1504,97 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
         "net-b plan must not carry net-a's overlay: {b_plan}"
     );
     // 内核路由表同样没有对端网络的路由（双保险，不只在计划层）。
-    let routes_in = |ns: &str| -> String {
-        let out = netns_exec(ns, &["ip", "route"]);
-        String::from_utf8_lossy(&out.stdout).to_string()
-    };
     assert!(
-        routes_in(&topo.a.netns).contains("10.240.0.0/16"),
+        kernel_routes(&topo.a.netns).contains("10.240.0.0/16"),
         "net-a kernel route carries its own overlay: {}",
-        routes_in(&topo.a.netns)
+        kernel_routes(&topo.a.netns)
     );
     assert!(
-        routes_in(&topo.b.netns).contains("10.242.0.0/16"),
+        kernel_routes(&topo.b.netns).contains("10.242.0.0/16"),
         "net-b kernel route carries its own overlay: {}",
-        routes_in(&topo.b.netns)
+        kernel_routes(&topo.b.netns)
     );
     assert!(
-        !routes_in(&topo.a.netns).contains("10.242"),
+        !kernel_routes(&topo.a.netns).contains("10.242"),
         "net-a kernel routes must not reach net-b: {}",
-        routes_in(&topo.a.netns)
+        kernel_routes(&topo.a.netns)
     );
     assert!(
-        !routes_in(&topo.b.netns).contains("10.240"),
+        !kernel_routes(&topo.b.netns).contains("10.240"),
         "net-b kernel routes must not reach net-a: {}",
-        routes_in(&topo.b.netns)
+        kernel_routes(&topo.b.netns)
     );
 
+    // ---- Control-plane restart: restore the remaining site from persisted state.
+    let site1_unreachable = topo.ping_within(&topo.a.netns, "10.241.1.5", Duration::from_secs(4));
+    assert!(
+        !site1_unreachable,
+        "deleted site1 alias must remain unreachable before restart"
+    );
+    let g2_kernel_before_restart = managed_iptables(&topo.g2.netns);
+    let local_kernel_before_restart = iptables_save(&topo.local_lan);
+    server_handle.stop();
+    server_b_handle.stop();
+    std::fs::remove_file(dir.join("agent-a/applied.json")).unwrap();
+    require_ok(
+        &netns_exec(&topo.a.netns, &["ip", "link", "del", "wg0"]),
+        "simulate agent restart",
+    );
+    let (base_restarted, restarted_handle) = start_stoppable_server(
+        dir.join("db.sqlite3"),
+        hub_key_path.clone(),
+        topo.hub.netns.clone(),
+    );
+    wait_server_up(&base_restarted);
+    let (base_b_restarted, base_b_restarted_handle) = start_stoppable_server(
+        dir.join("db.sqlite3"),
+        dir.join("hub-b.key"),
+        topo.hub2.netns.clone(),
+    );
+    wait_server_up(&base_b_restarted);
+    for (node, token, name) in [
+        (&topo.g1, g1_token.as_str(), "g1"),
+        (&topo.g2, g2_token.as_str(), "g2"),
+        (&topo.a, a_token.as_str(), "a"),
+    ] {
+        tick_agent(
+            &dir,
+            &base_restarted,
+            name,
+            node,
+            token,
+            Some(&hub_endpoint),
+        );
+    }
+    tick_agent(
+        &dir,
+        &base_b_restarted,
+        "laptop-b",
+        &topo.b,
+        b_token.as_str(),
+        Some(&format!("{HUB_B_UNDERLAY_IP}:{HUB_LISTEN_PORT}")),
+    );
+    assert_eq!(
+        managed_iptables(&topo.g2.netns),
+        g2_kernel_before_restart,
+        "remaining gateway NAT must be rebuilt exactly after restart"
+    );
+    assert_eq!(
+        kernel_routes(&topo.a.netns),
+        expected_client_routes,
+        "client routes must be rebuilt exactly after restart"
+    );
+    assert_eq!(
+        iptables_save(&topo.local_lan),
+        local_kernel_before_restart,
+        "local LAN must remain untouched by restore"
+    );
+    let restored_local = tcp_echo(&topo, &dir, &topo.local_lan, "192.168.1.5", "local", 7808);
+    let restored_site2 = tcp_echo(&topo, &dir, &topo.lan2, "10.241.2.5", "site2", 7809);
+    assert!(restored_local.contains("local"), "{restored_local}");
+    assert!(restored_site2.contains("site2"), "{restored_site2}");
+    base_b_restarted_handle.stop();
+    restarted_handle.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
