@@ -100,10 +100,7 @@ pub fn segment_alias_overlap(segments: &[Segment], aliases: &[AliasMapping]) -> 
 
 /// Strict overlay containment for non-default segments; the default segment
 /// may equal the overlay for zero-behavior-fork legacy backfill.
-pub fn segment_overlay_containment(
-    overlay: Ipv4Cidr,
-    segments: &[Segment],
-) -> Vec<Conflict> {
+pub fn segment_overlay_containment(overlay: Ipv4Cidr, segments: &[Segment]) -> Vec<Conflict> {
     segments
         .iter()
         .filter(|segment| {

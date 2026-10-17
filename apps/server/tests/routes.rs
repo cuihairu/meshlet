@@ -17,6 +17,7 @@ const OVERLAY: &str = "10.240.0.0/16";
 struct Ctx {
     app: Router,
     cookie: String,
+    pool: sqlx::SqlitePool,
 }
 
 async fn ctx() -> Ctx {
@@ -27,7 +28,7 @@ async fn ctx() -> Ctx {
         meshlet_server::service::SharedState::default(),
         meshlet_server::auth::AuthStore::new(pool.clone()),
         meshlet_server::agent::AgentTokenStore::new(pool.clone()),
-        meshlet_server::api_token::ApiTokenStore::new(pool),
+        meshlet_server::api_token::ApiTokenStore::new(pool.clone()),
         false,
     ));
     let app = meshlet_server::router(state);
@@ -54,7 +55,7 @@ async fn ctx() -> Ctx {
         .and_then(|v| v.split(';').next())
         .expect("session cookie")
         .to_string();
-    Ctx { app, cookie }
+    Ctx { app, cookie, pool }
 }
 
 async fn call(
@@ -563,4 +564,58 @@ async fn revision_count(c: &Ctx, network_id: &str) -> usize {
     .await;
     assert_eq!(st, StatusCode::OK);
     body.as_array().unwrap().len()
+}
+
+async fn forwarding_snapshot(c: &Ctx, networks: &[&str]) -> Value {
+    let mut memory = Vec::new();
+    for net in networks {
+        for resource in ["routes", "aliases", "config-revisions"] {
+            let (status, value) = json_get(c, &format!("/api/v1/networks/{net}/{resource}")).await;
+            assert_eq!(status, StatusCode::OK);
+            memory.push(value);
+        }
+    }
+    let persisted: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM lan_routes), (SELECT COUNT(*) FROM alias_mappings), (SELECT COUNT(*) FROM config_revisions)"
+    ).fetch_one(&c.pool).await.unwrap();
+    json!({"memory": memory, "persisted": persisted})
+}
+
+#[tokio::test]
+async fn host_forward_conflicts_do_not_write_partial_state() {
+    let c = ctx().await;
+    let (home, gateway) = net_with_device(&c, "home", OVERLAY).await;
+    let (other, other_gateway) = net_with_device(&c, "other", "10.242.0.0/16").await;
+    // Other-network Direct, Alias and Host Forward reserves are all visible.
+    let (status, _) = json_post(
+        &c,
+        &format!("/api/v1/networks/{other}/routes"),
+        route_body(&other_gateway, "10.250.1.0/24"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let mut route = route_body(&other_gateway, "192.168.70.0/24");
+    route["route_mode"] = json!("alias");
+    let (status, route) = json_post(&c, &format!("/api/v1/networks/{other}/routes"), route).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = json_post(
+        &c,
+        &format!("/api/v1/networks/{other}/aliases"),
+        json!({"lan_route_id": route["id"], "alias_cidr": "10.250.2.0/24"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = json_post(&c, &format!("/api/v1/networks/{other}/host-forwards"), json!({"gateway_device_id": other_gateway, "target_ipv4":"192.168.71.5", "alias_ipv4":"10.250.3.5"})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    for alias in ["10.242.1.5", "10.250.1.5", "10.250.2.5", "10.250.3.5"] {
+        let before = forwarding_snapshot(&c, &[&home, &other]).await;
+        let (status, error) = json_post(
+            &c,
+            &format!("/api/v1/networks/{home}/host-forwards"),
+            json!({"gateway_device_id":gateway, "target_ipv4":"192.168.80.5", "alias_ipv4":alias}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{alias}: {error}");
+        assert_eq!(forwarding_snapshot(&c, &[&home, &other]).await, before);
+    }
 }

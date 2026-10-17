@@ -599,10 +599,10 @@ fn backend_driven_tunnel_routes_and_nat() {
     };
 
     // ---- 全部数据面配置经 LinuxNetworkBackend 下发 ------------------------
-    let hub_backend = topo.hub.backend();
-    let a_backend = topo.a.backend();
-    let b_backend = topo.b.backend();
-    let gw_backend = topo.gw.backend();
+    let mut hub_backend = topo.hub.backend();
+    let mut a_backend = topo.a.backend();
+    let mut b_backend = topo.b.backend();
+    let mut gw_backend = topo.gw.backend();
 
     // hub：tunnel（peer A/B/G）+ Alias 前缀转发路由。
     hub_backend
@@ -613,7 +613,7 @@ fn backend_driven_tunnel_routes_and_nat() {
         .expect("hub apply_routes");
 
     // 客户端 A/B：tunnel + Alias 段进隧道的路由。
-    for (node, backend) in [(&topo.a, &a_backend), (&topo.b, &b_backend)] {
+    for (node, backend) in [(&topo.a, &mut a_backend), (&topo.b, &mut b_backend)] {
         backend
             .apply_tunnel_sync(&leaf_tunnel(
                 node,

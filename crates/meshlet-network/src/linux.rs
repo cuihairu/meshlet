@@ -49,6 +49,23 @@ fn parse_link_mtu(link_show: &str) -> Option<u32> {
     None
 }
 
+/// Kernel-selected source for the actual destination, not an address inside its prefix.
+fn route_source(route_get: &str, tunnel: &str) -> Option<Ipv4Addr> {
+    let fields: Vec<_> = route_get.split_whitespace().collect();
+    if matches!(
+        fields.first().copied(),
+        Some("local" | "broadcast" | "unreachable" | "blackhole" | "prohibit")
+    ) {
+        return None;
+    }
+    let dev = fields.windows(2).find(|p| p[0] == "dev")?[1];
+    if dev == tunnel || dev == "lo" {
+        return None;
+    }
+    let source: Ipv4Addr = fields.windows(2).find(|p| p[0] == "src")?[1].parse().ok()?;
+    (!source.is_unspecified() && !source.is_loopback()).then_some(source)
+}
+
 /// §18.3：判读 `ip route show exact <dst>` 的一行是否为「不经受管接口的
 /// 外来路由」。返回 `Some(行原文)` 表示冲突——目标前缀已被指往别的路径，
 /// `ip route replace` 会静默接管它，必须改为显式拒绝；`None` 表示经受管
@@ -75,6 +92,7 @@ pub struct LinuxNetworkBackend {
     sudo: bool,
     /// 受管隧道接口名（默认 `wg0`）。
     interface: String,
+    last_applied_routes: Vec<RouteConfig>,
 }
 
 impl LinuxNetworkBackend {
@@ -83,6 +101,7 @@ impl LinuxNetworkBackend {
             netns: None,
             sudo: false,
             interface: "wg0".to_string(),
+            last_applied_routes: Vec::new(),
         }
     }
 
@@ -102,6 +121,11 @@ impl LinuxNetworkBackend {
     pub fn with_interface(mut self, interface: impl Into<String>) -> Self {
         self.interface = interface.into();
         self
+    }
+
+    /// Extend the successful-route ledger. Used by apply and test setup.
+    fn record_applied_routes(&mut self, routes: &[RouteConfig]) {
+        self.last_applied_routes = routes.to_vec();
     }
 
     /// 命令前缀（sudo / netns 测试钩子展开在这之后统一处理）。
@@ -222,8 +246,9 @@ impl LinuxNetworkBackend {
         Ok(())
     }
 
-    /// `ip -4 route show dev <if>` → 目的网段列表（回滚与 inspect 共用解析）。
-    /// `default` 等非 CIDR 行跳过（不归 Meshlet 管，也不该在回滚里误删）。
+    /// `ip -4 route show dev <if>` → successful-route destinations for
+    /// rollback and inspect. Skip connected, default and unrecognized routes:
+    /// Meshlet must neither report nor delete objects it did not apply.
     fn routes_on_interface(&self) -> Result<Vec<Ipv4Cidr>, NetworkError> {
         let out = self.run(&["ip", "-4", "route", "show", "dev", &self.interface])?;
         let mut dsts = Vec::new();
@@ -235,13 +260,32 @@ impl LinuxNetworkBackend {
             if line.contains("proto kernel") {
                 continue;
             }
-            let dst = line.split_whitespace().next().unwrap_or("");
+            let mut fields = line.split_whitespace();
+            let dst = fields.next().unwrap_or("");
             if dst.is_empty() || dst == "default" {
                 continue;
             }
-            match Ipv4Cidr::from_str(dst) {
-                Ok(cidr) => dsts.push(cidr),
+            let cidr = match dst.parse::<std::net::Ipv4Addr>() {
+                Ok(addr) => {
+                    let prefix = fields
+                        .next()
+                        .and_then(|spec| spec.strip_prefix('/'))
+                        .and_then(|prefix| prefix.parse().ok())
+                        .unwrap_or(32);
+                    Ipv4Cidr::new(addr, prefix)
+                }
+                Err(_) => Ipv4Cidr::from_str(dst),
+            };
+            let cidr = match cidr {
+                Ok(cidr) => cidr,
                 Err(_) => return Err(NetworkError::Io(format!("unparsable route line: {line}"))),
+            };
+            if self
+                .last_applied_routes
+                .iter()
+                .any(|r| r.destination == cidr)
+            {
+                dsts.push(cidr);
             }
         }
         Ok(dsts)
@@ -573,16 +617,9 @@ impl LinuxNetworkBackend {
         for rule in &plan.nat_rules {
             let addr = match rule.action {
                 NatAction::NetMap { .. } => Ipv4Addr::UNSPECIFIED,
-                NatAction::SnatToGatewayLan => match self.lan_addr_in(rule.match_dest)? {
-                    Some(addr) => addr,
-                    None => return Ok(false),
-                },
+                NatAction::SnatToGatewayLan => self.lan_source_for(rule.match_dest)?,
             };
-            let mut args = rule.iptables_args(addr);
-            args[0] = "-C".into();
-            let mut argv = vec!["iptables", "-t", "nat"];
-            argv.extend(args.iter().map(String::as_str));
-            if self.run(&argv).is_err() {
+            if !self.nat_rule_matches(rule, addr) {
                 return Ok(false);
             }
         }
@@ -662,7 +699,10 @@ impl LinuxNetworkBackend {
     }
 
     /// 同步路由/ip_forward/FORWARD 应用（[NetworkBackend::apply_routes] 核心）。
-    pub fn apply_routes_sync(&self, routes: &[RouteConfig]) -> Result<ApplyResult, NetworkError> {
+    pub fn apply_routes_sync(
+        &mut self,
+        routes: &[RouteConfig],
+    ) -> Result<ApplyResult, NetworkError> {
         // §18.3 冲突预检：目标前缀已有指向其他接口的路由时显式拒绝——
         // `ip route replace` 会静默接管外来路由，这里改为点名冲突对象并
         // 拒绝，且拒绝发生在任何内核状态（sysctl/iptables）改动之前。
@@ -725,6 +765,7 @@ impl LinuxNetworkBackend {
             let argv: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             self.run(&argv)?;
         }
+        self.record_applied_routes(routes);
         Ok(ApplyResult::ok())
     }
 
@@ -795,29 +836,24 @@ impl LinuxNetworkBackend {
         Ok(key)
     }
 
-    /// 本机（含 netns）接口上落在 `cidr` 内的首个 IPv4 地址：网关侧受控 SNAT
-    /// 的源地址由本机自己解析（服务端不知道设备 LAN 地址）。
-    pub fn lan_addr_in(&self, cidr: Ipv4Cidr) -> Result<Option<Ipv4Addr>, NetworkError> {
-        let out = self.run(&["ip", "-4", "addr", "show"])?;
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let mut tokens = line.split_whitespace();
-            while let Some(tok) = tokens.next() {
-                if tok != "inet" {
-                    continue;
-                }
-                let Some(spec) = tokens.next() else { continue };
-                let Some(addr) = spec.split('/').next() else {
-                    continue;
-                };
-                let Ok(ip) = addr.parse::<Ipv4Addr>() else {
-                    continue;
-                };
-                if cidr.contains(ip) {
-                    return Ok(Some(ip));
-                }
-            }
-        }
-        Ok(None)
+    /// Resolve the route-selected LAN source, including /32 targets and routed LANs.
+    /// Reject missing routes, local destinations and routes back into our own tunnel.
+    pub fn lan_source_for(&self, target: Ipv4Cidr) -> Result<Ipv4Addr, NetworkError> {
+        let out = self.run(&["ip", "-4", "route", "get", &target.network().to_string()])?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        route_source(&text, &self.interface).ok_or_else(|| {
+            NetworkError::ApplyRejected(format!(
+                "no usable LAN egress/source for {target}: route get={text:?}"
+            ))
+        })
+    }
+
+    fn nat_rule_matches(&self, rule: &NatRule, source: Ipv4Addr) -> bool {
+        let mut args = rule.iptables_args(source);
+        args[0] = "-C".into();
+        let mut argv = vec!["iptables", "-t", "nat"];
+        argv.extend(args.iter().map(String::as_str));
+        self.run(&argv).is_ok()
     }
 
     /// 设备数据面计划的同步应用入口：agent（§16.4 结构化配置对象）与测试共
@@ -825,9 +861,10 @@ impl LinuxNetworkBackend {
     ///
     /// - `private_key` = 本设备本地私钥（服务端不携带）；
     /// - `gateway_lan_addr` = `Some` 显式给定 SNAT 源地址；`None` = 从本机
-    ///   接口自动解析（计划里没有 SNAT 规则时无需地址，直接跳过）。
+    ///   到每个目标的实际路由解析；显式地址也须与读回使用的内核选择一致。
+    ///   没有 SNAT 规则时无需解析源地址。
     pub fn apply_device_plan_sync(
-        &self,
+        &mut self,
         plan: &DevicePlan,
         private_key: Option<String>,
         gateway_lan_addr: Option<Ipv4Addr>,
@@ -849,27 +886,38 @@ impl LinuxNetworkBackend {
         if plan.nat_rules.is_empty() {
             return Ok(());
         }
-        // Resolve each SNAT independently: a gateway can serve several LANs.
-        for rule in &plan.nat_rules {
-            let lan_addr = match rule.action {
-                NatAction::NetMap { .. } => Ipv4Addr::UNSPECIFIED,
-                NatAction::SnatToGatewayLan => match gateway_lan_addr {
-                    Some(addr) if rule.match_dest.contains(addr) => addr,
-                    Some(addr) => {
+        // Resolve all sources before adding any NAT, so an unreachable target does
+        // not leave a partial NETMAP-only unit. Apply and readback share this lookup.
+        let sources: Vec<_> = plan
+            .nat_rules
+            .iter()
+            .map(|rule| match rule.action {
+                NatAction::NetMap { .. } => Ok(Ipv4Addr::UNSPECIFIED),
+                NatAction::SnatToGatewayLan => {
+                    let source = self.lan_source_for(rule.match_dest)?;
+                    if gateway_lan_addr.is_some_and(|explicit| explicit != source) {
                         return Err(NetworkError::ApplyRejected(format!(
-                            "gateway address {addr} is outside {}",
+                            "explicit gateway address does not match route source {source} for {}",
                             rule.match_dest
-                        )))
+                        )));
                     }
-                    None => self.lan_addr_in(rule.match_dest)?.ok_or_else(|| {
-                        NetworkError::ApplyRejected(format!(
-                            "no gateway LAN address in {}",
-                            rule.match_dest
-                        ))
-                    })?,
-                },
-            };
-            let result = self.apply_nat_sync(std::slice::from_ref(rule), lan_addr)?;
+                    Ok(source)
+                }
+            })
+            .collect::<Result<_, NetworkError>>()?;
+        // A changed egress source must replace the old owner's SNAT, not append a
+        // shadowed rule that passes -C while packets still use the obsolete source.
+        let mut reset_owners = std::collections::BTreeSet::new();
+        for (rule, source) in plan.nat_rules.iter().zip(&sources) {
+            if !self.nat_rule_matches(rule, *source) {
+                reset_owners.insert(rule.owner.as_str());
+            }
+        }
+        for owner in reset_owners {
+            self.remove_nat_sync(owner)?;
+        }
+        for (rule, source) in plan.nat_rules.iter().zip(sources) {
+            let result = self.apply_nat_sync(std::slice::from_ref(rule), source)?;
             if !result.applied {
                 return Err(NetworkError::ApplyRejected(
                     result.error.unwrap_or_default(),
@@ -942,7 +990,10 @@ impl NetworkBackend for LinuxNetworkBackend {
         self.apply_tunnel_sync(&config)
     }
 
-    async fn apply_routes(&self, routes: Vec<RouteConfig>) -> Result<ApplyResult, NetworkError> {
+    async fn apply_routes(
+        &mut self,
+        routes: Vec<RouteConfig>,
+    ) -> Result<ApplyResult, NetworkError> {
         self.apply_routes_sync(&routes)
     }
 
@@ -973,6 +1024,34 @@ impl Default for LinuxNetworkBackend {
 mod tests {
     use super::*;
     use crate::nat::NatAction;
+
+    #[test]
+    fn route_source_uses_kernel_selection_and_rejects_unsafe_egress() {
+        assert_eq!(
+            route_source("192.168.1.5 dev eth0 src 192.168.1.1 uid 0\n cache", "wg0"),
+            Some("192.168.1.1".parse().unwrap())
+        );
+        assert_eq!(
+            route_source(
+                "192.168.2.5 via 192.168.1.2 dev eth0 src 192.168.1.9",
+                "wg0"
+            ),
+            Some("192.168.1.9".parse().unwrap())
+        );
+        for output in [
+            "192.168.1.5 dev wg0 src 10.240.0.2",
+            "local 192.168.1.1 dev lo src 192.168.1.1",
+            "broadcast 192.168.1.255 dev eth0 src 192.168.1.1",
+            "unreachable 192.168.1.5",
+            "blackhole 192.168.1.5",
+            "192.168.1.5 dev eth0",
+            "192.168.1.5 src 192.168.1.1",
+            "192.168.1.5 dev eth0 src bad",
+            "",
+        ] {
+            assert_eq!(route_source(output, "wg0"), None, "{output}");
+        }
+    }
 
     #[test]
     fn split_iptables_line_keeps_quoted_comment_as_one_token() {

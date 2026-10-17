@@ -185,7 +185,7 @@ pub trait NetworkBackend {
     ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
     fn apply_routes<'s>(
-        &'s self,
+        &'s mut self,
         routes: Vec<RouteConfig>,
     ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
@@ -237,7 +237,7 @@ mod tests {
         }
 
         async fn apply_routes(
-            &self,
+            &mut self,
             _routes: Vec<RouteConfig>,
         ) -> Result<ApplyResult, NetworkError> {
             Ok(ApplyResult::ok())

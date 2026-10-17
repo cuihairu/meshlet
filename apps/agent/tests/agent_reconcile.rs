@@ -608,7 +608,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
     };
 
     // ---- hub 侧先行（server 数据面，与 agent 无关） ------------------------
-    let hub_backend = LinuxNetworkBackend::new()
+    let mut hub_backend = LinuxNetworkBackend::new()
         .with_netns(&topo.hub.netns)
         .with_sudo()
         .with_interface("wg0");
@@ -628,7 +628,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
     // 同构，§7.2）。二者必须一致：目的前缀不在 AllowedIPs 里时 WireGuard
     // 不发包（路由装了也不通），所以「AllowedIPs 与目标路由一致」是可测约束。
     let a_dir = temp_state_dir("state-a");
-    let a_agent = agent_in(&topo.a, &a_dir);
+    let mut a_agent = agent_in(&topo.a, &a_dir);
     let a_plan = leaf_plan(
         &topo.a,
         &topo.hub,
@@ -649,7 +649,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
 
     // B 侧同样应用（另一个 agent 实例）。
     let b_dir = temp_state_dir("state-b");
-    let b_agent = agent_in(&topo.b, &b_dir);
+    let mut b_agent = agent_in(&topo.b, &b_dir);
     let b_plan = leaf_plan(
         &topo.b,
         &topo.hub,
@@ -780,7 +780,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
 
     // ---- 4. 网关侧：Alias NAT 随计划下发，映射删除即整单元清理（§12.6）----
     let gw_dir = temp_state_dir("state-gw");
-    let gw_agent = agent_in(&topo.gw, &gw_dir);
+    let mut gw_agent = agent_in(&topo.gw, &gw_dir);
     let gw_plan = leaf_plan(
         &topo.gw,
         &topo.hub,

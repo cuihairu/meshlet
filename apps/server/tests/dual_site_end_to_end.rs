@@ -1101,7 +1101,8 @@ fn tick_agent(
         .with_netns(&node.netns)
         .with_sudo()
         .with_interface("wg0");
-    let agent = meshlet_agent::Agent::with_backend(config, Some(node.private_key.clone()), backend);
+    let mut agent =
+        meshlet_agent::Agent::with_backend(config, Some(node.private_key.clone()), backend);
     agent
         .tick()
         .unwrap_or_else(|e| panic!("agent {name} tick: {e}"));

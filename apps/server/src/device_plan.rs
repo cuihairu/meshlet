@@ -177,7 +177,7 @@ pub fn build_device_plan(
                 // hub 入口地址由 agent 本地配置（`[dataplane] hub_endpoint`）提供；
                 // 服务端未配置 advertise_ip 时留空，agent 自行兜底。
                 endpoint: None,
-                persistent_keepalive_secs: None,
+                persistent_keepalive_secs: Some(25),
             }],
             mtu: tunnel_mtu,
             private_key: None,

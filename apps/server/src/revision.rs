@@ -284,7 +284,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
         let plan = self.plan.as_ref().map_err(Clone::clone)?;
         let mut tunnel = plan.tunnel.clone();
         tunnel.private_key = self.read_private_key()?;
-        let backend = (self.make_backend)().with_interface(self.interface.clone());
+        let mut backend = (self.make_backend)().with_interface(self.interface.clone());
         let tunnel_result = backend
             .apply_tunnel_sync(&tunnel)
             .map_err(|e| format!("apply tunnel: {e}"))?;
@@ -328,7 +328,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
         if let Some(error) = &self.previous_error {
             return Err(error.clone());
         }
-        let backend = (self.make_backend)().with_interface(self.interface.clone());
+        let mut backend = (self.make_backend)().with_interface(self.interface.clone());
         if let Some(previous) = &self.previous {
             let mut tunnel = previous.hub.tunnel.clone();
             tunnel.private_key = self.read_private_key()?;

@@ -796,6 +796,54 @@ pub(crate) fn check_forward_prefix(
     Ok(())
 }
 
+/// Creation-time validation, including this network. Plan readback uses
+/// check_forward_prefix instead so a resource does not conflict with itself.
+fn check_new_forward_prefix(
+    state: &MeshState,
+    network_id: &str,
+    prefix: Ipv4Cidr,
+) -> Result<(), ServiceError> {
+    check_forward_prefix(state, network_id, prefix)?;
+    if prefix.overlaps(&state.network(network_id)?.overlay_cidr) {
+        return Err(ServiceError::RouteConflict(format!(
+            "prefix {prefix} overlaps overlay"
+        )));
+    }
+    if let Some(route) = state
+        .lan_routes
+        .get(network_id)
+        .into_iter()
+        .flatten()
+        .find(|r| r.destination_cidr.overlaps(&prefix))
+    {
+        return Err(ServiceError::RouteConflict(format!(
+            "prefix {prefix} overlaps existing route {} ({})",
+            route.id, route.destination_cidr
+        )));
+    }
+    check_local_alias_prefix(state, network_id, prefix)
+}
+
+fn check_local_alias_prefix(
+    state: &MeshState,
+    network_id: &str,
+    prefix: Ipv4Cidr,
+) -> Result<(), ServiceError> {
+    if let Some(alias) = state
+        .aliases
+        .get(network_id)
+        .into_iter()
+        .flatten()
+        .find(|a| a.alias_cidr.overlaps(&prefix))
+    {
+        return Err(ServiceError::RouteConflict(format!(
+            "prefix {prefix} overlaps existing alias {} ({})",
+            alias.id, alias.alias_cidr
+        )));
+    }
+    Ok(())
+}
+
 pub fn create_network(
     state: &mut MeshState,
     req: CreateNetworkRequest,
@@ -1463,16 +1511,11 @@ pub fn create_route(
     }
 
     if route_mode == RouteMode::Direct {
-        check_forward_prefix(state, network_id, destination)?;
-        if state
-            .aliases
-            .get(network_id)
-            .is_some_and(|aliases| aliases.iter().any(|a| a.alias_cidr.overlaps(&destination)))
-        {
-            return Err(ServiceError::RouteConflict(format!(
-                "destination {destination} overlaps an existing alias prefix"
-            )));
-        }
+        check_new_forward_prefix(state, network_id, destination)?;
+    } else {
+        // Preserve Alias real-prefix overlap, but never route a real target
+        // through an existing visible Alias on this gateway.
+        check_local_alias_prefix(state, network_id, destination)?;
     }
 
     state.route_seq += 1;
@@ -1592,7 +1635,6 @@ pub fn create_alias(
         .alias_cidr
         .parse()
         .map_err(|e| ServiceError::InvalidCidr(format!("{}: {e}", req.alias_cidr)))?;
-    check_forward_prefix(state, network_id, alias_cidr)?;
     let translation_mode = match req.translation_mode.as_deref() {
         None | Some("dnat_snat") => TranslationMode::DnatSnat,
         Some("dnat_only") => TranslationMode::DnatOnly,
@@ -1621,6 +1663,17 @@ pub fn create_alias(
             route.route_mode.as_str()
         )));
     }
+    let target_cidr = route.destination_cidr;
+    AliasMapping::new(
+        AliasMappingId(format!("al-{}", state.route_seq + 1)),
+        meshlet_domain::NetworkId(network_id.to_string()),
+        route.id.clone(),
+        alias_cidr,
+        target_cidr,
+        translation_mode,
+    )
+    .map_err(|e: AliasError| ServiceError::InvalidInput(e.to_string()))?;
+    check_new_forward_prefix(state, network_id, alias_cidr)?;
     let gateway = state
         .registry
         .find_by_id(&route.gateway_device_id)
@@ -1640,8 +1693,6 @@ pub fn create_alias(
         }
     }
 
-    // target 由路由推导（alias_target_mismatch 在创建路径上结构性不可能）。
-    let target_cidr = route.destination_cidr;
     let id = AliasMappingId(format!("al-{}", state.route_seq + 1));
     let alias = AliasMapping::new(
         id,
@@ -1652,37 +1703,6 @@ pub fn create_alias(
         translation_mode,
     )
     .map_err(|e: AliasError| ServiceError::InvalidInput(e.to_string()))?;
-
-    // 冲突检查（拒绝在任何状态变更前，消息点名对端）：
-    // ① 与 overlay 重叠；② 与既有 Alias 重叠；③ 与既有路由目的网段重叠
-    // （Alias 是虚拟前缀，必须与真实 LAN 空间全隔离）。
-    let overlay = state.network(network_id)?.overlay_cidr;
-    if alias.alias_cidr.overlaps(&overlay) {
-        return Err(ServiceError::RouteConflict(format!(
-            "alias {} overlaps overlay {overlay}",
-            alias.alias_cidr
-        )));
-    }
-    if let Some(aliases) = state.aliases.get(network_id) {
-        if let Some(existing) = aliases
-            .iter()
-            .find(|a| a.alias_cidr.overlaps(&alias.alias_cidr))
-        {
-            return Err(ServiceError::RouteConflict(format!(
-                "alias {} overlaps existing alias {} ({}) in network {network_id}",
-                alias.alias_cidr, existing.id, existing.alias_cidr
-            )));
-        }
-    }
-    if let Some(existing) = routes
-        .iter()
-        .find(|r| r.destination_cidr.overlaps(&alias.alias_cidr))
-    {
-        return Err(ServiceError::RouteConflict(format!(
-            "alias {} overlaps existing route {} ({}) in network {network_id}",
-            alias.alias_cidr, existing.id, existing.destination_cidr
-        )));
-    }
 
     state.route_seq += 1;
     state
@@ -1771,6 +1791,8 @@ pub fn create_host_forward(
         .map_err(|e| ServiceError::InvalidCidr(format!("{}/32: {e}", req.target_ipv4)))?;
     let alias_cidr = Ipv4Cidr::new(req.alias_ipv4, 32)
         .map_err(|e| ServiceError::InvalidCidr(format!("{}/32: {e}", req.alias_ipv4)))?;
+    check_new_forward_prefix(state, network_id, alias_cidr)?;
+    check_local_alias_prefix(state, network_id, target)?;
     let translation_mode = match req.translation_mode.as_deref() {
         None | Some("dnat_snat") => TranslationMode::DnatSnat,
         Some("dnat_only") => TranslationMode::DnatOnly,
@@ -1799,19 +1821,6 @@ pub fn create_host_forward(
             )));
         }
     }
-    for existing in state
-        .aliases
-        .get(network_id)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-    {
-        if existing.alias_cidr.overlaps(&alias_cidr) {
-            return Err(ServiceError::RouteConflict(format!(
-                "host forward alias {alias_cidr} overlaps existing alias {} ({})",
-                existing.id, existing.alias_cidr
-            )));
-        }
-    }
 
     let gateway = DeviceId(req.gateway_device_id.clone());
     let device = state
@@ -1828,9 +1837,8 @@ pub fn create_host_forward(
         )));
     }
 
-    state.route_seq += 1;
     let route = LanRoute {
-        id: LanRouteId(format!("rt-{}", state.route_seq)),
+        id: LanRouteId(format!("rt-{}", state.route_seq + 1)),
         network_id: meshlet_domain::NetworkId(network_id.to_string()),
         gateway_device_id: gateway,
         destination_cidr: target,
@@ -1839,9 +1847,8 @@ pub fn create_host_forward(
         status: DesiredStateStatus::Pending,
         created_at: now(),
     };
-    state.route_seq += 1;
     let alias = AliasMapping::new(
-        AliasMappingId(format!("al-{}", state.route_seq)),
+        AliasMappingId(format!("al-{}", state.route_seq + 2)),
         meshlet_domain::NetworkId(network_id.to_string()),
         route.id.clone(),
         alias_cidr,
@@ -1849,6 +1856,8 @@ pub fn create_host_forward(
         translation_mode,
     )
     .map_err(|e| ServiceError::InvalidInput(e.to_string()))?;
+
+    state.route_seq += 2;
 
     state
         .lan_routes
@@ -2107,5 +2116,259 @@ fn to_device_view(
         online_state: presence.state.as_str().to_string(),
         presence_source: presence.source.as_str().to_string(),
         dataplane_evidence: d.dataplane_evidence.clone(),
+    }
+}
+
+#[cfg(test)]
+mod forwarding_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn network(state: &mut MeshState, overlay: &str) -> (String, String) {
+        let id = create_network(
+            state,
+            CreateNetworkRequest {
+                name: overlay.into(),
+                overlay_cidr: overlay.into(),
+            },
+        )
+        .unwrap()
+        .id;
+        let invite = create_invite(
+            state,
+            &id,
+            CreateInviteRequest {
+                expires_at: None,
+                max_uses: None,
+            },
+        )
+        .unwrap();
+        let device = enroll(
+            state,
+            EnrollRequest {
+                invite_token: invite.token,
+                device_name: id.clone(),
+                public_key: format!("key-{id}"),
+                platform: "linux".into(),
+            },
+        )
+        .unwrap();
+        (id, device.device_id)
+    }
+
+    fn snapshot(state: &MeshState) -> Value {
+        let revisions: std::collections::BTreeMap<_, _> = state
+            .networks
+            .keys()
+            .map(|id| {
+                (
+                    id.clone(),
+                    state
+                        .ledger
+                        .revisions(&meshlet_domain::NetworkId(id.clone()))
+                        .iter()
+                        .map(crate::revision::to_revision_view)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        json!({"routes": state.lan_routes, "aliases": state.aliases, "sequence": state.route_seq, "networks": state.networks.keys().collect::<std::collections::BTreeSet<_>>(), "revisions": revisions})
+    }
+
+    // Prepare an Alias route before the mutation snapshot: creating the mapping
+    // must not consume a revision or id when its forwarding prefix conflicts.
+    fn prepare(
+        state: &mut MeshState,
+        net: &str,
+        gateway: &str,
+        kind: &str,
+        target: &str,
+    ) -> Option<String> {
+        (kind == "alias").then(|| {
+            create_route(
+                state,
+                net,
+                CreateRouteRequest {
+                    gateway_device_id: gateway.into(),
+                    destination_cidr: target.into(),
+                    route_mode: Some("alias".into()),
+                    return_path_mode: "controlled_snat".into(),
+                },
+            )
+            .unwrap()
+            .id
+        })
+    }
+
+    fn publish(
+        state: &mut MeshState,
+        net: &str,
+        gateway: &str,
+        kind: &str,
+        prefix: &str,
+        target: &str,
+        route: Option<String>,
+    ) -> Result<(), ServiceError> {
+        match kind {
+            "direct" => create_route(
+                state,
+                net,
+                CreateRouteRequest {
+                    gateway_device_id: gateway.into(),
+                    destination_cidr: prefix.into(),
+                    route_mode: None,
+                    return_path_mode: "dual_route".into(),
+                },
+            )
+            .map(|_| ()),
+            "alias" => create_alias(
+                state,
+                net,
+                CreateAliasRequest {
+                    lan_route_id: route.unwrap(),
+                    alias_cidr: prefix.into(),
+                    translation_mode: None,
+                },
+            )
+            .map(|_| ()),
+            "host" => create_host_forward(
+                state,
+                net,
+                CreateHostForwardRequest {
+                    gateway_device_id: gateway.into(),
+                    target_ipv4: target.parse::<Ipv4Cidr>().unwrap().network(),
+                    alias_ipv4: prefix.parse::<Ipv4Cidr>().unwrap().network(),
+                    translation_mode: None,
+                },
+            )
+            .map(|_| ()),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn forwarding_prefix_entrypoints_reject_each_other_atomically() {
+        let mut cases = 0;
+        for first in ["direct", "alias", "host"] {
+            for second in ["direct", "alias", "host"] {
+                for cross_network in [false, true] {
+                    for (first_len, second_len) in [(32, 32), (24, 32), (32, 24)] {
+                        if (first == "host" && first_len != 32)
+                            || (second == "host" && second_len != 32)
+                        {
+                            continue;
+                        }
+                        let mut state = MeshState::default();
+                        let (n1, g1) = network(&mut state, "10.240.0.0/24");
+                        let (n2, g2) = if cross_network {
+                            network(&mut state, "10.242.0.0/24")
+                        } else {
+                            (n1.clone(), g1.clone())
+                        };
+                        let p1 = format!(
+                            "10.250.0.{}/{first_len}",
+                            if first_len == 32 { 5 } else { 0 }
+                        );
+                        let p2 = format!(
+                            "10.250.0.{}/{second_len}",
+                            if second_len == 32 { 5 } else { 0 }
+                        );
+                        let t1 = format!(
+                            "192.168.60.{}/{first_len}",
+                            if first_len == 32 { 5 } else { 0 }
+                        );
+                        let t2 = format!(
+                            "192.168.61.{}/{second_len}",
+                            if second_len == 32 { 5 } else { 0 }
+                        );
+                        let r1 = prepare(&mut state, &n1, &g1, first, &t1);
+                        publish(&mut state, &n1, &g1, first, &p1, &t1, r1).unwrap();
+                        let r2 = prepare(&mut state, &n2, &g2, second, &t2);
+                        let before = snapshot(&state);
+                        let err = publish(&mut state, &n2, &g2, second, &p2, &t2, r2).unwrap_err();
+                        assert!(
+                            matches!(err, ServiceError::RouteConflict(_)),
+                            "{first} -> {second}: {err}"
+                        );
+                        assert_eq!(
+                            snapshot(&state),
+                            before,
+                            "{first} -> {second}, cross={cross_network}, {p1}/{p2}"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 42);
+    }
+
+    #[test]
+    fn overlay_conflicts_reject_all_entries_and_creation_orders() {
+        for kind in ["direct", "alias", "host"] {
+            for cross in [false, true] {
+                let mut state = MeshState::default();
+                let (net, gw) = network(&mut state, "10.240.0.0/24");
+                if cross {
+                    network(&mut state, "10.242.0.0/24");
+                }
+                let target = "192.168.61.5/32";
+                let route = prepare(&mut state, &net, &gw, kind, target);
+                let before = snapshot(&state);
+                let prefix = if cross {
+                    "10.242.0.5/32"
+                } else {
+                    "10.240.0.5/32"
+                };
+                assert!(matches!(
+                    publish(&mut state, &net, &gw, kind, prefix, target, route),
+                    Err(ServiceError::RouteConflict(_))
+                ));
+                assert_eq!(snapshot(&state), before);
+            }
+            let mut state = MeshState::default();
+            let (net, gw) = network(&mut state, "10.240.0.0/24");
+            let route = prepare(&mut state, &net, &gw, kind, "192.168.61.5/32");
+            publish(
+                &mut state,
+                &net,
+                &gw,
+                kind,
+                "10.250.0.5/32",
+                "192.168.61.5/32",
+                route,
+            )
+            .unwrap();
+            let before = snapshot(&state);
+            assert!(matches!(
+                create_network(
+                    &mut state,
+                    CreateNetworkRequest {
+                        name: "blocked".into(),
+                        overlay_cidr: "10.250.0.0/24".into()
+                    }
+                ),
+                Err(ServiceError::RouteConflict(_))
+            ));
+            assert_eq!(snapshot(&state), before);
+        }
+    }
+
+    #[test]
+    fn invalid_host_unit_does_not_consume_ids_or_revisions() {
+        let mut state = MeshState::default();
+        let (net, gw) = network(&mut state, "10.240.0.0/24");
+        let before = snapshot(&state);
+        assert!(publish(
+            &mut state,
+            &net,
+            &gw,
+            "host",
+            "192.168.61.5/32",
+            "192.168.61.5/32",
+            None
+        )
+        .is_err());
+        assert_eq!(snapshot(&state), before);
     }
 }

@@ -84,7 +84,7 @@ impl Agent {
 
     /// 主循环：首轮即对账（启动对账），之后按 `poll_interval_secs` 轮询；
     /// 连续失败指数退避至上限。
-    pub fn run(self) -> ! {
+    pub fn run(mut self) -> ! {
         let mut backoff = Duration::from_secs(BACKOFF_MIN_SECS);
         loop {
             match self.tick() {
@@ -105,7 +105,7 @@ impl Agent {
 
     /// 一轮：拉计划 → 需要则应用 → 心跳上报。待审批（自举注册，ZeroTier 式）
     /// 时拉不到计划：心跳保活让控制中心看到设备活着，批准后自然转入正常循环。
-    pub fn tick(&self) -> Result<(), String> {
+    pub fn tick(&mut self) -> Result<(), String> {
         let plan = match server::fetch_plan(&self.server_url, &self.token) {
             Ok(plan) => plan,
             // 服务端契约：Pending 申请的 desired 端点 404 且消息含
@@ -185,7 +185,7 @@ impl Agent {
     ///
     /// 拉不到计划时**不动内核**：数据面以服务端期望为唯一来源，宁可不改也不
     /// 按猜测重放（调用方 [`Agent::tick`] 因此让整轮失败并退避重试）。
-    pub fn reconcile(&self, plan: &DevicePlan) -> Result<Decision, String> {
+    pub fn reconcile(&mut self, plan: &DevicePlan) -> Result<Decision, String> {
         let state = AgentState::load(&self.state_path).unwrap_or_default();
         let snapshot = self
             .backend
