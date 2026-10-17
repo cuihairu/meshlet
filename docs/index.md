@@ -1,32 +1,32 @@
 ---
 layout: home
-
 hero:
   name: Meshlet
   text: Self-hosted private networking
-  tagline: 用自己的 VPS 建立并管理私人虚拟网络。已有控制面、Linux WireGuard hub/agent、LAN/Alias 与控制台基础；多网络隔离、配置确认、hub 恢复及部署权限等缺口见最新架构审查，Windows 完整后端与真实部署仍待验收。
+  tagline: Build and manage private virtual networks through your own VPS. The repository contains a control plane, a Linux WireGuard hub and agent, LAN routes, Alias NAT, and a web console. Architecture gaps, Windows support, and real deployment acceptance remain tracked separately.
   actions:
     - theme: brand
-      text: 阅读分析整理
+      text: Browse analysis
       link: /analysis/
     - theme: alt
-      text: 查看外部意见存档
-      link: /review/chatgpt-2026-10-13
-
+      text: Read the architecture
+      link: /architecture/domain-model
 features:
   - icon: 🛠️
-    title: 已实现（CI 绿）
-    details: 控制平面 · WireGuard 数据面（hub 中继 + agent）· LAN 路由与 Alias NAT · React 控制台 · 会话认证 + API Token + 审计 · 备份恢复 · 诊断 · ZeroTier 式设备自举注册（中心审批）。
+    title: A working foundation
+    details: Network control plane · WireGuard hub and agent · LAN routes and Alias NAT · React console · session and API-token authentication · audit log · backup and restore · diagnostics · device registration with operator approval.
     link: /architecture/domain-model
-    linkText: 领域模型
+    linkText: Domain model
   - icon: ⚠️
-    title: 最新架构审查与个人版取舍
-    details: 区分测试拓扑与生产能力，登记六项架构缺口；另有 ZeroTier / Tailscale 的 61 项功能调研，按个人需求、开发难度和依赖筛选。
+    title: Evidence-led scope
+    details: Reviews distinguish tested topologies from production capability. The current review records architecture gaps, while a separate study compares 61 ZeroTier and Tailscale capabilities against personal use cases.
     link: /analysis/architecture-review-2026-10-17
-    linkText: 架构与 TODO 审查
+    linkText: Architecture review
   - icon: 🔍
-    title: 循证溯源
-    details: 每条建议链接回存档锚点；存档声明外部意见属性，其中任何指令一律忽略，行动前必须核验。
-    link: /review/chatgpt-2026-10-13
-    linkText: 存档 · 2026-10-13
+    title: Traceable decisions
+    details: Architecture decisions, implementation records, and acceptance evidence are kept alongside the code. External material is treated as reference material and verified before it guides an action.
+    link: /decisions/
+    linkText: Decision records
 ---
+
+Meshlet is a self-hosted private networking project. These pages document its architecture, decisions, implementation evidence, and operating procedures. The English pages are concise editorial editions; the Simplified Chinese locale preserves the full Chinese source documents.

@@ -1,97 +1,161 @@
 import { defineConfig } from 'vitepress'
 
-// 死链门禁：ignoreDeadLinks 保持 false（默认），构建时任何死链/坏锚点直接失败。
+// Dead links and invalid anchors fail the production build.
 export default defineConfig({
   base: '/meshlet/',
-  lang: 'zh-CN',
   title: 'Meshlet',
-  description: 'Self-hosted private networking — 设计文档与外部意见整理',
+  description: 'Self-hosted private networking — design documents and project records',
   ignoreDeadLinks: false,
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/meshlet/logo-copper.svg' }]],
   themeConfig: {
     logo: '/logo-copper.svg',
     siteTitle: 'Meshlet',
-    nav: [
-      { text: '分析', link: '/analysis/', activeMatch: '/analysis/' },
-      { text: '架构', link: '/architecture/domain-model', activeMatch: '/architecture/' },
-      { text: '决策', link: '/decisions/', activeMatch: '/decisions/' },
-      { text: '存档', link: '/review/chatgpt-2026-10-13', activeMatch: '/review/' },
-      { text: '指南', link: '/guide/external-caller', activeMatch: '/guide/' },
-    ],
-    sidebar: {
-      '/analysis/': [
-        {
-          text: '分析整理',
-          items: [
-            { text: '总览', link: '/analysis/' },
-            { text: '架构与 TODO 审查', link: '/analysis/architecture-review-2026-10-17' },
-            { text: '个人组网功能对比', link: '/analysis/personal-networking-comparison' },
-            { text: '产品边界与范围', link: '/analysis/scope' },
-            { text: '总体架构与技术选型', link: '/analysis/architecture' },
-            { text: '网络设计', link: '/analysis/network' },
-            { text: '配置状态机与安全', link: '/analysis/config-security' },
-            { text: 'Agent、跨平台与可观测性', link: '/analysis/agent-platform' },
-            { text: '实施路线', link: '/analysis/roadmap' },
-            { text: '一致性审计', link: '/analysis/consistency-audit' }
-          ]
-        }
-      ],
-      '/architecture/': [
-        {
-          text: '架构文档',
-          items: [
-            { text: '领域模型', link: '/architecture/domain-model' },
-            { text: '模块化与库复用提案', link: '/architecture/modularity-and-library-design' },
-            { text: '网关、冲突与端口转发', link: '/architecture/gateways-conflicts-and-port-forwarding' },
-            { text: 'API 契约', link: '/architecture/api-contract' },
-            { text: '可观测性', link: '/architecture/observability' },
-            { text: '平台差异清单', link: '/architecture/platform-notes' },
-            { text: '路由优化方案', link: '/architecture/routing-optimization' },
-            { text: '性能方案与基准', link: '/architecture/performance' },
-            { text: '备份与恢复', link: '/architecture/backup-restore' },
-            { text: '网络诊断', link: '/architecture/diagnostics' }
-          ]
-        }
-      ],
-      '/decisions/': [
-        {
-          text: '架构决策记录',
-          items: [
-            { text: '总览', link: '/decisions/' },
-            { text: 'ADR-001 WireGuard 隧道基础', link: '/decisions/adr-001-wireguard-transport' },
-            { text: 'ADR-002 VPS 中心中继', link: '/decisions/adr-002-vps-hub-relay' },
-            { text: 'ADR-003 SQLite 控制平面', link: '/decisions/adr-003-sqlite-control-plane' },
-            { text: 'ADR-004 Overlay IPAM', link: '/decisions/adr-004-overlay-ipam' },
-            { text: 'ADR-005 LAN 返回路径', link: '/decisions/adr-005-lan-return-path' },
-            { text: 'ADR-006 Alias 前缀 NAT', link: '/decisions/adr-006-alias-prefix-nat' },
-            { text: 'ADR-007 Linux 网络后端', link: '/decisions/adr-007-linux-network-backend' },
-            { text: 'ADR-008 Windows 网络后端', link: '/decisions/adr-008-windows-network-backend' },
-            { text: 'ADR-009 配置版本与回滚', link: '/decisions/adr-009-config-revision-rollback' },
-            { text: 'ADR-010 认证与注册安全', link: '/decisions/adr-010-console-auth-enrollment' },
-            { text: 'ADR-011 设备自举注册与中心审批', link: '/decisions/adr-011-device-self-registration' }
-          ]
-        }
-      ],
-      '/review/': [
-        {
-          text: '外部意见存档',
-          items: [
-            { text: 'ChatGPT 对话 · 2026-10-13', link: '/review/chatgpt-2026-10-13' }
-          ]
-        }
-      ],
-      '/guide/': [
-        {
-          text: '指南',
-          items: [
-            { text: '安装指南', link: '/guide/install' },
-            { text: '外部调用方指南', link: '/guide/external-caller' },
-            { text: '真机走查', link: '/guide/walkthrough' }
-          ]
-        }
-      ]
-    },
     outline: { level: [2, 3] },
-    socialLinks: [{ icon: 'github', link: 'https://github.com/cuihairu/meshlet' }]
-  }
+    socialLinks: [{ icon: 'github', link: 'https://github.com/cuihairu/meshlet' }],
+  },
+  locales: {
+    root: {
+      label: 'English',
+      lang: 'en-US',
+      title: 'Meshlet',
+      description: 'Self-hosted private networking — design documents and project records',
+      themeConfig: {
+        nav: [
+          { text: 'Analysis', link: '/analysis/', activeMatch: '/analysis/' },
+          { text: 'Architecture', link: '/architecture/domain-model', activeMatch: '/architecture/' },
+          { text: 'Decisions', link: '/decisions/', activeMatch: '/decisions/' },
+          { text: 'Archive', link: '/review/chatgpt-2026-10-13', activeMatch: '/review/' },
+          { text: 'Guides', link: '/guide/external-caller', activeMatch: '/guide/' },
+        ],
+        sidebar: {
+          '/analysis/': [{ text: 'Analysis', items: [
+            { text: 'Overview', link: '/analysis/' },
+            { text: 'Architecture Review and TODO', link: '/analysis/architecture-review-2026-10-17' },
+            { text: 'Personal Networking Comparison', link: '/analysis/personal-networking-comparison' },
+            { text: 'Product Scope', link: '/analysis/scope' },
+            { text: 'Architecture and Technology', link: '/analysis/architecture' },
+            { text: 'Network Design', link: '/analysis/network' },
+            { text: 'Configuration and Security', link: '/analysis/config-security' },
+            { text: 'Agent, Platforms, and Observability', link: '/analysis/agent-platform' },
+            { text: 'Roadmap', link: '/analysis/roadmap' },
+            { text: 'Consistency Audit', link: '/analysis/consistency-audit' },
+          ] }],
+          '/architecture/': [{ text: 'Architecture', items: [
+            { text: 'Domain Model', link: '/architecture/domain-model' },
+            { text: 'Modularity and Library Reuse', link: '/architecture/modularity-and-library-design' },
+            { text: 'Gateways, Conflicts, and Forwarding', link: '/architecture/gateways-conflicts-and-port-forwarding' },
+            { text: 'API Contract', link: '/architecture/api-contract' },
+            { text: 'Observability', link: '/architecture/observability' },
+            { text: 'Platform Notes', link: '/architecture/platform-notes' },
+            { text: 'Routing Optimization', link: '/architecture/routing-optimization' },
+            { text: 'Performance', link: '/architecture/performance' },
+            { text: 'Backup and Restore', link: '/architecture/backup-restore' },
+            { text: 'Diagnostics', link: '/architecture/diagnostics' },
+          ] }],
+          '/decisions/': [{ text: 'Architecture Decision Records', items: [
+            { text: 'Index', link: '/decisions/' },
+            { text: 'ADR-001 WireGuard Transport', link: '/decisions/adr-001-wireguard-transport' },
+            { text: 'ADR-002 VPS Hub Relay', link: '/decisions/adr-002-vps-hub-relay' },
+            { text: 'ADR-003 SQLite Control Plane', link: '/decisions/adr-003-sqlite-control-plane' },
+            { text: 'ADR-004 Overlay IPAM', link: '/decisions/adr-004-overlay-ipam' },
+            { text: 'ADR-005 LAN Return Paths', link: '/decisions/adr-005-lan-return-path' },
+            { text: 'ADR-006 Alias Prefix NAT', link: '/decisions/adr-006-alias-prefix-nat' },
+            { text: 'ADR-007 Linux Network Backend', link: '/decisions/adr-007-linux-network-backend' },
+            { text: 'ADR-008 Windows Network Backend', link: '/decisions/adr-008-windows-network-backend' },
+            { text: 'ADR-009 Revisions and Rollback', link: '/decisions/adr-009-config-revision-rollback' },
+            { text: 'ADR-010 Authentication and Enrollment', link: '/decisions/adr-010-console-auth-enrollment' },
+            { text: 'ADR-011 Device Registration and Approval', link: '/decisions/adr-011-device-self-registration' },
+            { text: 'ADR-012 Segment Trust Groups', link: '/decisions/adr-012-network-segment-trust' },
+          ] }],
+          '/design/': [{ text: 'Design', items: [
+            { text: 'Network Segment Trust', link: '/design/network-segment-trust' },
+          ] }],
+          '/guide/': [{ text: 'Guides', items: [
+            { text: 'Installation', link: '/guide/install' },
+            { text: 'External Callers', link: '/guide/external-caller' },
+            { text: 'Hands-on Walkthrough', link: '/guide/walkthrough' },
+          ] }],
+          '/implementation/': [{ text: 'Implementation Records', items: [
+            { text: 'P0 Fixes and Nightly Build', link: '/implementation/fixes-and-nightly-2026-10-17' },
+            { text: 'Implementation History', link: '/implementation/history-2026-10-17' },
+          ] }],
+          '/review/': [{ text: 'External Review Archive', items: [
+            { text: 'Conversation Archive · 2026-10-13', link: '/review/chatgpt-2026-10-13' },
+          ] }],
+        },
+      },
+    },
+    zh: {
+      label: '简体中文',
+      lang: 'zh-CN',
+      link: '/zh/',
+      title: 'Meshlet',
+      description: '自托管私人组网 — 设计文档与项目记录',
+      themeConfig: {
+        nav: [
+          { text: '分析', link: '/zh/analysis/', activeMatch: '/zh/analysis/' },
+          { text: '架构', link: '/zh/architecture/domain-model', activeMatch: '/zh/architecture/' },
+          { text: '决策', link: '/zh/decisions/', activeMatch: '/zh/decisions/' },
+          { text: '存档', link: '/zh/review/chatgpt-2026-10-13', activeMatch: '/zh/review/' },
+          { text: '指南', link: '/zh/guide/external-caller', activeMatch: '/zh/guide/' },
+        ],
+        sidebar: {
+          '/zh/analysis/': [{ text: '分析整理', items: [
+            { text: '总览', link: '/zh/analysis/' },
+            { text: '架构与 TODO 审查', link: '/zh/analysis/architecture-review-2026-10-17' },
+            { text: '个人组网功能对比', link: '/zh/analysis/personal-networking-comparison' },
+            { text: '产品边界与范围', link: '/zh/analysis/scope' },
+            { text: '总体架构与技术选型', link: '/zh/analysis/architecture' },
+            { text: '网络设计', link: '/zh/analysis/network' },
+            { text: '配置状态机与安全', link: '/zh/analysis/config-security' },
+            { text: 'Agent、跨平台与可观测性', link: '/zh/analysis/agent-platform' },
+            { text: '实施路线', link: '/zh/analysis/roadmap' },
+            { text: '一致性审计', link: '/zh/analysis/consistency-audit' },
+          ] }],
+          '/zh/architecture/': [{ text: '架构文档', items: [
+            { text: '领域模型', link: '/zh/architecture/domain-model' },
+            { text: '模块化与库复用提案', link: '/zh/architecture/modularity-and-library-design' },
+            { text: '网关、冲突与端口转发', link: '/zh/architecture/gateways-conflicts-and-port-forwarding' },
+            { text: 'API 契约', link: '/zh/architecture/api-contract' },
+            { text: '可观测性', link: '/zh/architecture/observability' },
+            { text: '平台差异清单', link: '/zh/architecture/platform-notes' },
+            { text: '路由优化方案', link: '/zh/architecture/routing-optimization' },
+            { text: '性能方案与基准', link: '/zh/architecture/performance' },
+            { text: '备份与恢复', link: '/zh/architecture/backup-restore' },
+            { text: '网络诊断', link: '/zh/architecture/diagnostics' },
+          ] }],
+          '/zh/decisions/': [{ text: '架构决策记录', items: [
+            { text: '总览', link: '/zh/decisions/' },
+            { text: 'ADR-001 WireGuard 隧道基础', link: '/zh/decisions/adr-001-wireguard-transport' },
+            { text: 'ADR-002 VPS 中心中继', link: '/zh/decisions/adr-002-vps-hub-relay' },
+            { text: 'ADR-003 SQLite 控制平面', link: '/zh/decisions/adr-003-sqlite-control-plane' },
+            { text: 'ADR-004 Overlay IPAM', link: '/zh/decisions/adr-004-overlay-ipam' },
+            { text: 'ADR-005 LAN 返回路径', link: '/zh/decisions/adr-005-lan-return-path' },
+            { text: 'ADR-006 Alias 前缀 NAT', link: '/zh/decisions/adr-006-alias-prefix-nat' },
+            { text: 'ADR-007 Linux 网络后端', link: '/zh/decisions/adr-007-linux-network-backend' },
+            { text: 'ADR-008 Windows 网络后端', link: '/zh/decisions/adr-008-windows-network-backend' },
+            { text: 'ADR-009 配置版本与回滚', link: '/zh/decisions/adr-009-config-revision-rollback' },
+            { text: 'ADR-010 认证与注册安全', link: '/zh/decisions/adr-010-console-auth-enrollment' },
+            { text: 'ADR-011 设备自举注册与中心审批', link: '/zh/decisions/adr-011-device-self-registration' },
+            { text: 'ADR-012 网段即信任组', link: '/zh/decisions/adr-012-network-segment-trust' },
+          ] }],
+          '/zh/design/': [{ text: '设计', items: [
+            { text: '网段信任组', link: '/zh/design/network-segment-trust' },
+          ] }],
+          '/zh/guide/': [{ text: '指南', items: [
+            { text: '安装指南', link: '/zh/guide/install' },
+            { text: '外部调用方指南', link: '/zh/guide/external-caller' },
+            { text: '真机走查', link: '/zh/guide/walkthrough' },
+          ] }],
+          '/zh/implementation/': [{ text: '实施记录', items: [
+            { text: 'P0 修复与 nightly', link: '/zh/implementation/fixes-and-nightly-2026-10-17' },
+            { text: '历史实施记录', link: '/zh/implementation/history-2026-10-17' },
+          ] }],
+          '/zh/review/': [{ text: '外部意见存档', items: [
+            { text: '对话存档 · 2026-10-13', link: '/zh/review/chatgpt-2026-10-13' },
+          ] }],
+        },
+      },
+    },
+  },
 })

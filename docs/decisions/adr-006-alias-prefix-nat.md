@@ -1,72 +1,23 @@
-# ADR-006：Alias 前缀映射与 NAT 方案
+# ADR-006: Alias Prefix Mapping and NAT
 
-- 状态：Accepted
-- 日期：2026-10-14
-- 期次：Phase 0
-- 来源：[存档 §9](../review/chatgpt-2026-10-13.md#_9-alias-地址映射设计)
+**Status:** Accepted
 
-## 背景
+## Context
 
-家庭与办公室常使用相同网段（如都为 `192.168.1.0/24`），普通 IP 路由无法区分两个同名目的地（§8.3）。
+Two remote LANs can use the same IPv4 prefix. A client cannot route both real prefixes unambiguously, so one side needs a virtual address range.
 
-## 问题
+## Decision
 
-如何让重叠网段同时可达？
+An Alias maps a virtual CIDR to a real CIDR with the same prefix length and binds to a published LAN route. Translation is one-to-one. The selected translation mode determines whether return traffic is source-NATed.
 
-## 候选方案
+## Rationale and trade-offs
 
-1. **等长前缀一对一映射 + 目标网关侧 NAT**：为每个 LAN 分配独立 Alias 前缀（`10.241.1.0/24` ↔ `192.168.1.0/24`），在目标 LAN 网关做 DNAT（+受控 SNAT）
-2. VPS 侧集中 NAT（为所有远端 LAN 建重叠路由）
-3. 基于 DNS 的动态映射
-4. L2 桥接（第一版排除项）
+Equal-length prefixes preserve host bits and make the mapping predictable. Binding an Alias to a route keeps gateway ownership and route lifecycle explicit. The design does not solve overlap with a client's own local LAN automatically.
 
-## 决定
+## Execution correction
 
-方案 1：
+The implementation must apply and verify NAT using the same ownership model, including host-specific `/32` cases. A successful plan assertion is not proof that the kernel accepted or retained the rules.
 
-- Alias 与 Target 前缀**等长**，前缀替换式一对一映射（`10.241.1.10 → 192.168.1.10`）；非等长映射、端口代理、DNS 动态映射第一版不做；
-- 转换在**目标 LAN 网关**实施（DNAT + 按需受控 SNAT，遵循 ADR-005 模式 B 语义）；VPS 只需知道 Alias 前缀对应哪个网关 Peer；规则**计划**已实现（`crates/meshlet-network/src/nat.rs`：从映射确定性推导 PREROUTING NETMAP（DNAT 恒有）与 `dnat_snat` 模式下的 POSTROUTING 受控 SNAT（源改写为网关 LAN 地址，§9.5），所有权注释 `meshlet alias {id}` 供 §12.6 清理定位，渲染与计划共用同一结构；**执行**随 ADR-007 数据面接线）；方案已经**真实内核验证**（2026-10-15，`crates/meshlet-network/tests/alias_nat.rs`：6 netns 拓扑里两个真实前缀完全重叠的 `192.168.1.0/24` LAN 经不同 Alias 同时可达——ping + UDP echo 证明站点不串线、受控 SNAT 下 LAN 主机看到网关 LAN 地址、`dnat_only` 下 LAN 主机看到真实 Overlay 源地址，NETMAP 的 conntrack 逆变换让应答源自动回到 Alias 地址，无需额外规则）；
-- 转换前六项检查（§9.2）：前缀归属、Target 归属、冲突、网关有效、发起方授权、规则已应用；
-- 协议边界按 §9.6 明示（完整清单见下节「协议兼容边界」）。
+## Revisit when
 
-## 协议兼容边界（§9.6）
-
-Alias 解决的是 **IP 地址映射与路由**问题，不代表所有应用协议都能透明工作：
-
-- **覆盖范围**：IPv4/IPv6 **单播路由层**——第一版目标是常见 TCP、UDP、ICMP 的 IPv4
-  通信，以实际系统行为验证为准；
-- **广播/组播/二层发现不保证**：ARP/NDP、mDNS、DHCP 等**广播域流量不跨 Alias 透传**
-  ——Alias 不是二层桥接，也不是通用应用层代理；
-- **协议负载内嵌 IP**：在报文负载里携带自身地址的应用（SIP、主动模式 FTP、部分
-  P2P/游戏）经地址转换后可能失效——简单前缀替换不重写应用层负载；
-- **SNAT 对源 IP 语义的影响**：`controlled_snat` 模式下 LAN 侧看到的是网关地址，
-  依赖源 IP 的访问控制（LAN 内防火墙/白名单）会受影响；`dual_route` 模式保留原始
-  源地址（ADR-005）；
-- **真实 LAN IP 直连仍可能撞路由冲突**：重叠网段下必须经 Alias 前缀访问远端。
-
-**第一版不宣称对所有协议完全透明。** 对用户的实际影响：跨网段访问一律用 Alias
-前缀地址；网络发现/自动配对类功能留在各自网段内，跨网段用 IP/域名直连。
-
-## 理由
-
-- 网关知道真实 LAN 出口且可直接访问目标主机，避免 VPS 上维护全部远端 LAN 的重叠路由；
-- 等长前缀让映射可预测、可静态校验，冲突检测简单；
-- 拒绝 DNS 方案：第一版 DNS 非强制依赖（§1.3）。
-
-## 缺点与风险
-
-- 协议负载内嵌自身 IP 的应用可能失效（文档明示，不承诺全协议透明）；
-- SNAT 模式下 LAN 侧源 IP 变成网关；
-- 网关侧 NAT 规则所有权与清理必须严格（删除 Alias 同步清理，§12.6），否则留下孤儿规则。
-
-## 2026-10-17 执行修正
-
-`dnat_only` 的真实 agent 入口不再要求 SNAT 地址。每条 SNAT 根据自己的目标 LAN 独立选择源地址，避免多个 LAN 共用第一个接口地址；Direct 的 `controlled_snat` 也编译为网关计划。生产 NAT 限定 Overlay 源前缀，PREROUTING 还限定受管输入接口。Alias 模式的真实 LAN 前缀不进入客户端或 hub 的 AllowedIPs，只发布对应 Alias 前缀。
-
-`single_instance.rs` 真实内核测试验证两 LAN 的独立 SNAT 源地址及无需返回路由的通信，再切换到仅 DNAT：缺返回路由时不通，添加返回路由后恢复。
-
-## 重新评估条件
-
-- 等长约束在实际网段（如 /23 对 /24）频繁冲突；
-- 出现端口级或名称级寻址需求；
-- NAT 规则规模超出 nftables 管理舒适区。
+Requirements demand non-bijective translation, port-level service publishing, or richer conflict resolution.

@@ -1,20 +1,16 @@
-# 架构决策记录（ADR）
+# Architecture Decision Records
 
-按 [存档 §21](../review/chatgpt-2026-10-13.md#_21-架构决策记录-adr) 要求建立，每份含：背景、问题、候选方案、决定、理由、缺点与风险、重新评估条件。状态为 Accepted 表示作为当前设计基线采纳，**实现期如与代码现实冲突须回到这里修订**。
+These records capture durable choices and the conditions that could justify revisiting them. An accepted decision is a design contract; implementation and production acceptance remain tracked separately.
 
-| 编号 | 决策 |
-|---|---|
-| [ADR-001 采用 WireGuard 作为隧道基础](./adr-001-wireguard-transport) | 采用 WireGuard 作为隧道基础 |
-| [ADR-002 第一版采用 VPS 中心中继拓扑](./adr-002-vps-hub-relay) | 第一版采用 VPS 中心中继拓扑 |
-| [ADR-003 SQLite 作为初期控制平面数据库](./adr-003-sqlite-control-plane) | SQLite 作为初期控制平面数据库 |
-| [ADR-004 Overlay IPAM 与地址分配策略](./adr-004-overlay-ipam) | Overlay IPAM 与地址分配策略 |
-| [ADR-005 LAN 路由及返回路径模式](./adr-005-lan-return-path) | LAN 路由及返回路径模式 |
-| [ADR-006 Alias 前缀映射与 NAT 方案](./adr-006-alias-prefix-nat) | Alias 前缀映射与 NAT 方案 |
-| [ADR-007 Linux 网络配置后端](./adr-007-linux-network-backend) | Linux 网络配置后端 |
-| [ADR-008 Windows Agent 网络配置后端](./adr-008-windows-network-backend) | Windows Agent 网络配置后端 |
-| [ADR-009 配置版本、应用状态与回滚机制](./adr-009-config-revision-rollback) | 配置版本、应用状态与回滚机制 |
-| [ADR-010 控制台认证和设备注册安全模型](./adr-010-console-auth-enrollment) | 控制台认证和设备注册安全模型 |
-| [ADR-011 设备自举注册（ZeroTier 式）与中心审批](./adr-011-device-self-registration) | 设备自举注册（ZeroTier 式）与中心审批 |
-| [ADR-012 网段即信任组](./adr-012-network-segment-trust) | Network 内 Segment、默认隔离与跨段单向授权 |
-
-约定：新增决策顺延编号；推翻旧决策不改写原文，新增 supersede 记录并互链。
+- [ADR-001: WireGuard transport](/decisions/adr-001-wireguard-transport)
+- [ADR-002: VPS hub relay](/decisions/adr-002-vps-hub-relay)
+- [ADR-003: SQLite control plane](/decisions/adr-003-sqlite-control-plane)
+- [ADR-004: Overlay IPAM](/decisions/adr-004-overlay-ipam)
+- [ADR-005: LAN return paths](/decisions/adr-005-lan-return-path)
+- [ADR-006: Alias prefix NAT](/decisions/adr-006-alias-prefix-nat)
+- [ADR-007: Linux networking backend](/decisions/adr-007-linux-network-backend)
+- [ADR-008: Windows networking backend](/decisions/adr-008-windows-network-backend)
+- [ADR-009: Configuration revisions and rollback](/decisions/adr-009-config-revision-rollback)
+- [ADR-010: Console authentication and enrollment](/decisions/adr-010-console-auth-enrollment)
+- [ADR-011: Device self-registration and approval](/decisions/adr-011-device-self-registration)
+- [ADR-012: Network segment trust groups](/decisions/adr-012-network-segment-trust)

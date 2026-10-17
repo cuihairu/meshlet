@@ -1,45 +1,19 @@
-# ADR-004：Overlay IPAM 与地址分配策略
+# ADR-004: Overlay IPAM and Address Allocation
 
-- 状态：Accepted
-- 日期：2026-10-14
-- 期次：Phase 0
-- 来源：[存档 §6](../review/chatgpt-2026-10-13.md#_6-ip-地址规划)
+**Status:** Accepted
 
-## 背景
+## Context
 
-每个 Network 需要一个 Overlay IPv4 网段，并为 VPS 与每台设备分配唯一虚拟 IP。第一版仅 IPv4。
+Devices need stable virtual IPv4 addresses that do not collide within a private network. The hub needs a predictable address, and client addresses must survive restart and revocation.
 
-## 问题
+## Decision
 
-地址池如何选择、分配与保护？
+Each network has an immutable Overlay CIDR. The first usable address is reserved for the hub; client addresses are allocated from the remaining usable range. Persisted assignments remain reserved, including revoked devices, unless an explicit lifecycle rule releases them.
 
-## 候选方案
+## Rationale and trade-offs
 
-1. **每网络独立 CIDR + 顺序分配 + 唯一性约束**（创建时选定 CIDR，创建后不可变）
-2. 全局固定网段硬编码
-3. 动态租约（DHCP 式）
+A small deterministic allocator is easy to inspect and test. Immutable CIDRs avoid silently invalidating existing routes and peers. Exhaustion is reported rather than handled by reusing an occupied address.
 
-## 决定
+## Revisit when
 
-- 每个 Network 创建时选择自己的 Overlay CIDR；**默认值 `10.240.0.0/16` 仅为默认，不是协议常量**；
-- CIDR 创建后默认不可改；修改必须走冲突检查 + 迁移流程（第一版不提供）；
-- 地址分配从 CIDR 计算：网络地址/广播地址保留；约定 **hub 取第一个可用地址（如 `10.240.0.1`），客户端从第二可用地址起（`10.240.0.2+`）**，且 hub 地址不分配给普通设备；
-- 顺序分配 + 已用集合保证唯一性；耗尽时报错而不是复用；
-- 冲突检测覆盖 §6.2 六项；客户端本地路由冲突由 Agent 二次检查上报。
-
-## 理由
-
-- 固定可预测的地址（名字→IP 稳定）符合"稳定虚拟 IP"的产品承诺，比租约简单；
-- 按网络独立 CIDR 支撑多网络隔离（§5.3）；
-- 不硬编码网段，避免与用户既有网络冲突时无路可走。
-
-## 缺点与风险
-
-- 用户自选 CIDR 可能与客户端本地网段冲突：靠三类冲突分类（服务端已知/客户端发现/无法确认）+ 警告缓解，无法确认时**只警告不阻断**（§6.3）；
-- 顺序分配在大网段尾部有扫描开销——/16 规模无碍。
-
-## 重新评估条件
-
-- 需要 IPv6 Overlay；
-- 需要地址租约/短生命周期设备大规模进出；
-- 冲突检测误报率不可接受，需要更聪明的选址建议。
+IPv6, subnet resizing, or large-scale allocation becomes a concrete requirement. Any migration must preserve uniqueness and address ownership across restart.

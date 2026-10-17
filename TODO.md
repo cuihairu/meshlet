@@ -93,4 +93,4 @@ Segment 实测：`cargo check --workspace --offline` 通过；`cargo test -p mes
 
 - 远端验收：首次 [nightly 发布](https://github.com/cuihairu/meshlet/actions/runs/39023899317)成功；[Windows/Linux CI](https://github.com/cuihairu/meshlet/actions/runs/39024292854) 已在迁移失败显式关闭连接池修复后通过。
 
-- [ ] 文档接 vitepress 官方 locales 双语（2026-10-17 用户令）：现状 locales=0、41 篇英文页、0 中文页。要求：locales.root=en + locales.zh（link:'/zh/'），各自独立 nav/sidebar；英文在 docs/ 根、中文在 docs/zh/；中文必须真中文禁机翻禁复制英文顶替；构建通过贴输出；**禁止自造切换链接**（`> **中文** | [English](...)` 这类一律不许）；完成后标记并 commit+push，回报 hash 与中英文页数
+- [x] 文档接 VitePress 官方 locales 双语（2026-10-17 用户令）：已配置 `locales.root`（en-US）与 `locales.zh`（`link: '/zh/'`），两种语言各有独立 nav/sidebar；英文编辑页位于 `docs/` 根目录（41 页），中文原稿位于 `docs/zh/`（41 页），未添加自制语言切换链接。`pnpm docs:build`（VitePress 1.6.4）通过，死链与锚点检查通过。

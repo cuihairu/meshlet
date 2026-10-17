@@ -1,42 +1,19 @@
-# ADR-003：SQLite 作为初期控制平面数据库
+# ADR-003: SQLite for the Initial Control Plane
 
-- 状态：Accepted
-- 日期：2026-10-14
-- 期次：Phase 0
-- 来源：[存档 §4.1 / §17.4](../review/chatgpt-2026-10-13.md#_4-1-后端)
+**Status:** Accepted
 
-## 背景
+## Context
 
-控制平面需要持久化网络/设备元数据、公钥与撤销状态、IPAM 记录、路由与 Alias 配置、配置版本与审计事件。第一版为单 VPS 部署。
+The initial deployment is a single self-hosted server with modest expected write volume. It needs durable state, transactions, migrations, backup, and recovery without operating a separate database service.
 
-## 问题
+## Decision
 
-初期选什么数据库？
+Use SQLite as the control-plane database. Run migrations at startup and serialize writes through a single-connection pool.
 
-## 候选方案
+## Rationale and trade-offs
 
-1. **SQLite**（经 SQLx 访问，WAL 模式）
-2. PostgreSQL
-3. 嵌入式 KV（sled / redb 等）
+SQLite keeps installation and backup simple and supports transactional state changes. A single writer fits the initial scale and makes ordering easier to reason about. It limits concurrent writes and does not provide multi-host coordination.
 
-## 决定
+## Revisit when
 
-SQLite + SQLx（含 SQLx migrations）。启用 WAL；写路径集中、事务短小。
-
-## 理由
-
-- 单 VPS 场景零运维：无独立进程、无连接池调优、备份即文件（需一致性保障，见 §17.4）；
-- 写负载低（配置变更是低频操作），SQLite 能力绰绰有余；
-- SQLx 保持 SQL 兼容路径，后续迁移 PostgreSQL 主要是 schema 与迁移脚本工作。
-
-## 缺点与风险
-
-- 单写者：并发写需要应用层排队或依赖 WAL 的串行化，配置应用并发需乐观锁（ADR-009）；
-- 不支持多节点控制平面——第一版明确不需要；
-- 备份不能直接复制写入中的文件：需 `VACUUM INTO` / `.backup` 或停写窗口（§17.4 要求）。
-
-## 重新评估条件
-
-- 控制平面需要多实例/HA；
-- 写入量或审计量超出 SQLite 舒适区；
-- 需要复杂分析查询（则评估只读副本或外置分析）。
+A measured deployment requirement exceeds the single-instance model, or high availability and multi-writer operation become explicit product requirements. Such a change must preserve transaction, backup, and recovery guarantees.

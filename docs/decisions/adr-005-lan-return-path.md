@@ -1,45 +1,19 @@
-# ADR-005：LAN 路由及返回路径模式
+# ADR-005: LAN Routes and Return-Path Modes
 
-- 状态：Accepted
-- 日期：2026-10-14
-- 期次：Phase 0
-- 来源：[存档 §8](../review/chatgpt-2026-10-13.md#_8-异地-lan-路由设计)
+**Status:** Accepted
 
-## 背景
+## Context
 
-远端 LAN 主机收到来自 Overlay 网段的连接时，默认不知道如何把响应路由回 Overlay——这是 LAN 路由最易出问题的部分（§8.2）。
+A remote device may need to reach a real LAN behind another Meshlet device. The gateway must forward traffic, and the LAN must know how to return it.
 
-## 问题
+## Decision
 
-返回路径如何建立？出站路由与返回路由如何成对管理？
+A LAN route names an active gateway device, destination CIDR, and explicit return-path mode. The initial modes distinguish routed return traffic from controlled source NAT.
 
-## 候选方案
+## Rationale and trade-offs
 
-1. **双模式**：真实双向路由（用户在 LAN 路由器配静态路由）/ 受控 SNAT（网关把来自 Overlay 的流量 SNAT 成自身 LAN 地址）
-2. 只做双向路由
-3. 只做 SNAT
-4. 无差别 SNAT 全部流量（§7.4 明确禁止）
+Explicit modes make route behavior reviewable and prevent the server from assuming that a LAN router has a return route. Source NAT can work where route changes are unavailable, but it reduces source-address visibility. Route publication is network-scoped and subject to conflict checks.
 
-## 决定
+## Revisit when
 
-支持双模式，**LAN Route 记录并显示所采用的返回路径模式**：
-
-- 模式 A（双向路由）：保留真实源 IP，用户须能管理 LAN 路由器；
-- 模式 B（受控 SNAT）：兼容普通家庭网络，LAN 主机看到的来源是网关；控制台必须明示该限制；
-- Overlay 设备间通信**不做 SNAT**，保持原始源地址（§7.4）；仅进入真实 LAN 的流量按所选模式处理。该纪律在计划层有结构性保证：`meshlet-network` 的 NAT 计划规则按**目的**前缀匹配，前缀只能是 alias 或真实 LAN 网段——目的落在 Overlay 内的流量匹配不到任何规则（`overlay_traffic_matches_no_rule_so_sources_stay_original` 单测断言）。
-
-## 理由
-
-- 家庭路由器普遍不支持/不开放静态路由，只做模式 A 会挡掉主要场景；
-- 只做 SNAT 则丢掉对源 IP 敏感的高级用法；
-- 模式显式化让"连接失败原因"可诊断（无返回路由时能解释，§18.2 第 5 项）。
-
-## 缺点与风险
-
-- 模式 B 下基于客户端源 IP 的 LAN 访问策略失效（UI 明示）；
-- 模式 A 依赖用户正确配置路由器，需要诊断能力支撑。
-
-## 重新评估条件
-
-- 出现第三类返回路径需求（如 LAN 侧装 Agent 做代理）；
-- 诊断数据显示两模式覆盖率不足。
+Additional gateway selection, failover, or policy-routing requirements arise. Those features must specify duplicate publication, gateway health, and deterministic return behavior.

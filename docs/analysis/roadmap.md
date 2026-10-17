@@ -1,57 +1,17 @@
-# 实施路线：阶段计划、ADR 与验收
+# Roadmap, Decisions, and Acceptance
 
-> 来源：[ChatGPT 存档 §19–§23](/review/chatgpt-2026-10-13#_19-分阶段实施计划)。外部意见，全部【待核】；阶段划分与验收标准在实现时复核调整。
+## Phased delivery
 
-## 分阶段计划（§19）
+The project progresses from architecture and prototype work through the minimal Overlay, console, LAN routing, Alias support, and stability. Later work should close evidence-backed P0 gaps before adding broad platform or product scope.
 
-【待核】六个阶段（[存档 §19](/review/chatgpt-2026-10-13#_19-分阶段实施计划)）：
+## Decision records
 
-| 阶段 | 目标 | 关键交付/验收 |
-|---|---|---|
-| Phase 0 · 仓库与架构审查 | 大规模实现前确认架构可行 | 架构审查报告、风险清单、领域模型、API 初稿、WireGuard 配置原型、Alias 网络实验报告 |
-| Phase 1 · 最小 Overlay | 两台客户端经 VPS 通信 | Rust Server 基础、SQLite、Network/Device 模型、密钥注册、Peer 管理、IP 分配、Linux 客户端、CLI；验收含互访/重启恢复/撤销/不重复分配 |
-| Phase 2 · Web 控制台 | 用户能管理整个网络 | 认证、React 控制台、Network/Device 管理、邀请撤销、版本页面；验收含"不手工改库即可完成管理" |
-| Phase 3 · LAN Subnet Routing | 经远端网关访问真实 LAN | LAN Route 模型、网关配置、转发与返回路径、冲突检测；验收含"不静默覆盖已有冲突" |
-| Phase 4 · Alias Routing | 支持重叠网段 | Alias 模型、前缀分配、DNAT/SNAT、规则所有权与清理；验收含双 `192.168.1.0/24` 经不同 Alias 可访问 |
-| Phase 5 · 稳定性与发布 | 可供用户部署 | 自动化测试、安装流程、备份恢复、安全检查、文档；验收含"从空 VPS 完成部署" |
+ADRs record durable choices such as WireGuard transport, VPS relay topology, SQLite, Overlay IPAM, return paths, Alias NAT, operating-system backends, configuration revisions, authentication, enrollment, and segment trust groups. New implementation should follow accepted decisions or explicitly revise them.
 
-## Code Agent 协作规则（§20）
+## Acceptance discipline
 
-【待核】实现前必须先检查仓库真实内容（Cargo.toml、源代码、README、CI、架构文档、依赖），**不能假设仓库为空，也不能假设建议已实现**（[存档 §20.1](/review/chatgpt-2026-10-13#_20-1-开始实现前)）。
+A feature is complete only when its acceptance criteria and the relevant evidence pass. Tests must identify whether they cover domain logic, API integration, privileged networking, or real deployment. Build success is necessary but does not substitute for operational verification.
 
-【待核】必须先提交架构审查结论，回答八个问题（[存档 §20.2](/review/chatgpt-2026-10-13#_20-2-必须先提交架构审查结论)）：现有代码与设计的差距；Peer 与路由模型是否可行；VPS 能否正确转发；Alias DNAT/SNAT 部署在哪个节点；Windows 管理方式；失败如何回滚；哪些设计要调整；哪些风险需原型验证。
+## Collaboration
 
-【待核】禁止的实现方式（[存档 §20.3](/review/chatgpt-2026-10-13#_20-3-不允许的实现方式)）：模拟状态代替真实网络功能；只写 UI 不连后端；只更新数据库就显示成功；忽略平台差异；删所有路由/防火墙规则回滚；私钥入库；默认开放所有流量；擅自加公共中继/P2P/多跳；未审查引入大型依赖；TODO/假实现描述为已完成。
-
-【待核】每阶段交付（[存档 §20.4](/review/chatgpt-2026-10-13#_20-4-每个阶段的交付要求)）：改动文件清单、架构决策与取舍、实现说明、单元测试、必要集成测试、测试执行结果、已知限制、下阶段建议。**不能以"编译成功"作为网络功能完成的证明**。
-
-## ADR 清单（§21）
-
-【待核】第一阶段至少建立（[存档 §21](/review/chatgpt-2026-10-13#_21-架构决策记录-adr)）：
-
-- ADR-001 WireGuard 作为隧道基础
-- ADR-002 第一版 VPS 中心中继拓扑
-- ADR-003 SQLite 作为初期控制平面数据库
-- ADR-004 Overlay IPAM 与地址分配策略
-- ADR-005 LAN 路由及返回路径模式
-- ADR-006 Alias 前缀映射与 NAT 方案
-- ADR-007 Linux 网络配置后端
-- ADR-008 Windows Agent 网络配置后端
-- ADR-009 配置版本、应用状态与回滚机制
-- ADR-010 控制台认证和设备注册安全模型
-
-每份 ADR 含：背景、问题、候选方案、最终决定、选择理由、缺点与风险、重新评估条件。
-
-## 第一版最终验收（§22）
-
-【待核】五组验收（[存档 §22](/review/chatgpt-2026-10-13#_22-第一版最终验收标准)）：
-
-1. **产品**：自有 VPS 部署；控制台建网管网；设备注册/查看/撤销；Overlay IPv4 稳定；配置状态与诊断可见。
-2. **Overlay**：两客户端经 VPS 互访；Peer 配置正确；VPS 路由转发正确；成员授权边界有效；服务端重启恢复。
-3. **LAN 路由**：指定网关并发布 CIDR；远端可访问；返回路由/SNAT 正确；冲突被识别；撤销网关后路由失效。
-4. **Alias**：重叠 LAN 用不同前缀访问；地址转换与返回路径正确；前缀冲突被拒；删除清理规则；失败不显示虚假成功。
-5. **安全与可靠性**：管理 API 受认证授权；私钥不上传；邀请可过期/撤销/防重放；撤销移除 Peer；应用幂等；回滚不破坏非 Meshlet 配置；诊断区分故障层。
-
-## 首轮任务（§23）
-
-【待核】存档要求第一轮不直接实现，只做（[存档 §23](/review/chatgpt-2026-10-13#_23-给-code-agent-的首轮任务)）：审查仓库现状 → 文档与代码对照 → 验证 WireGuard 中心转发拓扑 → 实验环境验证 Alias DNAT/SNAT 与返回路径 → 检查 Windows/Linux 配置管理差异 → 提出架构修正 → 输出模块图/数据模型/API 契约/ADR → 给出分阶段计划。首轮完成后才决定直接实现 vs 原型验证。
+Keep tasks small enough to review, link implementation to requirements and ADRs, and record meaningful deviations. The current TODO is the active queue; historical records preserve earlier evidence without claiming that every old checkbox represents current product completeness.

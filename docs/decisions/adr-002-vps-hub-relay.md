@@ -1,42 +1,19 @@
-# ADR-002：第一版采用 VPS 中心中继拓扑
+# ADR-002: Use a VPS Hub Relay for the First Version
 
-- 状态：Accepted
-- 日期：2026-10-14
-- 期次：Phase 0
-- 来源：[存档 §3.3 / §7.1](../review/chatgpt-2026-10-13.md#_3-3-部署形态)
+**Status:** Accepted
 
-## 背景
+## Context
 
-用户拥有一台公网 IPv4 VPS；设备分布在家庭/办公室等多个 NAT 后位置。
+A personal networking product needs a reachable coordination and traffic path even when endpoints are behind restrictive NATs. Direct peer connectivity adds discovery, traversal, and fallback complexity.
 
-## 问题
+## Decision
 
-设备间互联采用什么拓扑？
+The first topology uses a user-operated VPS as the hub. Devices establish WireGuard connections to it, and the hub relays traffic between peers.
 
-## 候选方案
+## Rationale and trade-offs
 
-1. **中心中继（hub-and-spoke）**：所有设备只与 VPS 建隧道，跨设备流量由 VPS 内核转发
-2. 全网格直连（需 NAT 穿透）
-3. 混合：中继 + 按需 P2P
+The hub gives the operator one stable public endpoint and a central place to coordinate policy. It also introduces a bandwidth and availability dependency: client-to-client traffic traverses the VPS, and hub capacity bounds throughput.
 
-## 决定
+## Revisit when
 
-第一版采用单 VPS 中心中继（方案 1）。部署形态：一个 Server、一个 Web 控制台（Server 提供静态文件）、一个 SQLite、一个 WireGuard 数据面、多个 Agent。**不引入 Kubernetes、微服务集群、独立消息队列**；控制 API 与 WireGuard 可同机但逻辑分离。
-
-## 理由
-
-- "Simple first"（§1.2.2）：无 NAT 穿透、无打洞、无多跳，控制面与转发面都集中可观测；
-- 客户端只需出站 UDP，兼容绝大多数家庭/办公网络；
-- 与第一版排除项一致（§1.3：不做 P2P 直连与动态中继切换）。
-
-## 缺点与风险
-
-- VPS 是单点：宕机则跨设备连接与控制台同时不可用（§7.6 已明确接受）；
-- 带宽与延迟受 VPS 规格限制，所有流量过中继；
-- 多租户规模化的路被堵死——按计划由后续版本重新评估。
-
-## 重新评估条件
-
-- 出现设备间大流量/低延迟需求；
-- VPS 可用性不达标，需要冗余中继；
-- 验收发现 VPS 转发性能不满足基本场景。
+Measure the actual relay bottleneck first. A direct peer path may be prototyped later, but it must retain hub fallback, preserve network isolation, and define behavior when connectivity changes.
