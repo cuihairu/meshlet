@@ -29,7 +29,7 @@
 | CR-05 | P0 / 已验收（API / Linux netns） | agent 检查实际地址、Peer/AllowedIPs、转发、路由下一跳和逐条 NAT；局部漂移可修复 | `single_instance.rs` 验证部分 SNAT 丢失、关闭转发后的重放与通信恢复 |
 | QA-01 | P0 / 待验证 | 独立数据面 CI 门禁：前置缺失不算通过，记录实际执行/跳过；重做最终验收矩阵 | `dataplane.yml` hosted 严格门禁与日志制品已通过；真实 VPS 验收矩阵待补 |
 | RG-01 | P1 / 待验证 | 不同目标网段分别走指定网关；返回路径正确，网关失效不串站点 | 网关专题；AR-02/AR-05，当前已有基础路由模型 |
-| RG-02 | P0 核验 / 设计草案完成 | 双站点和本地 LAN 重复时用独立 Alias；已细化各端路由/AllowedIPs、返回模式、同网关歧义、删除/故障及 8 项验收；实现与组合场景验收未完成 | [重叠 LAN Alias 设计](docs/zh/design/overlapping-lan-alias.md)；AR-01/MOD-03；源码已排除 Alias 的真实 LAN 前缀，API/Agent + 客户端同前缀组合验收待补 |
+| RG-02 | P0 核验 / 部分验收（Linux netns） | 双站点和客户端本地 LAN 同前缀时用独立 Alias；正式 API/Agent + netns 已验 UDP local/site1/site2 同时可达、本地路由保留、重复真实前缀不进隧道。TCP 标识、返回模式变化、同网关歧义、删除、离线/失败、重启恢复和 RG-03 冲突/预检仍未验收，不标整项完成 | [重叠 LAN Alias 设计](docs/zh/design/overlapping-lan-alias.md)；AR-01/MOD-03；`apps/server/tests/dual_site_end_to_end.rs::dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites` 实际通过 |
 | RG-03 | 随 P0 修复 / 待设计 | 完整检查 Overlay/Alias/Direct/本地路由及共享多网络冲突域；拒绝覆盖，未知可追踪 | 网关专题；AR-01，精确前缀预检不代表完整冲突检测 |
 | PN-01 | P1 / 待实现 | Device/网络成员/设备组/能力模型；先明确网络内分组，一机多网按需实现 | 分组部分由 ADR-012 覆盖；调研 N01…N03、P01…P06 |
 | PN-02 | P1 / 待设计 | 最小组到设备/服务端口策略；明确默认行为，允许与拒绝均有内核证据 | PN-01、AR-01、AR-02；P2P 前需端点执行 |

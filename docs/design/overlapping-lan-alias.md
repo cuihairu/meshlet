@@ -68,14 +68,15 @@ Acceptance covers tested IPv4 unicast protocols. Broadcast discovery, embedded-a
 | `apps/server/src/service.rs` | Alias routes can overlap in real space; mappings require a same-network Alias route, one-to-one binding, and equal prefix length | Same-gateway ambiguity rejection, return-mode compatibility, RG-03 checks |
 | `crates/meshlet-network/tests/alias_nat.rs` | Existing topology covers two overlapping remote LANs, site identity, SNAT, and source preservation | Formal API/Agent entry points plus a matching client-local LAN |
 | `apps/server/tests/agent_plan.rs` | Gateway NAT and exclusion of its own LAN have coverage | Combined topology, single-site deletion, restart, failure recovery |
+| `apps/server/tests/dual_site_end_to_end.rs` | Formal API/Agent flow covers two remote LANs plus the client-local same-prefix LAN. UDP probes return local/site1/site2, the kernel keeps the client-local route, and the repeated real prefix is absent from tunnel routes | TCP identity, return-mode variation, deletion, restart, failure recovery, and RG-03 preflight remain open |
 
-These are source findings, not claims that dataplane tests were rerun for this draft. Historical netns evidence does not replace deployment acceptance.
+These findings include a local Linux netns run of `dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites`. This remains integration acceptance, not VPS deployment or full RG-02 acceptance.
 
 ## Acceptance matrix
 
 | Case | Required result |
 |---|---|
-| RG02-01: two remote LANs and local LAN overlap | Concurrent TCP/UDP access returns three distinct site identities; local routes remain unchanged |
+| RG02-01: two remote LANs and local LAN overlap | UDP returns local/site1/site2 in the available netns test; TCP identity remains open |
 | RG02-02: plan consistency | Alias prefixes belong to the correct hub Peers and client routes/AllowedIPs; no repeated real or unpublished aggregate prefixes enter the tunnel |
 | RG02-03: return modes | SNAT exposes the correct gateway LAN address; preserved-source mode exposes Overlay source, fails without a return route, and succeeds when it is added |
 | RG02-04: missing or invalid mapping | No real-prefix fallback; reject orphan, cross-network, mismatched-target, or ambiguous same-gateway input without partial writes |

@@ -15,15 +15,15 @@
 //!           ┌── HUB (server 数据面 wg0 = 10.240.0.1，underlay .10，listen 51830)
 //!  bridge ──┼── G1  (网关 10.240.0.2，underlay .20) ── LAN1 192.168.1.0/24 (L1 = .5)
 //!           ├── G2  (网关 10.240.0.3，underlay .30) ── LAN2 192.168.1.0/24 (L2 = .5)
-//!           ├── A   (客户端 10.240.0.4，underlay .40)        ↑ 两个真实前缀完全重叠
+//!           ├── A   (客户端 10.240.0.4，underlay .40) ── LOCAL 192.168.1.0/24 (L0 = .5)
 //!           ├── H2  (net-B hub mlt2 = 10.242.0.1，underlay .50，listen 51830)
 //!           └── B   (net-B 客户端，underlay .60)             ↑ overlay 完全不相交
 //! ```
 //!
 //! 断言对应验收：
-//! 1. **双重叠 LAN 各自可达**——A 分别经 `10.241.1.0/24`（→G1→L1）与
-//!    `10.241.2.0/24`（→G2→L2）ping 0 丢，UDP echo 应答体携带站点名
-//!    （`site1`/`site2`，重叠子网确实落到两个不同站点，不串线）；
+//! 1. **双重叠 LAN + 客户端本地同前缀组合**——A 分别经 `10.241.1.0/24`
+//!    （→G1→L1）与 `10.241.2.0/24`（→G2→L2）访问两个远端 `.5`，同时经
+//!    本地路由访问自己的 `.5`；三个 UDP echo 应答携带不同站点名，不串线；
 //! 2. **hub 只按前缀转发、不做 NAT（§9.4）**——服务端 hub 计划里 Alias 前缀
 //!    才进 hub 路由/AllowedIPs，真实前缀不进（重叠时两个 peer 的 AllowedIPs
 //!    保持互斥，cryptkey 路由无歧义）；
@@ -167,6 +167,12 @@ fn owner_alive(name: &str) -> bool {
     Path::new("/proc").join(pid).exists()
 }
 
+fn kernel_routes(ns: &str) -> String {
+    let out = netns_exec(ns, &["ip", "route"]);
+    require_ok(&out, "ip route");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 // ---------------------------------------------------------------- 密钥
 
 fn wg_genkey() -> Option<String> {
@@ -236,6 +242,7 @@ struct Topology {
     b: Node,
     lan1: String,
     lan2: String,
+    local_lan: String,
 }
 
 fn offload_off(dev: &str) {
@@ -434,6 +441,72 @@ impl Topology {
             offload_off(&lan_end);
         }
 
+        let (local_host_end, local_lan_end) = (format!("{tag}XA0"), format!("{tag}XA1"));
+        let local_lan = format!("{tag}L0");
+        guard.netns.push(local_lan.clone());
+        guard.veth.push(local_host_end.clone());
+        require_ok(
+            &sudo(&["ip", "netns", "add", &local_lan]),
+            "client lan netns add",
+        );
+        require_ok(
+            &sudo(&[
+                "ip",
+                "link",
+                "add",
+                &local_host_end,
+                "type",
+                "veth",
+                "peer",
+                "name",
+                &local_lan_end,
+            ]),
+            "client lan veth add",
+        );
+        require_ok(
+            &sudo(&["ip", "link", "set", &local_host_end, "netns", &a.netns]),
+            "client lan end -> client",
+        );
+        require_ok(
+            &sudo(&["ip", "link", "set", &local_lan_end, "netns", &local_lan]),
+            "client lan host end -> lan",
+        );
+        require_ok(
+            &netns_exec(
+                &a.netns,
+                &[
+                    "ip",
+                    "addr",
+                    "add",
+                    "192.168.1.1/24",
+                    "dev",
+                    &local_host_end,
+                ],
+            ),
+            "client lan addr",
+        );
+        require_ok(
+            &netns_exec(
+                &local_lan,
+                &["ip", "addr", "add", "192.168.1.5/24", "dev", &local_lan_end],
+            ),
+            "client lan host addr",
+        );
+        require_ok(
+            &netns_exec(&a.netns, &["ip", "link", "set", &local_host_end, "up"]),
+            "client lan up",
+        );
+        require_ok(
+            &netns_exec(&local_lan, &["ip", "link", "set", &local_lan_end, "up"]),
+            "client lan host up",
+        );
+        require_ok(
+            &netns_exec(&local_lan, &["ip", "link", "set", "lo", "up"]),
+            "client lan lo up",
+        );
+        offload_off(&local_host_end);
+        offload_off(&local_lan_end);
+
         Some(Topology {
             guard,
             hub,
@@ -444,6 +517,7 @@ impl Topology {
             b,
             lan1,
             lan2,
+            local_lan,
         })
     }
 
@@ -660,6 +734,37 @@ fn udp_echo(
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn local_udp_echo(topo: &Topology, script_dir: &Path, target: &str, port: u16) -> String {
+    let echo_py = script_dir.join("echo.py");
+    let send_py = script_dir.join("send.py");
+    let mut server = Command::new("sudo")
+        .arg("-n")
+        .args(["ip", "netns", "exec", &topo.local_lan, "python3"])
+        .arg(&echo_py)
+        .arg(port.to_string())
+        .arg("local")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn local echo server");
+    let out = netns_exec(
+        &topo.a.netns,
+        &[
+            "python3",
+            &send_py.to_string_lossy(),
+            target,
+            &port.to_string(),
+        ],
+    );
+    let _ = server.wait();
+    assert!(
+        out.status.success(),
+        "local udp echo to {target}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 // ---------------------------------------------------------------- 测试
 
 #[test]
@@ -684,6 +789,11 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     std::fs::write(&echo_py, ECHO_PY).unwrap();
     let send_py = dir.join("send.py");
     std::fs::write(&send_py, SEND_PY).unwrap();
+    let local_route_before = kernel_routes(&topo.a.netns);
+    assert!(
+        local_route_before.contains("192.168.1.0/24"),
+        "client local LAN must have its existing route before apply: {local_route_before}"
+    );
 
     let base = start_server(
         dir.join("db.sqlite3"),
@@ -925,7 +1035,19 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
         );
     }
 
-    // ---- 验收①：双重叠 LAN 各自可达（ping + 站点名不串线） ---------------
+    // ---- 验收①：双重叠 LAN + 客户端本地同前缀组合 -----------------------
+    let local_route_after = kernel_routes(&topo.a.netns);
+    assert!(
+        local_route_after
+            .lines()
+            .any(|route| route.starts_with("192.168.1.0/24 ")
+                && !route.contains("dev wg0")),
+        "managed Alias routes must preserve the client's same-prefix local route: {local_route_after}"
+    );
+    assert!(
+        !local_route_after.contains("192.168.1.0/24 dev wg0"),
+        "the repeated real LAN prefix must not enter the tunnel routes: {local_route_after}"
+    );
     assert!(
         topo.ping_within(&topo.a.netns, "10.241.1.5", HANDSHAKE_TIMEOUT),
         "A -> site1 via alias 10.241.1.5"
@@ -944,6 +1066,11 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     assert!(
         reply2.contains("site2"),
         "alias2 must land at site2: {reply2}"
+    );
+    let local_reply = local_udp_echo(&topo, &dir, "192.168.1.5", 7700);
+    assert!(
+        local_reply.contains("local"),
+        "same-prefix local destination must keep using its existing route: {local_reply}"
     );
     // dnat_snat（§9.5 模式 B）：LAN 主机看到的源是网关自身 LAN 地址。
     assert!(

@@ -74,14 +74,15 @@ Alias 模式尚未绑定映射时，不能回退发布真实前缀。发布集�
 | `apps/server/src/service.rs` | 不同 Alias 路由允许真实重叠；映射限制同网络 Alias 路由、一对一、等长 | 同网关重复目标的拒绝；返回模式兼容校验；与 RG-03 对齐 |
 | `crates/meshlet-network/tests/alias_nat.rs` | 已有双重叠远端 LAN、站点标识、SNAT/源保留的测试拓扑 | 经正式 API/Agent 入口，同时加入客户端同前缀本地 LAN |
 | `apps/server/tests/agent_plan.rs` | 已有网关 NAT 与自身 LAN 不回灌的覆盖 | 组合场景、删除单站点、重启和失败恢复 |
+| `apps/server/tests/dual_site_end_to_end.rs` | 正式 API/Agent 流程已包含两个远端 LAN 与客户端本地同前缀 LAN；UDP 探测返回 local/site1/site2，内核保留本地路由，重复真实前缀不进隧道 | TCP 标识、返回模式变化、删除、重启、失败恢复和 RG-03 预检仍未完成 |
 
-以上是源码核对，不代表本轮已重新执行数据面测试。历史 netns 证据不能替代真实部署验收。
+以上结论包含本轮实际执行的 `dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites` Linux netns 验收；它只是集成验收，不等同 VPS 部署验收，也不能代表 RG-02 全项完成。
 
 ## 7. 验收矩阵
 
 | 编号 | 场景 | 通过条件 |
 |---|---|---|
-| RG02-01 | 两远端 LAN + 客户端本地 LAN 同前缀 | 三个 `.50` 的 TCP/UDP 服务返回不同站点标识，三者可同时访问，本地路由前后不变 |
+| RG02-01 | 两远端 LAN + 客户端本地 LAN 同前缀 | 可用 netns 测试中 UDP 返回 local/site1/site2 且本地路由不变；TCP 标识仍待补 |
 | RG02-02 | 计划一致性 | Alias 出现在正确 hub Peer、客户端路由/AllowedIPs；真实重复前缀不进入隧道；没有未发布 Alias 聚合前缀 |
 | RG02-03 | 两种返回模式 | SNAT 时目标看到正确网关 LAN 地址；源保留时看到 Overlay 源，缺返回路由失败、补路由成功 |
 | RG02-04 | 无映射或非法关联 | 不发布真实 LAN 兜底；孤儿、跨网络、目标不匹配和同网关歧义配置被拒绝，无部分写入 |
