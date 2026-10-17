@@ -36,10 +36,11 @@ use serde::Serialize;
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service::{
-    approve_registration, create_bootstrap_token, create_invite, create_network, create_route,
-    delete_route, deny_registration, enroll, get_route, list_bootstrap_tokens, list_devices,
-    list_networks, list_registrations, list_routes, register_device, revoke_bootstrap_token,
-    revoke_device, revoke_invite,
+    approve_registration, create_bootstrap_token, create_host_forward, create_invite,
+    create_network, create_route, delete_host_forward, delete_route, deny_registration, enroll,
+    get_route, list_bootstrap_tokens, list_devices, list_host_forwards, list_networks,
+    list_registrations, list_routes, register_device, revoke_bootstrap_token, revoke_device,
+    revoke_invite,
 };
 
 /// `GET /api/v1/system/status` 响应（契约见 docs/architecture/api-contract.md）。
@@ -292,6 +293,86 @@ async fn create_route_handler(
     Ok((StatusCode::CREATED, Json(view)))
 }
 
+async fn create_host_forward_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path(network_id): axum::extract::Path<String>,
+    Json(req): Json<service::CreateHostForwardRequest>,
+) -> Result<(StatusCode, Json<service::HostForwardView>), service::ServiceError> {
+    let _persist = state.persist.lock().await;
+    let (view, route, alias, revision, route_seq) = {
+        let mut guard = state.mesh.lock().unwrap();
+        match create_host_forward(&mut guard, &network_id, req) {
+            Ok(view) => {
+                let alias = guard
+                    .aliases
+                    .get(&network_id)
+                    .and_then(|aliases| aliases.iter().find(|item| item.id.to_string() == view.id))
+                    .expect("host forward alias just created")
+                    .clone();
+                let route = guard
+                    .lan_routes
+                    .get(&network_id)
+                    .and_then(|routes| routes.iter().find(|item| item.id == alias.lan_route_id))
+                    .expect("host forward route just created")
+                    .clone();
+                let revision = guard
+                    .ledger
+                    .get(
+                        &meshlet_domain::NetworkId(network_id.clone()),
+                        view.revision_id,
+                    )
+                    .expect("just recorded")
+                    .clone();
+                (view, route, alias, revision, guard.route_seq())
+            }
+            Err(e) => {
+                if matches!(e, service::ServiceError::RouteConflict(_)) {
+                    record_route_conflict(&state);
+                }
+                crate::op_log!(
+                    warn,
+                    "host_forward",
+                    "create_host_forward",
+                    &network_id,
+                    crate::telemetry::NOT_APPLICABLE,
+                    crate::telemetry::NOT_APPLICABLE,
+                    crate::telemetry::ErrorCategory::from(&e).as_str(),
+                    crate::telemetry::RESULT_ERROR
+                );
+                return Err(e);
+            }
+        }
+    };
+    crate::persist::insert_host_forward(state.auth.pool(), &route, &alias, route_seq)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::persist::insert_revision(state.auth.pool(), &revision)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "host_forward.created",
+        "host_forward",
+        Some(&view.id),
+        Some(serde_json::json!({ "network_id": network_id })),
+    )
+    .await?;
+    crate::op_log!(
+        info,
+        "host_forward",
+        "create_host_forward",
+        &network_id,
+        crate::telemetry::NOT_APPLICABLE,
+        &view.revision_id.to_string(),
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
 /// 路由冲突拒绝（§17.2「路由冲突数」指标）：仅计「目的网段重叠」类冲突
 /// （`ServiceError::RouteConflict`）；设备未激活等其它 409 不计。
 pub(crate) fn record_route_conflict(state: &SharedAppState) {
@@ -360,6 +441,60 @@ async fn delete_route_handler(
         crate::telemetry::RESULT_OK
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_host_forward_handler(
+    State(state): State<SharedAppState>,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
+    axum::extract::Path((network_id, alias_id)): axum::extract::Path<(String, String)>,
+) -> Result<StatusCode, service::ServiceError> {
+    let _persist = state.persist.lock().await;
+    let (route_id, revision) = {
+        let mut guard = state.mesh.lock().unwrap();
+        let (_, route_id) = delete_host_forward(&mut guard, &network_id, &alias_id)?;
+        let revision = guard
+            .ledger
+            .current(&meshlet_domain::NetworkId(network_id.clone()))
+            .expect("delete_host_forward just recorded a revision")
+            .clone();
+        (route_id, revision)
+    };
+    crate::persist::delete_route(state.auth.pool(), &route_id)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::persist::insert_revision(state.auth.pool(), &revision)
+        .await
+        .map_err(crate::persist::internal)?;
+    crate::audit::record_or_fail(
+        &state,
+        Some(&user_id.0),
+        "host_forward.deleted",
+        "host_forward",
+        Some(&alias_id),
+        Some(serde_json::json!({ "network_id": network_id, "route_id": route_id })),
+    )
+    .await?;
+    crate::op_log!(
+        info,
+        "host_forward",
+        "delete_host_forward",
+        &network_id,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::NOT_APPLICABLE,
+        crate::telemetry::ErrorCategory::None.as_str(),
+        crate::telemetry::RESULT_OK
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_host_forwards_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(_user): AuthenticatedUser,
+    axum::extract::Path(network_id): axum::extract::Path<String>,
+) -> Result<Json<Vec<service::HostForwardView>>, service::ServiceError> {
+    let guard = state.mesh.lock().unwrap();
+    Ok(Json(list_host_forwards(&guard, &network_id)?))
 }
 
 async fn revoke_device_handler(
@@ -821,6 +956,14 @@ pub fn router(state: SharedAppState) -> Router {
         .route(
             "/api/v1/networks/{network_id}/routes/{route_id}",
             get(get_route_handler).delete(delete_route_handler),
+        )
+        .route(
+            "/api/v1/networks/{network_id}/host-forwards",
+            post(create_host_forward_handler).get(list_host_forwards_handler),
+        )
+        .route(
+            "/api/v1/networks/{network_id}/host-forwards/{alias_id}",
+            delete(delete_host_forward_handler),
         )
         .route(
             "/api/v1/networks/{network_id}/devices/{device_id}/revoke",

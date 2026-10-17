@@ -166,6 +166,21 @@ export interface AliasMapping {
   apply_status: string;
 }
 
+/** One /32 host forwarding unit (route + alias are created and removed together). */
+export interface HostForward {
+  id: string;
+  network_id: string;
+  gateway_device_id: string;
+  target_ipv4: string;
+  alias_ipv4: string;
+  /** dnat_snat | dnat_only. */
+  translation_mode: string;
+  /** pending | applied | failed — desired-state marker. */
+  status: string;
+  revision_id: number;
+  apply_status: string;
+}
+
 /** One of the 13 network diagnostics checks (§12.7). */
 export interface DiagnosticCheck {
   id: string;
@@ -309,6 +324,23 @@ export const api = {
   /** Removes the mapping AND its bound route in one revision (§12.6). */
   deleteAlias: (networkId: string, aliasId: string) =>
     request<void>('DELETE', `/networks/${networkId}/aliases/${aliasId}`),
+  listHostForwards: (networkId: string) =>
+    request<HostForward[]>('GET', `/networks/${networkId}/host-forwards`),
+  createHostForward: (
+    networkId: string,
+    gateway_device_id: string,
+    target_ipv4: string,
+    alias_ipv4: string,
+    translation_mode?: string,
+  ) =>
+    request<HostForward>('POST', `/networks/${networkId}/host-forwards`, {
+      gateway_device_id,
+      target_ipv4,
+      alias_ipv4,
+      ...(translation_mode ? { translation_mode } : {}),
+    }),
+  deleteHostForward: (networkId: string, aliasId: string) =>
+    request<void>('DELETE', `/networks/${networkId}/host-forwards/${aliasId}`),
   /** Latest persisted diagnostics snapshot; 404 when never run. */
   getDiagnostics: (networkId: string) =>
     request<DiagnosticsReport>('GET', `/networks/${networkId}/diagnostics`),

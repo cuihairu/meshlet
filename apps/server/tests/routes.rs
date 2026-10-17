@@ -495,3 +495,74 @@ async fn unknown_network_is_404_for_all_route_operations() {
     let (st, _) = json_get(&c, "/api/v1/networks/nope/routes/rt-1").await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn host_forward_creates_and_removes_a_single_host_unit() {
+    let c = ctx().await;
+    let (network_id, device_id) = net_with_device(&c, "home", OVERLAY).await;
+    let uri = format!("/api/v1/networks/{network_id}/host-forwards");
+    let body = json!({
+        "gateway_device_id": device_id,
+        "target_ipv4": "192.168.1.23",
+        "alias_ipv4": "10.241.1.23",
+    });
+
+    let (st, view) = json_post(&c, &uri, body.clone()).await;
+    assert_eq!(st, StatusCode::CREATED, "{view}");
+    assert_eq!(view["target_ipv4"], "192.168.1.23");
+    assert_eq!(view["alias_ipv4"], "10.241.1.23");
+    assert_eq!(view["translation_mode"], "dnat_snat");
+    assert_eq!(view["status"], "pending");
+    assert_eq!(view["revision_id"], 3);
+    assert_eq!(view["apply_status"], "pending");
+    let alias_id = view["id"].as_str().unwrap().to_string();
+
+    // Host Forward 是 /32：一个虚拟主机映射一个真实主机，协议/端口不裁剪。
+    let (routes_st, routes) = json_get(&c, &format!("/api/v1/networks/{network_id}/routes")).await;
+    assert_eq!(routes_st, StatusCode::OK);
+    let route = routes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|route| route["destination_cidr"] == "192.168.1.23/32")
+        .expect("/32 route");
+    assert_eq!(route["route_mode"], "alias");
+    assert_eq!(route["gateway_device_id"], device_id.as_str());
+    let route_id = route["id"].as_str().unwrap().to_string();
+
+    // 冲突必须发生在状态变更前：同一 alias /32 再建 → 409，且不产生新修订。
+    let revisions_before = revision_count(&c, &network_id).await;
+    let (st, error) = json_post(&c, &uri, body).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("overlaps existing alias") || message.contains("overlaps existing route"),
+        "conflict names the existing unit: {error}"
+    );
+    assert_eq!(revision_count(&c, &network_id).await, revisions_before);
+
+    // 删除 Host Forward = 删除 alias + 绑定 route 一个修订。
+    let (st, _) = json_delete(
+        &c,
+        &format!("/api/v1/networks/{network_id}/host-forwards/{alias_id}"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let (routes_st, routes) = json_get(&c, &format!("/api/v1/networks/{network_id}/routes")).await;
+    assert_eq!(routes_st, StatusCode::OK);
+    assert!(!routes
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|route| route["id"] == route_id.as_str()));
+}
+
+async fn revision_count(c: &Ctx, network_id: &str) -> usize {
+    let (st, body) = json_get(
+        c,
+        &format!("/api/v1/networks/{network_id}/config-revisions"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    body.as_array().unwrap().len()
+}

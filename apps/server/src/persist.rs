@@ -452,6 +452,54 @@ pub async fn insert_alias(
     Ok(())
 }
 
+/// 事务性落库 Host Forward 的两条镜像（LAN Route + Alias）。
+///
+/// 内存路径已保证“创建即整单元”；这里把同一原子边界带到 SQLite：任一行
+/// 写入失败时路由序列和另一行一起回滚。
+pub async fn insert_host_forward(
+    pool: &SqlitePool,
+    route: &LanRoute,
+    alias: &AliasMapping,
+    route_seq: u64,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO lan_routes
+           (id, network_id, gateway_device_id, destination_cidr, route_mode,
+            return_path_mode, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(route.id.to_string())
+    .bind(route.network_id.to_string())
+    .bind(route.gateway_device_id.to_string())
+    .bind(route.destination_cidr.to_string())
+    .bind(route.route_mode.as_str())
+    .bind(route.return_path_mode.as_str())
+    .bind(desired_status_to_str(route.status))
+    .bind(&route.created_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO alias_mappings
+           (id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode,
+            status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(alias.id.to_string())
+    .bind(alias.network_id.to_string())
+    .bind(alias.lan_route_id.to_string())
+    .bind(alias.alias_cidr.to_string())
+    .bind(alias.target_cidr.to_string())
+    .bind(alias.translation_mode.as_str())
+    .bind(desired_status_to_str(alias.status))
+    .bind(crate::service::now())
+    .execute(&mut *tx)
+    .await?;
+    save_seq_tx(&mut tx, "route_seq", route_seq).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// 删除一条 LAN 路由及其绑定 Alias（§12.6 所有权清理：alias-路由是一对一
 /// 单元；FK 约束下必须先删子行）。路由 id 序列不回退，已删 id 不复用。
 pub async fn delete_route(pool: &SqlitePool, route_id: &str) -> Result<(), sqlx::Error> {

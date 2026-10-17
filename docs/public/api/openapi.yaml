@@ -690,6 +690,73 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DiagnosticsReport" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /networks/{network_id}/host-forwards:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [routes]
+      summary: List /32 host forwarding units
+      description: >
+        Each row is an atomic route-plus-alias unit. It forwards every IPv4
+        protocol and port for one LAN host; this endpoint does not manage
+        individual firewall port rules.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HostForward" }
+    post:
+      tags: [routes]
+      summary: Forward all traffic for one LAN host
+      description: >
+        Creates a /32 alias-mode LAN route and its equal /32 alias in one
+        desired-state revision. `dnat_snat` is the compatibility mode for LANs
+        without a return route; `dnat_only` preserves the caller source address.
+        Rejected creates mutate nothing and 409 names the conflicting overlay,
+        route, or alias.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HostForwardCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HostForward" }
+        "400":
+          description: Unknown NAT mode or invalid address.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Network or gateway device not found in this network.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            Target or alias overlaps the overlay, an existing route, or an
+            existing alias; or the gateway is inactive. Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /networks/{network_id}/host-forwards/{alias_id}:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/AliasId" }
+    delete:
+      tags: [routes]
+      summary: Delete a host forwarding unit
+      description: >
+        Removes the /32 alias and its bound route in the same ownership unit
+        and records one revision.
+      responses:
+        "204": { description: No content }
+        "404": { $ref: "#/components/responses/NotFound" }
     post:
       tags: [diagnostics]
       summary: Run diagnostics now and persist the snapshot
@@ -1259,6 +1326,27 @@ components:
       properties:
         lan_route_id: { type: string, description: An alias-mode route of this network; one mapping per route }
         alias_cidr: { type: string, description: Must have same prefix length as target route CIDR }
+        translation_mode: { type: string, enum: [dnat_only, dnat_snat], default: dnat_snat }
+    HostForward:
+      type: object
+      required: [id, network_id, gateway_device_id, target_ipv4, alias_ipv4, translation_mode, status, revision_id, apply_status]
+      properties:
+        id: { type: string, description: Alias id of the atomic host-forward unit }
+        network_id: { type: string }
+        gateway_device_id: { type: string }
+        target_ipv4: { type: string, format: ipv4, description: Real LAN host address }
+        alias_ipv4: { type: string, format: ipv4, description: Virtual host address visible in the overlay }
+        translation_mode: { type: string, enum: [dnat_only, dnat_snat] }
+        status: { type: string, enum: [pending, applied, failed] }
+        revision_id: { type: integer, description: Config revision recorded by this change (ADR-009) }
+        apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
+    HostForwardCreate:
+      type: object
+      required: [gateway_device_id, target_ipv4, alias_ipv4]
+      properties:
+        gateway_device_id: { type: string }
+        target_ipv4: { type: string, format: ipv4 }
+        alias_ipv4: { type: string, format: ipv4 }
         translation_mode: { type: string, enum: [dnat_only, dnat_snat], default: dnat_snat }
     DiagnosticsReport:
       type: object

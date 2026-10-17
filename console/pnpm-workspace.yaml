@@ -1,0 +1,3 @@
+# Keep console dependencies independent from the docs workspace overrides.
+allowBuilds:
+  esbuild: true

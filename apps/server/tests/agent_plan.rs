@@ -563,6 +563,75 @@ async fn gateway_plan_carries_alias_nat_rules_and_hides_own_lan() {
 }
 
 #[tokio::test]
+async fn host_forward_plan_carries_full_host_nat_rules() {
+    if !wg_available() {
+        return;
+    }
+    let dir = std::env::temp_dir().join("meshlet-agent-plan-host-forward");
+    std::fs::create_dir_all(&dir).unwrap();
+    let key_file = write_hub_key(&dir).unwrap();
+    let dp = meshlet_config::DataPlaneConfig {
+        private_key_file: Some(key_file.to_string_lossy().to_string()),
+        ..dataplane_on()
+    };
+    let (ctx, token) = bootstrap_with_device(dp, "pub-gw-host-0008").await;
+    let gateway = own_device_id(&ctx).await;
+
+    let (st, view) = admin(
+        &ctx.app,
+        &ctx.cookie,
+        &format!("/api/v1/networks/{}/host-forwards", ctx.network_id),
+        serde_json::json!({
+            "gateway_device_id": gateway,
+            "target_ipv4": "192.168.40.23",
+            "alias_ipv4": "10.241.40.23",
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{view}");
+    let alias_id = view["id"].as_str().unwrap().to_string();
+    apply_current(&ctx).await;
+
+    let (st, plan) = desired(&ctx.app, Some(&token)).await;
+    assert_eq!(st, StatusCode::OK, "{plan}");
+    let nat = plan["nat_rules"].as_array().unwrap();
+    assert_eq!(nat.len(), 2, "{plan}");
+    assert_eq!(nat[0]["match_dest"], "10.241.40.23/32");
+    assert_eq!(nat[0]["action"]["net_map"]["to"], "192.168.40.23/32");
+    assert_eq!(nat[1]["match_dest"], "192.168.40.23/32");
+    assert_eq!(nat[1]["action"], "snat_to_gateway_lan");
+    assert!(nat
+        .iter()
+        .all(|rule| rule["owner"] == format!("meshlet alias {alias_id}")));
+
+    let res = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/v1/networks/{}/host-forwards/{alias_id}",
+                    ctx.network_id
+                ))
+                .header("cookie", &ctx.cookie)
+                .header("x-requested-with", "XMLHttpRequest")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    apply_current(&ctx).await;
+    let (st, after) = desired(&ctx.app, Some(&token)).await;
+    assert_eq!(st, StatusCode::OK, "{after}");
+    assert!(after["nat_rules"].as_array().unwrap().is_empty());
+
+    std::fs::remove_file(&key_file).ok();
+    std::fs::remove_dir(&dir).ok();
+}
+
+#[tokio::test]
 async fn desired_plan_fails_visibly_when_hub_key_file_missing() {
     // 开启数据面但未配私钥文件：明确 500，不返回空计划。
     let (ctx, token) = bootstrap_with_device(dataplane_on(), "pub-edge-dddd-0006").await;

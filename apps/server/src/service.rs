@@ -236,6 +236,31 @@ pub struct CreateAliasRequest {
     pub translation_mode: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateHostForwardRequest {
+    /// 本网络 Active 网关设备：流量经它进入目标主机所在 LAN。
+    pub gateway_device_id: String,
+    /// LAN 内真实主机地址（不是 CIDR；Host Forward 会在服务端转成 /32）。
+    pub target_ipv4: Ipv4Addr,
+    /// 虚拟主机地址（必须是与 target 等长的 /32，且不落在 overlay）。
+    pub alias_ipv4: Ipv4Addr,
+    /// `dnat_snat`（缺省，兼容无返回路由的 LAN）或 `dnat_only`。
+    pub translation_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostForwardView {
+    pub id: String,
+    pub network_id: String,
+    pub gateway_device_id: String,
+    pub target_ipv4: String,
+    pub alias_ipv4: String,
+    pub translation_mode: String,
+    pub status: String,
+    pub revision_id: u64,
+    pub apply_status: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AliasView {
     pub id: String,
@@ -1658,6 +1683,170 @@ pub fn delete_alias(
     Ok((alias_id.to_string(), route_id))
 }
 
+/// 创建单主机全端口转发：把「alias /32 → target /32」作为一个原子单元写入。
+///
+/// Host Forward 不新增端口防火墙模型：`/32` 使 TCP/UDP/ICMP 的所有端口和
+/// 协议都经既有 LAN Route + Alias NETMAP 路径转发，删除路由/alias 单元即全删。
+pub fn create_host_forward(
+    state: &mut MeshState,
+    network_id: &str,
+    req: CreateHostForwardRequest,
+) -> Result<HostForwardView, ServiceError> {
+    state.network(network_id)?;
+    let target = Ipv4Cidr::new(req.target_ipv4, 32)
+        .map_err(|e| ServiceError::InvalidCidr(format!("{}/32: {e}", req.target_ipv4)))?;
+    let alias_cidr = Ipv4Cidr::new(req.alias_ipv4, 32)
+        .map_err(|e| ServiceError::InvalidCidr(format!("{}/32: {e}", req.alias_ipv4)))?;
+    let translation_mode = match req.translation_mode.as_deref() {
+        None | Some("dnat_snat") => TranslationMode::DnatSnat,
+        Some("dnat_only") => TranslationMode::DnatOnly,
+        Some(other) => {
+            return Err(ServiceError::InvalidInput(format!(
+                "translation_mode must be \"dnat_snat\" or \"dnat_only\", got {other:?}"
+            )));
+        }
+    };
+    let overlay = state.network(network_id)?.overlay_cidr;
+    if target.overlaps(&overlay) || alias_cidr.overlaps(&overlay) {
+        return Err(ServiceError::RouteConflict(format!(
+            "host forward target {target} or alias {alias_cidr} overlaps overlay {overlay}"
+        )));
+    }
+    for existing in state
+        .lan_routes
+        .get(network_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        if existing.destination_cidr.overlaps(&target) {
+            return Err(ServiceError::RouteConflict(format!(
+                "host forward target {target} overlaps existing route {} ({})",
+                existing.id, existing.destination_cidr
+            )));
+        }
+    }
+    for existing in state
+        .aliases
+        .get(network_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        if existing.alias_cidr.overlaps(&alias_cidr) {
+            return Err(ServiceError::RouteConflict(format!(
+                "host forward alias {alias_cidr} overlaps existing alias {} ({})",
+                existing.id, existing.alias_cidr
+            )));
+        }
+    }
+
+    let gateway = DeviceId(req.gateway_device_id.clone());
+    let device = state
+        .registry
+        .find_by_id(&gateway)
+        .ok_or_else(|| ServiceError::DeviceNotFound(req.gateway_device_id.clone()))?;
+    if device.network_id.to_string() != network_id {
+        return Err(ServiceError::DeviceNotFound(req.gateway_device_id));
+    }
+    if !device.is_active() {
+        return Err(ServiceError::Conflict(format!(
+            "gateway device {} is not active",
+            device.id
+        )));
+    }
+
+    state.route_seq += 1;
+    let route = LanRoute {
+        id: LanRouteId(format!("rt-{}", state.route_seq)),
+        network_id: meshlet_domain::NetworkId(network_id.to_string()),
+        gateway_device_id: gateway,
+        destination_cidr: target,
+        route_mode: RouteMode::Alias,
+        return_path_mode: ReturnPathMode::ControlledSnat,
+        status: DesiredStateStatus::Pending,
+        created_at: now(),
+    };
+    state.route_seq += 1;
+    let alias = AliasMapping::new(
+        AliasMappingId(format!("al-{}", state.route_seq)),
+        meshlet_domain::NetworkId(network_id.to_string()),
+        route.id.clone(),
+        alias_cidr,
+        target,
+        translation_mode,
+    )
+    .map_err(|e| ServiceError::InvalidInput(e.to_string()))?;
+
+    state
+        .lan_routes
+        .entry(network_id.to_string())
+        .or_default()
+        .push(route);
+    state
+        .aliases
+        .entry(network_id.to_string())
+        .or_default()
+        .push(alias.clone());
+    let revision_id = record_revision(state, network_id)?;
+    Ok(to_host_forward_view(state, network_id, &alias, revision_id))
+}
+
+/// Host Forward 列表 = 当前所有 /32 target 的 Alias 单元（真实 LAN 网段仍用
+/// 原有 Alias 页面展示，避免把两种语义混在同一张表）。
+pub fn list_host_forwards(
+    state: &MeshState,
+    network_id: &str,
+) -> Result<Vec<HostForwardView>, ServiceError> {
+    state.network(network_id)?;
+    let routes: HashMap<String, &LanRoute> = state
+        .lan_routes
+        .get(network_id)
+        .map(|routes| {
+            routes
+                .iter()
+                .map(|route| (route.id.to_string(), route))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut views = state
+        .aliases
+        .get(network_id)
+        .map(|aliases| {
+            aliases
+                .iter()
+                .filter_map(|alias| {
+                    let route = routes.get(&alias.lan_route_id.to_string())?;
+                    if route.destination_cidr.prefix_len() != 32 {
+                        return None;
+                    }
+                    let (_, apply_status) = current_revision_ref(state, network_id);
+                    Some(HostForwardView {
+                        id: alias.id.to_string(),
+                        network_id: alias.network_id.to_string(),
+                        gateway_device_id: route.gateway_device_id.to_string(),
+                        target_ipv4: alias.target_cidr.network().to_string(),
+                        alias_ipv4: alias.alias_cidr.network().to_string(),
+                        translation_mode: alias.translation_mode.as_str().to_string(),
+                        status: alias.status.as_str().to_string(),
+                        revision_id: 0,
+                        apply_status,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    views.sort_by_key(|view| view.alias_ipv4.clone());
+    Ok(views)
+}
+
+/// 删除 Host Forward 的 alias id；绑定路由随既有 ownership 单元一并移除。
+pub fn delete_host_forward(
+    state: &mut MeshState,
+    network_id: &str,
+    alias_id: &str,
+) -> Result<(String, String), ServiceError> {
+    delete_alias(state, network_id, alias_id)
+}
+
 fn to_alias_view(
     state: &MeshState,
     network_id: &str,
@@ -1671,6 +1860,33 @@ fn to_alias_view(
         lan_route_id: alias.lan_route_id.to_string(),
         alias_cidr: alias.alias_cidr.to_string(),
         target_cidr: alias.target_cidr.to_string(),
+        translation_mode: alias.translation_mode.as_str().to_string(),
+        status: alias.status.as_str().to_string(),
+        revision_id,
+        apply_status,
+    }
+}
+
+fn to_host_forward_view(
+    state: &MeshState,
+    network_id: &str,
+    alias: &AliasMapping,
+    revision_id: u64,
+) -> HostForwardView {
+    let (_, apply_status) = current_revision_ref(state, network_id);
+    let target_ipv4 = alias.target_cidr.network().to_string();
+    let alias_ipv4 = alias.alias_cidr.network().to_string();
+    HostForwardView {
+        id: alias.id.to_string(),
+        network_id: alias.network_id.to_string(),
+        gateway_device_id: state
+            .lan_routes
+            .get(network_id)
+            .and_then(|routes| routes.iter().find(|route| route.id == alias.lan_route_id))
+            .map(|route| route.gateway_device_id.to_string())
+            .unwrap_or_default(),
+        target_ipv4,
+        alias_ipv4,
         translation_mode: alias.translation_mode.as_str().to_string(),
         status: alias.status.as_str().to_string(),
         revision_id,
