@@ -870,7 +870,7 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         "no network rows need defaults in empty v8 DB"
     );
     pool.close().await;
-    std::fs::remove_dir_all(dir).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test]
@@ -900,5 +900,5 @@ async fn failed_backup_migration_preserves_live_database() {
             .is_err()
     );
     assert_eq!(std::fs::read(&live).unwrap(), before);
-    std::fs::remove_dir_all(dir).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
 }
