@@ -6,6 +6,7 @@
 - [Meshlet / ZeroTier / Tailscale 个人组网调研](docs/analysis/personal-networking-comparison.md)：61 项功能对比、官方来源、个人必要性、开发难度与实测方案。
 - [模块化与库复用提案](docs/architecture/modularity-and-library-design.md)：依赖边界、公共库与渐进迁移；常规虚拟网卡为主，无网卡服务入口按需评估。
 - [网关、网段冲突与端口转发专题](docs/architecture/gateways-conflicts-and-port-forwarding.md)：分网段选网关、Alias 冲突域和 A 端口到 B 服务的完整场景与验收。
+- [网段即信任组设计](docs/design/network-segment-trust.md)：ADR-012 已采纳 Network 内 Segment、同段互信、跨段默认拒绝与单向授权契约；实现未开始。
 
 ## 当前执行清单（2026-10-17）
 
@@ -23,7 +24,7 @@
 | RG-01 | P1 / 待验证 | 不同目标网段分别走指定网关；返回路径正确，网关失效不串站点 | 网关专题；AR-02/AR-05，当前已有基础路由模型 |
 | RG-02 | P0 核验 / 待设计 | 双站点和本地 LAN 重复时用独立 Alias；收敛客户端/hub 路由与 AllowedIPs 的真实/Alias 前缀口径 | 网关专题；AR-01/MOD-03，现有辅助函数与计划生成需对照 |
 | RG-03 | 随 P0 修复 / 待设计 | 完整检查 Overlay/Alias/Direct/本地路由及共享多网络冲突域；拒绝覆盖，未知可追踪 | 网关专题；AR-01，精确前缀预检不代表完整冲突检测 |
-| PN-01 | P1 / 待设计 | Device/网络成员/设备组/能力模型；先明确网络内分组，一机多网按需实现 | 调研 N01…N03、P01…P06 |
+| PN-01 | P1 / 待实现 | Device/网络成员/设备组/能力模型；先明确网络内分组，一机多网按需实现 | 分组部分由 ADR-012 覆盖；调研 N01…N03、P01…P06 |
 | PN-02 | P1 / 待设计 | 最小组到设备/服务端口策略；明确默认行为，允许与拒绝均有内核证据 | PN-01、AR-01、AR-02；P2P 前需端点执行 |
 | PN-03 | P1 / 待实现 | Windows 完整 Overlay 客户端：隧道服务、提权、开机恢复和清理 | ADR-008；现有 netsh 原语非完整客户端 |
 | PN-04 | P1 / 待设计 | 路径诊断与实测基线：业务成功率、直连率、首连/恢复时间、吞吐分开报告 | 调研 C11/C13/O01 及实验矩阵；本次未测速 |

@@ -15,5 +15,6 @@
 | [ADR-009 配置版本、应用状态与回滚机制](./adr-009-config-revision-rollback) | 配置版本、应用状态与回滚机制 |
 | [ADR-010 控制台认证和设备注册安全模型](./adr-010-console-auth-enrollment) | 控制台认证和设备注册安全模型 |
 | [ADR-011 设备自举注册（ZeroTier 式）与中心审批](./adr-011-device-self-registration) | 设备自举注册（ZeroTier 式）与中心审批 |
+| [ADR-012 网段即信任组](./adr-012-network-segment-trust) | Network 内 Segment、默认隔离与跨段单向授权 |
 
 约定：新增决策顺延编号；推翻旧决策不改写原文，新增 supersede 记录并互链。

@@ -1,10 +1,12 @@
 # 网段即信任组：Network 内分段与跨段授权设计
 
-日期：2026-10-17。状态：设计提案（未实现，不是 Accepted ADR；落地前需 ADR 与验收）。
+日期：2026-10-17。状态：设计已采纳（[ADR-012](../decisions/adr-012-network-segment-trust.md)）；实现、迁移与真实数据面验收均未开始。
 
 用户意图（2026-10-16）：「meshlet 是不是可以分配网段呢？这样一类网段的是可以相互信任的，这样就分组了」。本文把它落成一个模型：**Segment（网段）是 Network 内部的地址子前缀，也是默认信任边界**。同一网段内成员默认互信；跨网段默认不可达，必须由显式授权（Grant）放行。
 
 本文是静态核对既有实现后写的增量设计，不重写既有路由模型：LAN Route / Alias / 网关 / IPAM 实体全部保留，分段只增加「地址归属」和「hub 转发点的来源校验」两件事。
+
+**实现状态**：本文只定义契约与验收边界，仓内仍没有 Segment、授权或分段策略代码。文中所有 `crates/...:line`、`apps/...:line` 均是 2026-10-17 现状证据，不是已完成实现。
 
 ## 1. 范围
 
@@ -35,14 +37,14 @@
 | `Ipam`：Network 级扁平顺序池，hub 保留第一可用地址，客户端顺序分配、全局唯一、耗尽报错、不回卷复用 | `crates/meshlet-domain/src/ipam.rs:21`（`allocate` 在 `:53`） |
 | `Device`：`network_id` + `virtual_ipv4` + `public_key` + `platform` + `status`；无任何分组字段 | `crates/meshlet-domain/src/entities.rs:92` |
 | `DeviceStatus = Pending | Active | Revoked`；Pending 申请不占地址、不进期望配置 | `crates/meshlet-domain/src/entities.rs:79`；`crates/meshlet-domain/src/entities.rs:123` |
-| `DeviceRegistry::add` 拒绝同 Network 内重复虚拟 IP 与重复名 | `crates/meshlet-domain/src/entities.rs:468` |
+| `DeviceRegistry::add` 拒绝同 Network 内重复虚拟 IP 与重复名 | `crates/meshlet-domain/src/entities.rs:468`（`add` 在 `:500`） |
 | 注册批准时由 Network 级 IPAM `allocate()` 分配地址 | `apps/server/src/service.rs:1007`（分配在 `:1030`） |
-| `LanRoute`：Network 级，`gateway_device_id` + `destination_cidr` + `route_mode(Direct/Alias)` + `return_path_mode` | `crates/meshlet-domain/src/entities.rs:215`、`:235`；表 `migrations/001_init.sql:57` |
+| `LanRoute`：Network 级，`gateway_device_id` + `destination_cidr` + `route_mode(Direct/Alias)` + `return_path_mode` | `crates/meshlet-domain/src/entities.rs:215`、`crates/meshlet-domain/src/entities.rs:235`；表 `migrations/001_init.sql:57` |
 | `AliasMapping`：与 Alias 模式路由 1:1，等长前缀 | `crates/meshlet-domain/src/entities.rs:280`；表 `migrations/001_init.sql:68` |
 
 ### 2.2 身份与授权现状
 
-- 设备身份是每设备一把 WireGuard 静态公钥（`Device.public_key`），经邀请入会或自举注册+中心审批进入；私钥不离开设备（ADR-010；`apps/server/src/device_plan.rs:14`）。仓内**没有 CA、没有组密钥、没有每段 PSK**——文档层面查无按组组织密钥的机制。
+- 设备身份是每设备一把 WireGuard 静态公钥（`Device.public_key`），经邀请入会或自举注册+中心审批进入；私钥不离开设备（ADR-010；`apps/server/src/device_plan.rs:27`）。仓内**没有 CA、没有组密钥、没有每段 PSK**——文档层面查无按组组织密钥的机制。
 - 控制台用户与设备身份是两套体系：用户登录 Argon2id + session（`crates/meshlet-domain/src/auth.rs:91`）；设备靠 agent token / 自举码（`migrations/003_agent_tokens.sql`、`migrations/008_device_registrations.sql`）。
 - 既有的「授权」只有两级：
   1. **Network 成员资格**：非成员的公钥不在 hub peer 列表中，密码学上不可达（真实内核证据见 `crates/meshlet-network/tests/wg_forwarding.rs`，未授权 C 无 peer、ping 失败）。
@@ -55,7 +57,7 @@
 |---|---|---|
 | 期望配置确定性哈希 | 输入 overlay/hub/设备/路由/Alias，无前缀授权维度；格式标签 `meshlet-desired-v3` | `crates/meshlet-domain/src/config_state.rs:35` |
 | hub 侧计划 | 每 Active 设备一个 peer（/32 + 其发布前缀）；路由按 Direct/Alias 选真实段或 Alias 段经网关 | `apps/server/src/revision.rs:208`（`hub_plan`）；peer 推导 `crates/meshlet-domain/src/peer_routes.rs:136` |
-| 设备侧计划 | 到 hub 单 peer，AllowedIPs = 整个 Overlay + 他人已发布 LAN/Alias；自己发布的不回灌 | `apps/server/src/device_plan.rs:53`（`build_device_plan`）；`crates/meshlet-domain/src/peer_routes.rs:101` |
+| 设备侧计划 | 到 hub 单 peer，AllowedIPs = 整个 Overlay + 他人已发布 LAN/Alias；自己发布的不回灌 | `apps/server/src/device_plan.rs:53`（`build_device_plan`）；全量收集循环在 `:82`；AllowedIPs 推导 `crates/meshlet-domain/src/peer_routes.rs:101` |
 | 计划对象 | `DevicePlan { tunnel, routes, nat_rules, hub_address, desired_config_hash }`，agent 只消费结构化对象 | `crates/meshlet-network/src/lib.rs:95` |
 | hub/agent Linux 执行 | peer 对账：计划外 peer 立即移除；路由 `ip route replace`；NAT 按 owner 注释增删 | `crates/meshlet-network/src/linux.rs:190`（`reconcile_peers`）、`:429`（`apply_routes_sync`） |
 | hub 现有 FORWARD 策略 | 仅两条 `-i wg0` / `-o wg0` ACCEPT（注释 `meshlet tunnel`），**无来源/目的维度的区分** | `crates/meshlet-network/src/linux.rs:443` |
@@ -101,8 +103,8 @@ SegmentGrant     { id, network_id, source_segment_id, destination_segment_id,
   2. 与同 Network 其他段不重叠；
   3. 可用地址数 ≥ 2（hub 之外至少容纳一个成员；复用 `Ipv4Cidr::usable_addresses`）；
   4. 段 CIDR 不得与本 Network 已发布的 Alias 前缀重叠（Alias 前缀是隧道可见地址，与 Overlay 成员地址共用 cryptkey 路由空间；现有检查 `crates/meshlet-domain/src/conflict.rs:58` 同口径扩展到段）。
-- 段内地址分配：把现有 `Ipam` 原样嵌套一层——Network 级 IPAM 负责**段 CIDR 的占用登记**（段 CIDR 视为已保留区间），每个段持有一个池为段 CIDR 的 `Ipam` 实例负责成员地址分配。因为段 CIDR 互不重叠，现有「IP 不重复」验收（`DeviceRegistry::add`，`entities.rs:468`）天然保持，不需要新的唯一性机制。
-- 批准注册（`service.rs:1007`）增加必填语义：**批准时指定目标段**，地址从该段的 IPAM 分配；邀请入会同理。不允许先批准进网络再「补充分组」——无段成员在模型中不存在（控制台可把 default 段作为预选默认值）。
+- 段内地址分配：Network 级仍保留现有 `Ipam`，负责全局已用地址集合与段 CIDR 占用（段 CIDR 中的地址不能再分配给设备）；每个 Segment 另持有一个池为该段 CIDR 的 `Ipam` 实例，负责段内成员地址分配。Network 级与段级池在批准事务里同步更新；因为段 CIDR 互不重叠，现有「IP 不重复」验收（`DeviceRegistry::add`，`entities.rs:468`）天然保持，不需要新的唯一性机制。
+- 批准注册（`service.rs:1007`）增加必填语义：**批准时指定目标段**，地址从该段的 IPAM 分配并登记到 Network 级池；邀请入会同理。不允许先批准进网络再「补充分组」——无段成员在模型中不存在（控制台可把 default 段作为预选默认值）。
 
 ## 4. 信任边界模型
 
@@ -122,7 +124,7 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
   - 每条 Applied 授权指向的**目的段 CIDR**；
   - 同段成员发布的、以及被授权目的段成员发布的 LAN/Alias 已发布前缀（可见性规则见 §5）。
 - 改动点是 `client_hub_peer_allowed_ips`（`crates/meshlet-domain/src/peer_routes.rs:101`）的输入与集合构造；它今天无条件 `vec![overlay_cidr]`，改为由「本段 + 授权目的段」集合替代。`normalize` 排序去重（同文件 `:65`）保持不变。
-- hub 侧每设备 peer 的 AllowedIPs（`hub_peer_allowed_ips`，`peer_routes.rs:76`）**不变**：它表达「该设备能从隧道发上来的源/目的地」，仍为设备 /32 + 它作为网关发布的 LAN/Alias，与信任授权无关。
+- hub 侧每设备 peer 的 AllowedIPs（`hub_peer_allowed_ips`，`peer_routes.rs:76`）规则不变：它表达「该设备能从隧道发上来的源/目的地」，仍为设备 /32 + 它作为网关发布的 LAN/Alias，与信任授权无关。实现必须保留精确 /32 Source 维度校验；若把该 peer 的设备 /32 误改成段 CIDR，WireGuard 会把同段目的地址错交给该设备 peer。
 
 **第二层：hub FORWARD 段策略（内核默认拒绝）。**
 
@@ -146,14 +148,14 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
 
 - 一条已发布 LAN 路由（网关 G 属于段 B，目标 `192.168.10.0/24`）的可见集合 = 段 B 自身 ∪ 所有持有「source → B」Applied 授权的段。**路由本身不再新增授权字段**，授权主语统一为段，避免「设备可达性」与「网段可达性」两套模型并行。
 - Alias 前缀同理：段 B 的网关发布的 Alias 前缀，只进入 B 自身及被授权段的计划。
-- 这替换今天「同 Network 内任何 Active 设备都能看到全部 Applied 路由」的口径（`device_plan.rs:74` 起的路由循环、`peer_routes.rs:101` 的全量收集）。
+- 这替换今天「同 Network 内任何 Active 设备都能看到全部 Applied 路由」的口径（`device_plan.rs:82` 起的路由循环、`peer_routes.rs:101` 的全量收集）。
 
 ### 5.2 计划编译的具体接缝
 
 | 编译产物 | 现状输入 | 增加输入 |
 |---|---|---|
 | 设备 AllowedIPs（`client_hub_peer_allowed_ips`） | overlay + 全部他人路由/Alias | 本设备段、Applied Grant 集合；按「网关所属段」过滤路由/Alias |
-| 设备路由表（`build_device_plan` 中 `routes` 循环，`device_plan.rs:74`） | 全部他人 Applied 路由 | 同一可见性过滤；不可见路由不生成 `RouteConfig`，也不进 AllowedIPs |
+| 设备路由表（`build_device_plan` 中 `routes` 循环，`device_plan.rs:82`） | 全部他人 Applied 路由 | 同一可见性过滤；不可见路由不生成 `RouteConfig`，也不进 AllowedIPs |
 | hub peer AllowedIPs（`hub_peer_allowed_ips`） | /32 + 本设备发布前缀 | 不变 |
 | hub 转发路由（`hub_plan`，`revision.rs:208`） | Direct 真实段/Alias 段经网关 | 不变（hub 必须能把已授权流量送到网关；是否允许由 FORWARD 策略决定，不由路由表决定） |
 | hub FORWARD 规则 | 无（两条全放行） | **新增**：隔离/同段/授权/default-deny 规则集，随修订重放 |
@@ -167,7 +169,7 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
   - 设备行追加 `segment=<id>`；
   - 追加排序后的授权行 `grant <src-seg> -> <dst-seg>`（只计 Applied）；
   - 段 CIDR 集合行 `segment <id>=<cidr>`。
-- 段/授权/成员归属的任何变更 = 该 Network 一个新 ConfigRevision（ADR-009 状态机不变），hub 计划与设备计划共用同一哈希口径；agent 仍是「哈希不变不重放」。失败修订的回滚只移除 Meshlet owner 的规则与 peer，段表数据保留（回滚的是数据面，不是关系本身——与今天路由/Alias 的口径一致）。
+- 段/授权/成员归属的任何变更 = 该 Network 一个新 ConfigRevision（ADR-009 状态机不变），hub 计划与设备计划共用同一哈希口径；agent 仍是「哈希不变不重放」。后端失败清理只移除 Meshlet owner 的规则与 peer；SQLite 中的段、授权与成员归属按目标期望保留，不把「数据面回滚」误做成「撤销关系」。
 
 ## 6. 撤销与隔离
 
@@ -175,7 +177,7 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
 
 - **设备移出段**（改派到另一个段或挂起）：
   - 成员地址必须落在目的段内，因此「换段」= 在目的段分配新地址、重放该设备隧道地址与全部相关 AllowedIPs/FORWARD 集。设备 id、公钥、agent 凭证不变（与注册批准时「凭证原样沿用」同一纪律，`docs/guide/external-caller.md` 登记的口径）。
-  - 在新修订 Applied 前，先在 hub 收紧：从旧段同段/授权规则的源集合中消失是规则重放的必然结果；为保证「立即失去旧段权限」，移出操作的 hub 计划先于设备侧计划应用（服务端编排顺序：hub 修订 Applied 后再放行设备新计划），最坏窗口等于一次 hub 重放时长，而不是等设备下次轮询。
+  - 在新修订 Applied 前，先在 hub 收紧：从旧段同段/授权规则的源集合中消失是规则重放的必然结果；为保证「立即失去旧段权限」，移出操作的 hub 计划先于设备侧计划应用（服务端编排顺序：hub 修订 Applied 后再放行设备新计划），最坏窗口等于一次 hub 重放时长，而不是等设备下次轮询。改为 Pending 的旧地址在旧设备重放前可能短暂保留；其后续分配由当前修订状态决定，不依赖地址回收顺序。
 - **撤销 Grant**：删除一条授权 = 新修订；hub FORWARD 对应规则移除 + 相关源段设备下一轮计划收窄 AllowedIPs。FORWARD 移除在 hub 即时生效；对端 AllowedIPs 收窄在下个轮询周期补齐（第二层兜底，期间默认拒绝已经恢复）。
 - **设备 Revoke**（既有语义）：peer 对账立即移除（`linux.rs:190`），其发布路由/Alias 级联删除（既有行为）；段模型不改变这条路径，只额外要求 FORWARD 规则集重放。
 
@@ -215,6 +217,7 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
   - 设备批准/入会请求增加 `segment_id`；设备改派 `POST /devices/{id}/segment`（语义为 §6.1 的换地址重放）。
 - 冲突检查扩展点：`conflict.rs` 的 `check_network`（`crates/meshlet-domain/src/conflict.rs:182`）增加段间重叠、段/Alias 重叠、段/Overlay 包含关系三类，沿用 `ConflictKind` 严重度分类。
 - 后端执行扩展点：`NetworkBackend` trait（`crates/meshlet-network/src/lib.rs:173`）增加一个 `apply_segment_policy(rules)` 之类的受控方法（规则由域层纯函数渲染，参数化 argv，与 `nat.rs` 同纪律），`NetworkSnapshot` 增加段规则计数用于漂移对账（AR-03）。
+- API 路由扩展点：沿用现有模块化 `Router` 形态（`apps/server/src/lib.rs:925`，Alias 子路由在 `apps/server/src/alias.rs:18`），新增 `/networks/{id}/segments`、`/segments/{seg_id}`、`/segment-grants` 等子资源，不把段 CRUD 塞进通用 route handler。
 
 ## 9. 与既有待办条目的衔接
 
@@ -242,7 +245,8 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
 
 ## 11. 风险与未决
 
-- ** hub 规则规模**：FORWARD 规则数随「段数 + 授权数」线性增长，个人规模（十段、数十授权）无压力；不预先做 ipset/nftset 聚合，规模到了再在同一计划层替换渲染。
+- **hub 规则规模**：FORWARD 规则数随「段数 + 授权数」线性增长，个人规模（十段、数十授权）无压力；不预先做 ipset/nftset 聚合，规模到了再在同一计划层替换渲染。
 - **换段即换 IP 的体验**：设备段间迁移必然改变其 Overlay 地址（地址位置即边界），对记住了旧 IP 的使用方不友好。缓解：PN-09 名称解析落地后以名称访问；本文不为它破坏「CIDR 即边界」的直接性。
 - **default 段拆分需先清空**：对「已在用网络中途分组」要求先迁成员，这是保守约束；若实际场景强烈需要，另开「段 CIDR 预留 + 成员原地迁移」的设计，不与本文混做。
 - **同段互信仍是全端口**：网络层同段 ACCEPT 不等同于应用层安全；勒索软件横向移动场景需要 PN-02 的端点级策略，文档与控制台文案需明示「同段 = 网络可达，不等于服务免鉴权」。
+- **Pending 设备的窄 AllowedIPs**：设备消费新计划前可能短暂持旧地址；这由 hub FORWARD 默认拒绝兜底，验收必须覆盖窗口内跨段不通，而不是假设所有 agent 同步更新。
