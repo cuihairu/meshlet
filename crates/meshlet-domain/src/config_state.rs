@@ -98,6 +98,10 @@ pub fn desired_config_hash(
 ///   **不得返回 `Ok` 假装成功**；
 /// - 只操作 Meshlet 自有对象，不得清空系统路由。
 pub trait ConfigApplyBackend {
+    /// Inspect and repair the last confirmed plan without publishing pending edits.
+    fn reconcile(&mut self) -> Result<(), String> {
+        Err("backend recovery is not configured".into())
+    }
     fn apply(&mut self, revision: &ConfigRevision) -> Result<(), String>;
     /// 回滚一个 `Failed` 修订：只删除/恢复 Meshlet 自有对象。
     fn rollback(&mut self, revision: &ConfigRevision) -> Result<(), String>;
@@ -207,6 +211,15 @@ impl ConfigLedger {
             Some(r) if r.apply_status == ApplyStatus::Applied => return Ok(r.clone()),
             Some(_) => {}
         }
+        if let Some(latest) = self.current(network_id) {
+            if latest.revision != revision {
+                return Err(LedgerError::SupersededRevision {
+                    network_id: network_id.to_string(),
+                    revision,
+                    latest: latest.revision,
+                });
+            }
+        }
         let r = self.get_mut(network_id, revision).unwrap();
         r.transition(ApplyStatus::Applying)?;
         match backend.apply(r) {
@@ -222,6 +235,37 @@ impl ConfigLedger {
             }
         }
         Ok(self.get(network_id, revision).cloned().unwrap())
+    }
+
+    /// A provisional kernel success is not committed until its outcome is durable.
+    /// Correct it to an explicit failure when persistence of that outcome fails.
+    pub fn mark_apply_unconfirmed(&mut self, network_id: &NetworkId, revision: u64, error: String) {
+        if let Some(r) = self.get_mut(network_id, revision) {
+            if matches!(r.apply_status, ApplyStatus::Applied | ApplyStatus::Applying) {
+                r.apply_status = ApplyStatus::Failed;
+                r.applied_at = None;
+                r.error_summary = Some(error);
+            }
+        }
+    }
+
+    /// Keep a rollback unconfirmed when its durable outcome cannot be committed.
+    pub fn mark_rollback_unconfirmed(
+        &mut self,
+        network_id: &NetworkId,
+        revision: u64,
+        error: String,
+    ) {
+        if let Some(r) = self.get_mut(network_id, revision) {
+            if matches!(
+                r.apply_status,
+                ApplyStatus::RolledBack | ApplyStatus::RollbackPending
+            ) {
+                r.apply_status = ApplyStatus::RollbackPending;
+                let prior = r.error_summary.take().unwrap_or_default();
+                r.error_summary = Some(format!("{prior}; {error}"));
+            }
+        }
     }
 
     /// 回滚一个 `Failed` 修订：`failed → rollback_pending → rolled_back`。

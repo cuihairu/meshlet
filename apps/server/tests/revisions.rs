@@ -537,8 +537,8 @@ async fn rollback_touches_only_the_failed_revision_it_is_given() {
     let network_id = created["id"].as_str().unwrap().to_string();
 
     // 再加一个设备（产生修订 2）并让两个修订都应用失败。
-    enroll_device(&c, &network_id, "laptop", "pub-laptop-0001").await;
     assert_eq!(apply(&c, &network_id, 1).await.1["apply_status"], "failed");
+    enroll_device(&c, &network_id, "laptop", "pub-laptop-0001").await;
     assert_eq!(apply(&c, &network_id, 2).await.1["apply_status"], "failed");
 
     let (status, body) = rollback(&c, &network_id, 2).await;
@@ -652,7 +652,7 @@ async fn concurrent_applies_are_serialized_per_network() {
         let c = c.clone();
         let network_id = network_id.clone();
         tasks.push(tokio::spawn(
-            async move { apply(&c, &network_id, 1).await.0 },
+            async move { apply(&c, &network_id, 2).await.0 },
         ));
     }
     for task in tasks {
@@ -666,7 +666,7 @@ async fn concurrent_applies_are_serialized_per_network() {
     );
     assert_eq!(
         calls.applied,
-        vec![1],
+        vec![2],
         "8 concurrent applies of one revision must hit the backend once"
     );
 }
@@ -717,4 +717,53 @@ async fn revision_numbering_is_independent_across_networks() {
             .collect();
         assert_eq!(numbers, vec![1, 2], "network {net}");
     }
+}
+
+#[tokio::test]
+async fn old_pending_and_applied_revisions_cannot_publish_new_resources() {
+    let (calls, factory) = spy();
+    let c = ctx_with_backend(factory).await;
+    let network = create_network(&c).await;
+    let id = network["id"].as_str().unwrap();
+    enroll_device(&c, id, "first", "pub-first").await;
+    assert_eq!(apply(&c, id, 1).await.0, StatusCode::CONFLICT);
+    assert!(calls.lock().unwrap().applied.is_empty());
+    assert_eq!(apply(&c, id, 2).await.1["apply_status"], "applied");
+    enroll_device(&c, id, "second", "pub-second").await;
+    assert_eq!(apply(&c, id, 2).await.0, StatusCode::CONFLICT);
+    assert_eq!(calls.lock().unwrap().applied, vec![2]);
+    let current = revisions(&c, id).await;
+    assert_eq!(
+        current.as_array().unwrap().last().unwrap()["apply_status"],
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn replaying_old_rolled_back_revision_does_not_settle_new_pending_routes() {
+    let (calls, factory) = failing_factory();
+    let c = ctx_with_backend(factory).await;
+    let network = create_network(&c).await;
+    let id = network["id"].as_str().unwrap();
+    assert_eq!(apply(&c, id, 1).await.1["apply_status"], "failed");
+    assert_eq!(rollback(&c, id, 1).await.1["apply_status"], "rolled_back");
+    let device = enroll_device(&c, id, "later", "pub-later").await;
+    let (status, route) = call(&c, "POST", &format!("/api/v1/networks/{id}/routes"), Some(&c.cookie), true,
+        Some(json!({"gateway_device_id":device["device_id"],"destination_cidr":"192.168.90.0/24","return_path_mode":"dual_route"}))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(rollback(&c, id, 1).await.1["apply_status"], "rolled_back");
+    let (_, after) = call(
+        &c,
+        "GET",
+        &format!(
+            "/api/v1/networks/{id}/routes/{}",
+            route["id"].as_str().unwrap()
+        ),
+        Some(&c.cookie),
+        false,
+        None,
+    )
+    .await;
+    assert_eq!(after["status"], "pending");
+    assert_eq!(calls.lock().unwrap().rolled_back, vec![1]);
 }

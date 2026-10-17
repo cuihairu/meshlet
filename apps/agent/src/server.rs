@@ -68,6 +68,26 @@ pub fn register_device(
     serde_json::from_str(&body).map_err(|e| format!("parse the registration response: {e}"))
 }
 
+/// Acknowledge only the exact plan successfully read back from the kernel.
+pub fn report_apply(
+    server_url: &str,
+    token: &str,
+    plan: &DevicePlan,
+    error: Option<&str>,
+) -> Result<(), String> {
+    let payload = serde_json::json!({"desired_revision": plan.desired_revision, "plan_hash": plan.desired_config_hash, "error": error}).to_string();
+    read(
+        ureq::post(&format!(
+            "{}/api/v1/agent/device/applied",
+            server_url.trim_end_matches('/')
+        ))
+        .set("authorization", &format!("Bearer {token}"))
+        .set("content-type", "application/json")
+        .send(payload.as_bytes()),
+    )
+    .map(|_| ())
+}
+
 /// 心跳上报：返回服务端在线判定回执（仅用于日志/排查）。
 ///
 /// 失败一律以 `Err` 报出（含 401/503 等分类），由调用方决定是否重试。

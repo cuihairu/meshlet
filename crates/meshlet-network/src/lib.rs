@@ -93,6 +93,10 @@ pub struct RouteConfig {
 ///   变更才重放」（§10.1）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DevicePlan {
+    #[serde(default)]
+    pub desired_revision: u64,
+    #[serde(default)]
+    pub hub_port: Option<u16>,
     pub tunnel: TunnelConfig,
     pub routes: Vec<RouteConfig>,
     pub nat_rules: Vec<nat::NatRule>,
@@ -307,6 +311,8 @@ mod tests {
     fn device_plan_round_trips_as_a_structured_object() {
         // §16.4：server→agent 传的是类型化对象（CIDR 序列化为 a.b.c.d/p 字符串）。
         let plan = DevicePlan {
+            desired_revision: 0,
+            hub_port: None,
             tunnel: TunnelConfig {
                 name: "wg0".into(),
                 address: "10.240.0.3".parse().unwrap(),
@@ -355,6 +361,8 @@ mod tests {
     fn device_plan_rejects_a_non_canonical_cidr() {
         // 反序列化同样走校验：主机位非零的网段不是合法计划输入（§6.1）。
         let plan = DevicePlan {
+            desired_revision: 0,
+            hub_port: None,
             tunnel: TunnelConfig {
                 name: "wg0".into(),
                 address: "10.240.0.3".parse().unwrap(),

@@ -361,6 +361,234 @@ impl LinuxNetworkBackend {
         })
     }
 
+    /// Remove only this hub interface and its isolation rules; gateways own NAT.
+    pub fn clear_hub_sync(&self) -> Result<(), NetworkError> {
+        let chain = format!("MLT_{}", self.interface);
+        for table_chain in ["INPUT", "FORWARD"] {
+            let out = self.run(&["iptables", "-S", table_chain])?;
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let tokens = Self::split_iptables_line(line);
+                if tokens.first().map(String::as_str) != Some("-A") {
+                    continue;
+                }
+                let owned = tokens
+                    .windows(2)
+                    .any(|p| (p[0] == "-j" || p[0] == "--comment") && p[1] == chain)
+                    || (tokens
+                        .windows(2)
+                        .any(|p| (p[0] == "-i" || p[0] == "-o") && p[1] == self.interface)
+                        && tokens
+                            .windows(2)
+                            .any(|p| p[0] == "--comment" && p[1] == MESHLET_FILTER_COMMENT));
+                if owned {
+                    let mut argv = vec!["iptables", "-D"];
+                    argv.extend(tokens[1..].iter().map(String::as_str));
+                    self.run(&argv)?;
+                }
+            }
+        }
+        if self.run(&["iptables", "-S", &chain]).is_ok() {
+            self.run(&["iptables", "-F", &chain])?;
+            self.run(&["iptables", "-X", &chain])?;
+        }
+        if self.run(&["ip", "link", "show", &self.interface]).is_ok() {
+            self.run(&["ip", "link", "del", &self.interface])?;
+        }
+        Ok(())
+    }
+
+    /// Hub traffic can only be forwarded between peers of this network.
+    pub fn isolate_hub_sync(&self, address: Ipv4Addr) -> Result<(), NetworkError> {
+        let chain = format!("MLT_{}", self.interface);
+        if self.run(&["iptables", "-S", &chain]).is_err() {
+            self.run(&["iptables", "-N", &chain])?;
+        }
+        let out = self.run(&["iptables", "-S", &chain])?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let actual: Vec<_> = text
+            .lines()
+            .filter(|line| line.starts_with("-A "))
+            .collect();
+        let accept = format!(
+            "-A {chain} -i {} -o {} -j ACCEPT",
+            self.interface, self.interface
+        );
+        let drop = format!("-A {chain} -j DROP");
+        if actual != [accept.as_str(), drop.as_str()] {
+            // Install a fail-closed pair before discarding a drifted rule set.
+            self.run(&["iptables", "-I", &chain, "1", "-j", "DROP"])?;
+            self.run(&[
+                "iptables",
+                "-I",
+                &chain,
+                "1",
+                "-i",
+                &self.interface,
+                "-o",
+                &self.interface,
+                "-j",
+                "ACCEPT",
+            ])?;
+            for _ in actual {
+                self.run(&["iptables", "-D", &chain, "3"])?;
+            }
+        }
+        for dir in ["-i", "-o"] {
+            let mut args = vec![
+                "iptables",
+                "-C",
+                "FORWARD",
+                dir,
+                &self.interface,
+                "-j",
+                &chain,
+            ];
+            if self.run(&args).is_err() {
+                args[1] = "-I";
+                self.run(&args)?;
+            }
+        }
+        let address = address.to_string();
+        let mut args = vec![
+            "iptables",
+            "-C",
+            "INPUT",
+            "-i",
+            &self.interface,
+            "!",
+            "-d",
+            &address,
+            "-m",
+            "comment",
+            "--comment",
+            &chain,
+            "-j",
+            "DROP",
+        ];
+        if self.run(&args).is_err() {
+            args[1] = "-I";
+            self.run(&args)?;
+        }
+        Ok(())
+    }
+
+    /// Read back each planned object; counts alone do not prove convergence.
+    pub fn device_plan_matches_sync(&self, plan: &DevicePlan) -> Result<bool, NetworkError> {
+        let addresses = self.run(&["ip", "-4", "-o", "addr", "show", "dev", &self.interface])?;
+        let expected = format!("{}/{}", plan.tunnel.address, plan.tunnel.address_prefix);
+        if !String::from_utf8_lossy(&addresses.stdout)
+            .split_whitespace()
+            .any(|v| v == expected)
+        {
+            return Ok(false);
+        }
+        let link = self.run(&["ip", "link", "show", &self.interface])?;
+        let link_text = String::from_utf8_lossy(&link.stdout);
+        if !link_text
+            .split(['<', '>'])
+            .nth(1)
+            .is_some_and(|flags| flags.split(',').any(|f| f == "UP"))
+        {
+            return Ok(false);
+        }
+        if plan.tunnel.mtu.is_some() && parse_link_mtu(&link_text) != plan.tunnel.mtu {
+            return Ok(false);
+        }
+        let dump = self.run(&["wg", "show", &self.interface, "dump"])?;
+        let body = String::from_utf8_lossy(&dump.stdout);
+        let header: Vec<_> = body
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect();
+        if let Some(port) = plan.tunnel.listen_port {
+            if header.get(2).and_then(|s| s.parse::<u16>().ok()) != Some(port) {
+                return Ok(false);
+            }
+        }
+        if let Some(key) = &plan.tunnel.private_key {
+            if header.get(1).copied() != Some(self.public_key_from_private(key)?.as_str()) {
+                return Ok(false);
+            }
+        }
+        let peers: Vec<_> = body.lines().skip(1).collect();
+        if peers.len() != plan.tunnel.peers.len() {
+            return Ok(false);
+        }
+        for peer in &plan.tunnel.peers {
+            let Some(line) = peers
+                .iter()
+                .find(|line| line.split_whitespace().next() == Some(peer.public_key.as_str()))
+            else {
+                return Ok(false);
+            };
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let actual: std::collections::BTreeSet<_> =
+                fields.get(3).unwrap_or(&"").split(',').collect();
+            let wanted: Vec<_> = peer.allowed_ips.iter().map(ToString::to_string).collect();
+            if actual != wanted.iter().map(String::as_str).collect() {
+                return Ok(false);
+            }
+        }
+        for route in &plan.routes {
+            let out = self.run(&[
+                "ip",
+                "-4",
+                "route",
+                "show",
+                "exact",
+                &route.destination.to_string(),
+            ])?;
+            let text = String::from_utf8_lossy(&out.stdout);
+            let dev = format!("dev {}", route.interface);
+            let via = route.gateway.map(|g| format!("via {g}"));
+            if !text
+                .lines()
+                .any(|line| line.contains(&dev) && via.as_ref().is_none_or(|v| line.contains(v)))
+            {
+                return Ok(false);
+            }
+        }
+        for dir in ["-i", "-o"] {
+            if self
+                .run(&[
+                    "iptables",
+                    "-C",
+                    "FORWARD",
+                    dir,
+                    &self.interface,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    MESHLET_FILTER_COMMENT,
+                    "-j",
+                    "ACCEPT",
+                ])
+                .is_err()
+            {
+                return Ok(false);
+            }
+        }
+        for rule in &plan.nat_rules {
+            let addr = match rule.action {
+                NatAction::NetMap { .. } => Ipv4Addr::UNSPECIFIED,
+                NatAction::SnatToGatewayLan => match self.lan_addr_in(rule.match_dest)? {
+                    Some(addr) => addr,
+                    None => return Ok(false),
+                },
+            };
+            let mut args = rule.iptables_args(addr);
+            args[0] = "-C".into();
+            let mut argv = vec!["iptables", "-t", "nat"];
+            argv.extend(args.iter().map(String::as_str));
+            if self.run(&argv).is_err() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// 大包探测（§7.5）：以 DF 位（`ping -M do`）向 `target` 发一个载荷
     /// `payload` 字节的 ICMP echo——成功即路径可承载「payload + 28B」（IP
     /// 头 20B + ICMP 头 8B）的数据报。只读诊断，不写任何内核状态；ping
@@ -386,6 +614,14 @@ impl LinuxNetworkBackend {
     /// 同步隧道应用（[NetworkBackend::apply_tunnel] 的命令核心）。
     pub fn apply_tunnel_sync(&self, config: &TunnelConfig) -> Result<ApplyResult, NetworkError> {
         let ifname = config.name.clone();
+        if ifname.is_empty()
+            || ifname.len() > 15
+            || !ifname
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        {
+            return Err(NetworkError::ApplyRejected("invalid interface name".into()));
+        }
         if ifname != self.interface {
             return Err(NetworkError::ApplyRejected(format!(
                 "tunnel name {ifname} is not the managed interface {}",
@@ -438,7 +674,10 @@ impl LinuxNetworkBackend {
                 )));
             }
         }
-        self.run(&["sysctl", "-w", "net.ipv4.ip_forward=1"])?;
+        let forwarding = self.run(&["sysctl", "-n", "net.ipv4.ip_forward"])?;
+        if String::from_utf8_lossy(&forwarding.stdout).trim() != "1" {
+            self.run(&["sysctl", "-w", "net.ipv4.ip_forward=1"])?;
+        }
         // FORWARD 放行：进出受管隧道接口的流量（注释标记所有权，回滚可精确定位）。
         for dir in ["-i", "-o"] {
             let probe = vec![
@@ -458,6 +697,18 @@ impl LinuxNetworkBackend {
                 let mut add = probe.clone();
                 add[1] = "-A";
                 self.run(&add)?;
+            }
+        }
+        for existing in self.routes_on_interface()? {
+            if !routes.iter().any(|r| r.destination == existing) {
+                self.run(&[
+                    "ip",
+                    "route",
+                    "del",
+                    &existing.to_string(),
+                    "dev",
+                    &self.interface,
+                ])?;
             }
         }
         for route in routes {
@@ -598,32 +849,41 @@ impl LinuxNetworkBackend {
         if plan.nat_rules.is_empty() {
             return Ok(());
         }
-        let lan_addr = match gateway_lan_addr {
-            Some(addr) => addr,
-            None => match Self::snat_target_cidr(&plan.nat_rules).and_then(|cidr| self.lan_addr_in(cidr).ok().flatten()) {
-                Some(addr) => addr,
-                None => return Err(NetworkError::ApplyRejected(format!(
-                    "nat rules require a gateway lan address, but no interface address was found in {}",
-                    Self::snat_target_cidr(&plan.nat_rules)
-                        .map(|c| c.to_string())
-                        .unwrap_or_default()
-                ))),
-            },
-        };
-        let nat_result = self.apply_nat_sync(&plan.nat_rules, lan_addr)?;
-        if !nat_result.applied {
-            return Err(NetworkError::ApplyRejected(
-                nat_result.error.unwrap_or_default(),
-            ));
+        // Resolve each SNAT independently: a gateway can serve several LANs.
+        for rule in &plan.nat_rules {
+            let lan_addr = match rule.action {
+                NatAction::NetMap { .. } => Ipv4Addr::UNSPECIFIED,
+                NatAction::SnatToGatewayLan => match gateway_lan_addr {
+                    Some(addr) if rule.match_dest.contains(addr) => addr,
+                    Some(addr) => {
+                        return Err(NetworkError::ApplyRejected(format!(
+                            "gateway address {addr} is outside {}",
+                            rule.match_dest
+                        )))
+                    }
+                    None => self.lan_addr_in(rule.match_dest)?.ok_or_else(|| {
+                        NetworkError::ApplyRejected(format!(
+                            "no gateway LAN address in {}",
+                            rule.match_dest
+                        ))
+                    })?,
+                },
+            };
+            let result = self.apply_nat_sync(std::slice::from_ref(rule), lan_addr)?;
+            if !result.applied {
+                return Err(NetworkError::ApplyRejected(
+                    result.error.unwrap_or_default(),
+                ));
+            }
         }
         Ok(())
     }
 
-    /// 计划中受控 SNAT 规则的匹配前缀（= 真实 LAN 网段，§9.5）。
+    #[cfg(test)]
     fn snat_target_cidr(rules: &[NatRule]) -> Option<Ipv4Cidr> {
         rules.iter().find_map(|rule| match rule.action {
             NatAction::SnatToGatewayLan => Some(rule.match_dest),
-            NatAction::NetMap { .. } => None,
+            _ => None,
         })
     }
 
@@ -632,12 +892,8 @@ impl LinuxNetworkBackend {
         // §10.3：只删 Meshlet 自有对象——本后端拥有的隧道接口上的全部数据面
         // 对象（nat 规则 / FORWARD 放行 / 隧道路由 / peer），保留接口、地址与
         // 系统级 ip_forward（属系统状态，不动用户既有配置）。
-        for del_args in self.meshlet_nat_rules(None)? {
-            let mut full = vec!["iptables".to_string(), "-t".to_string(), "nat".to_string()];
-            full.extend(del_args);
-            let args: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
-            self.run(&args)?;
-        }
+        // Gateway NAT cleanup requires exact owner ids from its local ledger.
+        // A hub rollback must never sweep the machine-wide NAT table.
         let out = self.run(&["iptables", "-S", "FORWARD"])?;
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             let tokens = Self::split_iptables_line(line);
@@ -649,7 +905,11 @@ impl LinuxNetworkBackend {
                 .position(|t| t == "--comment")
                 .and_then(|i| tokens.get(i + 1))
                 .is_some_and(|c| *c == MESHLET_FILTER_COMMENT);
-            if owned {
+            if owned
+                && tokens
+                    .windows(2)
+                    .any(|pair| (pair[0] == "-i" || pair[0] == "-o") && pair[1] == self.interface)
+            {
                 let mut del = vec!["iptables".to_string(), "-D".to_string(), tokens[1].clone()];
                 del.extend(tokens[2..].iter().cloned());
                 let args: Vec<&str> = del.iter().map(|s| s.as_str()).collect();
@@ -779,6 +1039,8 @@ mod tests {
         // apply_nat_sync 组装 `iptables -t nat <args>`；-C 探测与 -A 下发只差
         // flag 位（index 3），保证探测与实际规则形状一致。
         let rule = NatRule {
+            source_cidr: None,
+            incoming_interface: None,
             chain: NatChain::Prerouting,
             match_dest: "10.241.1.0/24".parse().unwrap(),
             action: NatAction::NetMap {

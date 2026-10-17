@@ -332,8 +332,8 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
     // 备份文件独立可打开：16 表 + 8 个迁移齐全；内容停留在备份时刻
     // （路由 1 条、route_seq=1），不随活动库后续变更回写。
     let (tables, migrations, routes, seq) = inspect_backup(&backup_path).await;
-    assert_eq!(tables, 16, "schema complete in backup");
-    assert_eq!(migrations, 8, "migrations 001-008 recorded in backup");
+    assert_eq!(tables, 18, "schema complete in backup");
+    assert_eq!(migrations, 9, "migrations 001-009 recorded in backup");
     assert_eq!(routes, 1, "backup frozen at snapshot moment");
     assert_eq!(seq.as_deref(), Some("1"));
 
@@ -782,4 +782,88 @@ async fn backup_endpoint_auth_and_configuration_gates() {
     );
     c.pool.close().await;
     cleanup(&db);
+}
+
+#[tokio::test]
+async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
+    let dir = std::env::temp_dir().join(format!("meshlet-v8-restore-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let backup = dir.join("version-eight.db");
+    let _ = std::fs::remove_file(&backup);
+    let pool =
+        meshlet_server::store::connect(&format!("sqlite:{}", dir.join("source.db").display()))
+            .await
+            .unwrap();
+    sqlx::query("DROP TABLE device_apply_receipts")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE hub_deployments")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version=9")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // An actual backup is a standalone VACUUM snapshot, not a live WAL database.
+    sqlx::query("VACUUM INTO ?")
+        .bind(backup.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        backup.exists(),
+        "VACUUM must produce a standalone file snapshot"
+    );
+    pool.close().await;
+    meshlet_server::persist::validate_backup(&backup)
+        .await
+        .unwrap();
+    let restored = dir.join("restored.db");
+    meshlet_server::persist::restore_from_backup(&backup, &restored, Default::default())
+        .await
+        .unwrap();
+    let pool = meshlet_server::store::connect(&format!("sqlite:{}", restored.display()))
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('hub_deployments','device_apply_receipts')").fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 2);
+    let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(version, 9);
+    pool.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn failed_backup_migration_preserves_live_database() {
+    let dir = std::env::temp_dir().join(format!("meshlet-bad-migration-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let backup = dir.join("bad.db");
+    let live = dir.join("live.db");
+    let _ = std::fs::remove_file(&backup);
+    let _ = std::fs::remove_file(&live);
+    let pool = meshlet_server::store::connect(&format!("sqlite:{}", backup.display()))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE _sqlx_migrations SET checksum=x'00' WHERE version=9")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let pool = meshlet_server::store::connect(&format!("sqlite:{}", live.display()))
+        .await
+        .unwrap();
+    pool.close().await;
+    let before = std::fs::read(&live).unwrap();
+    assert!(
+        meshlet_server::persist::restore_from_backup(&backup, &live, Default::default())
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&live).unwrap(), before);
+    std::fs::remove_dir_all(dir).unwrap();
 }

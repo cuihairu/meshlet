@@ -313,6 +313,7 @@ pub async fn desired_device_plan_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
 ) -> Result<Json<meshlet_network::DevicePlan>, AgentApiError> {
+    let _persist = state.persist.lock().await;
     // 身份判定先于全局数据面开关：待审批的注册申请永远 404「pending approval」，
     // 否则数据面关闭时该信号被 503 掩盖，agent 与管理员都读不到真实状态。
     let (plan, network_id) = {
@@ -337,6 +338,23 @@ pub async fn desired_device_plan_handler(
                 "server dataplane is disabled: set [dataplane] enabled = true to distribute \
                  device plans"
                     .into(),
+            ));
+        }
+        if !device.is_active() {
+            return Err(AgentApiError::Unauthorized);
+        }
+        if !guard
+            .ledger
+            .current(&device.network_id)
+            .is_some_and(|r| r.apply_status == meshlet_domain::ApplyStatus::Applied)
+        {
+            return Err(AgentApiError::DataplaneNotConfigured(
+                "hub desired revision has not been applied".into(),
+            ));
+        }
+        if !guard.deployments.contains_key(&network_id) {
+            return Err(AgentApiError::DataplaneNotConfigured(
+                "hub recovery has not yet confirmed this network".into(),
             ));
         }
         let hub_public_key = crate::device_plan::hub_public_key(&state.dataplane)

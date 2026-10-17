@@ -119,6 +119,16 @@ hub 侧接线落地后，设备侧走同一条 `LinuxNetworkBackend` 路径，**
 - **未落地**：真机部署走查（systemd 单元 + 真实设备）未做，见
   [安装指南](../guide/install.md) 的诚实边界与 TODO。
 
+## 2026-10-17 修订：资源隔离与正式部署
+
+- Network 使用独立 hub 接口和 UDP 端口。`net-1` 保留配置接口及基础端口，`net-N` 使用 `mltN` 与基础端口 + N - 1；禁止接口名或端口范围冲突。
+- 共享路由域拒绝不同 Network 的 Overlay、Direct 与 Alias 转发前缀重叠；hub 使用每接口独立 filter 链，允许同接口 Peer 间转发，拒绝跨接口转发及访问其他网络 hub 地址。
+- 成功计划与恢复的所有权按网络/接口划分。hub 不执行机器级 NAT 扫描清理；网关依据本地账本的精确 owner 清理规则。
+- Agent 直接继承 ambient capabilities 执行后端，不经过 sudo。systemd unit 允许 AF_NETLINK，root 的受限 ExecStartPre 在所属网络命名空间启用 ip_forward；常驻进程只在未启用时尝试修改转发开关。
+- 控制面默认 unit 保持无特权；开启 hub 时安装 `meshlet-server.service.d/dataplane.conf`。数据面服务授予 NET_ADMIN 与诊断所需 NET_RAW，并允许访问网络 sysctl。密钥和配置由专用服务用户读取。
+- 对账逐项检查实际地址、接口 UP/MTU、Peer 与 AllowedIPs、路由下一跳和 NAT 规则；部分 SNAT 丢失也必须触发修复。应用成功必须读回。
+- 独立 `Dataplane acceptance` 流水线安装必需工具并设置 `MESHLET_REQUIRE_DATAPLANE=1`，前置缺失即失败；nightly 发布依赖该门禁。
+
 ## 重新评估条件
 
 - Netlink crate 维护性或平台覆盖不达预期；

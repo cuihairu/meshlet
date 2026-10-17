@@ -51,9 +51,7 @@ impl Agent {
     /// 生产构造：默认 `sudo -n` 后端（agent 通常以 root 运行；`sudo -n` 在
     /// 已是 root 或已免密的环境下同样成立）。
     pub fn new(config: AgentConfig, private_key: Option<String>) -> Self {
-        let backend = SystemBackend::new()
-            .with_interface(config.dataplane.interface.clone())
-            .with_sudo();
+        let backend = SystemBackend::new().with_interface(config.dataplane.interface.clone());
         Self::with_backend(config, private_key, backend)
     }
 
@@ -122,7 +120,12 @@ impl Agent {
             }
             Err(e) => return Err(e),
         };
-        let decision = self.reconcile(&plan)?;
+        let result = self.reconcile(&plan);
+        let error = result.as_ref().err().map(String::as_str);
+        if let Err(error) = server::report_apply(&self.server_url, &self.token, &plan, error) {
+            tracing::warn!(%error, "device apply receipt not delivered");
+        }
+        let decision = result?;
         let control_ok = self.report_heartbeat(Some(&plan));
         // 托盘态：reason × 控制通道 × 隧道握手（映射依据见 [`crate::tray`]）。
         self.publish_tray(TrayState::derive(
@@ -188,7 +191,29 @@ impl Agent {
             .backend
             .inspect_sync()
             .map_err(|e| format!("inspect the local network state: {e}"))?;
-        let decision = needs_apply(&state, &snapshot, plan);
+        let mut local_plan = plan_with_hub_endpoint(plan, self.dataplane.hub_endpoint.as_deref());
+        local_plan.tunnel.name = self.dataplane.interface.clone();
+        for route in &mut local_plan.routes {
+            route.interface = self.dataplane.interface.clone();
+        }
+        for rule in &mut local_plan.nat_rules {
+            if rule.incoming_interface.is_some() {
+                rule.incoming_interface = Some(self.dataplane.interface.clone());
+            }
+        }
+        local_plan.tunnel.private_key = self.private_key.clone();
+        let mut decision = needs_apply(&state, &snapshot, plan);
+        if !decision.needs_apply
+            && !self
+                .backend
+                .device_plan_matches_sync(&local_plan)
+                .unwrap_or(false)
+        {
+            decision = Decision {
+                needs_apply: true,
+                reason: crate::reconcile::Reason::KernelDrift,
+            };
+        }
         if !decision.needs_apply {
             return Ok(decision);
         }
@@ -202,10 +227,16 @@ impl Agent {
         // hub 入口地址兜底（§16.4：服务端不下发 agent 的网络位置）：计划未带
         // endpoint 时用本地 `[dataplane] hub_endpoint` 填充——只影响本次内核下
         // 发，账本仍按服务端原计划记（desired_config_hash 不因此变化）。
-        let local_plan = plan_with_hub_endpoint(plan, self.dataplane.hub_endpoint.as_deref());
         self.backend
             .apply_device_plan_sync(&local_plan, self.private_key.clone(), None)
             .map_err(|e| format!("apply the desired plan: {e}"))?;
+        if !self
+            .backend
+            .device_plan_matches_sync(&local_plan)
+            .map_err(|e| e.to_string())?
+        {
+            return Err("applied plan did not match kernel readback".into());
+        }
         AgentState::from_plan(plan).save(&self.state_path)?;
         tracing::info!(
             desired_config_hash = %plan.desired_config_hash,
@@ -308,7 +339,13 @@ fn plan_with_hub_endpoint(plan: &DevicePlan, hub_endpoint: Option<&str>) -> Devi
     let mut local = plan.clone();
     if let (Some(endpoint), Some(peer)) = (hub_endpoint, local.tunnel.peers.first_mut()) {
         if peer.endpoint.is_none() {
-            peer.endpoint = Some(endpoint.to_string());
+            peer.endpoint = Some(match plan.hub_port {
+                Some(port) => endpoint
+                    .rsplit_once(':')
+                    .map(|(host, _)| format!("{host}:{port}"))
+                    .unwrap_or_else(|| format!("{endpoint}:{port}")),
+                None => endpoint.to_string(),
+            });
         }
     }
     local
@@ -385,6 +422,8 @@ mod tests {
 
     fn probe_plan(mtu: Option<u32>, hub: Option<&str>, own: &str) -> DevicePlan {
         DevicePlan {
+            desired_revision: 0,
+            hub_port: None,
             tunnel: meshlet_network::TunnelConfig {
                 name: "wg0".into(),
                 address: own.parse().unwrap(),

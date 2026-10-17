@@ -85,17 +85,29 @@ fn count_prefix_lines(text: &str, prefix: &str) -> usize {
 
 fn prerequisites() -> Option<()> {
     if !sudo_ok(&["true"]) {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
         eprintln!("SKIP: passwordless sudo (sudo -n) unavailable");
         return None;
     }
     match Command::new("wg").arg("--version").output() {
         Ok(o) if o.status.success() => {}
         _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
             eprintln!("SKIP: wireguard-tools (wg) not installed");
             return None;
         }
     }
     if !sudo_ok(&["modprobe", "wireguard"]) && !Path::new("/sys/module/wireguard").exists() {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
         eprintln!("SKIP: wireguard kernel module unavailable");
         return None;
     }
@@ -227,6 +239,10 @@ impl Topology {
             let private = match wg_genkey() {
                 Some(k) => k,
                 None => {
+                    assert!(
+                        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                        "required dataplane prerequisite failed"
+                    );
                     eprintln!("SKIP: key generation failed");
                     return None;
                 }
@@ -234,6 +250,10 @@ impl Topology {
             let public = match wg_pubkey(&private) {
                 Some(k) => k,
                 None => {
+                    assert!(
+                        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                        "required dataplane prerequisite failed"
+                    );
                     eprintln!("SKIP: key derivation failed");
                     return None;
                 }
@@ -437,6 +457,8 @@ impl Topology {
 /// 由调用方从 `[dataplane] private_key_file` 注入——与 agent 路径同一纪律。
 fn hub_plan(topo: &Topology) -> DevicePlan {
     DevicePlan {
+        desired_revision: 0,
+        hub_port: None,
         tunnel: TunnelConfig {
             name: "wg0".into(),
             address: topo.hub.overlay.parse().unwrap(),
@@ -501,6 +523,8 @@ fn leaf_plan(
     hash: &str,
 ) -> DevicePlan {
     DevicePlan {
+        desired_revision: 0,
+        hub_port: None,
         tunnel: TunnelConfig {
             name: "wg0".into(),
             address: node.overlay.parse().unwrap(),

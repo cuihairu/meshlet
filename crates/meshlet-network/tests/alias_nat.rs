@@ -103,23 +103,39 @@ fn count_prefix_lines(text: &str) -> usize {
 /// python3 跑 UDP echo 与 iptables NETMAP 支持）。
 fn prerequisites() -> Option<()> {
     if !sudo_ok(&["true"]) {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
         eprintln!("SKIP: passwordless sudo (sudo -n) unavailable");
         return None;
     }
     match Command::new("wg").arg("--version").output() {
         Ok(o) if o.status.success() => {}
         _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
             eprintln!("SKIP: wireguard-tools (wg) not installed");
             return None;
         }
     }
     if !sudo_ok(&["modprobe", "wireguard"]) && !Path::new("/sys/module/wireguard").exists() {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
         eprintln!("SKIP: wireguard kernel module unavailable");
         return None;
     }
     match Command::new("python3").arg("--version").output() {
         Ok(o) if o.status.success() => {}
         _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
             eprintln!("SKIP: python3 not installed");
             return None;
         }
@@ -403,6 +419,10 @@ impl Topology {
             let private = match wg_genkey() {
                 Ok(k) => k,
                 Err(e) => {
+                    assert!(
+                        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                        "required dataplane prerequisite failed"
+                    );
                     eprintln!("SKIP: key generation failed: {e}");
                     return None;
                 }
@@ -410,6 +430,10 @@ impl Topology {
             let public = match wg_pubkey(&private) {
                 Ok(k) => k,
                 Err(e) => {
+                    assert!(
+                        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                        "required dataplane prerequisite failed"
+                    );
                     eprintln!("SKIP: key derivation failed: {e}");
                     return None;
                 }

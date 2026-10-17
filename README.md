@@ -15,12 +15,51 @@
 Self-hosted private networking on your own VPS — Rust + WireGuard.
 
 > [!NOTE]
-> Implemented and CI-green: control plane, WireGuard dataplane (hub relay + agent), LAN routing and
-> Alias NAT, React console, session auth + API tokens + audit, backup/restore, diagnostics, and
-> ZeroTier-style device self-registration with center approval. The 2026-10-17 architecture review
-> identifies remaining work in single-instance multi-network isolation, device apply confirmation,
-> hub recovery, rollback, Direct LAN SNAT, and deployment permissions, alongside Windows support
-> and real-hardware validation. See [TODO](TODO.md) for the current scope and acceptance criteria.
+> The control plane, WireGuard hub/agent, LAN routing and Alias NAT, console, authentication,
+> audit, backup and device approval are implemented. This revision adds single-instance network
+> isolation, device apply receipts, hub recovery, last-good-plan rollback, Direct LAN SNAT and
+> service permissions, with local Linux kernel and unprivileged service regression evidence.
+> Windows, empty-VPS installation and real-device acceptance remain pending. See [TODO](TODO.md).
+
+## Nightly builds and one-command installation
+
+The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly) and an immutable dated release. Packages include the server, agent, CLI, web console and systemd units for Linux x86_64 and ARM64.
+
+**Install the server on your VPS:**
+
+```bash
+curl -fsSL https://github.com/cuihairu/meshlet/releases/download/nightly/install.sh | sudo bash -s -- server
+```
+
+The installer installs dependencies, verifies the archive's SHA-256, creates a service account and local WireGuard key, and enables the service. The console listens on `127.0.0.1:8080` by default. To access a remote VPS:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@your-vps
+```
+
+Open `http://127.0.0.1:8080`, create the administrator, a network and a device bootstrap token. Allow the network's UDP port in the VPS firewall: `51820` for the first network by default, increasing by one for each subsequent network. Configure an HTTPS reverse proxy for public administration as described in the [installation guide](docs/guide/install.md).
+
+**Install an agent on a Linux device:**
+
+```bash
+curl -fsSL https://github.com/cuihairu/meshlet/releases/download/nightly/install.sh | sudo bash -s -- agent \
+  --server-url 'https://meshlet.example.com' \
+  --hub-endpoint 'YOUR_VPS_PUBLIC_IP:51820' \
+  --bootstrap-token 'TOKEN_FROM_THE_CONSOLE' \
+  --name 'home-linux'
+```
+
+Approve the device in the console, then apply the network's current revision. Hub execution, device receipts and connectivity probes are reported separately.
+
+Re-run the same role to upgrade to the latest successful nightly. Existing TOML files, private keys, device credentials and databases are preserved; installed devices do not automatically upgrade each day. To install a dated release, replace `nightly` in the download URL with its full release tag and pass `--version 'THAT_TAG'`. Use `--no-start` to install without starting the service.
+
+```bash
+systemctl status meshlet-server   # use meshlet-agent on a device
+journalctl -u meshlet-server -n 100 --no-pager
+cat /usr/local/share/meshlet/server-build-info
+```
+
+The workflow must be merged into the default branch and run successfully once before download assets exist. This installer requires Linux with systemd; the Windows dataplane remains pending. See the [installation guide](docs/guide/install.md) for configuration details.
 
 ## What it is
 
@@ -52,11 +91,11 @@ API tokens, audit logging, presence, the config-revision state machine (a DB wri
 to be effective until applied), and ZeroTier-style device self-registration (bootstrap token →
 pending → approve/deny) are in place.
 
-The current implementation is not fully accepted for deployment. The latest review reopens
-multi-network isolation, distributed apply confirmation, hub kernel recovery, rollback,
-Direct LAN SNAT, and service permissions. The Windows dataplane backend (ADR-008) and real-hardware
-walkthroughs are also pending. See the current checklist at the top of [TODO](TODO.md);
-historical CI results do not establish end-to-end readiness.
+The current implementation is not fully accepted for deployment. See the
+[P0 fixes and nightly implementation record](docs/implementation/fixes-and-nightly-2026-10-17.md)
+for local Linux evidence. ARM64 builds, the first nightly publication on the default branch,
+empty-VPS installation, Windows support and real-device walkthroughs remain pending.
+The current checklist at the top of [TODO](TODO.md) records these limits.
 
 ## License
 

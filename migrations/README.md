@@ -1,6 +1,6 @@
 # migrations
 
-SQLx migrations 落库目录。当前版本：`008_device_registrations.sql`。
+SQLx migrations 落库目录。当前版本：`009_deployments.sql`。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -12,6 +12,8 @@ SQLx migrations 落库目录。当前版本：`008_device_registrations.sql`。
 | 006_diagnostics | 诊断快照（`diagnostics_runs`） |
 | 007_dataplane_evidence | 心跳回传数据面证据（`devices.dataplane_evidence`） |
 | 008_device_registrations | 设备自举注册：`bootstrap_tokens`（自举码摘要）+ `device_registrations`（Pending 申请） |
+
+| 009_deployments | `hub_deployments`（公共成功计划、恢复错误）+ `device_apply_receipts`（设备版本/哈希回执） |
 
 ## 应用方式
 

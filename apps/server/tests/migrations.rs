@@ -318,7 +318,7 @@ async fn migrations_are_idempotent_across_reopens() {
     // diagnostics_runs（§12.7 诊断快照）；008 新增 bootstrap_tokens +
     // device_registrations（设备自举注册，Pending 不进 devices）。
     let tables = tables(&pool).await;
-    assert_eq!(tables.len(), 16);
+    assert_eq!(tables.len(), 18);
     assert!(tables.contains(&"mesh_meta".to_string()), "{tables:?}");
     assert!(
         tables.contains(&"diagnostics_runs".to_string()),

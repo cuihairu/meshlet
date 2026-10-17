@@ -136,7 +136,7 @@ pub fn needs_apply(state: &AgentState, snapshot: &NetworkSnapshot, plan: &Device
 ///   对象由 [`stale_owners`] 与 backend 的对账处理，不在这里误判）；
 /// - NAT：期望有规则而内核一条 Meshlet 规则都没有 → 漂移（重启清空 iptables）。
 fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) -> bool {
-    if !snapshot.tunnel_exists {
+    if !snapshot.tunnel_exists || snapshot.forwarding_enabled != Some(true) {
         return true;
     }
     if !state.tunnel_address.is_empty() && state.tunnel_address != plan.tunnel.address.to_string() {
@@ -163,7 +163,12 @@ fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) ->
     if missing {
         return true;
     }
-    !plan.nat_rules.is_empty() && !snapshot.nat_rules_present
+    (!plan.nat_rules.is_empty() && !snapshot.nat_rules_present)
+        || (plan
+            .nat_rules
+            .iter()
+            .any(|r| r.action == NatAction::SnatToGatewayLan)
+            && !snapshot.nat_snat_rules_present)
 }
 
 /// 本轮重放前要按所有权注释清理的 NAT 单元（§12.6 精确清理）。
@@ -196,11 +201,13 @@ fn rule_signatures(rules: &[NatRule]) -> Vec<String> {
                 NatAction::SnatToGatewayLan => "snat_to_gateway_lan".to_string(),
             };
             format!(
-                "{}|{}|{}|{}",
+                "{}|{}|{}|{}|{:?}|{:?}",
                 r.chain.as_str(),
                 r.match_dest,
                 action,
-                r.owner
+                r.owner,
+                r.source_cidr,
+                r.incoming_interface
             )
         })
         .collect::<BTreeSet<String>>()
@@ -240,6 +247,8 @@ mod tests {
 
     fn plan(hash: &str, with_nat: bool) -> DevicePlan {
         DevicePlan {
+            desired_revision: 0,
+            hub_port: None,
             tunnel: TunnelConfig {
                 name: "wg0".into(),
                 address: "10.240.0.7".parse().unwrap(),
@@ -262,6 +271,8 @@ mod tests {
             nat_rules: if with_nat {
                 vec![
                     NatRule {
+                        source_cidr: None,
+                        incoming_interface: None,
                         chain: NatChain::Prerouting,
                         match_dest: "10.241.9.0/24".parse().unwrap(),
                         action: NatAction::NetMap {
@@ -270,6 +281,8 @@ mod tests {
                         owner: "meshlet alias al-1".into(),
                     },
                     NatRule {
+                        source_cidr: None,
+                        incoming_interface: None,
                         chain: NatChain::Postrouting,
                         match_dest: "192.168.9.0/24".parse().unwrap(),
                         action: NatAction::SnatToGatewayLan,

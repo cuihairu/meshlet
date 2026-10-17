@@ -32,6 +32,10 @@ fn wg_available() -> bool {
     match std::process::Command::new("wg").arg("--version").output() {
         Ok(o) if o.status.success() => true,
         _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
             eprintln!("SKIP: wireguard-tools (wg) not installed");
             false
         }
@@ -43,6 +47,10 @@ fn write_hub_key(dir: &Path) -> Option<std::path::PathBuf> {
     let out = match std::process::Command::new("wg").arg("genkey").output() {
         Ok(o) if o.status.success() => o,
         _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
             eprintln!("SKIP: wg genkey failed");
             return None;
         }
@@ -70,6 +78,13 @@ async fn app(dataplane: meshlet_config::DataPlaneConfig) -> Router {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
         .unwrap();
+    app_with_pool(dataplane, pool).await
+}
+
+async fn app_with_pool(
+    dataplane: meshlet_config::DataPlaneConfig,
+    pool: sqlx::SqlitePool,
+) -> Router {
     let mesh = Arc::new(std::sync::Mutex::new(
         meshlet_server::service::MeshState::new(PresenceThresholds::default()),
     ));
@@ -135,7 +150,10 @@ async fn bootstrap_with_device(
     public_key: &str,
 ) -> (Ctx, String) {
     let app = app(dataplane).await;
+    bootstrap_in_app(app, public_key).await
+}
 
+async fn bootstrap_in_app(app: Router, public_key: &str) -> (Ctx, String) {
     let res = app
         .clone()
         .oneshot(
@@ -207,14 +225,13 @@ async fn bootstrap_with_device(
     let enroll = res_body(res).await;
     let agent_token = enroll["agent_token"].as_str().unwrap().to_string();
 
-    (
-        Ctx {
-            app,
-            cookie,
-            network_id,
-        },
-        agent_token,
-    )
+    let ctx = Ctx {
+        app,
+        cookie,
+        network_id,
+    };
+    apply_current(&ctx).await;
+    (ctx, agent_token)
 }
 
 /// 用同一邀请再入一台设备（返回 device_id、agent_token）。
@@ -436,16 +453,8 @@ async fn plan_grows_only_after_the_revision_is_applied() {
     // 期望项只写了账本、尚未下发内核（§10.1）→ 不进计划：agent 不会拿到
     // 一个还没生效的远端网段去转发。
     let (st, pending_plan) = desired(&ctx.app, Some(&token)).await;
-    assert_eq!(st, StatusCode::OK, "{pending_plan}");
-    assert!(
-        pending_plan["routes"].as_array().unwrap().is_empty(),
-        "unapplied route must stay out of the plan: {pending_plan}"
-    );
-    assert_eq!(
-        pending_plan["tunnel"]["peers"][0]["allowed_ips"],
-        serde_json::json!([OVERLAY]),
-        "{pending_plan}"
-    );
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{pending_plan}");
+    assert_eq!(pending_plan["error"]["code"], "dataplane_not_configured");
 
     apply_current(&ctx).await;
 
@@ -472,12 +481,9 @@ async fn plan_grows_only_after_the_revision_is_applied() {
         "via gateway device virtual ip: {plan}"
     );
 
-    // 期望配置哈希不随「是否已应用」变化（哈希描述期望，不是生效状态）——
-    // 应用前后同一个期望配置的哈希必须相同。
-    assert_eq!(
-        plan["desired_config_hash"],
-        pending_plan["desired_config_hash"]
-    );
+    // Candidate hashes identify the complete plan; receipt state does not alter it.
+    let (_, repeated) = desired(&ctx.app, Some(&token)).await;
+    assert_eq!(plan["desired_config_hash"], repeated["desired_config_hash"]);
 
     std::fs::remove_file(&key_file).ok();
     std::fs::remove_dir(&dir).ok();
@@ -719,4 +725,219 @@ async fn own_device_id(ctx: &Ctx) -> String {
     assert_eq!(res.status(), StatusCode::OK);
     let list = res_body(res).await;
     list[0]["id"].as_str().unwrap().to_string()
+}
+
+async fn receipt(
+    ctx: &Ctx,
+    token: &str,
+    plan: &serde_json::Value,
+    error: Option<&str>,
+) -> StatusCode {
+    let response = ctx.app.clone().oneshot(Request::builder().method("POST").uri("/api/v1/agent/device/applied")
+        .header("authorization", format!("Bearer {token}")).header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({"desired_revision":plan["desired_revision"],"plan_hash":plan["desired_config_hash"],"error":error}).to_string())).unwrap()).await.unwrap();
+    response.status()
+}
+
+#[tokio::test]
+async fn resource_status_waits_for_exact_device_receipts_and_rejects_stale_acks() {
+    if !wg_available() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("meshlet-receipts-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let key = write_hub_key(&dir).unwrap();
+    let (ctx, token) = bootstrap_with_device(
+        meshlet_config::DataPlaneConfig {
+            private_key_file: Some(key.to_string_lossy().into_owned()),
+            ..dataplane_on()
+        },
+        "receipt-gateway",
+    )
+    .await;
+    let (_, peer_token) = enroll_extra(&ctx, "receipt-peer").await;
+    let gateway = own_device_id(&ctx).await;
+    create_route(&ctx, &gateway, "192.168.80.0/24", "direct").await;
+    let applied = apply_current(&ctx).await;
+    assert_eq!(applied["convergence"]["device_apply_status"], "pending");
+    assert_eq!(
+        applied["convergence"]["pending_device_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let (_, plan) = desired(&ctx.app, Some(&token)).await;
+    let (_, peer_plan) = desired(&ctx.app, Some(&peer_token)).await;
+    let mut wrong = plan.clone();
+    wrong["desired_config_hash"] = serde_json::json!("wrong");
+    assert_eq!(
+        receipt(&ctx, &token, &wrong, None).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        receipt(&ctx, &token, &plan, None).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        receipt(&ctx, &peer_token, &peer_plan, Some("kernel apply rejected")).await,
+        StatusCode::NO_CONTENT
+    );
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/networks/{}/routes", ctx.network_id))
+                .header("cookie", &ctx.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let routes = res_body(response).await;
+    assert_eq!(routes[0]["status"], "pending");
+    assert_eq!(
+        receipt(&ctx, &peer_token, &peer_plan, None).await,
+        StatusCode::NO_CONTENT
+    );
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/networks/{}/routes", ctx.network_id))
+                .header("cookie", &ctx.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let routes = res_body(response).await;
+    assert_eq!(routes[0]["status"], "applied");
+    let (_, unchanged) = desired(&ctx.app, Some(&token)).await;
+    assert_eq!(
+        plan["desired_config_hash"],
+        unchanged["desired_config_hash"]
+    );
+    create_route(&ctx, &gateway, "192.168.81.0/24", "direct").await;
+    apply_current(&ctx).await;
+    assert_eq!(
+        receipt(&ctx, &token, &plan, None).await,
+        StatusCode::BAD_REQUEST
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn failed_outcome_commit_withholds_plans_and_preserves_last_good_journal() {
+    if !wg_available() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("meshlet-commit-failure-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let key = write_hub_key(&dir).unwrap();
+    let pool = meshlet_server::store::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let app = app_with_pool(
+        meshlet_config::DataPlaneConfig {
+            private_key_file: Some(key.to_string_lossy().into_owned()),
+            ..dataplane_on()
+        },
+        pool.clone(),
+    )
+    .await;
+    let (ctx, token) = bootstrap_in_app(app, "commit-gateway").await;
+    let before: String =
+        sqlx::query_scalar("SELECT plan_json FROM hub_deployments WHERE network_id=?")
+            .bind(&ctx.network_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("CREATE TRIGGER fail_journal BEFORE UPDATE ON hub_deployments BEGIN SELECT RAISE(FAIL, 'journal disk failure'); END").execute(&pool).await.unwrap();
+    let (peer, _) = enroll_extra(&ctx, "commit-peer").await;
+    create_route(&ctx, &peer, "192.168.85.0/24", "direct").await;
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/networks/{}/config-revisions",
+                    ctx.network_id
+                ))
+                .header("cookie", &ctx.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let revisions = res_body(response).await;
+    let revision = revisions.as_array().unwrap().last().unwrap()["revision"]
+        .as_u64()
+        .unwrap();
+    let (status, _) = admin(
+        &ctx.app,
+        &ctx.cookie,
+        &format!(
+            "/api/v1/networks/{}/config-revisions/{revision}/apply",
+            ctx.network_id
+        ),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        desired(&ctx.app, Some(&token)).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let after: String =
+        sqlx::query_scalar("SELECT plan_json FROM hub_deployments WHERE network_id=?")
+            .bind(&ctx.network_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        before, after,
+        "a failed commit cannot replace the recovery journal"
+    );
+    let db_status: String = sqlx::query_scalar(
+        "SELECT apply_status FROM config_revisions WHERE network_id=? AND revision=?",
+    )
+    .bind(&ctx.network_id)
+    .bind(revision as i64)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        db_status, "applying",
+        "durable intent survives an unknown commit outcome"
+    );
+    let response = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/networks/{}/config-revisions/{revision}",
+                    ctx.network_id
+                ))
+                .header("cookie", &ctx.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let state = res_body(response).await;
+    assert_eq!(
+        state["apply_status"], "failed",
+        "memory must not advertise provisional success"
+    );
+    assert!(state["error_summary"]
+        .as_str()
+        .unwrap()
+        .contains("could not be persisted"));
+    pool.close().await;
+    std::fs::remove_dir_all(dir).unwrap();
 }

@@ -47,6 +47,10 @@ pub enum NatAction {
 /// 一条计划态 NAT 规则。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NatRule {
+    #[serde(default)]
+    pub source_cidr: Option<Ipv4Cidr>,
+    #[serde(default)]
+    pub incoming_interface: Option<String>,
     pub chain: NatChain,
     /// 按**目的**前缀匹配：DNAT 匹配 alias 前缀；受控 SNAT 匹配 target
     /// 前缀（即刚被 DNAT 改写为真实 LAN 目的、正要进入 LAN 的流量）。
@@ -68,6 +72,14 @@ impl NatRule {
             "-d".into(),
             self.match_dest.to_string(),
         ];
+        if let Some(source) = self.source_cidr {
+            args.extend(["-s".into(), source.to_string()]);
+        }
+        if self.chain == NatChain::Prerouting {
+            if let Some(interface) = &self.incoming_interface {
+                args.extend(["-i".into(), interface.clone()]);
+            }
+        }
         match self.action {
             NatAction::NetMap { to } => {
                 args.extend(["-j".into(), "NETMAP".into(), "--to".into(), to.to_string()]);
@@ -106,6 +118,8 @@ impl NatRule {
 pub fn alias_nat_rules(alias: &AliasMapping) -> Vec<NatRule> {
     let owner = format!("meshlet alias {}", alias.id);
     let mut rules = vec![NatRule {
+        source_cidr: None,
+        incoming_interface: None,
         chain: NatChain::Prerouting,
         match_dest: alias.alias_cidr,
         action: NatAction::NetMap {
@@ -115,6 +129,8 @@ pub fn alias_nat_rules(alias: &AliasMapping) -> Vec<NatRule> {
     }];
     if alias.translation_mode == TranslationMode::DnatSnat {
         rules.push(NatRule {
+            source_cidr: None,
+            incoming_interface: None,
             chain: NatChain::Postrouting,
             match_dest: alias.target_cidr,
             action: NatAction::SnatToGatewayLan,

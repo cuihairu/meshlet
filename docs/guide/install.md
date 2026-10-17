@@ -97,12 +97,11 @@ console_dir = "/usr/local/share/meshlet/console"
 
 # 数据面接线（ADR-007）：默认**全关**——apply 修订只记录、显式失败并说明
 # 「已记录但未应用」，不碰内核。要让本机真正承担 hub 转发面（wg 接口/peer/
-# 路由/FORWARD 放行）才打开；进程需要 CAP_NET_ADMIN（systemd 单元未授予，
-# 见 deploy/systemd 注释）。私钥只从文件读取、绝不落库（ADR-010）。
+# 路由/FORWARD 放行）才打开；进程需要 CAP_NET_ADMIN（安装 §5 的 dataplane.conf drop-in 后授予）。私钥只从文件读取、绝不落库（ADR-010）。
 # [dataplane]
 # enabled = true                                 # 打开才真实执行 apply/rollback
 # interface = "wg0"                              # 受管 WireGuard 接口名
-# listen_port = 51820                            # hub 监听端口（不配=随机）
+# listen_port = 51820                            # net-1 端口；net-N 使用此端口 + N - 1
 # private_key_file = "/etc/meshlet/hub.key"      # hub 私钥文件（首装必须，0600）
 
 # 备份（§17.4「备份 ≠ 同步」）：默认**全关**——不写盘、不自动、无任何外发
@@ -308,3 +307,29 @@ userdel meshlet meshlet-agent
 **待真机验证**（对应 TODO「安装流程与自启动」条保持未勾的原因）：真实空
 VPS 上按本指南从零走查一遍——bootstrap、控制台、备份开关、重启恢复；以及
 数据面实装后的 agent 加入与互通。走查中发现的问题会回写本指南。
+
+## 数据面服务权限与恢复
+
+控制面默认 unit 不授予网络管理能力。开启 `[dataplane] enabled = true` 后，在 VPS 安装配套 drop-in：
+
+```bash
+install -d /etc/systemd/system/meshlet-server.service.d
+install -m 0644 deploy/systemd/meshlet-server.service.d/dataplane.conf /etc/systemd/system/meshlet-server.service.d/dataplane.conf
+systemctl daemon-reload
+systemctl restart meshlet-server
+```
+
+Agent 使用专用用户及 ambient `CAP_NET_ADMIN` / `CAP_NET_RAW`，直接运行网络工具，不经过 sudo。两端都需要安装 `iproute2`、`wireguard-tools`、`iptables` 和 `iputils-ping`；unit 允许 AF_NETLINK 及写转发开关。配置和私钥必须对各自服务用户可读（例如 `chown meshlet:meshlet hub.key; chmod 0600 hub.key`），不能只对 root 可读。
+
+`net-1` 保留配置的接口，后续网络使用 `mlt2`、`mlt3` 等独立接口；UDP 端口从 `listen_port`（默认 51820）依次递增，需要同步放行 VPS 防火墙。共享路由域拒绝不同网络的 Overlay、Direct 和 Alias 转发前缀重叠，hub 防火墙拒绝跨网络转发。旧版多网络部署应先停服务并清理已确认归属 Meshlet 的旧共享接口，再启用新版，避免遗留 Peer/地址。
+
+成功的 hub 公共计划保存在 SQLite `hub_deployments`；私钥仍只从本地文件读取。启动后立即检查，随后每 30 秒检查并修复内核漂移。`apply_status=applied` 表示 hub 执行成功；`convergence.device_apply_status` 表示设备回执收敛，业务健康在未探测时为 `not_probed`。设备失败或离线不能当作端到端已生效。
+
+回滚仅恢复上一份成功计划及其路由/Alias，重新等待设备回执；首次应用失败只清理该网络 hub 接口。恢复失败通过 `convergence.hub_recovery_error` 报告。
+
+正式权限回归可在有 systemd、免密 sudo 与 WireGuard 的 Linux 上执行；脚本使用临时网络命名空间和临时服务，不创建永久用户，完成后清理：
+
+```bash
+cargo build -p meshlet-server --bin meshlet-server
+sudo python3 scripts/verify-systemd.py target/debug/meshlet-server
+```

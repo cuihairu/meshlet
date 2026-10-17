@@ -1,0 +1,128 @@
+name: Nightly build
+on:
+  schedule:
+    # 03:17 Asia/Shanghai; use an off-hour minute to reduce scheduler contention.
+    - cron: '17 19 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - name: Validate installer
+        run: |
+          bash -n scripts/install.sh scripts/package-release.sh
+          scripts/install.sh --help
+          shellcheck scripts/install.sh scripts/package-release.sh
+  dataplane:
+    uses: ./.github/workflows/dataplane.yml
+  console:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.10.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+      - run: pnpm --dir console install --frozen-lockfile
+      - run: pnpm --dir console run build
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run docs:build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-console
+          path: console/dist/
+  build:
+    needs: [checks, dataplane, console]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-${{ matrix.target }}
+      - name: Install static build tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-console
+          path: console/dist/
+      - name: Build static Linux binaries
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --locked --release --target '${{ matrix.target }}' --bin meshlet-server --bin meshlet-agent --bin meshlet-cli
+      - name: Package binaries, console and systemd units
+        run: scripts/package-release.sh '${{ matrix.target }}' '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-binary-${{ matrix.arch }}
+          path: dist/*.tar.gz
+  publish:
+    if: github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-binary-*
+          merge-multiple: true
+          path: dist/
+      - name: Publish dated and rolling nightly releases
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/install.sh dist/install.sh
+          cd dist
+          sha256sum meshlet-linux-*.tar.gz install.sh > SHA256SUMS
+          release_tag="nightly-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          cat > notes.md <<NOTES
+          Automated prerelease from commit ${GITHUB_SHA}.
+          Linux x86_64 and ARM64 static binaries, web console and systemd units are included.
+          SHA256SUMS verifies the downloaded archive. BUILD_INFO inside each archive records the source commit.
+          This build passed the workspace checks and required Linux kernel dataplane tests.
+          Immutable release: ${release_tag}. The nightly tag tracks the most recent successful build.
+          NOTES
+          gh release create "$release_tag" meshlet-linux-*.tar.gz install.sh SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "$release_tag" --notes-file notes.md
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true
+            gh release upload nightly meshlet-linux-*.tar.gz install.sh SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit nightly --repo "$GITHUB_REPOSITORY" --prerelease --title 'Nightly' --notes-file notes.md
+          else
+            gh release create nightly meshlet-linux-*.tar.gz install.sh SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
+          fi

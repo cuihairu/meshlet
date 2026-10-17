@@ -256,17 +256,15 @@ async fn overlapping_destination_in_same_network_is_conflict() {
     // 子网重叠同样冲突。
     let (st, _) = json_post(&c, &uri, route_body(&device_id, "192.168.1.0/25")).await;
     assert_eq!(st, StatusCode::CONFLICT);
-    // 其他网络不受影响。
-    let (st, _) = json_post(
-        &c,
-        &format!(
-            "/api/v1/networks/{}/routes",
-            create_network(&c, "m", "10.242.0.0/16").await
-        ),
-        route_body("dev-999", "192.168.1.0/24"),
-    )
-    .await;
+    // Unknown gateways retain their 404 contract. Valid gateways cannot publish
+    // a conflicting forwarding prefix from a different network in the same host.
+    let other = create_network(&c, "m", "10.242.0.0/16").await;
+    let uri = format!("/api/v1/networks/{other}/routes");
+    let (st, _) = json_post(&c, &uri, route_body("dev-999", "192.168.1.0/24")).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+    let gateway = enroll(&c, &other, "other-gateway", "pub-other").await;
+    let (st, _) = json_post(&c, &uri, route_body(&gateway, "192.168.1.0/24")).await;
+    assert_eq!(st, StatusCode::CONFLICT);
 }
 
 /// ADR-006 旗舰场景：两个站点各有一个 192.168.1.0/24，经各自 Alias 同时可达。

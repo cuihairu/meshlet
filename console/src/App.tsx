@@ -270,7 +270,7 @@ function NetworkDetail({
       <p className="muted">
         Current config revision {network.revision_id} ·{' '}
         <span className={`status status-${network.apply_status}`}>
-          {network.apply_status}
+          Hub: {network.apply_status}
         </span>
       </p>
       <DevicesSection
@@ -1559,10 +1559,9 @@ function RevisionsSection({ networkId }: { networkId: string }) {
       <h3>Config revisions</h3>
       <p className="muted">
         A new revision is recorded for every config change (network, device join,
-        route, revoke). A database write is not an apply: the status below is
-        the verdict. Apply targets the current desired config; rollback is only
-        for the current failed revision — a superseded failure is refused rather
-        than rolled back across the newer revision.
+        route, revoke). Apply publishes the current revision to the hub. Device
+        receipts are tracked separately; business connectivity requires a probe.
+        Rollback restores the last successful hub plan for the current failed revision.
       </p>
       {revisions === null ? (
         <p className="muted">Loading…</p>
@@ -1586,8 +1585,21 @@ function RevisionsSection({ networkId }: { networkId: string }) {
                 <td>{formatTime(r.created_at)}</td>
                 <td>
                   <span className={`status status-${r.apply_status}`}>
-                    {r.apply_status}
+                    Hub: {r.apply_status}
                   </span>
+                  {r.convergence && (
+                    <div className="muted">
+                      <div>Devices: {({ pending: 'Waiting for receipts', applied: 'All devices applied', failed: 'Apply failed', not_configured: 'Data plane not configured' } as Record<string, string>)[r.convergence.device_apply_status] ?? r.convergence.device_apply_status}</div>
+                      {r.convergence.pending_device_ids.length > 0 && (
+                        <div>Waiting for: {r.convergence.pending_device_ids.join(', ')}</div>
+                      )}
+                      {Object.entries(r.convergence.device_errors).map(([device, error]) => (
+                        <div key={device}>{device}: {error}</div>
+                      ))}
+                      {r.convergence.hub_recovery_error && <div>Hub recovery: {r.convergence.hub_recovery_error}</div>}
+                      <div>Connectivity: {r.convergence.business_health === 'not_probed' ? 'Not probed' : r.convergence.business_health}</div>
+                    </div>
+                  )}
                   {r.error_summary && (
                     <span className="muted"> · {r.error_summary}</span>
                   )}

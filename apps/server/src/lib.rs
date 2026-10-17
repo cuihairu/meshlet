@@ -18,6 +18,7 @@ pub mod api_token;
 pub mod audit;
 pub mod auth;
 pub mod backup;
+pub mod convergence;
 pub mod device_plan;
 pub mod diagnostics;
 pub mod metrics;
@@ -71,6 +72,11 @@ async fn create_network_handler(
     let _persist = state.persist.lock().await;
     let (view, network, revision) = {
         let mut guard = state.mesh.lock().unwrap();
+        crate::revision::network_dataplane(
+            &state.dataplane,
+            &format!("net-{}", guard.network_count() + 1),
+        )
+        .map_err(service::ServiceError::InvalidInput)?;
         let view = create_network(&mut guard, req)?;
         let network = guard.network_row(&view.id).expect("just created").clone();
         let revision = guard
@@ -996,6 +1002,10 @@ pub fn router(state: SharedAppState) -> Router {
         .route(
             "/api/v1/networks/{network_id}/bootstrap-tokens/{token_id}",
             delete(revoke_bootstrap_token_handler),
+        )
+        .route(
+            "/api/v1/agent/device/applied",
+            post(convergence::receipt_handler),
         )
         .route("/api/v1/agent/heartbeat", post(agent::heartbeat_handler))
         .route(

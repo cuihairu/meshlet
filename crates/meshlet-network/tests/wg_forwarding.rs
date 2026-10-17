@@ -101,18 +101,30 @@ fn count_prefix_lines(text: &str) -> usize {
 /// 缺任一前置条件就返回 `None`（并打印 `SKIP:`），让 CI 无特权环境保持全绿。
 fn prerequisites() -> Option<()> {
     if !sudo_ok(&["true"]) {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
         eprintln!("SKIP: passwordless sudo (sudo -n) unavailable");
         return None;
     }
     match Command::new("wg").arg("--version").output() {
         Ok(o) if o.status.success() => {}
         _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
             eprintln!("SKIP: wireguard-tools (wg) not installed");
             return None;
         }
     }
     // 已加载则 modprobe 可能报错，所以两个条件取「或」。
     if !sudo_ok(&["modprobe", "wireguard"]) && !Path::new("/sys/module/wireguard").exists() {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
         eprintln!("SKIP: wireguard kernel module unavailable");
         return None;
     }
@@ -278,6 +290,10 @@ impl Topology {
             let private = match wg_genkey() {
                 Ok(k) => k,
                 Err(e) => {
+                    assert!(
+                        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                        "required dataplane prerequisite failed"
+                    );
                     eprintln!("SKIP: key generation failed: {e}");
                     return None;
                 }
@@ -285,6 +301,10 @@ impl Topology {
             let public = match wg_pubkey(&private) {
                 Ok(k) => k,
                 Err(e) => {
+                    assert!(
+                        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                        "required dataplane prerequisite failed"
+                    );
                     eprintln!("SKIP: key derivation failed: {e}");
                     return None;
                 }

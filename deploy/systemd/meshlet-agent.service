@@ -10,11 +10,10 @@
 #   原因（[dataplane] 未开则只打印状态后正常退出，不碰内核）。
 #
 # 硬化项已逐项注释；真机走查尚未做——尤其 `PrivateDevices=true` 与
-# `ProtectKernelTunables=true` 对本机数据面路径（wg/ip/iptables）的影响需要在
+# `ProtectKernelTunables=false` 对本机数据面路径（wg/ip/iptables）的影响需要在
 # 真实设备上验证，发现冲突时以最小放宽为原则调整并在此处记录。
 #
-# sysctl（如 net.ipv4.ip_forward）不由 agent 写 /proc/sys（单元层已锁
-# ProtectKernelTunables）：网关转发开关走 /etc/sysctl.d/（见安装指南）。
+# 后端直接继承 ambient capabilities，不经 sudo；需 Netlink 与 ip_forward 写入。
 
 [Unit]
 Description=Meshlet device agent
@@ -23,6 +22,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+ExecStartPre=+sysctl -w net.ipv4.ip_forward=1
 Type=simple
 User=meshlet-agent
 Group=meshlet-agent
@@ -32,16 +32,16 @@ StateDirectory=meshlet-agent
 Restart=on-failure
 RestartSec=5s
 
-# --- 硬化：数据面只需 CAP_NET_ADMIN，别的一概不给 ---
+# --- 硬化：数据面只需 CAP_NET_ADMIN CAP_NET_RAW，别的一概不给 ---
 NoNewPrivileges=true
-CapabilityBoundingSet=CAP_NET_ADMIN
-AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/meshlet-agent
 PrivateTmp=true
 PrivateDevices=true
-ProtectKernelTunables=true
+ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectKernelLogs=true
 LockPersonality=true
@@ -49,7 +49,7 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 UMask=0027
 
 [Install]

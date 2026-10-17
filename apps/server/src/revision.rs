@@ -49,6 +49,8 @@ pub struct RevisionView {
     pub applied_at: Option<String>,
     /// 失败诊断（§12.2：失败可见）；成功时为 `null`。
     pub error_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub convergence: Option<serde_json::Value>,
 }
 
 pub fn to_revision_view(r: &ConfigRevision) -> RevisionView {
@@ -60,6 +62,7 @@ pub fn to_revision_view(r: &ConfigRevision) -> RevisionView {
         created_at: r.created_at.clone(),
         applied_at: r.applied_at.clone(),
         error_summary: r.error_summary.clone(),
+        convergence: None,
     }
 }
 
@@ -106,9 +109,34 @@ pub fn unconfigured_backend_factory() -> BackendFactory {
 // ---------------------------------------------------------------------------
 
 /// 一次应用的 hub 侧期望快照（从 [MeshState] 对账翻译，§10.1）。
-struct HubPlan {
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HubPlan {
     tunnel: TunnelConfig,
     routes: Vec<RouteConfig>,
+}
+
+/// Last confirmed hub plan, stored without private keys for restart/rollback.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Deployment {
+    pub revision: u64,
+    pub hub: HubPlan,
+    pub routes: Vec<meshlet_domain::LanRoute>,
+    pub aliases: Vec<AliasMapping>,
+}
+
+pub(crate) fn deployment(
+    mesh: &MeshState,
+    network_id: &str,
+    cfg: &DataPlaneConfig,
+    mtu: Option<u32>,
+    revision: u64,
+) -> Result<Deployment, String> {
+    Ok(Deployment {
+        revision,
+        hub: hub_plan(mesh, network_id, &network_dataplane(cfg, network_id)?, mtu)?,
+        routes: mesh.lan_routes.get(network_id).cloned().unwrap_or_default(),
+        aliases: mesh.aliases.get(network_id).cloned().unwrap_or_default(),
+    })
 }
 
 /// hub 数据面 backend：把网络当前期望配置真实下发到本机内核。
@@ -121,6 +149,8 @@ struct HubPlan {
 pub struct HubDataPlaneBackend {
     plan: Result<HubPlan, String>,
     interface: String,
+    previous: Option<Deployment>,
+    previous_error: Option<String>,
     private_key_file: Option<String>,
     /// 后端构造（生产 `SystemBackend::new()`；netns 集成测试注入指定
     /// netns 的后端，同一 hub 期望翻译跑进沙箱内核）。
@@ -137,9 +167,57 @@ impl HubDataPlaneBackend {
         tunnel_mtu: Option<u32>,
         make_backend: Arc<dyn Fn() -> SystemBackend + Send + Sync>,
     ) -> Self {
+        let mut previous = mesh.deployments.get(network_id).cloned();
+        if let Some(saved) = &mut previous {
+            let active_keys: std::collections::HashSet<_> = mesh
+                .registry
+                .devices()
+                .iter()
+                .filter(|d| d.is_active() && d.network_id.0 == network_id)
+                .map(|d| d.public_key.as_str())
+                .collect();
+            saved
+                .hub
+                .tunnel
+                .peers
+                .retain(|p| active_keys.contains(p.public_key.as_str()));
+            saved.routes.retain(|r| {
+                mesh.registry
+                    .find_by_id(&r.gateway_device_id)
+                    .is_some_and(|d| d.is_active())
+            });
+            saved
+                .aliases
+                .retain(|a| saved.routes.iter().any(|r| r.id == a.lan_route_id));
+            saved.hub.routes.retain(|r| {
+                saved
+                    .hub
+                    .tunnel
+                    .peers
+                    .iter()
+                    .any(|p| p.allowed_ips.contains(&r.destination))
+            });
+        }
+        let previous_error = previous.as_ref().and_then(|saved| {
+            saved.hub.routes.iter().find_map(|r| {
+                service::check_forward_prefix(mesh, network_id, r.destination)
+                    .err()
+                    .map(|e| e.to_string())
+            })
+        });
+        let scoped = network_dataplane(cfg, network_id);
+        let plan = scoped
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|cfg| hub_plan(mesh, network_id, cfg, tunnel_mtu));
         Self {
-            plan: hub_plan(mesh, network_id, cfg, tunnel_mtu),
-            interface: cfg.interface.clone(),
+            plan,
+            previous,
+            previous_error,
+            interface: scoped
+                .as_ref()
+                .map(|cfg| cfg.interface.clone())
+                .unwrap_or_else(|_| cfg.interface.clone()),
             private_key_file: cfg.private_key_file.clone(),
             make_backend,
         }
@@ -158,6 +236,50 @@ impl HubDataPlaneBackend {
 }
 
 impl ConfigApplyBackend for HubDataPlaneBackend {
+    fn reconcile(&mut self) -> Result<(), String> {
+        if let Some(error) = &self.previous_error {
+            return Err(error.clone());
+        }
+        let Some(saved) = self.previous.clone() else {
+            return Ok(());
+        };
+        let backend = (self.make_backend)().with_interface(saved.hub.tunnel.name.clone());
+        let mut check = meshlet_network::DevicePlan {
+            desired_revision: saved.revision,
+            hub_port: saved.hub.tunnel.listen_port,
+            tunnel: saved.hub.tunnel.clone(),
+            routes: saved.hub.routes.clone(),
+            nat_rules: vec![],
+            hub_address: None,
+            desired_config_hash: String::new(),
+        };
+        check.tunnel.private_key = self.read_private_key()?;
+        backend
+            .isolate_hub_sync(check.tunnel.address)
+            .map_err(|e| e.to_string())?;
+        if !backend.device_plan_matches_sync(&check).unwrap_or(false)
+            || backend
+                .inspect_sync()
+                .map_err(|e| e.to_string())?
+                .forwarding_enabled
+                != Some(true)
+        {
+            let wanted = std::mem::replace(&mut self.plan, Ok(saved.hub.clone()));
+            let result = self.rollback(&meshlet_domain::ConfigRevision {
+                network_id: NetworkId(String::new()),
+                revision: saved.revision,
+                desired_config_hash: String::new(),
+                apply_status: meshlet_domain::ApplyStatus::Applied,
+                created_at: String::new(),
+                applied_at: None,
+                error_summary: None,
+            });
+            self.plan = wanted;
+            result?;
+        }
+        Ok(())
+    }
+
     fn apply(&mut self, _revision: &ConfigRevision) -> Result<(), String> {
         let plan = self.plan.as_ref().map_err(Clone::clone)?;
         let mut tunnel = plan.tunnel.clone();
@@ -181,22 +303,91 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
                 routes_result.error.unwrap_or_else(|| "unknown".into())
             ));
         }
+        backend
+            .isolate_hub_sync(plan.tunnel.address)
+            .map_err(|e| format!("isolate network: {e}"))?;
+        let check = meshlet_network::DevicePlan {
+            desired_revision: _revision.revision,
+            hub_port: tunnel.listen_port,
+            tunnel,
+            routes: plan.routes.clone(),
+            nat_rules: vec![],
+            hub_address: None,
+            desired_config_hash: String::new(),
+        };
+        if !backend
+            .device_plan_matches_sync(&check)
+            .map_err(|e| e.to_string())?
+        {
+            return Err("hub plan did not match kernel readback".into());
+        }
         Ok(())
     }
 
     fn rollback(&mut self, _revision: &ConfigRevision) -> Result<(), String> {
+        if let Some(error) = &self.previous_error {
+            return Err(error.clone());
+        }
         let backend = (self.make_backend)().with_interface(self.interface.clone());
-        let result = backend
-            .rollback_sync()
-            .map_err(|e| format!("rollback: {e}"))?;
-        if !result.applied {
-            return Err(format!(
-                "rollback rejected: {}",
-                result.error.unwrap_or_else(|| "unknown".into())
-            ));
+        if let Some(previous) = &self.previous {
+            let mut tunnel = previous.hub.tunnel.clone();
+            tunnel.private_key = self.read_private_key()?;
+            backend
+                .apply_tunnel_sync(&tunnel)
+                .map_err(|e| e.to_string())?;
+            backend
+                .apply_routes_sync(&previous.hub.routes)
+                .map_err(|e| e.to_string())?;
+            backend
+                .isolate_hub_sync(tunnel.address)
+                .map_err(|e| e.to_string())?;
+            let check = meshlet_network::DevicePlan {
+                desired_revision: previous.revision,
+                hub_port: tunnel.listen_port,
+                tunnel,
+                routes: previous.hub.routes.clone(),
+                nat_rules: vec![],
+                hub_address: None,
+                desired_config_hash: String::new(),
+            };
+            if !backend
+                .device_plan_matches_sync(&check)
+                .map_err(|e| e.to_string())?
+            {
+                return Err("previous hub plan could not be verified".into());
+            }
+        } else {
+            // The hub has no NAT. Never sweep gateway rules or other networks.
+            backend.clear_hub_sync().map_err(|e| e.to_string())?;
         }
         Ok(())
     }
+}
+
+/// Stable per-network hub resources. net-1 preserves the original interface/port.
+pub fn network_dataplane(
+    cfg: &DataPlaneConfig,
+    network_id: &str,
+) -> Result<DataPlaneConfig, String> {
+    let index: u16 = network_id
+        .strip_prefix("net-")
+        .and_then(|s| s.parse().ok())
+        .filter(|n| *n > 0)
+        .ok_or_else(|| "invalid network resource id".to_string())?;
+    let mut out = cfg.clone();
+    out.listen_port = Some(
+        cfg.listen_port
+            .unwrap_or(51820)
+            .checked_add(index - 1)
+            .ok_or_else(|| "network WireGuard port range exhausted".to_string())?,
+    );
+    if index > 1 {
+        out.interface = format!("mlt{index}");
+        if out.interface == cfg.interface {
+            return Err("base interface conflicts with a reserved network interface".into());
+        }
+    }
+    Ok(out)
 }
 
 /// 把指定网络的期望配置翻译为 hub 侧数据面计划。
@@ -253,6 +444,8 @@ fn hub_plan(
                 .collect(),
         };
         for destination in destinations {
+            service::check_forward_prefix(mesh, network_id, destination)
+                .map_err(|e| e.to_string())?;
             routes.push(RouteConfig {
                 destination,
                 interface: cfg.interface.clone(),
@@ -292,6 +485,18 @@ fn hub_plan(
         },
         routes,
     })
+}
+
+pub(crate) fn recover_deployment(
+    state: &SharedAppState,
+    network: &str,
+    _saved: Deployment,
+) -> Result<(), String> {
+    let mut backend = {
+        let mesh = state.mesh.lock().unwrap();
+        (state.apply_backend)(&mesh, network)
+    };
+    backend.reconcile()
 }
 
 /// `/32` 主机段（设备虚拟 IP 的 allowed-ips 单元）。
@@ -355,16 +560,28 @@ pub async fn list_revisions_handler(
     AuthenticatedUser(_user): AuthenticatedUser,
     Path(network_id): Path<String>,
 ) -> Result<Json<Vec<RevisionView>>, ServiceError> {
-    let guard = state.mesh.lock().unwrap();
-    service::require_network(&guard, &network_id)?;
-    Ok(Json(
+    let _persist = state.persist.lock().await;
+    let mut views = {
+        let guard = state.mesh.lock().unwrap();
+        service::require_network(&guard, &network_id)?;
         guard
             .ledger
             .revisions(&network_id_of(&network_id))
             .iter()
             .map(to_revision_view)
-            .collect(),
-    ))
+            .collect::<Vec<_>>()
+    };
+    if let Some(last) = views
+        .iter_mut()
+        .rev()
+        .find(|r| r.apply_status != "rolled_back")
+    {
+        last.convergence = Some(
+            serde_json::to_value(crate::convergence::status(&state, &network_id).await?)
+                .map_err(|e| ServiceError::Internal(e.to_string()))?,
+        );
+    }
+    Ok(Json(views))
 }
 
 /// `GET /api/v1/networks/{network_id}/config-revisions/{revision}`：版本详情。
@@ -373,15 +590,29 @@ pub async fn get_revision_handler(
     AuthenticatedUser(_user): AuthenticatedUser,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
-    let guard = state.mesh.lock().unwrap();
-    service::require_network(&guard, &network_id)?;
-    let revision = guard
-        .ledger
-        .get(&network_id_of(&network_id), revision)
-        .ok_or_else(|| {
-            ServiceError::RevisionNotFound(format!("{revision} in network {network_id}"))
-        })?;
-    Ok(Json(to_revision_view(revision)))
+    let _persist = state.persist.lock().await;
+    let (mut view, current) = {
+        let guard = state.mesh.lock().unwrap();
+        service::require_network(&guard, &network_id)?;
+        let r = guard
+            .ledger
+            .get(&network_id_of(&network_id), revision)
+            .ok_or_else(|| ServiceError::RevisionNotFound(revision.to_string()))?;
+        (
+            to_revision_view(r),
+            guard
+                .ledger
+                .current(&network_id_of(&network_id))
+                .is_some_and(|r| r.revision == revision),
+        )
+    };
+    if current {
+        view.convergence = Some(
+            serde_json::to_value(crate::convergence::status(&state, &network_id).await?)
+                .map_err(|e| ServiceError::Internal(e.to_string()))?,
+        );
+    }
+    Ok(Json(view))
 }
 
 /// `POST .../config-revisions/{revision}/apply`：把该修订应用到实际环境。
@@ -395,9 +626,36 @@ pub async fn apply_revision_handler(
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
     let _persist = state.persist.lock().await;
-    let (applied, settle) = {
+    // Write intent before touching the kernel, so a crash becomes an explicit failure.
+    let should_apply = {
+        let guard = state.mesh.lock().unwrap();
+        let current = guard.ledger.current(&network_id_of(&network_id));
+        current.is_some_and(|r| {
+            r.revision == revision && r.apply_status == meshlet_domain::ApplyStatus::Pending
+        })
+    };
+    if should_apply {
+        sqlx::query("UPDATE config_revisions SET apply_status='applying' WHERE network_id=? AND revision=? AND apply_status='pending'")
+            .bind(&network_id).bind(revision as i64).execute(state.auth.pool()).await.map_err(crate::persist::internal)?;
+    }
+    let (applied, settle, candidate) = {
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
+        if guard
+            .ledger
+            .get(&network_id_of(&network_id), revision)
+            .is_none()
+        {
+            return Err(ServiceError::RevisionNotFound(revision.to_string()));
+        }
+        if let Some(current) = guard.ledger.current(&network_id_of(&network_id)) {
+            if current.revision != revision {
+                return Err(ServiceError::Conflict(format!(
+                    "revision {revision} superseded by {}",
+                    current.revision
+                )));
+            }
+        }
         // backend 在网络级互斥内按当前期望配置构造快照（§10.4 串行化）。
         let mut backend = (state.apply_backend)(&guard, &network_id);
         let applied = guard
@@ -411,23 +669,60 @@ pub async fn apply_revision_handler(
             .map_err(ServiceError::from_ledger)?;
         // 结论收敛到每条期望项（§10.1 的路由/映射层镜像）：只有真下发到内核
         // 的前缀才转 `applied`，agent 数据面据此取计划。
-        let settle = service::settle_desired_state(
-            &mut guard,
-            &network_id,
-            applied.apply_status == meshlet_domain::ApplyStatus::Applied,
-        );
-        (applied, settle)
+        let success = applied.apply_status == meshlet_domain::ApplyStatus::Applied;
+        let candidate = if success && should_apply && state.dataplane.enabled {
+            Some(
+                deployment(
+                    &guard,
+                    &network_id,
+                    &state.dataplane,
+                    state.tunnel_mtu,
+                    revision,
+                )
+                .map_err(ServiceError::Internal)?,
+            )
+        } else {
+            None
+        };
+        let settle = if success && !should_apply {
+            service::DesiredStateSettle::default()
+        } else if success && state.dataplane.enabled {
+            service::settle_desired_with_status(
+                &mut guard,
+                &network_id,
+                meshlet_domain::DesiredStateStatus::Pending,
+            )
+        } else {
+            service::settle_desired_state(&mut guard, &network_id, success)
+        };
+        (applied, settle, candidate)
     };
-    // 应用结论（applied/failed 均含）落库：重启后状态不回退（§17.3）。
-    crate::persist::update_revision_status(state.auth.pool(), &applied)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::persist::update_desired_status(state.auth.pool(), &settle)
-        .await
-        .map_err(crate::persist::internal)?;
+    if let Err(error) =
+        crate::persist::commit_application(state.auth.pool(), &applied, &settle, candidate.as_ref())
+            .await
+    {
+        let message = format!("apply outcome could not be persisted: {error}");
+        let mut mesh = state.mesh.lock().unwrap();
+        mesh.ledger
+            .mark_apply_unconfirmed(&network_id_of(&network_id), revision, message.clone());
+        service::settle_desired_state(&mut mesh, &network_id, false);
+        return Err(ServiceError::Internal(message));
+    }
+    if let Some(candidate) = candidate {
+        state
+            .mesh
+            .lock()
+            .unwrap()
+            .deployments
+            .insert(network_id.clone(), candidate);
+    }
     // 应用失败必留痕（§16.5）；结果以 apply_status 为准（`applied` 即成功，
     // 其余一律按失败留痕），不凭响应码判断。
-    let view = to_revision_view(&applied);
+    let mut view = to_revision_view(&applied);
+    view.convergence = Some(
+        serde_json::to_value(crate::convergence::status(&state, &network_id).await?)
+            .map_err(|e| ServiceError::Internal(e.to_string()))?,
+    );
     let applied_ok = view.apply_status == "applied";
     let (action, detail) = if !applied_ok {
         (
@@ -489,6 +784,28 @@ pub async fn rollback_revision_handler(
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
     let _persist = state.persist.lock().await;
+    let should_rollback = {
+        let mesh = state.mesh.lock().unwrap();
+        service::require_network(&mesh, &network_id)?;
+        let target = mesh
+            .ledger
+            .get(&network_id_of(&network_id), revision)
+            .ok_or_else(|| ServiceError::RevisionNotFound(revision.to_string()))?;
+        if target.apply_status == meshlet_domain::ApplyStatus::RolledBack {
+            return Ok(Json(to_revision_view(target)));
+        }
+        mesh.ledger
+            .current(&network_id_of(&network_id))
+            .is_some_and(|r| r.revision == revision)
+            && matches!(
+                target.apply_status,
+                meshlet_domain::ApplyStatus::Failed | meshlet_domain::ApplyStatus::RollbackPending
+            )
+    };
+    if should_rollback {
+        sqlx::query("UPDATE config_revisions SET apply_status='rollback_pending' WHERE network_id=? AND revision=?")
+            .bind(&network_id).bind(revision as i64).execute(state.auth.pool()).await.map_err(crate::persist::internal)?;
+    }
     let (rolled, settle) = {
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
@@ -497,21 +814,80 @@ pub async fn rollback_revision_handler(
             .ledger
             .rollback(&network_id_of(&network_id), revision, backend.as_mut())
             .map_err(ServiceError::from_ledger)?;
+        if rolled.apply_status == meshlet_domain::ApplyStatus::RolledBack && state.dataplane.enabled
+        {
+            if let Some(mut saved) = guard.deployments.get(&network_id).cloned() {
+                saved.routes.retain(|r| {
+                    guard
+                        .registry
+                        .find_by_id(&r.gateway_device_id)
+                        .is_some_and(|d| d.is_active())
+                });
+                saved
+                    .aliases
+                    .retain(|a| saved.routes.iter().any(|r| r.id == a.lan_route_id));
+                guard
+                    .lan_routes
+                    .insert(network_id.clone(), saved.routes.clone());
+                guard
+                    .aliases
+                    .insert(network_id.clone(), saved.aliases.clone());
+                guard.deployments.insert(network_id.clone(), saved);
+            } else {
+                guard.lan_routes.remove(&network_id);
+                guard.aliases.remove(&network_id);
+            }
+        }
         // 回滚清理了 hub 侧对象 → 期望项不得继续显示 `applied`（§10.3）：
         // 回滚确认即转 `failed`，未确认（rollback_pending）同样不算生效。
-        let settle = service::settle_desired_state(&mut guard, &network_id, false);
+        let settle = if rolled.apply_status == meshlet_domain::ApplyStatus::RolledBack
+            && state.dataplane.enabled
+        {
+            service::settle_desired_with_status(
+                &mut guard,
+                &network_id,
+                meshlet_domain::DesiredStateStatus::Pending,
+            )
+        } else {
+            service::settle_desired_state(&mut guard, &network_id, false)
+        };
         (rolled, settle)
     };
-    // 回滚结论落库（`rolled_back` / 未确认的 `rollback_pending` 都如实持久化）。
-    crate::persist::update_revision_status(state.auth.pool(), &rolled)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::persist::update_desired_status(state.auth.pool(), &settle)
-        .await
-        .map_err(crate::persist::internal)?;
+    let restore =
+        rolled.apply_status == meshlet_domain::ApplyStatus::RolledBack && state.dataplane.enabled;
+    let saved = state
+        .mesh
+        .lock()
+        .unwrap()
+        .deployments
+        .get(&network_id)
+        .cloned();
+    let committed = crate::persist::commit_rollback(
+        state.auth.pool(),
+        &rolled,
+        &settle,
+        restore,
+        saved.as_ref(),
+    )
+    .await;
+    if let Err(error) = committed {
+        let message = format!("rollback outcome could not be persisted: {error}");
+        state.mesh.lock().unwrap().ledger.mark_rollback_unconfirmed(
+            &network_id_of(&network_id),
+            revision,
+            message.clone(),
+        );
+        return Err(ServiceError::Internal(message));
+    }
     // 回滚失败同样留痕（§16.5）：无 backend 的回滚停在 `rollback_pending`
     //（明确未完成）——除 `rolled_back` 外一律按失败留痕。
-    let view = to_revision_view(&rolled);
+    let mut view = to_revision_view(&rolled);
+    if rolled.apply_status != meshlet_domain::ApplyStatus::RolledBack {
+        view.convergence = Some(
+            serde_json::to_value(crate::convergence::status(&state, &network_id).await?)
+                .map_err(|e| ServiceError::Internal(e.to_string()))?,
+        );
+    }
     let rolled_back = view.apply_status == "rolled_back";
     let (action, detail) = if !rolled_back {
         (

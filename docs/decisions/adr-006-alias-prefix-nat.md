@@ -59,6 +59,12 @@ Alias 解决的是 **IP 地址映射与路由**问题，不代表所有应用协
 - SNAT 模式下 LAN 侧源 IP 变成网关；
 - 网关侧 NAT 规则所有权与清理必须严格（删除 Alias 同步清理，§12.6），否则留下孤儿规则。
 
+## 2026-10-17 执行修正
+
+`dnat_only` 的真实 agent 入口不再要求 SNAT 地址。每条 SNAT 根据自己的目标 LAN 独立选择源地址，避免多个 LAN 共用第一个接口地址；Direct 的 `controlled_snat` 也编译为网关计划。生产 NAT 限定 Overlay 源前缀，PREROUTING 还限定受管输入接口。Alias 模式的真实 LAN 前缀不进入客户端或 hub 的 AllowedIPs，只发布对应 Alias 前缀。
+
+`single_instance.rs` 真实内核测试验证两 LAN 的独立 SNAT 源地址及无需返回路由的通信，再切换到仅 DNAT：缺返回路由时不通，添加返回路由后恢复。
+
 ## 重新评估条件
 
 - 等长约束在实际网段（如 /23 对 /24）频繁冲突；

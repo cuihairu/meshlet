@@ -53,6 +53,18 @@ impl UnsupportedBackend {
         ))
     }
 
+    pub fn clear_hub_sync(&self) -> Result<(), NetworkError> {
+        Err(self.refuse("clear_hub"))
+    }
+
+    pub fn isolate_hub_sync(&self, _address: Ipv4Addr) -> Result<(), NetworkError> {
+        Err(self.refuse("isolate_hub"))
+    }
+
+    pub fn device_plan_matches_sync(&self, _plan: &DevicePlan) -> Result<bool, NetworkError> {
+        Err(self.refuse("device_plan_matches"))
+    }
+
     pub fn inspect_sync(&self) -> Result<NetworkSnapshot, NetworkError> {
         Err(self.refuse("inspect"))
     }
@@ -141,6 +153,8 @@ mod tests {
 
     fn rule() -> NatRule {
         NatRule {
+            source_cidr: None,
+            incoming_interface: None,
             chain: NatChain::Prerouting,
             match_dest: "10.241.1.0/24".parse().unwrap(),
             action: NatAction::NetMap {
@@ -194,6 +208,8 @@ mod tests {
                 backend
                     .apply_device_plan_sync(
                         &DevicePlan {
+                            desired_revision: 0,
+                            hub_port: None,
                             tunnel: tunnel.clone(),
                             routes: vec![],
                             nat_rules: vec![],

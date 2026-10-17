@@ -15,6 +15,13 @@ export interface Network {
 }
 
 export interface ConfigRevision {
+  convergence?: {
+    device_apply_status: string;
+    pending_device_ids: string[];
+    device_errors: Record<string, string>;
+    hub_recovery_error: string | null;
+    business_health: string;
+  };
   network_id: string;
   revision: number;
   desired_config_hash: string;

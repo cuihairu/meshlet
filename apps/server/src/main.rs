@@ -95,6 +95,7 @@ async fn main() {
             meshlet_server::revision::unconfigured_backend_factory()
         }),
     );
+    meshlet_server::convergence::start_recovery(state.clone());
     // 定时自动备份（§17.4）：显式 `[backup] auto = true` 才开启；只写本地
     // `[backup] dir`，无任何外发。到期写一份 + 审计留痕，失败只记日志。
     if config.backup.auto {

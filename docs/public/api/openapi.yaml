@@ -463,6 +463,28 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /agent/device/applied:
+    post:
+      security:
+        - agentToken: []
+      tags: [devices]
+      summary: Report execution of the exact current device plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [desired_revision, plan_hash]
+              properties:
+                desired_revision: { type: integer, minimum: 1 }
+                plan_hash: { type: string }
+                error: { type: [string, "null"], maxLength: 4096 }
+      responses:
+        "204": { description: Receipt recorded; resource status recomputed from exact device receipts }
+        "400": { description: Stale revision, mismatched hash, hub not applied, or invalid input }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /agent/device/desired:
     get:
       security:
@@ -1248,6 +1270,8 @@ components:
       type: object
       required: [chain, match_dest, action, owner]
       properties:
+        source_cidr: { type: [string, "null"], description: Authorized source prefix }
+        incoming_interface: { type: [string, "null"], description: Incoming managed interface for PREROUTING }
         chain: { type: string, enum: [prerouting, postrouting] }
         match_dest: { type: string, description: Destination CIDR the rule matches }
         action:
@@ -1273,6 +1297,9 @@ components:
       type: object
       required: [tunnel, routes, nat_rules, desired_config_hash]
       properties:
+        desired_revision: { type: integer, description: Current hub-applied revision }
+        hub_port: { type: [integer, "null"], description: Network-specific hub UDP port }
+        hub_address: { type: [string, "null"], description: Hub overlay address for diagnostics }
         tunnel: { $ref: "#/components/schemas/TunnelConfig" }
         routes:
           type: array
@@ -1283,9 +1310,9 @@ components:
         desired_config_hash:
           type: string
           description: >
-            SHA-256 of the desired config, identical to the revision ledger's
-            hash — the agent compares it against its local ledger to decide
-            whether anything changed (§10.1).
+            SHA-256 of the serialized device plan with this hash field empty.
+            Includes revision, MTU, hub public key and resources. This differs
+            from the network revision ledger hash; receipts echo this exact hash.
     LanRoute:
       type: object
       required: [id, network_id, gateway_device_id, destination_cidr, route_mode, return_path_mode, status, revision_id, apply_status]
@@ -1408,6 +1435,15 @@ components:
         created_at: { type: string, format: date-time }
         applied_at: { type: string, format: date-time, nullable: true }
         error_summary: { type: string, nullable: true }
+        convergence:
+          type: object
+          description: Current revision only; hub execution is separate from device receipts and business health
+          properties:
+            device_apply_status: { type: string, enum: [pending, applied, failed, not_configured] }
+            pending_device_ids: { type: array, items: { type: string } }
+            device_errors: { type: object, additionalProperties: { type: string } }
+            hub_recovery_error: { type: [string, "null"] }
+            business_health: { type: string, enum: [not_probed] }
     RevisionRef:
       type: object
       required: [revision_id, apply_status]

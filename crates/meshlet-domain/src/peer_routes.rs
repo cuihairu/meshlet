@@ -44,7 +44,10 @@ fn published_destinations<'a>(
 ) -> Vec<Ipv4Cidr> {
     let mut out = Vec::new();
     for route in lan_routes {
-        if &route.gateway_device_id == gateway_device_id && is_published(route) {
+        if &route.gateway_device_id == gateway_device_id
+            && is_published(route)
+            && route.route_mode == crate::RouteMode::Direct
+        {
             out.push(route.destination_cidr);
         }
     }
@@ -106,7 +109,10 @@ pub fn client_hub_peer_allowed_ips(
 ) -> Vec<Ipv4Cidr> {
     let mut cidrs = vec![overlay_cidr];
     for route in lan_routes {
-        if &route.gateway_device_id != self_device_id && is_published(route) {
+        if &route.gateway_device_id != self_device_id
+            && is_published(route)
+            && route.route_mode == crate::RouteMode::Direct
+        {
             cidrs.push(route.destination_cidr);
         }
     }
@@ -165,7 +171,7 @@ pub fn all_published_routes(
 ) -> BTreeMap<DeviceId, Vec<Ipv4Cidr>> {
     let mut by_gateway: BTreeMap<DeviceId, Vec<Ipv4Cidr>> = BTreeMap::new();
     for route in lan_routes {
-        if is_published(route) {
+        if is_published(route) && route.route_mode == crate::RouteMode::Direct {
             by_gateway
                 .entry(route.gateway_device_id.clone())
                 .or_default()

@@ -1,0 +1,48 @@
+name: Dataplane acceptance
+on:
+  pull_request:
+    paths: ['apps/**', 'crates/**', 'migrations/**', 'deploy/**', 'scripts/**', '.github/workflows/dataplane.yml', 'Cargo.*']
+  push:
+    branches: [main]
+    paths: ['apps/**', 'crates/**', 'migrations/**', 'deploy/**', 'scripts/**', '.github/workflows/dataplane.yml', 'Cargo.*']
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  linux-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MESHLET_REQUIRE_DATAPLANE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install kernel test prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wireguard-tools iproute2 iptables ethtool python3 curl
+          sudo modprobe wireguard
+          sudo -n true
+      - name: Run real kernel tests without skips
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p meshlet-network --tests -- --nocapture --test-threads=1 2>&1 | tee dataplane-network.log
+          cargo test --locked -p meshlet-agent --test agent_reconcile -- --nocapture --test-threads=1 2>&1 | tee dataplane-agent.log
+          cargo test --locked -p meshlet-server --test agent_plan --test dual_site_end_to_end --test single_instance -- --nocapture --test-threads=1 2>&1 | tee dataplane-server.log
+          if rg 'SKIP:' dataplane-*.log; then
+            exit 1
+          fi
+      - name: Verify shipped systemd permissions as an unprivileged service
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p meshlet-server --bin meshlet-server
+          sudo -n python3 scripts/verify-systemd.py target/debug/meshlet-server 2>&1 | tee dataplane-systemd.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dataplane-evidence
+          path: dataplane-*.log

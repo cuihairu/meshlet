@@ -406,3 +406,37 @@ async fn cookie_secure_flag_flips_with_config() {
     let (_, _, cookie) = bootstrap(&ctx).await;
     assert!(cookie.contains("; Secure"), "{cookie}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_bootstrap_has_exactly_one_admin_session() {
+    let ctx = ctx().await;
+    let mut requests = Vec::new();
+    for i in 0..8 {
+        let ctx = ctx.clone();
+        requests.push(tokio::spawn(async move {
+            post_json(
+                &ctx,
+                "/api/v1/auth/bootstrap",
+                serde_json::json!({"email":format!("admin-{i}@test.local"),"password":PASSWORD}),
+                None,
+                false,
+            )
+            .await
+        }));
+    }
+    let mut created = 0;
+    for request in requests {
+        let (status, _, cookie) = request.await.unwrap();
+        if status == StatusCode::CREATED {
+            created += 1;
+            assert!(cookie.is_some());
+        } else {
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(cookie.is_none());
+        }
+    }
+    assert_eq!(
+        created, 1,
+        "bootstrap must issue only one administrator session"
+    );
+}

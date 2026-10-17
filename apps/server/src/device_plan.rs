@@ -14,8 +14,7 @@
 
 use meshlet_config::DataPlaneConfig;
 use meshlet_domain::{
-    desired_config_hash, peer_routes::client_hub_peer_allowed_ips, AliasMapping,
-    DesiredStateStatus, Device, DeviceId, RouteMode,
+    peer_routes::client_hub_peer_allowed_ips, AliasMapping, DesiredStateStatus, DeviceId, RouteMode,
 };
 use meshlet_network::nat::alias_nat_rules;
 use meshlet_network::{DevicePlan, PeerConfig, RouteConfig, SystemBackend, TunnelConfig};
@@ -70,17 +69,18 @@ pub fn build_device_plan(
         .hub_address(network_id)
         .ok_or_else(|| format!("ipam missing for network {network_id}"))?;
     let overlay = network.overlay_cidr;
-    let routes_in = mesh
-        .lan_routes
-        .get(network_id)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let aliases: &[AliasMapping] = mesh
-        .aliases
-        .get(network_id)
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
+    let mut planned_routes = mesh.lan_routes.get(network_id).cloned().unwrap_or_default();
+    let mut planned_aliases: Vec<AliasMapping> =
+        mesh.aliases.get(network_id).cloned().unwrap_or_default();
 
+    for route in &mut planned_routes {
+        route.status = DesiredStateStatus::Applied;
+    }
+    for alias in &mut planned_aliases {
+        alias.status = DesiredStateStatus::Applied;
+    }
+    let routes_in = planned_routes.as_slice();
+    let aliases = planned_aliases.as_slice();
     // AllowedIPs 走域层唯一推导：Overlay + 他人已发布的 LAN/Alias（自己的本地
     // 网段不回灌，避免环路）。路由与之一一映射：目标前缀经对应网关设备。
     let allowed_ips = client_hub_peer_allowed_ips(overlay, &device.id, routes_in, aliases);
@@ -115,7 +115,17 @@ pub fn build_device_plan(
         if route.gateway_device_id != device.id || route.status != DesiredStateStatus::Applied {
             continue;
         }
-        if route.route_mode != RouteMode::Alias {
+        if route.route_mode == RouteMode::Direct {
+            if route.return_path_mode == meshlet_domain::ReturnPathMode::ControlledSnat {
+                nat_rules.push(meshlet_network::nat::NatRule {
+                    source_cidr: None,
+                    incoming_interface: None,
+                    chain: meshlet_network::nat::NatChain::Postrouting,
+                    match_dest: route.destination_cidr,
+                    action: meshlet_network::nat::NatAction::SnatToGatewayLan,
+                    owner: format!("meshlet alias direct-{}", route.id),
+                });
+            }
             continue;
         }
         for alias in aliases.iter().filter(|a| a.lan_route_id == route.id) {
@@ -125,17 +135,37 @@ pub fn build_device_plan(
         }
     }
 
-    // 期望哈希与修订簿记同一来源（service::record_revision），agent 据此判断变更。
-    let devices: Vec<Device> = mesh
-        .registry
-        .devices()
-        .iter()
-        .filter(|d| d.network_id.to_string() == network_id)
-        .cloned()
-        .collect();
-    let hash = desired_config_hash(&overlay, hub, &devices, routes_in, aliases);
+    for rule in &mut nat_rules {
+        rule.source_cidr = Some(overlay);
+        rule.incoming_interface = Some(dataplane.interface.clone());
+    }
+    // Canonical order keeps plan hashes stable across DB reloads and input ordering.
+    routes.sort_by(|a, b| {
+        a.destination
+            .cmp(&b.destination)
+            .then(a.gateway.cmp(&b.gateway))
+    });
+    nat_rules.sort_by(|a, b| {
+        let chain = |r: &meshlet_network::nat::NatRule| {
+            if r.chain == meshlet_network::nat::NatChain::Prerouting {
+                0
+            } else {
+                1
+            }
+        };
+        chain(a)
+            .cmp(&chain(b))
+            .then(a.match_dest.cmp(&b.match_dest))
+            .then(a.owner.cmp(&b.owner))
+    });
 
-    Ok(DevicePlan {
+    let mut plan = DevicePlan {
+        desired_revision: mesh
+            .ledger
+            .current(&meshlet_domain::NetworkId(network_id.into()))
+            .map(|r| r.revision)
+            .unwrap_or(0),
+        hub_port: crate::revision::network_dataplane(dataplane, network_id)?.listen_port,
         tunnel: TunnelConfig {
             name: dataplane.interface.clone(),
             address: device.virtual_ipv4,
@@ -156,16 +186,24 @@ pub fn build_device_plan(
         nat_rules,
         // hub overlay 地址只作 agent 本地诊断目标（MTU 大包探测），不进内核。
         hub_address: Some(hub),
-        desired_config_hash: hash,
-    })
+        desired_config_hash: String::new(),
+    };
+    // Hash the actual device plan, including MTU, hub key and revision.
+    plan.desired_config_hash.clear();
+    use sha2::{Digest, Sha256};
+    plan.desired_config_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&plan).map_err(|e| e.to_string())?)
+    );
+    Ok(plan)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use meshlet_domain::{
-        AliasMappingId, DeviceStatus, LanRouteId, Network, NetworkId, Platform, PresenceThresholds,
-        RouteMode, TranslationMode,
+        AliasMappingId, Device, DeviceStatus, LanRouteId, Network, NetworkId, Platform,
+        PresenceThresholds, RouteMode, TranslationMode,
     };
     use std::net::Ipv4Addr;
 
@@ -339,8 +377,8 @@ mod tests {
     }
 
     #[test]
-    fn unpublished_route_is_invisible_to_the_plan() {
-        // 未应用的路由不进计划（期望配置只包含已发布项）。
+    fn pending_route_is_included_in_candidate_plan_for_device_ack() {
+        // Candidate plans include pending resources; the desired API withholds them until hub success.
         let mut mesh = mesh();
         add(
             &mut mesh,
@@ -363,13 +401,13 @@ mod tests {
             "hub-pub",
         )
         .unwrap();
-        assert!(plan.routes.is_empty());
+        assert_eq!(plan.routes.len(), 1);
         let allowed = plan.tunnel.peers[0]
             .allowed_ips
             .iter()
             .map(|c| c.to_string())
             .collect::<Vec<_>>();
-        assert_eq!(allowed, vec!["10.240.0.0/16"]);
+        assert_eq!(allowed, vec!["10.240.0.0/16", "192.168.1.0/24"]);
     }
 
     #[test]
@@ -397,6 +435,38 @@ mod tests {
             "hub-pub",
         )
         .is_err());
+    }
+
+    #[test]
+    fn plan_hash_is_stable_across_route_reordering() {
+        let mut mesh = mesh();
+        add(
+            &mut mesh,
+            device("self", "10.240.0.3", DeviceStatus::Active),
+        );
+        add(&mut mesh, device("gw", "10.240.0.2", DeviceStatus::Active));
+        mesh.restore_route(route("rt-2", "192.168.2.0/24", "gw", RouteMode::Direct));
+        mesh.restore_route(route("rt-1", "192.168.1.0/24", "gw", RouteMode::Direct));
+        let before = build_device_plan(
+            &mesh,
+            "net-1",
+            &DeviceId("self".into()),
+            &dataplane(),
+            None,
+            "hub",
+        )
+        .unwrap();
+        mesh.lan_routes.get_mut("net-1").unwrap().reverse();
+        let after = build_device_plan(
+            &mesh,
+            "net-1",
+            &DeviceId("self".into()),
+            &dataplane(),
+            None,
+            "hub",
+        )
+        .unwrap();
+        assert_eq!(before, after);
     }
 
     #[test]

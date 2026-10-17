@@ -163,6 +163,12 @@ impl AuthStore {
             .await
     }
 
+    pub async fn insert_first_user(&self, user: &User) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("INSERT INTO users(id,email,password_hash,created_at) SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM users)")
+            .bind(&user.id.0).bind(&user.email).bind(&user.password_hash).bind(&user.created_at).execute(&self.pool).await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn insert_user(&self, user: &User) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO users (id, email, password_hash, created_at)
@@ -519,6 +525,7 @@ pub async fn bootstrap_handler(
     State(state): State<SharedAppState>,
     Json(req): Json<CredentialsRequest>,
 ) -> Result<Response, AuthApiError> {
+    let _bootstrap = state.persist.lock().await;
     let count = state
         .auth
         .user_count()
@@ -538,11 +545,14 @@ pub async fn bootstrap_handler(
     )
     .map_err(|e| AuthApiError::InvalidInput(e.to_string()))?;
     let (user_id, email) = (user.id.clone(), user.email.clone());
-    state
+    if !state
         .auth
-        .insert_user(&user)
+        .insert_first_user(&user)
         .await
-        .map_err(|e| AuthApiError::Internal(e.to_string()))?;
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?
+    {
+        return Err(AuthApiError::AlreadyBootstrapped);
+    }
 
     let headers = open_session(&state, &user_id).await?;
     record_audit(

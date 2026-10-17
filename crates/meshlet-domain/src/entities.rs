@@ -12,7 +12,7 @@ pub type Timestamp = String;
 macro_rules! string_id {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
         impl std::fmt::Display for $name {
@@ -211,27 +211,27 @@ impl DeviceKey {
 // LAN Route / Alias Mapping
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RouteMode {
     Direct,
     Alias,
 }
 
 /// 返回路径模式（ADR-005）：真实双向路由 / 受控 SNAT。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReturnPathMode {
     DualRoute,
     ControlledSnat,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DesiredStateStatus {
     Pending,
     Applied,
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LanRoute {
     pub id: LanRouteId,
     pub network_id: NetworkId,
@@ -243,7 +243,7 @@ pub struct LanRoute {
     pub created_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TranslationMode {
     DnatOnly,
     DnatSnat,
@@ -276,7 +276,7 @@ pub enum AliasError {
 }
 
 /// 重叠网段的虚拟前缀映射（ADR-006）：Alias 与 Target 前缀等长、一对一替换。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AliasMapping {
     pub id: AliasMappingId,
     pub network_id: NetworkId,

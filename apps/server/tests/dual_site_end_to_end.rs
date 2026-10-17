@@ -16,7 +16,7 @@
 //!  bridge ──┼── G1  (网关 10.240.0.2，underlay .20) ── LAN1 192.168.1.0/24 (L1 = .5)
 //!           ├── G2  (网关 10.240.0.3，underlay .30) ── LAN2 192.168.1.0/24 (L2 = .5)
 //!           ├── A   (客户端 10.240.0.4，underlay .40)        ↑ 两个真实前缀完全重叠
-//!           ├── H2  (net-B hub wg0 = 10.242.0.1，underlay .50，listen 51830)
+//!           ├── H2  (net-B hub mlt2 = 10.242.0.1，underlay .50，listen 51830)
 //!           └── B   (net-B 客户端，underlay .60)             ↑ overlay 完全不相交
 //! ```
 //!
@@ -98,23 +98,39 @@ fn require_ok(out: &Output, what: &str) {
 
 fn prerequisites() -> Option<()> {
     if !sudo_ok(&["true"]) {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
         eprintln!("SKIP: passwordless sudo (sudo -n) unavailable");
         return None;
     }
     match Command::new("wg").arg("--version").output() {
         Ok(o) if o.status.success() => {}
         _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
             eprintln!("SKIP: wireguard-tools (wg) not installed");
             return None;
         }
     }
     if !sudo_ok(&["modprobe", "wireguard"]) && !Path::new("/sys/module/wireguard").exists() {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
         eprintln!("SKIP: wireguard kernel module unavailable");
         return None;
     }
     match Command::new("python3").arg("--version").output() {
         Ok(o) if o.status.success() => {}
         _ => {
+            assert!(
+                std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                "required dataplane prerequisite failed"
+            );
             eprintln!("SKIP: python3 not installed");
             return None;
         }
@@ -239,6 +255,10 @@ impl Topology {
             let private = match wg_genkey() {
                 Some(k) => k,
                 None => {
+                    assert!(
+                        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                        "required dataplane prerequisite failed"
+                    );
                     eprintln!("SKIP: wg genkey failed");
                     return None;
                 }
@@ -246,6 +266,10 @@ impl Topology {
             let public = match wg_pubkey(&private) {
                 Some(k) => k,
                 None => {
+                    assert!(
+                        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+                        "required dataplane prerequisite failed"
+                    );
                     eprintln!("SKIP: wg pubkey failed");
                     return None;
                 }
@@ -426,7 +450,8 @@ impl Topology {
     fn wait_handshake(&self, ns: &str) -> bool {
         let start = Instant::now();
         while start.elapsed() < HANDSHAKE_TIMEOUT {
-            let out = netns_exec(ns, &["wg", "show", "wg0"]);
+            let interface = if ns == self.hub2.netns { "mlt2" } else { "wg0" };
+            let out = netns_exec(ns, &["wg", "show", interface]);
             if String::from_utf8_lossy(&out.stdout).contains("latest handshake") {
                 return true;
             }
@@ -781,8 +806,8 @@ fn dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites() {
     );
     wait_server_up(&base_b);
 
-    // apply net-B 最新修订：net-B 的 hub wg0 真实落进 H2 netns（监听端口与
-    // net-A 相同无妨——不同 netns 的接口互不相干）。
+    // net-B uses the network-specific mlt2 interface and base port + 1, even
+    // though this historical topology still places it in its own namespace.
     let revisions_b = admin(
         &base_b,
         &cookie,

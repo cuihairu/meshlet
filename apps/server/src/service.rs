@@ -400,6 +400,7 @@ impl ServiceError {
 // ---------------------------------------------------------------------------
 
 pub struct MeshState {
+    pub(crate) deployments: HashMap<String, crate::revision::Deployment>,
     networks: HashMap<String, Network>,
     /// 邀请按 Token 摘要索引（§11.3：兑换时以摘要定位，不暴露原始 Token）。
     invites: HashMap<String, Invite>,
@@ -432,6 +433,7 @@ pub struct MeshState {
 impl MeshState {
     pub fn new(presence_thresholds: meshlet_domain::PresenceThresholds) -> Self {
         Self {
+            deployments: HashMap::new(),
             networks: HashMap::new(),
             invites: HashMap::new(),
             ipams: HashMap::new(),
@@ -635,6 +637,22 @@ pub fn settle_desired_state(
     network_id: &str,
     applied: bool,
 ) -> DesiredStateSettle {
+    settle_desired_with_status(
+        state,
+        network_id,
+        if applied {
+            DesiredStateStatus::Applied
+        } else {
+            DesiredStateStatus::Failed
+        },
+    )
+}
+
+pub(crate) fn settle_desired_with_status(
+    state: &mut MeshState,
+    network_id: &str,
+    status: DesiredStateStatus,
+) -> DesiredStateSettle {
     let mut settle = DesiredStateSettle::default();
     // 先在不可变借用下算好每条路由的网关可用性与目标状态，再统一写回。
     let wanted: Vec<(String, bool, DesiredStateStatus)> = state
@@ -649,8 +667,8 @@ pub fn settle_desired_state(
                         .find_by_id(&r.gateway_device_id)
                         .map(|d| d.is_active())
                         .unwrap_or(false);
-                    let want = if applied && gateway_ready {
-                        DesiredStateStatus::Applied
+                    let want = if gateway_ready {
+                        status
                     } else {
                         DesiredStateStatus::Failed
                     };
@@ -683,7 +701,7 @@ pub fn settle_desired_state(
     if let Some(aliases) = state.aliases.get_mut(network_id) {
         for alias in aliases.iter_mut() {
             let want = match route_status.get(&alias.lan_route_id.to_string()) {
-                Some(DesiredStateStatus::Applied) => DesiredStateStatus::Applied,
+                Some(status) => *status,
                 _ => DesiredStateStatus::Failed,
             };
             if alias.status != want {
@@ -747,6 +765,37 @@ pub type SharedState = Arc<Mutex<MeshState>>;
 // 操作
 // ---------------------------------------------------------------------------
 
+/// Reject ambiguous forwarding prefixes in the shared host routing domain.
+pub(crate) fn check_forward_prefix(
+    state: &MeshState,
+    network_id: &str,
+    prefix: Ipv4Cidr,
+) -> Result<(), ServiceError> {
+    if let Some(n) = state
+        .networks
+        .values()
+        .find(|n| n.id.to_string() != network_id && n.overlay_cidr.overlaps(&prefix))
+    {
+        return Err(ServiceError::RouteConflict(format!(
+            "prefix {prefix} overlaps network {}",
+            n.id
+        )));
+    }
+    if state.lan_routes.iter().any(|(id, routes)| {
+        id != network_id
+            && routes
+                .iter()
+                .any(|r| r.route_mode == RouteMode::Direct && r.destination_cidr.overlaps(&prefix))
+    }) || state.aliases.iter().any(|(id, aliases)| {
+        id != network_id && aliases.iter().any(|a| a.alias_cidr.overlaps(&prefix))
+    }) {
+        return Err(ServiceError::RouteConflict(format!(
+            "prefix {prefix} overlaps another network's forwarding prefix"
+        )));
+    }
+    Ok(())
+}
+
 pub fn create_network(
     state: &mut MeshState,
     req: CreateNetworkRequest,
@@ -758,11 +807,16 @@ pub fn create_network(
     if req.name.trim().is_empty() {
         return Err(ServiceError::InvalidInput("name must not be empty".into()));
     }
-    if state.networks.values().any(|n| n.overlay_cidr == overlay) {
+    if state
+        .networks
+        .values()
+        .any(|n| n.overlay_cidr.overlaps(&overlay))
+    {
         return Err(ServiceError::Conflict(format!(
             "overlay {overlay} already used by another network"
         )));
     }
+    check_forward_prefix(state, "", overlay)?;
     let id = format!("net-{}", state.networks.len() + 1);
     let ts = now();
     let network = Network::new(
@@ -1402,6 +1456,19 @@ pub fn create_route(
         )));
     }
 
+    if route_mode == RouteMode::Direct {
+        check_forward_prefix(state, network_id, destination)?;
+        if state
+            .aliases
+            .get(network_id)
+            .is_some_and(|aliases| aliases.iter().any(|a| a.alias_cidr.overlaps(&destination)))
+        {
+            return Err(ServiceError::RouteConflict(format!(
+                "destination {destination} overlaps an existing alias prefix"
+            )));
+        }
+    }
+
     state.route_seq += 1;
     let route = LanRoute {
         id: LanRouteId(format!("rt-{}", state.route_seq)),
@@ -1519,6 +1586,7 @@ pub fn create_alias(
         .alias_cidr
         .parse()
         .map_err(|e| ServiceError::InvalidCidr(format!("{}: {e}", req.alias_cidr)))?;
+    check_forward_prefix(state, network_id, alias_cidr)?;
     let translation_mode = match req.translation_mode.as_deref() {
         None | Some("dnat_snat") => TranslationMode::DnatSnat,
         Some("dnat_only") => TranslationMode::DnatOnly,

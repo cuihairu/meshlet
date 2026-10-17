@@ -44,6 +44,7 @@
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/approve` | 批准注册（此刻才分配虚拟 IP + 记修订；沿用注册期凭证，不轮换）🔒 |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/deny` | 拒绝注册（纯状态清理：申请与凭证一并作废，不记修订）🔒 |
 | POST | `/api/v1/agent/heartbeat` | Agent 心跳/状态上报（Bearer agent_token；可带 `last_handshake_at`，§14.1） |
+| POST | `/api/v1/agent/device/applied` | 回报当前修订和实际设备计划哈希；旧回执/哈希不符拒绝，错误与成功分别记录 |
 | GET | `/api/v1/agent/device/desired` | 本设备的期望数据面计划（Bearer agent_token；**结构化配置对象**：隧道/路由/NAT + `desired_config_hash`，**绝无 Shell 命令**，§16.4；`private_key` 恒为 `null`，ADR-010；服务端 `[dataplane] enabled = false` → `503 dataplane_not_configured`，agent 重试而非把「未配置」当「已生效」） |
 | POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5）🔒 |
 | GET/POST | `/api/v1/networks/{network_id}/routes` | LAN Route 列表 / 创建（含返回路径模式，ADR-005）；与 overlay/既有路由重叠 → `409 conflict` 且**消息点名冲突对端**（既有路由 id + 网段），拒绝发生在任何状态变更前——既有路由绝不被覆盖，客户端应提示改用 Alias 等长前缀映射（§8.3 不静默）。**例外（ADR-006 旗舰场景）**：新路由与既有路由**均为 Alias 模式**时允许真实前缀重叠——两个站点各有一个 `192.168.1.0/24`，经各自不同 Alias 前缀区分可达；对外可见的转发前缀是 Alias（唯一性由 Alias 创建时的互叠拒绝保证），真实前缀不进隧道转发表面 🔒 |
@@ -276,3 +277,11 @@ agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
 ## 已核验的最小实现
 
 `apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET/POST /api/v1/networks/{id}/bootstrap-tokens`、`DELETE /api/v1/networks/{id}/bootstrap-tokens/{token_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/device-registrations`、`GET /api/v1/networks/{id}/registrations`、`POST /api/v1/networks/{id}/devices/{device_id}/approve`、`POST /api/v1/networks/{id}/devices/{device_id}/deny`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/agent/device/desired`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`、`POST /api/v1/system/backup`（§17.4）；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,aliases,agent_plan,device_revoke,device_registration,audit,observability,recovery,backup}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/自举码/注册申请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005/008 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。
+
+## 2026-10-17 应用确认与恢复
+
+`ConfigRevision.apply_status` 描述 hub 执行结果。当前版本的 `convergence` 独立报告设备收敛状态、等待设备、设备错误、hub 恢复错误和业务健康。`business_health=not_probed` 表示未进行业务探测。
+
+设备计划携带 `desired_revision`、网络独立 `hub_port` 和设备专属 `desired_config_hash`。设备哈希包含实际隧道、MTU、公钥与 NAT 等完整计划，区别于网络修订簿记哈希。hub 未应用当前版本时，计划端点返回 503；hub 成功后下发候选计划，不以资源 Pending 状态过滤所需配置，避免等待 ACK 的循环依赖。设备读回确认后调用 `/agent/device/applied`，仅当前版本且哈希一致的回执可更新状态。全部相关 Active 设备确认后，路由与 Alias 才转 Applied。
+
+旧 Pending/Applied 修订的 apply 请求返回 409，未知修订仍为 404。失败应用的回滚恢复上次成功计划，随后重新等待设备回执。
