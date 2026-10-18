@@ -562,7 +562,6 @@ pub async fn list_revisions_handler(
     AuthenticatedUser(_user): AuthenticatedUser,
     Path(network_id): Path<String>,
 ) -> Result<Json<Vec<RevisionView>>, ServiceError> {
-    let _persist = state.persist.lock().await;
     let mut views = {
         let guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
@@ -592,7 +591,6 @@ pub async fn get_revision_handler(
     AuthenticatedUser(_user): AuthenticatedUser,
     Path((network_id, revision)): Path<(String, u64)>,
 ) -> Result<Json<RevisionView>, ServiceError> {
-    let _persist = state.persist.lock().await;
     let (mut view, current) = {
         let guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
@@ -621,83 +619,115 @@ pub async fn get_revision_handler(
 ///
 /// 返回该修订的当前视图——`apply_status` 是结论；backend 失败时同样 200，
 /// 但状态为 `failed` 且 `error_summary` 说明原因（失败可见，不伪装成功）。
-pub async fn apply_revision_handler(
+pub fn apply_revision_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
+) -> impl std::future::Future<Output = Result<Json<RevisionView>, ServiceError>> + Send {
+    apply_revision_impl(state, user_id, network_id, revision)
+}
+
+async fn apply_revision_impl(
+    state: SharedAppState,
+    user_id: meshlet_domain::UserId,
+    network_id: String,
+    revision: u64,
 ) -> Result<Json<RevisionView>, ServiceError> {
-    let _persist = state.persist.lock().await;
-    // Write intent before touching the kernel, so a crash becomes an explicit failure.
-    let should_apply = {
-        let guard = state.mesh.lock().unwrap();
-        let current = guard.ledger.current(&network_id_of(&network_id));
-        current.is_some_and(|r| {
-            r.revision == revision && r.apply_status == meshlet_domain::ApplyStatus::Pending
-        })
+    let (revision_permit, should_apply) = {
+        let revision_lock = state.revision_lock(&network_id);
+        let revision_permit = revision_lock.clone().lock_owned().await;
+        let _persist = state.persist.lock().await;
+        let should_apply;
+        {
+            let guard = state.mesh.lock().unwrap();
+            service::require_network(&guard, &network_id)?;
+            should_apply = guard
+                .ledger
+                .get(&network_id_of(&network_id), revision)
+                .is_some_and(|r| r.apply_status == meshlet_domain::ApplyStatus::Pending);
+        }
+        if should_apply {
+            let result = sqlx::query("UPDATE config_revisions SET apply_status='applying' WHERE network_id=? AND revision=? AND apply_status='pending'")
+                .bind(&network_id).bind(revision as i64).execute(state.auth.pool()).await.map_err(crate::persist::internal)?;
+            if result.rows_affected() != 1 {
+                return Err(ServiceError::Conflict(
+                    "revision state changed while recording apply intent".to_string(),
+                ));
+            }
+            state
+                .mesh
+                .lock()
+                .unwrap()
+                .ledger
+                .reserve_apply(&network_id_of(&network_id), revision);
+        }
+        (revision_permit, should_apply)
     };
-    if should_apply {
-        sqlx::query("UPDATE config_revisions SET apply_status='applying' WHERE network_id=? AND revision=? AND apply_status='pending'")
-            .bind(&network_id).bind(revision as i64).execute(state.auth.pool()).await.map_err(crate::persist::internal)?;
-    }
-    let (applied, settle, candidate) = {
+    let now = service::now();
+    let target_network = network_id_of(&network_id);
+    let task_network = target_network.clone();
+    let backend_factory = Arc::clone(&state.apply_backend);
+    let mesh = Arc::clone(&state.mesh);
+    let task_network_id = network_id.clone();
+    let task_result = tokio::task::spawn_blocking(move || {
+        let _revision_permit = revision_permit;
+        let mut staged = mesh.lock().unwrap().clone();
+        let mut backend = backend_factory(&staged, &task_network_id);
+        let result = staged
+            .ledger
+            .apply(&task_network, revision, backend.as_mut(), now);
+        (result, _revision_permit)
+    })
+    .await
+    .map_err(|error| ServiceError::Internal(format!("revision apply task failed: {error}")))?;
+    let (apply_result, revision_permit) = task_result;
+    let applied = apply_result.map_err(ServiceError::from_ledger)?;
+    let _revision_permit = revision_permit;
+    let (settle, candidate, applied) = {
+        let _persist = state.persist.lock().await;
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
-        if guard
-            .ledger
-            .get(&network_id_of(&network_id), revision)
-            .is_none()
-        {
-            return Err(ServiceError::RevisionNotFound(revision.to_string()));
+        if guard.ledger.current(&target_network).map(|r| r.revision) != Some(revision) {
+            return Err(ServiceError::Conflict(
+                "revision superseded while applying".to_string(),
+            ));
         }
-        if let Some(current) = guard.ledger.current(&network_id_of(&network_id)) {
-            if current.revision != revision {
-                return Err(ServiceError::Conflict(format!(
-                    "revision {revision} superseded by {}",
-                    current.revision
-                )));
-            }
-        }
-        // backend 在网络级互斥内按当前期望配置构造快照（§10.4 串行化）。
-        let mut backend = (state.apply_backend)(&guard, &network_id);
-        let applied = guard
-            .ledger
-            .apply(
-                &network_id_of(&network_id),
-                revision,
-                backend.as_mut(),
-                service::now(),
-            )
-            .map_err(ServiceError::from_ledger)?;
-        // 结论收敛到每条期望项（§10.1 的路由/映射层镜像）：只有真下发到内核
-        // 的前缀才转 `applied`，agent 数据面据此取计划。
-        let success = applied.apply_status == meshlet_domain::ApplyStatus::Applied;
-        let candidate = if success && should_apply && state.dataplane.enabled {
-            Some(
-                deployment(
-                    &guard,
-                    &network_id,
-                    &state.dataplane,
-                    state.tunnel_mtu,
-                    revision,
+        guard.ledger.restore_revision(applied.clone());
+        let (settle, candidate) = {
+            // 结论收敛到每条期望项（§10.1 的路由/映射层镜像）：只有真下发到内核
+            // 的前缀才转 `applied`，agent 数据面据此取计划。
+            let success = applied.apply_status == meshlet_domain::ApplyStatus::Applied;
+            let candidate = if success && should_apply && state.dataplane.enabled {
+                Some(
+                    deployment(
+                        &guard,
+                        &network_id,
+                        &state.dataplane,
+                        state.tunnel_mtu,
+                        revision,
+                    )
+                    .map_err(ServiceError::Internal)?,
                 )
-                .map_err(ServiceError::Internal)?,
-            )
-        } else {
-            None
+            } else {
+                None
+            };
+            let settle = if success && !should_apply {
+                service::DesiredStateSettle::default()
+            } else if success && state.dataplane.enabled {
+                service::settle_desired_with_status(
+                    &mut guard,
+                    &network_id,
+                    meshlet_domain::DesiredStateStatus::Pending,
+                )
+            } else {
+                service::settle_desired_state(&mut guard, &network_id, success)
+            };
+            (settle, candidate)
         };
-        let settle = if success && !should_apply {
-            service::DesiredStateSettle::default()
-        } else if success && state.dataplane.enabled {
-            service::settle_desired_with_status(
-                &mut guard,
-                &network_id,
-                meshlet_domain::DesiredStateStatus::Pending,
-            )
-        } else {
-            service::settle_desired_state(&mut guard, &network_id, success)
-        };
-        (applied, settle, candidate)
+        drop(guard);
+        drop(_persist);
+        (settle, candidate, applied)
     };
     if let Err(error) =
         crate::persist::commit_application(state.auth.pool(), &applied, &settle, candidate.as_ref())
@@ -779,43 +809,92 @@ pub async fn apply_revision_handler(
 
 /// `POST .../config-revisions/{revision}/rollback`：回滚一个 `Failed` 修订。
 /// 回滚只允许动 Meshlet 自有对象（ADR-007），不得清空系统路由（§10.3）。
-pub async fn rollback_revision_handler(
+pub fn rollback_revision_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
     Path((network_id, revision)): Path<(String, u64)>,
+) -> impl std::future::Future<Output = Result<Json<RevisionView>, ServiceError>> + Send {
+    rollback_revision_impl(state, user_id, network_id, revision)
+}
+
+async fn rollback_revision_impl(
+    state: SharedAppState,
+    user_id: meshlet_domain::UserId,
+    network_id: String,
+    revision: u64,
 ) -> Result<Json<RevisionView>, ServiceError> {
-    let _persist = state.persist.lock().await;
-    let should_rollback = {
-        let mesh = state.mesh.lock().unwrap();
-        service::require_network(&mesh, &network_id)?;
-        let target = mesh
-            .ledger
-            .get(&network_id_of(&network_id), revision)
-            .ok_or_else(|| ServiceError::RevisionNotFound(revision.to_string()))?;
-        if target.apply_status == meshlet_domain::ApplyStatus::RolledBack {
-            return Ok(Json(to_revision_view(target)));
+    let revision_permit = {
+        let revision_lock = state.revision_lock(&network_id);
+        let revision_permit = revision_lock.clone().lock_owned().await;
+        let _persist = state.persist.lock().await;
+        let should_rollback;
+        {
+            let guard = state.mesh.lock().unwrap();
+            service::require_network(&guard, &network_id)?;
+            let target = guard
+                .ledger
+                .get(&network_id_of(&network_id), revision)
+                .ok_or_else(|| ServiceError::RevisionNotFound(revision.to_string()))?;
+            if target.apply_status == meshlet_domain::ApplyStatus::RolledBack {
+                return Ok(Json(to_revision_view(target)));
+            }
+            should_rollback = guard
+                .ledger
+                .current(&network_id_of(&network_id))
+                .is_some_and(|r| r.revision == revision)
+                && matches!(
+                    target.apply_status,
+                    meshlet_domain::ApplyStatus::Failed
+                        | meshlet_domain::ApplyStatus::RollbackPending
+                );
         }
-        mesh.ledger
-            .current(&network_id_of(&network_id))
-            .is_some_and(|r| r.revision == revision)
-            && matches!(
-                target.apply_status,
-                meshlet_domain::ApplyStatus::Failed | meshlet_domain::ApplyStatus::RollbackPending
-            )
+        if should_rollback {
+            let result = sqlx::query("UPDATE config_revisions SET apply_status='rollback_pending' WHERE network_id=? AND revision=? AND apply_status='failed'")
+                .bind(&network_id).bind(revision as i64).execute(state.auth.pool()).await.map_err(crate::persist::internal)?;
+            if result.rows_affected() != 1 {
+                return Err(ServiceError::Conflict(
+                    "revision state changed while recording rollback intent".to_string(),
+                ));
+            }
+            state
+                .mesh
+                .lock()
+                .unwrap()
+                .ledger
+                .reserve_rollback(&network_id_of(&network_id), revision);
+        }
+        revision_permit
     };
-    if should_rollback {
-        sqlx::query("UPDATE config_revisions SET apply_status='rollback_pending' WHERE network_id=? AND revision=?")
-            .bind(&network_id).bind(revision as i64).execute(state.auth.pool()).await.map_err(crate::persist::internal)?;
-    }
-    let (rolled, settle) = {
+    let target_network = network_id_of(&network_id);
+    let task_network = target_network.clone();
+    let backend_factory = Arc::clone(&state.apply_backend);
+    let mesh = Arc::clone(&state.mesh);
+    let task_network_id = network_id.clone();
+    let task_result = tokio::task::spawn_blocking(move || {
+        let _revision_permit = revision_permit;
+        let mut staged = mesh.lock().unwrap().clone();
+        let mut backend = backend_factory(&staged, &task_network_id);
+        let result = staged
+            .ledger
+            .rollback(&task_network, revision, backend.as_mut());
+        (result, _revision_permit)
+    })
+    .await
+    .map_err(|error| ServiceError::Internal(format!("revision rollback task failed: {error}")))?;
+    let (rollback_result, revision_permit) = task_result;
+    let rolled = rollback_result.map_err(ServiceError::from_ledger)?;
+    let _revision_permit = revision_permit;
+    let (settle, saved) = {
+        let _persist = state.persist.lock().await;
         let mut guard = state.mesh.lock().unwrap();
         service::require_network(&guard, &network_id)?;
-        let mut backend = (state.apply_backend)(&guard, &network_id);
-        let rolled = guard
-            .ledger
-            .rollback(&network_id_of(&network_id), revision, backend.as_mut())
-            .map_err(ServiceError::from_ledger)?;
+        if guard.ledger.current(&target_network).map(|r| r.revision) != Some(revision) {
+            return Err(ServiceError::Conflict(
+                "revision superseded while rolling back".to_string(),
+            ));
+        }
+        guard.ledger.restore_revision(rolled.clone());
         if rolled.apply_status == meshlet_domain::ApplyStatus::RolledBack && state.dataplane.enabled
         {
             if let Some(mut saved) = guard.deployments.get(&network_id).cloned() {
@@ -853,17 +932,11 @@ pub async fn rollback_revision_handler(
         } else {
             service::settle_desired_state(&mut guard, &network_id, false)
         };
-        (rolled, settle)
+        let saved = guard.deployments.get(&network_id).cloned();
+        (settle, saved)
     };
     let restore =
         rolled.apply_status == meshlet_domain::ApplyStatus::RolledBack && state.dataplane.enabled;
-    let saved = state
-        .mesh
-        .lock()
-        .unwrap()
-        .deployments
-        .get(&network_id)
-        .cloned();
     let committed = crate::persist::commit_rollback(
         state.auth.pool(),
         &rolled,

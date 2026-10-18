@@ -5,6 +5,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tower::ServiceExt; // oneshot
 
 const EMAIL: &str = "admin@test.local";
@@ -13,6 +15,29 @@ const PASSWORD: &str = "correct-horse-battery";
 #[derive(Clone)]
 struct Ctx {
     app: Router,
+}
+
+async fn ctx_with_auth_blocking(concurrency: usize) -> (Ctx, Arc<Semaphore>) {
+    let pool = meshlet_server::store::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let state = std::sync::Arc::new(
+        meshlet_server::auth::AppState::new(
+            meshlet_server::service::SharedState::default(),
+            meshlet_server::auth::AuthStore::new(pool.clone()),
+            meshlet_server::agent::AgentTokenStore::new(pool.clone()),
+            meshlet_server::api_token::ApiTokenStore::new(pool),
+            false,
+        )
+        .with_auth_blocking_concurrency(concurrency),
+    );
+    let auth_blocking = Arc::clone(&state.auth_blocking);
+    (
+        Ctx {
+            app: meshlet_server::router(state),
+        },
+        auth_blocking,
+    )
 }
 
 async fn ctx() -> Ctx {
@@ -405,6 +430,36 @@ async fn cookie_secure_flag_flips_with_config() {
     };
     let (_, _, cookie) = bootstrap(&ctx).await;
     assert!(cookie.contains("; Secure"), "{cookie}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_logins_leave_capacity_for_other_network_requests() {
+    let (ctx, auth_blocking) = ctx_with_auth_blocking(1).await;
+    bootstrap(&ctx).await;
+
+    let slow_login = tokio::spawn({
+        let ctx = ctx.clone();
+        async move {
+            post_json(
+                &ctx,
+                "/api/v1/auth/login",
+                serde_json::json!({ "email": "ghost@test.local", "password": PASSWORD }),
+                None,
+                false,
+            )
+            .await
+        }
+    });
+    while auth_blocking.available_permits() > 0 {
+        tokio::task::yield_now().await;
+    }
+
+    let (status, _) = get_json(&ctx, "/api/v1/system/status", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body, _) = slow_login.await.unwrap();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "unauthorized");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

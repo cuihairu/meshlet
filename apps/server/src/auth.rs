@@ -27,7 +27,9 @@ use meshlet_domain::auth::{
 use meshlet_domain::{generate_token, token_hash, Timestamp, UserId};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::service;
@@ -35,6 +37,9 @@ use crate::service;
 /// 登录限流参数：每 email 每窗口最多 5 次失败尝试，窗口 15 分钟。
 pub const LOGIN_MAX_ATTEMPTS: u32 = 5;
 pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// Argon2 阻塞任务上限：限制 CPU 密集哈希/校验同时占满 worker。
+pub const AUTH_BLOCKING_CONCURRENCY: usize = 4;
 
 /// 未知 email 的恒时校验目标（消除「用户不存在」的时间侧信道）。
 /// 内容为 Argon2id PHC 格式的无效哈希——校验必然失败，但耗时与真哈希一致。
@@ -67,6 +72,10 @@ pub struct AppState {
     /// 服务端 `[dataplane]` 配置（设备计划下发用：接口名/私钥文件）；
     /// `enabled = false` 时 `GET /agent/device/desired` 返回 503。
     pub dataplane: meshlet_config::DataPlaneConfig,
+    /// 同一网络的 apply/rollback 串行门（§10.4）；不同网络仍可并行执行。
+    pub revision_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// 密码哈希/校验阻塞任务并发上限（§11.4）。
+    pub auth_blocking: Arc<tokio::sync::Semaphore>,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -92,6 +101,8 @@ impl AppState {
             apply_backend: crate::revision::unconfigured_backend_factory(),
             metrics: crate::metrics::Metrics::new(),
             persist: Arc::new(tokio::sync::Mutex::new(())),
+            revision_locks: Arc::new(Mutex::new(HashMap::new())),
+            auth_blocking: Arc::new(tokio::sync::Semaphore::new(AUTH_BLOCKING_CONCURRENCY)),
             backup_dir: None,
             tunnel_mtu: None,
             dataplane: meshlet_config::DataPlaneConfig::default(),
@@ -127,6 +138,22 @@ impl AppState {
     pub fn with_metrics(mut self, metrics: crate::metrics::Metrics) -> Self {
         self.metrics = metrics;
         self
+    }
+
+    /// 注入认证阻塞并发上限（生产保持默认，测试验证限并发）。
+    pub fn with_auth_blocking_concurrency(mut self, concurrency: usize) -> Self {
+        self.auth_blocking = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        self
+    }
+
+    /// 取某网络的 apply/rollback 串行门；其他网络不被这条配置操作阻塞。
+    pub fn revision_lock(&self, network_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self.revision_locks.lock().unwrap();
+        Arc::clone(
+            guard
+                .entry(network_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 }
 
@@ -537,13 +564,17 @@ pub async fn bootstrap_handler(
     validate_email(&req.email).map_err(|e| AuthApiError::InvalidInput(e.to_string()))?;
     validate_password(&req.password).map_err(|e| AuthApiError::InvalidInput(e.to_string()))?;
 
-    let user = User::new(
-        UserId(generate_token()),
-        req.email,
-        &req.password,
-        service::now(),
-    )
-    .map_err(|e| AuthApiError::InvalidInput(e.to_string()))?;
+    let password = req.password;
+    let user = {
+        let email = req.email;
+        let _permit = state.auth_blocking.acquire().await;
+        tokio::task::spawn_blocking(move || {
+            User::new(UserId(generate_token()), email, &password, service::now())
+        })
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?
+        .map_err(|e| AuthApiError::InvalidInput(e.to_string()))?
+    };
     let (user_id, email) = (user.id.clone(), user.email.clone());
     if !state
         .auth
@@ -602,7 +633,13 @@ pub async fn login_handler(
         .map_err(|e| AuthApiError::Internal(e.to_string()))?;
     let Some(record) = record else {
         // 恒时：对固定哈希跑一次校验再拒绝。
-        let _ = meshlet_domain::auth::verify_password(&req.password, DUMMY_HASH);
+        let password = req.password;
+        let _permit = state.auth_blocking.acquire().await;
+        let _ = tokio::task::spawn_blocking(move || {
+            meshlet_domain::auth::verify_password(&password, DUMMY_HASH)
+        })
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()));
         // 失败也要留痕（§16.5：登录失败必记录）；email 非秘密字段，有助
         // 暴破诊断。不记录密码本身。
         record_audit(
@@ -627,7 +664,14 @@ pub async fn login_handler(
     };
     let user_id = record.id.clone();
     let email = record.email;
-    if !meshlet_domain::auth::verify_password(&req.password, &record.password_hash) {
+    let password = req.password;
+    let _permit = state.auth_blocking.acquire().await;
+    let valid = tokio::task::spawn_blocking(move || {
+        meshlet_domain::auth::verify_password(&password, &record.password_hash)
+    })
+    .await
+    .map_err(|e| AuthApiError::Internal(e.to_string()))?;
+    if !valid {
         record_audit(
             &state,
             None,

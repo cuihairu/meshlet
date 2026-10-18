@@ -10,11 +10,13 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt; // oneshot
 
 use meshlet_domain::{ConfigApplyBackend, ConfigRevision};
 use meshlet_server::revision;
+use std::time::Duration;
 
 const OVERLAY: &str = "10.240.0.0/16";
 
@@ -444,6 +446,165 @@ fn spy() -> (Arc<Mutex<Calls>>, revision::BackendFactory) {
         })
     };
     (calls, factory)
+}
+
+#[derive(Clone)]
+struct SlowBackend {
+    gate: Arc<tokio::sync::Notify>,
+    delay: Duration,
+    error: Option<String>,
+    entered: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ConfigApplyBackend for SlowBackend {
+    fn apply(&mut self, _revision: &ConfigRevision) -> Result<(), String> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        self.gate.notify_one();
+        std::thread::sleep(self.delay);
+        match &self.error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn rollback(&mut self, _revision: &ConfigRevision) -> Result<(), String> {
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        self.gate.notify_one();
+        std::thread::sleep(self.delay);
+        Ok(())
+    }
+}
+
+fn slow_backend(
+    delay: Duration,
+    error: Option<String>,
+) -> (
+    Arc<tokio::sync::Notify>,
+    Arc<std::sync::atomic::AtomicUsize>,
+    revision::BackendFactory,
+) {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let factory: revision::BackendFactory = {
+        let gate = Arc::clone(&gate);
+        let entered = Arc::clone(&entered);
+        Arc::new(move |_, _| {
+            Box::new(SlowBackend {
+                gate: Arc::clone(&gate),
+                delay,
+                error: error.clone(),
+                entered: Arc::clone(&entered),
+            })
+        })
+    };
+    (gate, entered, factory)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_kernel_apply_keeps_queries_and_other_networks_responsive() {
+    let (gate, entered, factory) = slow_backend(Duration::from_millis(250), None);
+    let c = ctx_with_backend(factory).await;
+    let home = create_network(&c).await;
+    let home_id = home["id"].as_str().unwrap().to_string();
+    enroll_device(&c, &home_id, "laptop", "pub-laptop-0001").await;
+    let office = call(
+        &c,
+        "POST",
+        "/api/v1/networks",
+        Some(&c.cookie),
+        true,
+        Some(json!({ "name": "office", "overlay_cidr": "10.241.0.0/16" })),
+    )
+    .await
+    .1;
+    let office_id = office["id"].as_str().unwrap().to_string();
+
+    let apply_task = tokio::spawn({
+        let c = c.clone();
+        let home_id = home_id.clone();
+        async move { apply(&c, &home_id, 2).await }
+    });
+    gate.notified().await;
+
+    let query_started = tokio::time::Instant::now();
+    let (query_status, _) = call(&c, "GET", "/api/v1/networks", Some(&c.cookie), false, None).await;
+    assert_eq!(query_status, StatusCode::OK);
+    assert!(query_started.elapsed() < Duration::from_millis(100));
+
+    let office_started = tokio::time::Instant::now();
+    let (office_status, office_body) = call(
+        &c,
+        "GET",
+        &format!("/api/v1/networks/{office_id}/config-revisions"),
+        Some(&c.cookie),
+        false,
+        None,
+    )
+    .await;
+    assert_eq!(office_status, StatusCode::OK);
+    assert_eq!(office_body.as_array().unwrap().len(), 1);
+    assert!(office_started.elapsed() < Duration::from_millis(100));
+
+    let (status, body) = apply_task.await.unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["apply_status"], "applied");
+    assert_eq!(entered.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failing_kernel_apply_is_tracked_and_visible() {
+    let error = "slow kernel peer handshake rejected";
+    let (_, _, factory) = slow_backend(Duration::from_millis(20), Some(error.to_string()));
+    let c = ctx_with_backend(factory).await;
+    let network = create_network(&c).await;
+    let network_id = network["id"].as_str().unwrap().to_string();
+    enroll_device(&c, &network_id, "laptop", "pub-laptop-0001").await;
+
+    let (status, body) = apply(&c, &network_id, 2).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["apply_status"], "failed");
+    assert_eq!(body["error_summary"], error);
+    let detail = revisions(&c, &network_id).await;
+    assert_eq!(detail.as_array().unwrap()[1]["apply_status"], "failed");
+    assert_eq!(detail.as_array().unwrap()[1]["error_summary"], error);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_kernel_apply_across_networks_runs_in_parallel() {
+    let (gate, _, factory) = slow_backend(Duration::from_millis(100), None);
+    let c = ctx_with_backend(factory).await;
+    let home = create_network(&c).await;
+    let home_id = home["id"].as_str().unwrap().to_string();
+    let office = call(
+        &c,
+        "POST",
+        "/api/v1/networks",
+        Some(&c.cookie),
+        true,
+        Some(json!({ "name": "office", "overlay_cidr": "10.241.0.0/16" })),
+    )
+    .await
+    .1;
+    let office_id = office["id"].as_str().unwrap().to_string();
+
+    let home_apply = tokio::spawn({
+        let c = c.clone();
+        let home_id = home_id.clone();
+        async move { apply(&c, &home_id, 1).await }
+    });
+    gate.notified().await;
+    let office_started = tokio::time::Instant::now();
+    let (office_status, _) = apply(&c, &office_id, 1).await;
+    let office_elapsed = office_started.elapsed();
+    assert_eq!(office_status, StatusCode::OK);
+    assert!(
+        office_elapsed < Duration::from_millis(180),
+        "{office_elapsed:?}"
+    );
+
+    let home = home_apply.await.unwrap();
+    assert_eq!(home.0, StatusCode::OK);
+    assert_eq!(home.1["apply_status"], "applied");
 }
 
 #[tokio::test]

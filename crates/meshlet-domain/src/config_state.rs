@@ -221,7 +221,9 @@ impl ConfigLedger {
             }
         }
         let r = self.get_mut(network_id, revision).unwrap();
-        r.transition(ApplyStatus::Applying)?;
+        if r.apply_status == ApplyStatus::Pending {
+            r.transition(ApplyStatus::Applying)?;
+        }
         match backend.apply(r) {
             Ok(()) => {
                 r.transition(ApplyStatus::Applied)?;
@@ -349,6 +351,40 @@ impl ConfigLedger {
             rs.sort_by_key(|r| r.revision);
             self.revisions.insert(network_id, rs);
         }
+    }
+
+    /// Replace the stored conclusion for an already selected revision after an
+    /// isolated apply/rollback task completes. Callers must still hold the
+    /// network revision lock so concurrent tasks cannot overwrite each other.
+    pub fn restore_revision(&mut self, revision: ConfigRevision) {
+        let network_revisions = self
+            .revisions
+            .entry(revision.network_id.clone())
+            .or_default();
+        if let Some(existing) = network_revisions
+            .iter_mut()
+            .find(|r| r.revision == revision.revision)
+        {
+            *existing = revision;
+        }
+    }
+
+    pub fn reserve_apply(&mut self, network_id: &NetworkId, revision: u64) -> bool {
+        self.get_mut(network_id, revision)
+            .filter(|r| r.apply_status == ApplyStatus::Pending)
+            .is_some_and(|r| {
+                r.apply_status = ApplyStatus::Applying;
+                true
+            })
+    }
+
+    pub fn reserve_rollback(&mut self, network_id: &NetworkId, revision: u64) -> bool {
+        self.get_mut(network_id, revision)
+            .filter(|r| r.apply_status == ApplyStatus::Failed)
+            .is_some_and(|r| {
+                r.apply_status = ApplyStatus::RollbackPending;
+                true
+            })
     }
 
     /// §10.3 中断收敛（§17.3 重启恢复）：进程重启后，停在 `Applying` 的修订
