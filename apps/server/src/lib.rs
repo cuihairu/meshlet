@@ -70,16 +70,17 @@ async fn create_network_handler(
 ) -> Result<(StatusCode, Json<service::NetworkView>), service::ServiceError> {
     // 变更 + 落库同一互斥段（§17.3）：DB 镜像与内存变更序一致。
     let _persist = state.persist.lock().await;
-    let (view, network, revision) = {
-        let mut guard = state.mesh.lock().unwrap();
+    let (view, network, revision, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
         crate::revision::network_dataplane(
             &state.dataplane,
             &format!("net-{}", guard.network_count() + 1),
         )
         .map_err(service::ServiceError::InvalidInput)?;
-        let view = create_network(&mut guard, req)?;
-        let network = guard.network_row(&view.id).expect("just created").clone();
-        let revision = guard
+        let view = create_network(&mut staged, req)?;
+        let network = staged.network_row(&view.id).expect("just created").clone();
+        let revision = staged
             .ledger
             .get(
                 &meshlet_domain::NetworkId(view.id.clone()),
@@ -87,24 +88,19 @@ async fn create_network_handler(
             )
             .expect("just recorded")
             .clone();
-        (view, network, revision)
+        (view, network, revision, staged)
     };
-    // 落库失败即请求失败（「不落库不放行」）；审计随后留痕。
-    crate::persist::insert_network(state.auth.pool(), &network)
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "network.created",
+        target_type: "network",
+        target_id: &view.id,
+        detail: None,
+    };
+    crate::persist::commit_network(state.auth.pool(), &network, &revision, &audit)
         .await
         .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "network.created",
-        "network",
-        Some(&view.id),
-        None,
-    )
-    .await?;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "network",
@@ -232,17 +228,18 @@ async fn create_route_handler(
     Json(req): Json<service::CreateRouteRequest>,
 ) -> Result<(StatusCode, Json<service::RouteView>), service::ServiceError> {
     let _persist = state.persist.lock().await;
-    let (view, route, revision, route_seq) = {
-        let mut guard = state.mesh.lock().unwrap();
-        match create_route(&mut guard, &network_id, req) {
+    let (view, route, revision, route_seq, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
+        match create_route(&mut staged, &network_id, req) {
             Ok(view) => {
-                let route = guard
+                let route = staged
                     .lan_routes
                     .get(&network_id)
                     .and_then(|routes| routes.iter().find(|r| r.id.to_string() == view.id))
                     .expect("just created")
                     .clone();
-                let revision = guard
+                let revision = staged
                     .ledger
                     .get(
                         &meshlet_domain::NetworkId(network_id.clone()),
@@ -250,7 +247,8 @@ async fn create_route_handler(
                     )
                     .expect("just recorded")
                     .clone();
-                (view, route, revision, guard.route_seq())
+                let route_seq = staged.route_seq();
+                (view, route, revision, route_seq, staged)
             }
             Err(e) => {
                 // 路由冲突单独计数（§17.2「路由冲突数」）；错误类别随领域事件留痕。
@@ -271,21 +269,17 @@ async fn create_route_handler(
             }
         }
     };
-    crate::persist::insert_route(state.auth.pool(), &route, route_seq)
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "route.created",
+        target_type: "route",
+        target_id: &view.id,
+        detail: Some(serde_json::json!({ "network_id": network_id })),
+    };
+    crate::persist::commit_route(state.auth.pool(), &route, route_seq, &revision, &audit)
         .await
         .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "route.created",
-        "route",
-        Some(&view.id),
-        Some(serde_json::json!({ "network_id": network_id })),
-    )
-    .await?;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "route",
@@ -307,23 +301,24 @@ async fn create_host_forward_handler(
     Json(req): Json<service::CreateHostForwardRequest>,
 ) -> Result<(StatusCode, Json<service::HostForwardView>), service::ServiceError> {
     let _persist = state.persist.lock().await;
-    let (view, route, alias, revision, route_seq) = {
-        let mut guard = state.mesh.lock().unwrap();
-        match create_host_forward(&mut guard, &network_id, req) {
+    let (view, route, alias, revision, route_seq, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
+        match create_host_forward(&mut staged, &network_id, req) {
             Ok(view) => {
-                let alias = guard
+                let alias = staged
                     .aliases
                     .get(&network_id)
                     .and_then(|aliases| aliases.iter().find(|item| item.id.to_string() == view.id))
                     .expect("host forward alias just created")
                     .clone();
-                let route = guard
+                let route = staged
                     .lan_routes
                     .get(&network_id)
                     .and_then(|routes| routes.iter().find(|item| item.id == alias.lan_route_id))
                     .expect("host forward route just created")
                     .clone();
-                let revision = guard
+                let revision = staged
                     .ledger
                     .get(
                         &meshlet_domain::NetworkId(network_id.clone()),
@@ -331,7 +326,8 @@ async fn create_host_forward_handler(
                     )
                     .expect("just recorded")
                     .clone();
-                (view, route, alias, revision, guard.route_seq())
+                let route_seq = staged.route_seq();
+                (view, route, alias, revision, route_seq, staged)
             }
             Err(e) => {
                 if matches!(e, service::ServiceError::RouteConflict(_)) {
@@ -351,21 +347,24 @@ async fn create_host_forward_handler(
             }
         }
     };
-    crate::persist::insert_host_forward(state.auth.pool(), &route, &alias, route_seq)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "host_forward.created",
-        "host_forward",
-        Some(&view.id),
-        Some(serde_json::json!({ "network_id": network_id })),
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "host_forward.created",
+        target_type: "host_forward",
+        target_id: &view.id,
+        detail: Some(serde_json::json!({ "network_id": network_id })),
+    };
+    crate::persist::commit_host_forward(
+        state.auth.pool(),
+        &route,
+        &alias,
+        route_seq,
+        &revision,
+        &audit,
     )
-    .await?;
+    .await
+    .map_err(crate::persist::internal)?;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "host_forward",
@@ -410,32 +409,29 @@ async fn delete_route_handler(
     axum::extract::Path((network_id, route_id)): axum::extract::Path<(String, String)>,
 ) -> Result<StatusCode, service::ServiceError> {
     let _persist = state.persist.lock().await;
-    let revision = {
-        let mut guard = state.mesh.lock().unwrap();
-        delete_route(&mut guard, &network_id, &route_id)?;
+    let (revision, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
+        delete_route(&mut staged, &network_id, &route_id)?;
         // 删除记录了新修订（当前最新）：取出以镜像落库。
-        guard
+        let revision = staged
             .ledger
             .current(&meshlet_domain::NetworkId(network_id.clone()))
             .expect("delete_route just recorded a revision")
-            .clone()
+            .clone();
+        (revision, staged)
     };
-    // 删除 + 新修订落库；路由 id 序列不回退（重启不重发已删 id）。
-    crate::persist::delete_route(state.auth.pool(), &route_id)
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "route.deleted",
+        target_type: "route",
+        target_id: &route_id,
+        detail: Some(serde_json::json!({ "network_id": network_id })),
+    };
+    crate::persist::commit_route_delete(state.auth.pool(), &route_id, &revision, &audit)
         .await
         .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "route.deleted",
-        "route",
-        Some(&route_id),
-        Some(serde_json::json!({ "network_id": network_id })),
-    )
-    .await?;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "route",
@@ -456,31 +452,28 @@ async fn delete_host_forward_handler(
     axum::extract::Path((network_id, alias_id)): axum::extract::Path<(String, String)>,
 ) -> Result<StatusCode, service::ServiceError> {
     let _persist = state.persist.lock().await;
-    let (route_id, revision) = {
-        let mut guard = state.mesh.lock().unwrap();
-        let (_, route_id) = delete_host_forward(&mut guard, &network_id, &alias_id)?;
-        let revision = guard
+    let (route_id, revision, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
+        let (_, route_id) = delete_host_forward(&mut staged, &network_id, &alias_id)?;
+        let revision = staged
             .ledger
             .current(&meshlet_domain::NetworkId(network_id.clone()))
             .expect("delete_host_forward just recorded a revision")
             .clone();
-        (route_id, revision)
+        (route_id, revision, staged)
     };
-    crate::persist::delete_route(state.auth.pool(), &route_id)
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "host_forward.deleted",
+        target_type: "host_forward",
+        target_id: &alias_id,
+        detail: Some(serde_json::json!({ "network_id": network_id, "route_id": route_id })),
+    };
+    crate::persist::commit_route_delete(state.auth.pool(), &route_id, &revision, &audit)
         .await
         .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "host_forward.deleted",
-        "host_forward",
-        Some(&alias_id),
-        Some(serde_json::json!({ "network_id": network_id, "route_id": route_id })),
-    )
-    .await?;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "host_forward",
@@ -511,15 +504,16 @@ async fn revoke_device_handler(
 ) -> Result<(StatusCode, Json<service::RevisionRef>), service::ServiceError> {
     // 先完成撤销 + 修订簿记 + 落库（同一互斥段），再在锁外失效 agent 凭证并留痕。
     let _persist = state.persist.lock().await;
-    let (rev, device, revision) = {
-        let mut guard = state.mesh.lock().unwrap();
-        let rev = revoke_device(&mut guard, &network_id, &device_id)?;
-        let device = guard
+    let (rev, device, revision, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
+        let rev = revoke_device(&mut staged, &network_id, &device_id)?;
+        let device = staged
             .registry
             .find_by_id(&meshlet_domain::DeviceId(device_id.clone()))
             .expect("just revoked")
             .clone();
-        let revision = guard
+        let revision = staged
             .ledger
             .get(
                 &meshlet_domain::NetworkId(network_id.clone()),
@@ -527,35 +521,19 @@ async fn revoke_device_handler(
             )
             .expect("just recorded")
             .clone();
-        (rev, device, revision)
+        (rev, device, revision, staged)
     };
-    // §11.5：撤销设备状态 + 其发布的全部 LAN 路由 + 新修订一并落库。
-    crate::persist::update_device_status(state.auth.pool(), &device)
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "device.revoked",
+        target_type: "device",
+        target_id: &device_id,
+        detail: Some(serde_json::json!({ "network_id": network_id })),
+    };
+    crate::persist::commit_revoke_device(state.auth.pool(), &device, &revision, &audit)
         .await
         .map_err(crate::persist::internal)?;
-    crate::persist::delete_routes_of_device(state.auth.pool(), &device_id)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    state
-        .agent_tokens
-        .revoke_for_device(
-            &meshlet_domain::DeviceId(device_id.clone()),
-            &crate::service::now(),
-        )
-        .await
-        .map_err(|e| service::ServiceError::Internal(e.to_string()))?;
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "device.revoked",
-        "device",
-        Some(&device_id),
-        Some(serde_json::json!({ "network_id": network_id })),
-    )
-    .await?;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "device",
@@ -577,15 +555,16 @@ async fn enroll_handler(
     // mesh 锁的 await（future 须 Send）。
     let _persist = state.persist.lock().await;
     let invite_token = req.invite_token.clone();
-    let (mut resp, device, revision, invite) = {
-        let mut guard = state.mesh.lock().unwrap();
-        let resp = enroll(&mut guard, req)?;
-        let device = guard
+    let (mut resp, device, revision, invite, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
+        let resp = enroll(&mut staged, req)?;
+        let device = staged
             .registry
             .find_by_id(&meshlet_domain::DeviceId(resp.device_id.clone()))
             .expect("just enrolled")
             .clone();
-        let revision = guard
+        let revision = staged
             .ledger
             .get(
                 &meshlet_domain::NetworkId(resp.network_id.clone()),
@@ -593,40 +572,25 @@ async fn enroll_handler(
             )
             .expect("just recorded")
             .clone();
-        let invite = guard
+        let invite = staged
             .invite_by_hash(&meshlet_domain::token_hash(&invite_token))
             .expect("invite just redeemed")
             .clone();
-        (resp, device, revision, invite)
+        (resp, device, revision, invite, staged)
     };
-    // 设备行 + 新修订 + 邀请兑换计数落库（§17.3：重启后设备与 IP 保留）。
-    crate::persist::insert_device(state.auth.pool(), &device)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::persist::save_invite(state.auth.pool(), &invite)
-        .await
-        .map_err(crate::persist::internal)?;
-    let device_id = meshlet_domain::DeviceId(resp.device_id.clone());
-    let (raw, _hash) = state
-        .agent_tokens
-        .issue(&device_id, service::now())
-        .await
-        .map_err(|e| service::ServiceError::Internal(e.to_string()))?;
-    resp.agent_token = raw;
-    // 加入者经邀请 Token 而来，无用户 actor（actor=None）；agent Token 原始
-    // 材料不进审计（§16.5）。
-    crate::audit::record_or_fail(
-        &state,
-        None,
-        "device.enrolled",
-        "device",
-        Some(&resp.device_id),
-        Some(serde_json::json!({ "network_id": resp.network_id })),
-    )
-    .await?;
+    let audit = crate::persist::AuditDraft {
+        actor_id: None,
+        action: "device.enrolled",
+        target_type: "device",
+        target_id: &resp.device_id,
+        detail: Some(serde_json::json!({ "network_id": resp.network_id })),
+    };
+    let raw_agent_token =
+        crate::persist::commit_enrollment(state.auth.pool(), &device, &revision, &invite, &audit)
+            .await
+            .map_err(crate::persist::internal)?;
+    resp.agent_token = raw_agent_token;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "device",
@@ -830,26 +794,49 @@ async fn approve_registration_handler(
     axum::extract::Path((network_id, device_id)): axum::extract::Path<(String, String)>,
 ) -> Result<(StatusCode, Json<service::ApproveRegistrationResponse>), service::ServiceError> {
     let _persist = state.persist.lock().await;
-    let (registration, device, revision, revision_id, approved_at) = {
-        let mut guard = state.mesh.lock().unwrap();
+    let (registration, device, revision, revision_id, approved_at, audit_detail, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
         let (registration, device, revision_id) =
-            approve_registration(&mut guard, &network_id, &device_id)?;
-        let revision = guard
+            approve_registration(&mut staged, &network_id, &device_id)?;
+        let revision = staged
             .ledger
             .get(&meshlet_domain::NetworkId(network_id.clone()), revision_id)
             .expect("just recorded")
             .clone();
         let approved_at = device.approved_at.clone().expect("just approved");
-        (registration, device, revision, revision_id, approved_at)
+        let audit_detail = serde_json::json!({
+            "network_id": network_id,
+            "virtual_ipv4": device.virtual_ipv4.to_string(),
+            "revision_id": revision_id,
+        });
+        (
+            registration,
+            device,
+            revision,
+            revision_id,
+            approved_at,
+            audit_detail,
+            staged,
+        )
     };
-    // 设备行 + 新修订 + 申请转正（同一事务）。agent 凭证不轮换：凭证绑定
-    // 设备 id（注册时分配、批准沿用），设备端继续用原凭证拉计划。
-    crate::persist::promote_registration(state.auth.pool(), &registration, &device)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "device.approved",
+        target_type: "device",
+        target_id: &device.id.to_string(),
+        detail: Some(audit_detail.clone()),
+    };
+    crate::persist::commit_approve_registration(
+        state.auth.pool(),
+        &registration,
+        &device,
+        &revision,
+        &audit,
+    )
+    .await
+    .map_err(crate::persist::internal)?;
+    *state.mesh.lock().unwrap() = staged;
     let resp = service::ApproveRegistrationResponse {
         device_id: device.id.to_string(),
         network_id: device.network_id.to_string(),
@@ -859,19 +846,6 @@ async fn approve_registration_handler(
         apply_status: meshlet_domain::ApplyStatus::Pending.as_str().to_string(),
         approved_at,
     };
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "device.approved",
-        "device",
-        Some(&resp.device_id),
-        Some(serde_json::json!({
-            "network_id": network_id,
-            "virtual_ipv4": resp.virtual_ipv4.to_string(),
-            "revision_id": revision_id,
-        })),
-    )
-    .await?;
     crate::op_log!(
         info,
         "device",

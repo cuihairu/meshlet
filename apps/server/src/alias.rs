@@ -35,17 +35,18 @@ async fn create_alias_handler(
     Json(req): Json<crate::service::CreateAliasRequest>,
 ) -> Result<(StatusCode, Json<crate::service::AliasView>), crate::service::ServiceError> {
     let _persist = state.persist.lock().await;
-    let (view, alias, revision, route_seq) = {
-        let mut guard = state.mesh.lock().unwrap();
-        match crate::service::create_alias(&mut guard, &network_id, req) {
+    let (view, alias, revision, route_seq, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
+        match crate::service::create_alias(&mut staged, &network_id, req) {
             Ok(view) => {
-                let alias = guard
+                let alias = staged
                     .aliases
                     .get(&network_id)
                     .and_then(|aliases| aliases.iter().find(|a| a.id.to_string() == view.id))
                     .expect("just created")
                     .clone();
-                let revision = guard
+                let revision = staged
                     .ledger
                     .get(
                         &meshlet_domain::NetworkId(network_id.clone()),
@@ -53,7 +54,8 @@ async fn create_alias_handler(
                     )
                     .expect("just recorded")
                     .clone();
-                (view, alias, revision, guard.route_seq())
+                let route_seq = staged.route_seq();
+                (view, alias, revision, route_seq, staged)
             }
             Err(e) => {
                 // 前缀重叠类冲突与路由冲突同指标（§17.2）；其它 409 不计。
@@ -74,21 +76,19 @@ async fn create_alias_handler(
             }
         }
     };
-    crate::persist::insert_alias(state.auth.pool(), &alias, route_seq)
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "alias.created",
+        target_type: "alias",
+        target_id: &view.id,
+        detail: Some(
+            serde_json::json!({ "network_id": network_id, "lan_route_id": view.lan_route_id }),
+        ),
+    };
+    crate::persist::commit_alias(state.auth.pool(), &alias, route_seq, &revision, &audit)
         .await
         .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "alias.created",
-        "alias",
-        Some(&view.id),
-        Some(serde_json::json!({ "network_id": network_id, "lan_route_id": view.lan_route_id })),
-    )
-    .await?;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "alias",
@@ -131,33 +131,29 @@ async fn delete_alias_handler(
     axum::extract::Path((network_id, alias_id)): axum::extract::Path<(String, String)>,
 ) -> Result<StatusCode, crate::service::ServiceError> {
     let _persist = state.persist.lock().await;
-    let (route_id, revision) = {
-        let mut guard = state.mesh.lock().unwrap();
+    let (route_id, revision, staged) = {
+        let guard = state.mesh.lock().unwrap();
+        let mut staged = guard.clone();
         // 删除 = 整单元：返回值带上绑定路由 id，随同一修订清理。
-        let (_, route_id) = crate::service::delete_alias(&mut guard, &network_id, &alias_id)?;
-        let revision = guard
+        let (_, route_id) = crate::service::delete_alias(&mut staged, &network_id, &alias_id)?;
+        let revision = staged
             .ledger
             .current(&meshlet_domain::NetworkId(network_id.clone()))
             .expect("delete_alias just recorded a revision")
             .clone();
-        (route_id, revision)
+        (route_id, revision, staged)
     };
-    // 落库也是整单元：persist::delete_route 级联清理 alias 行（§12.6）。
-    crate::persist::delete_route(state.auth.pool(), &route_id)
+    let audit = crate::persist::AuditDraft {
+        actor_id: Some(&user_id.0),
+        action: "alias.deleted",
+        target_type: "alias",
+        target_id: &alias_id,
+        detail: Some(serde_json::json!({ "network_id": network_id, "route_id": route_id })),
+    };
+    crate::persist::commit_route_delete(state.auth.pool(), &route_id, &revision, &audit)
         .await
         .map_err(crate::persist::internal)?;
-    crate::persist::insert_revision(state.auth.pool(), &revision)
-        .await
-        .map_err(crate::persist::internal)?;
-    crate::audit::record_or_fail(
-        &state,
-        Some(&user_id.0),
-        "alias.deleted",
-        "alias",
-        Some(&alias_id),
-        Some(serde_json::json!({ "network_id": network_id, "route_id": route_id })),
-    )
-    .await?;
+    *state.mesh.lock().unwrap() = staged;
     crate::op_log!(
         info,
         "alias",

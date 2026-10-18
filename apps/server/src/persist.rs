@@ -66,6 +66,379 @@ pub struct MeshStatePersistedView {
     pub revisions: usize,
 }
 
+#[derive(Clone)]
+pub struct AuditDraft<'a> {
+    pub actor_id: Option<&'a str>,
+    pub action: &'a str,
+    pub target_type: &'a str,
+    pub target_id: &'a str,
+    pub detail: Option<serde_json::Value>,
+}
+
+async fn insert_audit_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO audit_events \
+         (actor_id, action, target_type, target_id, detail, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(audit.actor_id)
+    .bind(audit.action)
+    .bind(audit.target_type)
+    .bind(audit.target_id)
+    .bind(audit.detail.as_ref().map(serde_json::Value::to_string))
+    .bind(crate::service::now())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_revision_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    revision: &ConfigRevision,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO config_revisions
+           (network_id, revision, desired_config_hash, apply_status, created_at,
+            applied_at, error_summary)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(revision.network_id.to_string())
+    .bind(revision.revision as i64)
+    .bind(&revision.desired_config_hash)
+    .bind(revision.apply_status.as_str())
+    .bind(&revision.created_at)
+    .bind(&revision.applied_at)
+    .bind(&revision.error_summary)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_device_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    device: &Device,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO devices
+            (id, network_id, name, virtual_ipv4, public_key, platform, status, segment_id,
+            last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
+            created_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(device.id.to_string())
+    .bind(device.network_id.to_string())
+    .bind(&device.name)
+    .bind(device.virtual_ipv4.to_string())
+    .bind(&device.public_key)
+    .bind(platform_to_str(device.platform))
+    .bind(device_status_to_str(device.status))
+    .bind(device.segment_id.to_string())
+    .bind(&device.last_seen_at)
+    .bind(&device.last_handshake_at)
+    .bind(&device.last_report_at)
+    .bind(
+        device
+            .dataplane_evidence
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| {
+                sqlx::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                ))
+            })?,
+    )
+    .bind(&device.created_at)
+    .bind(&device.revoked_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_route_row_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    route: &LanRoute,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO lan_routes
+           (id, network_id, gateway_device_id, destination_cidr, route_mode,
+            return_path_mode, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(route.id.to_string())
+    .bind(route.network_id.to_string())
+    .bind(route.gateway_device_id.to_string())
+    .bind(route.destination_cidr.to_string())
+    .bind(route.route_mode.as_str())
+    .bind(route.return_path_mode.as_str())
+    .bind(desired_status_to_str(route.status))
+    .bind(&route.created_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_alias_row_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    alias: &AliasMapping,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO alias_mappings
+           (id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode,
+            status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(alias.id.to_string())
+    .bind(alias.network_id.to_string())
+    .bind(alias.lan_route_id.to_string())
+    .bind(alias.alias_cidr.to_string())
+    .bind(alias.target_cidr.to_string())
+    .bind(alias.translation_mode.as_str())
+    .bind(desired_status_to_str(alias.status))
+    .bind(crate::service::now())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub async fn commit_network(
+    pool: &SqlitePool,
+    network: &Network,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO networks (id, name, overlay_cidr, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(network.id.to_string())
+    .bind(&network.name)
+    .bind(network.overlay_cidr.to_string())
+    .bind(network_status_to_str(network.status))
+    .bind(&network.created_at)
+    .bind(&network.updated_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO segments (id, network_id, name, cidr, status, created_at)
+         VALUES (?, ?, 'default', ?, 'active', ?)",
+    )
+    .bind(meshlet_domain::default_segment_id(&network.id).to_string())
+    .bind(network.id.to_string())
+    .bind(network.overlay_cidr.to_string())
+    .bind(&network.created_at)
+    .execute(&mut *tx)
+    .await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_enrollment(
+    pool: &SqlitePool,
+    device: &Device,
+    revision: &ConfigRevision,
+    invite: &Invite,
+    audit: &AuditDraft<'_>,
+) -> Result<String, sqlx::Error> {
+    let raw_agent_token = meshlet_domain::generate_token();
+    let mut tx = pool.begin().await?;
+    insert_device_tx(&mut tx, device).await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    sqlx::query(
+        "INSERT INTO invitations
+           (id, network_id, token_hash, expires_at, max_uses, used_count, created_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+           used_count = excluded.used_count,
+           revoked_at = excluded.revoked_at",
+    )
+    .bind(invite.id.to_string())
+    .bind(invite.network_id.to_string())
+    .bind(&invite.token_hash)
+    .bind(&invite.expires_at)
+    .bind(invite.max_uses)
+    .bind(invite.used_count)
+    .bind(&invite.created_at)
+    .bind(&invite.revoked_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("INSERT INTO agent_tokens (token_hash, device_id, created_at) VALUES (?, ?, ?)")
+        .bind(meshlet_domain::token_hash(&raw_agent_token))
+        .bind(device.id.to_string())
+        .bind(crate::service::now())
+        .execute(&mut *tx)
+        .await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(raw_agent_token)
+}
+
+pub async fn commit_route(
+    pool: &SqlitePool,
+    route: &LanRoute,
+    route_seq: u64,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    insert_route_row_tx(&mut tx, route).await?;
+    save_seq_tx(&mut tx, "route_seq", route_seq).await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_alias(
+    pool: &SqlitePool,
+    alias: &AliasMapping,
+    route_seq: u64,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    insert_alias_row_tx(&mut tx, alias).await?;
+    save_seq_tx(&mut tx, "route_seq", route_seq).await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_host_forward(
+    pool: &SqlitePool,
+    route: &LanRoute,
+    alias: &AliasMapping,
+    route_seq: u64,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    insert_route_row_tx(&mut tx, route).await?;
+    insert_alias_row_tx(&mut tx, alias).await?;
+    save_seq_tx(&mut tx, "route_seq", route_seq).await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_route_delete(
+    pool: &SqlitePool,
+    route_id: &str,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM alias_mappings WHERE lan_route_id = ?")
+        .bind(route_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM lan_routes WHERE id = ?")
+        .bind(route_id)
+        .execute(&mut *tx)
+        .await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_approve_registration(
+    pool: &SqlitePool,
+    registration: &DeviceRegistration,
+    device: &Device,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO devices
+            (id, network_id, name, virtual_ipv4, public_key, platform, status, segment_id,
+            last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
+            created_at, approved_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(device.id.to_string())
+    .bind(device.network_id.to_string())
+    .bind(&device.name)
+    .bind(device.virtual_ipv4.to_string())
+    .bind(&device.public_key)
+    .bind(platform_to_str(device.platform))
+    .bind(device_status_to_str(device.status))
+    .bind(device.segment_id.to_string())
+    .bind(&device.last_seen_at)
+    .bind(&device.last_handshake_at)
+    .bind(&device.last_report_at)
+    .bind(
+        device
+            .dataplane_evidence
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| {
+                sqlx::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?,
+    )
+    .bind(&device.created_at)
+    .bind(&device.approved_at)
+    .bind(&device.revoked_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM device_registrations WHERE id = ?")
+        .bind(registration.id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_revoke_device(
+    pool: &SqlitePool,
+    device: &Device,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE devices SET status = ?, revoked_at = ? WHERE id = ?")
+        .bind(device_status_to_str(device.status))
+        .bind(&device.revoked_at)
+        .bind(device.id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "DELETE FROM alias_mappings WHERE lan_route_id IN
+           (SELECT id FROM lan_routes WHERE gateway_device_id = ?)",
+    )
+    .bind(device.id.to_string())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM lan_routes WHERE gateway_device_id = ?")
+        .bind(device.id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    sqlx::query(
+        "UPDATE agent_tokens SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL",
+    )
+    .bind(crate::service::now())
+    .bind(device.id.to_string())
+    .execute(&mut *tx)
+    .await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 状态 ↔ 行
 // ---------------------------------------------------------------------------

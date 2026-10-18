@@ -133,7 +133,7 @@ pub enum LedgerError {
 
 /// 每网络配置修订簿记（ADR-009）：版本号网络内严格单调递增（§10.4 的版本
 /// 顺序——同一网络的配置修改串行化即由「先记录修订、再应用修订」保证）。
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigLedger {
     revisions: HashMap<NetworkId, Vec<ConfigRevision>>,
 }

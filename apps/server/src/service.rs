@@ -399,6 +399,7 @@ impl ServiceError {
 // 状态
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct MeshState {
     pub(crate) deployments: HashMap<String, crate::revision::Deployment>,
     networks: HashMap<String, Network>,
