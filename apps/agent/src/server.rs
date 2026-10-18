@@ -132,6 +132,7 @@ fn describe(e: ureq::Error) -> String {
     }
 }
 
+#[cfg(test)]
 fn status_error(code: u16, body: &str) -> ureq::Error {
     ureq::Error::Status(
         code,
