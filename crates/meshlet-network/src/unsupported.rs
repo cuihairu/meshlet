@@ -99,6 +99,17 @@ impl UnsupportedBackend {
         Err(self.refuse("remove_nat"))
     }
 
+    pub fn meshlet_nat_owners_sync(&self) -> Result<Vec<String>, NetworkError> {
+        Err(self.refuse("enumerate meshlet nat owners"))
+    }
+
+    pub fn remove_stale_meshlet_routes_sync(
+        &self,
+        _routes: &[RouteConfig],
+    ) -> Result<ApplyResult, NetworkError> {
+        Err(self.refuse("remove stale meshlet routes"))
+    }
+
     pub fn rollback_sync(&self) -> Result<ApplyResult, NetworkError> {
         Err(self.refuse("rollback"))
     }

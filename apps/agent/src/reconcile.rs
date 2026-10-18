@@ -191,13 +191,36 @@ fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) ->
 ///   旧规则残留（backend 的下发只增不删，残留不会被自动发现）。
 ///
 /// 只按 `meshlet alias {id}` 注释删规则，绝不触碰非 Meshlet 规则。
-pub fn stale_owners(state: &AgentState, plan: &DevicePlan) -> Vec<String> {
+pub fn stale_owners(
+    state: &AgentState,
+    plan: &DevicePlan,
+    kernel_owners: &[String],
+    ledger_present: bool,
+) -> Vec<String> {
+    if !ledger_present {
+        return kernel_owners.to_vec();
+    }
     if rule_signatures(&plan.nat_rules) == state.nat_rules {
         // 规则集合一致：不动任何自有规则（幂等，§10.3）。
         return Vec::new();
     }
-    // 规则集合变了：账本记过的每个单元整体清掉，随后由计划重新下发——
-    // 只增不删的下发路径不会自动发现「旧规则已不该存在」。
+    // 账本丢失/损坏时，内核现存的 Meshlet 所有权清单是权威来源：
+    // 枚举所有带 `meshlet alias *` 注释的规则 owner，排除计划仍期望的
+    // 单元，余者全量清理；绝不触碰非 Meshlet 规则。
+    let planned: std::collections::BTreeSet<_> = owners(&plan.nat_rules).into_iter().collect();
+    let kernel_only: std::collections::BTreeSet<_> = kernel_owners.iter().cloned().collect();
+    if state.nat_owners.is_empty() {
+        return kernel_only.into_iter().collect();
+    }
+    let stale = kernel_only
+        .difference(&planned)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !stale.is_empty() {
+        return stale;
+    }
+    // 规则集合变了但内核侧没有额外对象：账本记录的旧单元整体清掉，
+    // 随后由计划重新下发——只增不删的下发路径不会自动发现「旧规则已不该存在」。
     state.nat_owners.clone()
 }
 
@@ -444,7 +467,7 @@ mod tests {
         let p = plan("hash-a", true);
         let state = state_of(&p);
         assert!(
-            stale_owners(&state, &p).is_empty(),
+            stale_owners(&state, &p, &[], true).is_empty(),
             "an unchanged plan has nothing stale"
         );
 
@@ -452,7 +475,7 @@ mod tests {
         let mut without_alias = p.clone();
         without_alias.nat_rules.clear();
         assert_eq!(
-            stale_owners(&state, &without_alias),
+            stale_owners(&state, &without_alias, &state.nat_owners, true),
             vec!["meshlet alias al-1"]
         );
 
@@ -460,18 +483,42 @@ mod tests {
         let mut other = p.clone();
         other.nat_rules[0].owner = "meshlet alias al-2".into();
         other.nat_rules[1].owner = "meshlet alias al-2".into();
-        assert_eq!(stale_owners(&state, &other), vec!["meshlet alias al-1"]);
+        assert_eq!(
+            stale_owners(&state, &other, &state.nat_owners, true),
+            vec!["meshlet alias al-1"]
+        );
 
         // 映射还在但规则少了（dnat_snat → dnat_only）：下发只增不删，必须先清
         // 再重刷，否则旧规则残留（白名单外的东西绝不动）。
         let mut dnat_only = p.clone();
         dnat_only.nat_rules.pop();
-        assert_eq!(stale_owners(&state, &dnat_only), vec!["meshlet alias al-1"]);
+        assert_eq!(
+            stale_owners(&state, &dnat_only, &state.nat_owners, true),
+            vec!["meshlet alias al-1"]
+        );
 
         // 顺序变化不算变更（指纹集合与顺序无关）。
         let mut reordered = p.clone();
         reordered.nat_rules.reverse();
-        assert!(stale_owners(&state, &reordered).is_empty());
+        assert!(stale_owners(&state, &reordered, &state.nat_owners, true).is_empty());
+    }
+
+    #[test]
+    fn missing_or_corrupt_ledger_uses_kernel_inventory() {
+        let mut p = plan("hash-a", false);
+        p.nat_rules.clear();
+        assert_eq!(
+            stale_owners(
+                &AgentState::default(),
+                &p,
+                &["meshlet alias kept".into(), "meshlet alias old".into()],
+                false
+            ),
+            [
+                "meshlet alias kept".to_string(),
+                "meshlet alias old".to_string(),
+            ]
+        );
     }
 
     #[test]

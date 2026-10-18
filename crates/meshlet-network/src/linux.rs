@@ -22,6 +22,7 @@
 use std::process::{Command, Output, Stdio};
 
 use meshlet_domain::Ipv4Cidr;
+use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
@@ -35,6 +36,8 @@ use crate::{
 /// 的 FORWARD 放行规则带 `meshlet tunnel`——回滚/清理只按注释精确定位。
 pub const MESHLET_NAT_COMMENT_PREFIX: &str = "meshlet alias";
 pub const MESHLET_FILTER_COMMENT: &str = "meshlet tunnel";
+/// Routing-protocol number used as Meshlet's route ownership marker.
+pub const MESHLET_ROUTE_PROTO: &str = "198";
 
 /// 从 `ip link show <if>` 输出解析实际 MTU 读数（首行形如
 /// `3: wg0: <...> mtu 1420 qdisc noqueue ...`）。读不到 `mtu` 字段或无法
@@ -92,7 +95,6 @@ pub struct LinuxNetworkBackend {
     sudo: bool,
     /// 受管隧道接口名（默认 `wg0`）。
     interface: String,
-    last_applied_routes: Vec<RouteConfig>,
 }
 
 impl LinuxNetworkBackend {
@@ -101,7 +103,6 @@ impl LinuxNetworkBackend {
             netns: None,
             sudo: false,
             interface: "wg0".to_string(),
-            last_applied_routes: Vec::new(),
         }
     }
 
@@ -121,11 +122,6 @@ impl LinuxNetworkBackend {
     pub fn with_interface(mut self, interface: impl Into<String>) -> Self {
         self.interface = interface.into();
         self
-    }
-
-    /// Extend the successful-route ledger. Used by apply and test setup.
-    fn record_applied_routes(&mut self, routes: &[RouteConfig]) {
-        self.last_applied_routes = routes.to_vec();
     }
 
     /// 命令前缀（sudo / netns 测试钩子展开在这之后统一处理）。
@@ -246,20 +242,23 @@ impl LinuxNetworkBackend {
         Ok(())
     }
 
-    /// `ip -4 route show dev <if>` → successful-route destinations for
-    /// rollback and inspect. Skip connected, default and unrecognized routes:
-    /// Meshlet must neither report nor delete objects it did not apply.
+    /// `ip -4 route show dev <if> proto <marker>` → successful Meshlet route
+    /// destinations. The routing protocol marker is the route-side ownership
+    /// tag: unlike `proto kernel` connected routes, these objects can be
+    /// enumerated safely even after the local agent ledger is lost.
     fn routes_on_interface(&self) -> Result<Vec<Ipv4Cidr>, NetworkError> {
-        let out = self.run(&["ip", "-4", "route", "show", "dev", &self.interface])?;
+        let out = self.run(&[
+            "ip",
+            "-4",
+            "route",
+            "show",
+            "dev",
+            &self.interface,
+            "proto",
+            MESHLET_ROUTE_PROTO,
+        ])?;
         let mut dsts = Vec::new();
         for line in String::from_utf8_lossy(&out.stdout).lines() {
-            // `proto kernel` 是接口地址自带的 connected 路由（内核所有权，
-            // 随地址生灭）：不是 Meshlet 安装的对象——rollback 不得删除
-            // （删了会破坏 on-link 可达、地址却还在），inspect 也不计入
-            // installed_routes（§10.3 只动自有对象）。
-            if line.contains("proto kernel") {
-                continue;
-            }
             let mut fields = line.split_whitespace();
             let dst = fields.next().unwrap_or("");
             if dst.is_empty() || dst == "default" {
@@ -280,13 +279,7 @@ impl LinuxNetworkBackend {
                 Ok(cidr) => cidr,
                 Err(_) => return Err(NetworkError::Io(format!("unparsable route line: {line}"))),
             };
-            if self
-                .last_applied_routes
-                .iter()
-                .any(|r| r.destination == cidr)
-            {
-                dsts.push(cidr);
-            }
+            dsts.push(cidr);
         }
         Ok(dsts)
     }
@@ -748,6 +741,8 @@ impl LinuxNetworkBackend {
                     &existing.to_string(),
                     "dev",
                     &self.interface,
+                    "proto",
+                    MESHLET_ROUTE_PROTO,
                 ])?;
             }
         }
@@ -762,10 +757,10 @@ impl LinuxNetworkBackend {
                 args.extend(["via".into(), gw.to_string()]);
             }
             args.extend(["dev".into(), route.interface.clone()]);
+            args.extend(["proto".into(), MESHLET_ROUTE_PROTO.into()]);
             let argv: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             self.run(&argv)?;
         }
-        self.record_applied_routes(routes);
         Ok(ApplyResult::ok())
     }
 
@@ -820,6 +815,52 @@ impl LinuxNetworkBackend {
             full.extend(del_args);
             let args: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
             self.run(&args)?;
+        }
+        Ok(ApplyResult::ok())
+    }
+
+    /// Enumerate NAT ownership units that currently exist in the kernel.
+    pub fn meshlet_nat_owners_sync(&self) -> Result<Vec<String>, NetworkError> {
+        let owners = self
+            .meshlet_nat_rules(None)?
+            .into_iter()
+            .filter_map(|tokens| {
+                let index = tokens.iter().position(|token| token == "--comment")? + 1;
+                tokens.get(index).cloned()
+            })
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect();
+        Ok(owners)
+    }
+
+    /// Remove Meshlet-marked routes that are absent from the desired plan.
+    ///
+    /// The managed-interface route marker is deliberately narrow: connected,
+    /// static and manually installed paths (including unmarked paths on the
+    /// managed interface) are foreign and are never deleted.
+    pub fn remove_stale_meshlet_routes_sync(
+        &self,
+        routes: &[RouteConfig],
+    ) -> Result<ApplyResult, NetworkError> {
+        if self.run(&["ip", "link", "show", &self.interface]).is_err() {
+            return Ok(ApplyResult::ok());
+        }
+        let desired: BTreeSet<_> = routes.iter().map(|route| route.destination).collect();
+        for existing in self.routes_on_interface()? {
+            if desired.contains(&existing) {
+                continue;
+            }
+            self.run(&[
+                "ip",
+                "route",
+                "del",
+                &existing.to_string(),
+                "dev",
+                &self.interface,
+                "proto",
+                MESHLET_ROUTE_PROTO,
+            ])?;
         }
         Ok(ApplyResult::ok())
     }
@@ -1189,7 +1230,9 @@ mod tests {
 
     #[test]
     fn foreign_route_line_flags_routes_on_other_paths() {
-        // 指向别的接口（带 via / 不带 via）都是冲突，原文点名。
+        // Marked routes on the managed interface remain Meshlet-owned even
+        // when their proto appears in exact output; other-interface paths are
+        // conflicts and are named verbatim.
         let via = "10.244.0.0/24 via 10.99.0.1 dev eth0";
         assert_eq!(foreign_route_line(via, "wg0").as_deref(), Some(via));
         assert_eq!(

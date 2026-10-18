@@ -186,7 +186,9 @@ impl Agent {
     /// 拉不到计划时**不动内核**：数据面以服务端期望为唯一来源，宁可不改也不
     /// 按猜测重放（调用方 [`Agent::tick`] 因此让整轮失败并退避重试）。
     pub fn reconcile(&mut self, plan: &DevicePlan) -> Result<Decision, String> {
-        let state = AgentState::load(&self.state_path).unwrap_or_default();
+        let ledger = AgentState::load(&self.state_path);
+        let state = ledger.clone().unwrap_or_default();
+        let ledger_present = ledger.is_ok();
         let snapshot = self
             .backend
             .inspect_sync()
@@ -218,12 +220,19 @@ impl Agent {
             return Ok(decision);
         }
         // 先按所有权清理计划里已消失的映射单元（§12.6），再重放隧道/路由/NAT。
-        for owner in stale_owners(&state, plan) {
+        let kernel_nat_owners = self
+            .backend
+            .meshlet_nat_owners_sync()
+            .map_err(|e| format!("enumerate meshlet nat owners: {e}"))?;
+        for owner in stale_owners(&state, plan, &kernel_nat_owners, ledger_present) {
             self.backend
                 .remove_nat_sync(&owner)
                 .map_err(|e| format!("remove meshlet nat rules of {owner}: {e}"))?;
             tracing::info!(owner = %owner, "removed stale meshlet nat rules");
         }
+        self.backend
+            .remove_stale_meshlet_routes_sync(&local_plan.routes)
+            .map_err(|e| format!("remove stale meshlet routes: {e}"))?;
         // hub 入口地址兜底（§16.4：服务端不下发 agent 的网络位置）：计划未带
         // endpoint 时用本地 `[dataplane] hub_endpoint` 填充——只影响本次内核下
         // 发，账本仍按服务端原计划记（desired_config_hash 不因此变化）。
