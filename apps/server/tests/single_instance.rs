@@ -654,6 +654,23 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
         .reconcile()
         .unwrap();
     assert!(!ping(&sandbox.names[2], "10.240.0.2"));
+    // Restart from persisted state must not restore the revoked peer from the
+    // last-good deployment journal.
+    net(&sandbox.names[0], &["ip", "link", "del", "wg0"]);
+    let loaded = meshlet_server::persist::load(&pool, Default::default())
+        .await
+        .unwrap();
+    *shared.lock().unwrap() = loaded.mesh;
+    meshlet_server::convergence::recover_once(state.clone())
+        .await
+        .unwrap();
+    let recovered_peers =
+        String::from_utf8_lossy(&ns(&sandbox.names[0], &["wg", "show", "wg0", "peers"]).stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count();
+    assert_eq!(recovered_peers, 1, "only the surviving device remains");
+    assert!(!ping(&sandbox.names[2], "10.240.0.2"));
     // First-ever application failure has no previous plan: clear C alone and
     // persist removal of its failed desired resources, including across restart.
     let c = admin(

@@ -525,7 +525,9 @@ paths:
       description: >
         Marks the device revoked (immediately invalidates its agent token) and
         removes the LAN routes it published from the desired config, recording
-        a new revision. Idempotent: revoking an already-revoked device is 409.
+        a new revision. Applying that revision removes the device's WireGuard
+        peer; last-good recovery never restores peers for revoked devices.
+        Idempotent: revoking an already-revoked device is 409.
       responses:
         "202":
           description: Accepted; carries revision
