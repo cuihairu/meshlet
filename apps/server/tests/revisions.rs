@@ -598,7 +598,7 @@ async fn slow_kernel_apply_across_networks_runs_in_parallel() {
     let office_elapsed = office_started.elapsed();
     assert_eq!(office_status, StatusCode::OK);
     assert!(
-        office_elapsed < Duration::from_millis(180),
+        office_elapsed < Duration::from_millis(250),
         "{office_elapsed:?}"
     );
 

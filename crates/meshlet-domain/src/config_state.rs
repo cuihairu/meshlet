@@ -18,6 +18,7 @@ use crate::entities::{
     AliasMapping, ApplyStatus, ConfigRevision, Device, DeviceStatus, LanRoute, NetworkId,
     RevisionError, Timestamp,
 };
+use crate::segments::SegmentGrant;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -30,17 +31,18 @@ use std::net::Ipv4Addr;
 /// 全部 **Active** 设备、全部 LAN 路由与全部 Alias 映射的确定性序列化取
 /// SHA-256。顺序不敏感（设备按虚拟 IP、路由按目的网段、Alias 按前缀排序）；
 /// `Pending`/`Revoked` 设备不入配置故不参与哈希；路由/Alias 删除即出哈希。
-/// 标签随输入集演进（v2 = 加入路由行，v3 = 加入 Alias 行），避免跨版本哈希
-/// 误判相等。
+/// 标签随输入集演进（v2 = 加入路由行，v3 = 加入 Alias 行，v4 = 加入 Applied
+/// Segment Grant 行），避免跨版本哈希误判相等。
 pub fn desired_config_hash(
     overlay_cidr: &Ipv4Cidr,
     hub: Ipv4Addr,
     devices: &[Device],
     routes: &[LanRoute],
     aliases: &[AliasMapping],
+    segment_grants: &[SegmentGrant],
 ) -> String {
     let mut lines = vec![
-        "meshlet-desired-v3".to_string(),
+        "meshlet-desired-v4".to_string(),
         format!("overlay={overlay_cidr}"),
         format!("hub={hub}"),
     ];
@@ -75,6 +77,23 @@ pub fn desired_config_hash(
             a.target_cidr,
             a.lan_route_id,
             a.translation_mode.as_str()
+        ));
+    }
+    let mut sorted_grants: Vec<&SegmentGrant> = segment_grants
+        .iter()
+        .filter(|g| g.status == crate::segments::SegmentGrantStatus::Applied)
+        .collect();
+    sorted_grants.sort_by(|a, b| {
+        (&a.source_segment_id, &a.destination_segment_id, &a.id).cmp(&(
+            &b.source_segment_id,
+            &b.destination_segment_id,
+            &b.id,
+        ))
+    });
+    for g in sorted_grants {
+        lines.push(format!(
+            "segment-grant src={} dst={}",
+            g.source_segment_id, g.destination_segment_id
         ));
     }
     let mut hasher = Sha256::new();
@@ -996,14 +1015,70 @@ mod tests {
         }
     }
 
+    fn grant(status: crate::segments::SegmentGrantStatus) -> SegmentGrant {
+        SegmentGrant {
+            id: crate::SegmentGrantId("sg-1".into()),
+            network_id: net("net-1"),
+            source_segment_id: crate::SegmentId("seg-src".into()),
+            destination_segment_id: crate::SegmentId("seg-dst".into()),
+            status,
+            created_at: T0.into(),
+            revoked_at: None,
+        }
+    }
+
+    #[test]
+    fn desired_config_hash_includes_only_applied_segment_grants() {
+        let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
+        let hub: Ipv4Addr = "10.240.0.1".parse().unwrap();
+        let base = desired_config_hash(&overlay, hub, &[], &[], &[], &[]);
+
+        let pending = grant(crate::segments::SegmentGrantStatus::Pending);
+        let revoked = grant(crate::segments::SegmentGrantStatus::Revoked);
+        assert_eq!(
+            desired_config_hash(&overlay, hub, &[], &[], &[], &[pending]),
+            base
+        );
+        assert_eq!(
+            desired_config_hash(&overlay, hub, &[], &[], &[], &[revoked]),
+            base
+        );
+
+        let mut applied = grant(crate::segments::SegmentGrantStatus::Applied);
+        let with_applied =
+            desired_config_hash(&overlay, hub, &[], &[], &[], std::slice::from_ref(&applied));
+        assert_ne!(with_applied, base);
+
+        let mut other = grant(crate::segments::SegmentGrantStatus::Applied);
+        other.id = crate::SegmentGrantId("sg-2".into());
+        assert_eq!(
+            desired_config_hash(
+                &overlay,
+                hub,
+                &[],
+                &[],
+                &[],
+                &[applied.clone(), other.clone()]
+            ),
+            desired_config_hash(&overlay, hub, &[], &[], &[], &[other, applied.clone()])
+        );
+
+        applied.status = crate::segments::SegmentGrantStatus::Revoked;
+        applied.revoked_at = Some(T1.into());
+        assert_eq!(
+            desired_config_hash(&overlay, hub, &[], &[], &[], &[applied]),
+            base
+        );
+    }
+
     #[test]
     fn desired_config_hash_is_deterministic_and_device_order_insensitive() {
         let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
         let hub: Ipv4Addr = "10.240.0.1".parse().unwrap();
         let d1 = device("alpha", "10.240.0.2", DeviceStatus::Active);
         let d2 = device("beta", "10.240.0.3", DeviceStatus::Active);
-        let h1 = desired_config_hash(&overlay, hub, &[d1.clone(), d2.clone()], &[], &[]);
-        let h2 = desired_config_hash(&overlay, hub, &[d2, d1], &[], &[]);
+        let h1 = desired_config_hash(&overlay, hub, &[d1.clone(), d2.clone()], &[], &[], &[]);
+        let h2 = desired_config_hash(&overlay, hub, &[d2, d1], &[], &[], &[]);
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 64); // SHA-256 hex
     }
@@ -1013,12 +1088,12 @@ mod tests {
         let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
         let hub: Ipv4Addr = "10.240.0.1".parse().unwrap();
         let alpha = device("alpha", "10.240.0.2", DeviceStatus::Active);
-        let base = desired_config_hash(&overlay, hub, std::slice::from_ref(&alpha), &[], &[]);
+        let base = desired_config_hash(&overlay, hub, std::slice::from_ref(&alpha), &[], &[], &[]);
 
         // 新设备加入 → 哈希变化。
         let beta = device("beta", "10.240.0.3", DeviceStatus::Active);
         assert_ne!(
-            desired_config_hash(&overlay, hub, &[alpha.clone(), beta], &[], &[]),
+            desired_config_hash(&overlay, hub, &[alpha.clone(), beta], &[], &[], &[],),
             base
         );
 
@@ -1026,7 +1101,7 @@ mod tests {
         let mut renamed = alpha.clone();
         renamed.name = "alpha-2".into();
         assert_ne!(
-            desired_config_hash(&overlay, hub, &[renamed], &[], &[]),
+            desired_config_hash(&overlay, hub, &[renamed], &[], &[], &[]),
             base
         );
 
@@ -1034,19 +1109,26 @@ mod tests {
         let mut revoked = alpha.clone();
         revoked.status = DeviceStatus::Revoked;
         assert_eq!(
-            desired_config_hash(&overlay, hub, &[revoked], &[], &[]),
-            desired_config_hash(&overlay, hub, &[], &[], &[])
+            desired_config_hash(&overlay, hub, &[revoked], &[], &[], &[]),
+            desired_config_hash(&overlay, hub, &[], &[], &[], &[])
         );
 
         // overlay 或 hub 变化 → 哈希变化。
         let other_overlay: Ipv4Cidr = "172.30.0.0/16".parse().unwrap();
         assert_ne!(
-            desired_config_hash(&other_overlay, hub, std::slice::from_ref(&alpha), &[], &[]),
+            desired_config_hash(
+                &other_overlay,
+                hub,
+                std::slice::from_ref(&alpha),
+                &[],
+                &[],
+                &[],
+            ),
             base
         );
         let other_hub: Ipv4Addr = "10.240.0.254".parse().unwrap();
         assert_ne!(
-            desired_config_hash(&overlay, other_hub, &[alpha], &[], &[]),
+            desired_config_hash(&overlay, other_hub, &[alpha], &[], &[], &[]),
             base
         );
     }
@@ -1085,26 +1167,26 @@ mod tests {
 
         // 路由纳入期望配置。
         assert_ne!(
-            desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&a), &[]),
-            { desired_config_hash(&overlay, hub, &[], &[], &[]) }
+            desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&a), &[], &[]),
+            desired_config_hash(&overlay, hub, &[], &[], &[], &[])
         );
         // 顺序不敏感。
         assert_eq!(
-            desired_config_hash(&overlay, hub, &[], &[a.clone(), b.clone()], &[]),
-            desired_config_hash(&overlay, hub, &[], &[b.clone(), a.clone()], &[])
+            desired_config_hash(&overlay, hub, &[], &[a.clone(), b.clone()], &[], &[],),
+            desired_config_hash(&overlay, hub, &[], &[b.clone(), a.clone()], &[], &[]),
         );
         // 返回路径模式 / 路由模式参与哈希。
         let mut snat = route("192.168.1.0/24", "dev-1", RouteMode::Direct);
         snat.return_path_mode = ReturnPathMode::ControlledSnat;
         assert_ne!(
-            desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&snat), &[]),
-            desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&a), &[])
+            desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&snat), &[], &[],),
+            desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&a), &[], &[],)
         );
         // 删除路由（不出现在输入里）→ 哈希不同于含路由时。
-        let with_route = desired_config_hash(&overlay, hub, &[], &[a], &[]);
+        let with_route = desired_config_hash(&overlay, hub, &[], &[a], &[], &[]);
         assert_ne!(
             with_route,
-            desired_config_hash(&overlay, hub, &[], &[], &[])
+            desired_config_hash(&overlay, hub, &[], &[], &[], &[])
         );
     }
 
@@ -1116,23 +1198,23 @@ mod tests {
         let a2 = alias("al-2", "10.241.2.0/24", "192.168.2.0/24", "rt-2");
 
         // Alias 纳入期望配置。
-        let base = desired_config_hash(&overlay, hub, &[], &[], &[]);
+        let base = desired_config_hash(&overlay, hub, &[], &[], &[], &[]);
         assert_ne!(
-            desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&a1)),
+            desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&a1), &[]),
             base
         );
         // 顺序不敏感。
         assert_eq!(
-            desired_config_hash(&overlay, hub, &[], &[], &[a1.clone(), a2.clone()]),
-            desired_config_hash(&overlay, hub, &[], &[], &[a2.clone(), a1.clone()])
+            desired_config_hash(&overlay, hub, &[], &[], &[a1.clone(), a2.clone()], &[],),
+            desired_config_hash(&overlay, hub, &[], &[], &[a2.clone(), a1.clone()], &[])
         );
         // 前缀或绑定路由变化 → 哈希变化。
         let other = alias("al-1", "10.241.9.0/24", "192.168.9.0/24", "rt-1");
         assert_ne!(
-            desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&other)),
-            desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&a1))
+            desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&other), &[],),
+            desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&a1), &[],)
         );
         // 删除 Alias → 哈希回到 base。
-        assert_eq!(desired_config_hash(&overlay, hub, &[], &[], &[]), base);
+        assert_eq!(desired_config_hash(&overlay, hub, &[], &[], &[], &[]), base);
     }
 }

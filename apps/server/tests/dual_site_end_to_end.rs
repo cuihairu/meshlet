@@ -740,10 +740,12 @@ s.sendto(f'{site} seen={addr[0]}'.encode(), addr)
 /// TCP echo server: replies `{site} seen={source}` and logs the 5-tuple.
 const TCP_ECHO_PY: &str = r#"
 import socket, sys
-port, site = int(sys.argv[1]), sys.argv[2]
+from pathlib import Path
+port, site, ready_path = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.bind(('0.0.0.0', port))
 s.listen(5)
+Path(ready_path).touch()
 s.settimeout(15)
 conn, peer = s.accept()
 data = conn.recv(2048)
@@ -862,6 +864,8 @@ fn tcp_echo(
 ) -> String {
     let echo_py = script_dir.join("tcp-echo.py");
     let send_py = script_dir.join("tcp-send.py");
+    let ready_path = script_dir.join(format!("tcp-{port}.ready"));
+    let _ = std::fs::remove_file(&ready_path);
     let server_ns = if site == "local" {
         &topo.local_lan
     } else {
@@ -873,10 +877,19 @@ fn tcp_echo(
         .arg(&echo_py)
         .arg(port.to_string())
         .arg(site)
+        .arg(&ready_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn tcp echo server");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ready_path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "tcp echo server did not become ready on port {port}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let out = netns_exec(
         &topo.a.netns,
         &[
@@ -929,17 +942,27 @@ fn capture_packet(
         &topo.local_lan
     };
     let echo_py = script_dir.join("tcp-echo.py");
+    let ready_path = script_dir.join(format!("tcp-{port}.ready"));
+    let _ = std::fs::remove_file(&ready_path);
     let mut server = Command::new("sudo")
         .arg("-n")
         .args(["ip", "netns", "exec", server_ns, "python3"])
         .arg(&echo_py)
         .arg(port.to_string())
         .arg("capture")
+        .arg(&ready_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn capture echo server");
-    std::thread::sleep(Duration::from_millis(200));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ready_path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "capture tcp echo server did not become ready on port {port}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let mut tcpdump = Command::new("sudo")
         .arg("-n")
         .args([

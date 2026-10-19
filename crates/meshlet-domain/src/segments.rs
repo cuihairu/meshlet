@@ -58,6 +58,55 @@ impl SegmentGrantStatus {
     }
 }
 
+pub struct SegmentGrantBuilder {
+    id: SegmentGrantId,
+    network_id: NetworkId,
+    source_segment_id: SegmentId,
+    destination_segment_id: SegmentId,
+    created_at: Timestamp,
+}
+
+impl SegmentGrantBuilder {
+    pub fn new(
+        id: SegmentGrantId,
+        network_id: NetworkId,
+        source_segment_id: SegmentId,
+        destination_segment_id: SegmentId,
+        created_at: Timestamp,
+    ) -> Self {
+        Self {
+            id,
+            network_id,
+            source_segment_id,
+            destination_segment_id,
+            created_at,
+        }
+    }
+
+    pub fn build(self) -> SegmentGrant {
+        SegmentGrant {
+            id: self.id,
+            network_id: self.network_id,
+            source_segment_id: self.source_segment_id,
+            destination_segment_id: self.destination_segment_id,
+            status: SegmentGrantStatus::Pending,
+            created_at: self.created_at,
+            revoked_at: None,
+        }
+    }
+}
+
+impl SegmentGrant {
+    pub fn revoke(&mut self, now: Timestamp) -> Result<(), &'static str> {
+        if self.status == SegmentGrantStatus::Revoked {
+            return Err("segment grant is already revoked");
+        }
+        self.status = SegmentGrantStatus::Revoked;
+        self.revoked_at = Some(now);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
     pub id: SegmentId,

@@ -830,6 +830,7 @@ fn record_revision(state: &mut MeshState, network_id: &str) -> Result<u64, Servi
         &devices,
         routes,
         aliases,
+        state.segment_grants(network_id),
     );
     Ok(state.ledger.record(
         &meshlet_domain::NetworkId(network_id.to_string()),

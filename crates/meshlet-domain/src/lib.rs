@@ -30,9 +30,8 @@ pub use entities::{
     ConfigRevision, DataplaneEvidence, DesiredStateStatus, Device, DeviceError, DeviceId,
     DeviceKey, DeviceRegistration, DeviceRegistry, DeviceStatus, InviteId, LanRoute, LanRouteId,
     Network, NetworkId, NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError,
-    RouteMode, SegmentId, Timestamp, TranslationMode, UserId,
+    RouteMode, SegmentGrantId, SegmentId, Timestamp, TranslationMode, UserId,
 };
-pub use entities::SegmentGrantId;
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};
 pub use presence::{
@@ -41,7 +40,7 @@ pub use presence::{
 };
 pub use segments::{
     default_segment_id, validate_device_segment, Segment, SegmentError, SegmentGrant,
-    SegmentGrantStatus, SegmentStatus,
+    SegmentGrantBuilder, SegmentGrantStatus, SegmentStatus,
 };
 
 #[cfg(test)]
