@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   api,
   ApiError,
@@ -289,7 +289,7 @@ function NetworkDetail({
       <DiagnosticsSection networkId={network.id} />
       <InvitesSection networkId={network.id} />
       <BootstrapTokensSection networkId={network.id} />
-      <RevisionsSection networkId={network.id} />
+      <RevisionsSection key={network.id} networkId={network.id} />
     </section>
   );
 }
@@ -1519,26 +1519,50 @@ function BootstrapTokensSection({ networkId }: { networkId: string }) {
   );
 }
 
-function RevisionsSection({ networkId }: { networkId: string }) {
+export function RevisionsSection({ networkId }: { networkId: string }) {
   const [revisions, setRevisions] = useState<ConfigRevision[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
 
   const load = useCallback(() => {
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     api
-      .listRevisions(networkId)
+      .listRevisions(networkId, controller.signal)
       // The API returns ascending order; the console shows the newest first.
-      .then((rows) => setRevisions([...rows].reverse()))
-      .catch(() => setRevisions([]));
+      .then((rows) => {
+        if (requestRef.current !== controller || controller.signal.aborted) return;
+        setRevisions([...rows].reverse());
+        setError(null);
+      })
+      .catch((e) => {
+        if (
+          requestRef.current !== controller ||
+          (e instanceof DOMException && e.name === 'AbortError')
+        ) {
+          return;
+        }
+        setError(e instanceof ApiError ? `${e.status} ${e.code}: ${e.message}` : String(e));
+      });
   }, [networkId]);
 
   useEffect(() => {
     load();
+    return () => requestRef.current?.abort();
   }, [load]);
 
-  // Newest first, so the head of the list is the current desired config — the
-  // only revision the server accepts a rollback for.
-  const currentRevision = revisions?.[0]?.revision;
+  const waitingForDevices =
+    revisions?.[0]?.convergence?.device_apply_status === 'pending';
+
+  useEffect(() => {
+    if (!waitingForDevices) return;
+    const timer = window.setInterval(() => {
+      void load();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [load, waitingForDevices]);
 
   const act = async (action: 'apply' | 'rollback', revision: number) => {
     setBusy(revision);
@@ -1547,12 +1571,16 @@ function RevisionsSection({ networkId }: { networkId: string }) {
       if (action === 'apply') await api.applyRevision(networkId, revision);
       else await api.rollbackRevision(networkId, revision);
     } catch (e) {
-      setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
+      setError(e instanceof ApiError ? `${e.status} ${e.code}: ${e.message}` : String(e));
     } finally {
       setBusy(null);
       load();
     }
   };
+
+  // Newest first, so the head of the list is the current desired config — the
+  // only revision the server accepts a rollback for.
+  const currentRevision = revisions?.[0]?.revision;
 
   return (
     <div>
@@ -1645,7 +1673,14 @@ function RevisionsSection({ networkId }: { networkId: string }) {
           </tbody>
         </table>
       )}
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p className="error">
+          Failed to load config revisions: {error}.{' '}
+          <button type="button" className="link" onClick={load}>
+            Retry
+          </button>
+        </p>
+      )}
     </div>
   );
 }

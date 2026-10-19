@@ -219,7 +219,12 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
     method,
     headers: {
@@ -227,6 +232,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       'x-requested-with': 'XMLHttpRequest',
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   });
   if (res.status === 204) {
     return undefined as T;
@@ -285,8 +291,13 @@ export const api = {
   /** Denies (drops) a pending registration; the device may re-register later. */
   denyRegistration: (networkId: string, deviceId: string) =>
     request<void>('POST', `/networks/${networkId}/devices/${deviceId}/deny`),
-  listRevisions: (networkId: string) =>
-    request<ConfigRevision[]>('GET', `/networks/${networkId}/config-revisions`),
+  listRevisions: (networkId: string, signal?: AbortSignal) =>
+    request<ConfigRevision[]>(
+      'GET',
+      `/networks/${networkId}/config-revisions`,
+      undefined,
+      signal,
+    ),
   applyRevision: (networkId: string, revision: number) =>
     request<ConfigRevision>(
       'POST',
