@@ -1,12 +1,12 @@
 # 网段即信任组：Network 内分段与跨段授权设计
 
-日期：2026-10-17。状态：设计已采纳（[ADR-012](../decisions/adr-012-network-segment-trust.md)）；实现、迁移与真实数据面验收均未开始。
+日期：2026-10-17。状态：设计已采纳（[ADR-012](../decisions/adr-012-network-segment-trust.md)）；控制面模型、迁移、Segment/Grant CRUD 与 apply/revoke 已实现，真实内核策略验收仍未开始。
 
 用户意图（2026-10-16）：「meshlet 是不是可以分配网段呢？这样一类网段的是可以相互信任的，这样就分组了」。本文把它落成一个模型：**Segment（网段）是 Network 内部的地址子前缀，也是默认信任边界**。同一网段内成员默认互信；跨网段默认不可达，必须由显式授权（Grant）放行。
 
 本文是静态核对既有实现后写的增量设计，不重写既有路由模型：LAN Route / Alias / 网关 / IPAM 实体全部保留，分段只增加「地址归属」和「hub 转发点的来源校验」两件事。
 
-**实现状态**：本文只定义契约与验收边界，仓内仍没有 Segment、授权或分段策略代码。文中所有 `crates/...:line`、`apps/...:line` 均是 2026-10-17 现状证据，不是已完成实现。
+**实现状态更新（2026-10-20）**：旧文“仓内没有 Segment、授权代码”的判断已过时。本文保留当时核对证据，另见当前实现与测试：`apps/server/src/segment.rs`、`apps/server/src/service.rs::create_segment/create_segment_grant/apply_segment_grant/revoke_segment_grant`、`apps/server/src/persist.rs::commit_segment/commit_segment_grant/commit_segment_grant_status`、`apps/server/tests/segments.rs`。内核策略仍不视为已验收。
 
 ## 1. 范围
 
@@ -203,21 +203,18 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
 - 边界：ADR-008 定 Windows v1 仅 Overlay 客户端，不做 LAN 网关与 Alias NAT。因此一个「成员全是 Windows」的段可以正常做 Overlay 同段互通与被跨段授权访问，但**不能发布 LAN 路由**；PN-03（Windows 完整 Overlay 客户端，隧道服务/提权/开机恢复）完成前，Windows 甚至还没有完整数据面。段设计不要求 PN-03 先行，PN-03 落地时按本文 AllowedIPs 口径实现即天然在段内。
 - Windows 上不安装、也不需要安装本地段防火墙规则；若未来出现 P2P 直连（v2），端点执行才成为问题——那是 PN-02 的前置项，本文的 hub 单点模型不预付这笔复杂度。
 
-## 8. 实施契约草案（供后续 ADR 细化，本轮不实现）
+## 8. 实施契约与当前边界
 
 - 迁移（下一个 migration 编号）：
   - `segments(id, network_id, name, cidr, status, created_at)`；
   - `segment_grants(id, network_id, source_segment_id, destination_segment_id, status, created_at, revoked_at)`；
   - `devices` 加 `segment_id REFERENCES segments(id)`；
   - 存量网络回填：每个已有 Network 建一条 `default` 段（CIDR = overlay），全部存量 Active 设备挂入。
-- API（沿用现有 `/api/v1/networks/{id}/...` 层级与修订回执风格）：
-  - `GET/POST /networks/{id}/segments`、`DELETE /segments/{seg_id}`；
-  - `POST /segments/{seg_id}/quarantine`、`DELETE /segments/{seg_id}/quarantine`；
-  - `GET/POST /networks/{id}/segment-grants`、`DELETE /segment-grants/{grant_id}`；
-  - 设备批准/入会请求增加 `segment_id`；设备改派 `POST /devices/{id}/segment`（语义为 §6.1 的换地址重放）。
+- 已实现 API：`GET/POST /networks/{id}/segments`、`GET/POST /networks/{id}/segment-grants`、`POST .../segment-grants/{grant_id}/apply`、`DELETE .../segment-grants/{grant_id}`。创建 Grant 恒为 `pending`；apply 后才参与期望哈希；撤销 `pending` 或 `applied` 授权；重复/同向活动授权拒绝。
+- 未实现 API：删除 Segment、隔离/解除隔离、设备批准指定 `segment_id` 与设备改派。不要把这些旧草案当成当前能力。
 - 冲突检查扩展点：`conflict.rs` 的 `check_network`（`crates/meshlet-domain/src/conflict.rs:182`）增加段间重叠、段/Alias 重叠、段/Overlay 包含关系三类，沿用 `ConflictKind` 严重度分类。
 - 后端执行扩展点：`NetworkBackend` trait（`crates/meshlet-network/src/lib.rs:173`）增加一个 `apply_segment_policy(rules)` 之类的受控方法（规则由域层纯函数渲染，参数化 argv，与 `nat.rs` 同纪律），`NetworkSnapshot` 增加段规则计数用于漂移对账（AR-03）。
-- API 路由扩展点：沿用现有模块化 `Router` 形态（`apps/server/src/lib.rs:925`，Alias 子路由在 `apps/server/src/alias.rs:18`），新增 `/networks/{id}/segments`、`/segments/{seg_id}`、`/segment-grants` 等子资源，不把段 CRUD 塞进通用 route handler。
+- 已接线模块化 Router：`apps/server/src/segment.rs::routes()` 在 `apps/server/src/lib.rs::router()` merge；控制台入口在 `console/src/App.tsx::SegmentGrantsSection`，API client 在 `console/src/api.ts`。控制台展示段与单向授权，提供 Pending 授权 Apply、非撤销授权 Revoke，并把校验错误内联显示；拒绝创建不会把既有列表清空。
 
 ## 9. 与既有待办条目的衔接
 

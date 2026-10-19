@@ -27,8 +27,8 @@
 use meshlet_domain::{
     AliasMapping, BootstrapToken, BootstrapTokenId, ConfigRevision, DesiredStateStatus, Device,
     DeviceId, DeviceRegistration, DeviceStatus, Invite, InviteId, Ipv4Cidr, LanRoute, LanRouteId,
-    Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode, Segment, SegmentId,
-    TranslationMode,
+    Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode, Segment, SegmentGrant,
+    SegmentId, TranslationMode,
 };
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -62,6 +62,7 @@ pub struct MeshStatePersistedView {
     pub routes: usize,
     pub aliases: usize,
     pub segments: usize,
+    pub segment_grants: usize,
     pub invites: usize,
     pub revisions: usize,
 }
@@ -324,6 +325,87 @@ pub async fn commit_host_forward(
     insert_route_row_tx(&mut tx, route).await?;
     insert_alias_row_tx(&mut tx, alias).await?;
     save_seq_tx(&mut tx, "route_seq", route_seq).await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_segment(
+    pool: &SqlitePool,
+    segment: &Segment,
+    route_seq: u64,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO segments (id, network_id, name, cidr, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(segment.id.to_string())
+    .bind(segment.network_id.to_string())
+    .bind(&segment.name)
+    .bind(segment.cidr.to_string())
+    .bind(segment.status.as_str())
+    .bind(&segment.created_at)
+    .execute(&mut *tx)
+    .await?;
+    save_seq_tx(&mut tx, "route_seq", route_seq).await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_segment_grant(
+    pool: &SqlitePool,
+    grant: &SegmentGrant,
+    route_seq: u64,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO segment_grants
+           (id, network_id, source_segment_id, destination_segment_id, status, created_at,
+            revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(grant.id.to_string())
+    .bind(grant.network_id.to_string())
+    .bind(grant.source_segment_id.to_string())
+    .bind(grant.destination_segment_id.to_string())
+    .bind(grant.status.as_str())
+    .bind(&grant.created_at)
+    .bind(&grant.revoked_at)
+    .execute(&mut *tx)
+    .await?;
+    save_seq_tx(&mut tx, "route_seq", route_seq).await?;
+    insert_revision_tx(&mut tx, revision).await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn commit_segment_grant_status(
+    pool: &SqlitePool,
+    grant: &SegmentGrant,
+    revision: &ConfigRevision,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE segment_grants
+         SET status = ?, revoked_at = ?
+         WHERE id = ? AND network_id = ?",
+    )
+    .bind(grant.status.as_str())
+    .bind(&grant.revoked_at)
+    .bind(grant.id.to_string())
+    .bind(grant.network_id.to_string())
+    .execute(&mut *tx)
+    .await?;
     insert_revision_tx(&mut tx, revision).await?;
     insert_audit_tx(&mut tx, audit).await?;
     tx.commit().await?;
@@ -1153,6 +1235,7 @@ pub async fn load(
             .restore_segment_grant(grant)
             .map_err(|e| corrupt("restore segment grant", e.to_string()))?;
     }
+    let segment_grants = state.segment_grant_count();
 
     // 设备：注册表顺序 = 加入顺序（created_at, id）；IPAM 逐一保留地址。
     let device_rows = sqlx::query_as::<
@@ -1492,6 +1575,7 @@ pub async fn load(
             routes,
             aliases,
             segments,
+            segment_grants,
             invites,
             revisions: state.revision_count(),
         },
@@ -1687,6 +1771,11 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
         aliases: count(pool, "alias_mappings").await?,
         segments: if has_segments {
             count(pool, "segments").await?
+        } else {
+            0
+        },
+        segment_grants: if has_segments {
+            count(pool, "segment_grants").await?
         } else {
             0
         },

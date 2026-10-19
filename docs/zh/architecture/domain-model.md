@@ -10,6 +10,9 @@ erDiagram
     NETWORK ||--o{ NETWORK_MEMBERSHIP : contains
     NETWORK ||--o{ DEVICE : contains
     DEVICE ||--o{ DEVICE_KEY : owns
+    NETWORK ||--o{ SEGMENT : owns
+    DEVICE ||--|| SEGMENT : belongs_to
+    SEGMENT ||--o{ SEGMENT_GRANT : "source or destination of"
     NETWORK ||--o{ LAN_ROUTE : publishes
     DEVICE ||--o{ LAN_ROUTE : "gateway of"
     LAN_ROUTE ||--o| ALIAS_MAPPING : has
@@ -19,6 +22,18 @@ erDiagram
     NETWORK ||--o{ BOOTSTRAP_TOKEN : issues
     BOOTSTRAP_TOKEN ||--o{ DEVICE_REGISTRATION : authorizes
     NETWORK ||--o{ DEVICE_REGISTRATION : holds
+    SEGMENT {
+        string id
+        string network_id
+        string cidr
+        string status
+    }
+    SEGMENT_GRANT {
+        string id
+        string source_segment_id
+        string destination_segment_id
+        string status
+    }
 ```
 
 ## User（控制台用户）
@@ -31,6 +46,12 @@ erDiagram
 | `status` / `created_at` / `updated_at` | 状态与时间戳 |
 
 第一版本地管理员即可；数据模型从一开始区分 Network 归属（§12.1）。
+
+## Segment 与 SegmentGrant
+
+Segment 是 Network 内的地址前缀与信任组，每台设备只属于一个 Segment。SegmentGrant 是从源段到目标段的**单向**信任，`pending` → `applied` 需显式 apply，任意非撤销状态可撤销为 `revoked`。
+
+Segment、Grant、Config Revision、审计事件与 SQLite 行在同一事务写入。只有 `applied` Grant 参与计划可见性与期望配置哈希；`pending` 和 `revoked` 会记录修订，但不改变序列化后的期望状态。Grant 的 apply 只是控制面跃迁，不等同于网络级 revision apply，更不能据此声称内核或端点已经完成策略下发。
 
 ## Network（私人虚拟网络）
 

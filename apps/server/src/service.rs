@@ -11,7 +11,8 @@ use meshlet_domain::{
     generate_token, token_hash, AliasError, AliasMapping, AliasMappingId, BootstrapToken,
     DataplaneEvidence, DesiredStateStatus, Device, DeviceId, DeviceRegistration, DeviceRegistry,
     Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network, Platform, RegistryError, ReturnPathMode,
-    RouteMode, Segment, SegmentGrant, Timestamp, TranslationMode,
+    RouteMode, Segment, SegmentGrant, SegmentGrantBuilder, SegmentGrantId, SegmentGrantStatus,
+    SegmentId, SegmentStatus, Timestamp, TranslationMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -277,6 +278,42 @@ pub struct AliasView {
     pub apply_status: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateSegmentRequest {
+    pub name: String,
+    pub cidr: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SegmentView {
+    pub id: String,
+    pub network_id: String,
+    pub name: String,
+    pub cidr: String,
+    pub status: String,
+    pub created_at: String,
+    pub revision_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSegmentGrantRequest {
+    pub source_segment_id: String,
+    pub destination_segment_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SegmentGrantView {
+    pub id: String,
+    pub network_id: String,
+    pub source_segment_id: String,
+    pub destination_segment_id: String,
+    pub status: String,
+    pub created_at: String,
+    pub revoked_at: Option<String>,
+    pub revision_id: u64,
+    pub apply_status: String,
+}
+
 // ---------------------------------------------------------------------------
 // 服务错误 → API 错误码
 // ---------------------------------------------------------------------------
@@ -295,6 +332,10 @@ pub enum ServiceError {
     RouteNotFound(String),
     #[error("alias {0} not found")]
     AliasNotFound(String),
+    #[error("segment {0} not found")]
+    SegmentNotFound(String),
+    #[error("segment grant {0} not found")]
+    SegmentGrantNotFound(String),
     /// 诊断从未运行过（§12.7：GET 返回最近一次运行，没有就是没有，不现算
     /// 也不假称有）。消息点名 POST 触发方式。
     #[error("{0}")]
@@ -332,6 +373,8 @@ impl ServiceError {
             | ServiceError::DeviceNotFound(_)
             | ServiceError::RouteNotFound(_)
             | ServiceError::AliasNotFound(_)
+            | ServiceError::SegmentNotFound(_)
+            | ServiceError::SegmentGrantNotFound(_)
             | ServiceError::RevisionNotFound(_)
             | ServiceError::DiagnosticsNotRun(_) => {
                 ErrorResponse::new(meshlet_api_types::ErrorCode::NotFound, self.to_string())
@@ -530,6 +573,10 @@ impl MeshState {
             .get(network_id)
             .map(Vec::as_slice)
             .unwrap_or(&[])
+    }
+
+    pub(crate) fn segment_grant_count(&self) -> usize {
+        self.grants.values().map(Vec::len).sum()
     }
 
     /// 启动重建：灌回一条待审批的注册申请（不进 IPAM、不进期望配置）。
@@ -1870,6 +1917,274 @@ pub fn delete_alias(
     }
     record_revision(state, network_id)?;
     Ok((alias_id.to_string(), route_id))
+}
+
+/// 创建非默认 Segment。默认段由建网事务固定，不能重复、替换或删除；
+/// 新段必须是 overlay 的严格子段，并与同网其它段前缀互斥。
+pub fn create_segment(
+    state: &mut MeshState,
+    network_id: &str,
+    req: CreateSegmentRequest,
+) -> Result<SegmentView, ServiceError> {
+    let network_id = network_id.to_string();
+    let network = state.network(&network_id)?;
+    let domain_network_id = network.id.clone();
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err(ServiceError::InvalidInput(
+            "segment name must not be empty".into(),
+        ));
+    }
+    if name == "default" {
+        return Err(ServiceError::Conflict(
+            "segment name \"default\" is reserved for the network overlay".into(),
+        ));
+    }
+    if state
+        .segments(&network_id)
+        .iter()
+        .any(|segment| segment.name == name)
+    {
+        return Err(ServiceError::Conflict(format!(
+            "segment name {name:?} already exists in network {network_id}"
+        )));
+    }
+    let cidr: Ipv4Cidr = req
+        .cidr
+        .parse()
+        .map_err(|e| ServiceError::InvalidCidr(format!("{}: {e}", req.cidr)))?;
+    let candidate = Segment {
+        id: SegmentId("candidate".to_string()),
+        network_id: network.id.clone(),
+        name: name.clone(),
+        cidr,
+        status: SegmentStatus::Active,
+        created_at: now(),
+    };
+    candidate
+        .validate_cidr(network.overlay_cidr)
+        .map_err(|e| ServiceError::InvalidCidr(e.to_string()))?;
+    if state
+        .segments(&network_id)
+        .iter()
+        .any(|segment| segment.cidr == cidr)
+    {
+        return Err(ServiceError::Conflict(format!(
+            "cidr {cidr} is already used by an existing segment in network {network_id}"
+        )));
+    }
+
+    state.route_seq += 1;
+    let segment = Segment {
+        id: SegmentId(format!("seg-{network_id}-{}", state.route_seq)),
+        network_id: domain_network_id,
+        name,
+        cidr,
+        status: SegmentStatus::Active,
+        created_at: now(),
+    };
+    state
+        .segments
+        .entry(network_id.clone())
+        .or_default()
+        .push(segment.clone());
+    let revision_id = record_revision(state, &network_id)?;
+    Ok(to_segment_view(&segment, revision_id))
+}
+
+pub fn list_segments(
+    state: &MeshState,
+    network_id: &str,
+) -> Result<Vec<SegmentView>, ServiceError> {
+    state.network(network_id)?;
+    Ok(state
+        .segments(network_id)
+        .iter()
+        .map(|segment| {
+            let (revision_id, _) = current_revision_ref(state, network_id);
+            to_segment_view(segment, revision_id)
+        })
+        .collect())
+}
+
+fn to_segment_view(segment: &Segment, revision_id: u64) -> SegmentView {
+    SegmentView {
+        id: segment.id.to_string(),
+        network_id: segment.network_id.to_string(),
+        name: segment.name.clone(),
+        cidr: segment.cidr.to_string(),
+        status: segment.status.as_str().to_string(),
+        created_at: segment.created_at.clone(),
+        revision_id,
+    }
+}
+
+fn segment_by_id<'a>(
+    state: &'a MeshState,
+    network_id: &'a str,
+    segment_id: &str,
+) -> Result<&'a Segment, ServiceError> {
+    state.network(network_id)?;
+    state
+        .segments(network_id)
+        .iter()
+        .find(|segment| segment.id.to_string() == segment_id)
+        .ok_or_else(|| {
+            ServiceError::SegmentNotFound(format!("{segment_id} in network {network_id}"))
+        })
+}
+
+/// 新建授权为 Pending：只有显式 apply 后的单向信任才进入期望哈希。
+pub fn create_segment_grant(
+    state: &mut MeshState,
+    network_id: &str,
+    req: CreateSegmentGrantRequest,
+) -> Result<SegmentGrantView, ServiceError> {
+    let network = state.network(network_id)?;
+    let domain_network_id = network.id.clone();
+    let source = segment_by_id(state, network_id, &req.source_segment_id)?;
+    let source_id = source.id.clone();
+    let destination = segment_by_id(state, network_id, &req.destination_segment_id)?;
+    let destination_id = destination.id.clone();
+    if source_id == destination_id {
+        return Err(ServiceError::InvalidInput(
+            "source and destination segments must differ".into(),
+        ));
+    }
+    if state.segment_grants(network_id).iter().any(|grant| {
+        grant.status != SegmentGrantStatus::Revoked
+            && grant.source_segment_id == source_id
+            && grant.destination_segment_id == destination_id
+    }) {
+        return Err(ServiceError::Conflict(format!(
+            "an active grant already exists from segment {} to segment {}",
+            source_id, destination_id
+        )));
+    }
+
+    state.route_seq += 1;
+    let grant = SegmentGrantBuilder::new(
+        SegmentGrantId(format!("sg-{}", state.route_seq)),
+        domain_network_id,
+        source_id.clone(),
+        destination_id.clone(),
+        now(),
+    )
+    .build();
+    state
+        .grants
+        .entry(network_id.to_string())
+        .or_default()
+        .push(grant.clone());
+    let revision_id = record_revision(state, network_id)?;
+    Ok(to_segment_grant_view(
+        state,
+        network_id,
+        &grant,
+        revision_id,
+    ))
+}
+
+pub fn list_segment_grants(
+    state: &MeshState,
+    network_id: &str,
+) -> Result<Vec<SegmentGrantView>, ServiceError> {
+    state.network(network_id)?;
+    let (revision_id, _) = current_revision_ref(state, network_id);
+    Ok(state
+        .segment_grants(network_id)
+        .iter()
+        .map(|grant| to_segment_grant_view(state, network_id, grant, revision_id))
+        .collect())
+}
+
+/// 显式批准 Pending 授权：之后才进入计划编译与 desired_config_hash v4。
+pub fn apply_segment_grant(
+    state: &mut MeshState,
+    network_id: &str,
+    grant_id: &str,
+) -> Result<SegmentGrantView, ServiceError> {
+    state.network(network_id)?;
+    let target_index = state
+        .grants
+        .get(network_id)
+        .and_then(|grants| {
+            grants
+                .iter()
+                .position(|grant| grant.id.to_string() == grant_id)
+        })
+        .ok_or_else(|| {
+            ServiceError::SegmentGrantNotFound(format!("{grant_id} in network {network_id}"))
+        })?;
+    if state.grants[network_id][target_index].status != SegmentGrantStatus::Pending {
+        return Err(ServiceError::Conflict(format!(
+            "segment grant {} is {}, only pending grants can be applied",
+            grant_id,
+            state.grants[network_id][target_index].status.as_str()
+        )));
+    }
+    state.grants.get_mut(network_id).expect("checked")[target_index].status =
+        SegmentGrantStatus::Applied;
+    let target = state.grants[network_id][target_index].clone();
+    let revision_id = record_revision(state, network_id)?;
+    Ok(to_segment_grant_view(
+        state,
+        network_id,
+        &target,
+        revision_id,
+    ))
+}
+
+/// 撤销单向信任；二次撤销是 409，不生成无变化修订。
+pub fn revoke_segment_grant(
+    state: &mut MeshState,
+    network_id: &str,
+    grant_id: &str,
+) -> Result<SegmentGrantView, ServiceError> {
+    state.network(network_id)?;
+    let target_index = state
+        .grants
+        .get(network_id)
+        .and_then(|grants| {
+            grants
+                .iter()
+                .position(|grant| grant.id.to_string() == grant_id)
+        })
+        .ok_or_else(|| {
+            ServiceError::SegmentGrantNotFound(format!("{grant_id} in network {network_id}"))
+        })?;
+    let mut target = state.grants[network_id][target_index].clone();
+    target
+        .revoke(now())
+        .map_err(|e| ServiceError::Conflict(e.to_string()))?;
+    state.grants.get_mut(network_id).expect("checked")[target_index] = target.clone();
+    let revision_id = record_revision(state, network_id)?;
+    Ok(to_segment_grant_view(
+        state,
+        network_id,
+        &target,
+        revision_id,
+    ))
+}
+
+fn to_segment_grant_view(
+    state: &MeshState,
+    network_id: &str,
+    grant: &SegmentGrant,
+    revision_id: u64,
+) -> SegmentGrantView {
+    let (_, apply_status) = current_revision_ref(state, network_id);
+    SegmentGrantView {
+        id: grant.id.to_string(),
+        network_id: grant.network_id.to_string(),
+        source_segment_id: grant.source_segment_id.to_string(),
+        destination_segment_id: grant.destination_segment_id.to_string(),
+        status: grant.status.as_str().to_string(),
+        created_at: grant.created_at.clone(),
+        revoked_at: grant.revoked_at.clone(),
+        revision_id,
+        apply_status,
+    }
 }
 
 /// 创建单主机全端口转发：把「alias /32 → target /32」作为一个原子单元写入。

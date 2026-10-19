@@ -173,6 +173,32 @@ export interface AliasMapping {
   apply_status: string;
 }
 
+/** Network segment: a trust group whose CIDR is a strict overlay subnet. */
+export interface Segment {
+  id: string;
+  network_id: string;
+  name: string;
+  cidr: string;
+  /** active | quarantined */
+  status: string;
+  created_at: string;
+  revision_id: number;
+}
+
+/** One-way segment trust grant (ADR-012); applied grants affect plans. */
+export interface SegmentGrant {
+  id: string;
+  network_id: string;
+  source_segment_id: string;
+  destination_segment_id: string;
+  /** pending | applied | revoked */
+  status: string;
+  created_at: string;
+  revoked_at: string | null;
+  revision_id: number;
+  apply_status: string;
+}
+
 /** One /32 host forwarding unit (route + alias are created and removed together). */
 export interface HostForward {
   id: string;
@@ -342,6 +368,32 @@ export const api = {
   /** Removes the mapping AND its bound route in one revision (§12.6). */
   deleteAlias: (networkId: string, aliasId: string) =>
     request<void>('DELETE', `/networks/${networkId}/aliases/${aliasId}`),
+  listSegments: (networkId: string) =>
+    request<Segment[]>('GET', `/networks/${networkId}/segments`),
+  createSegment: (networkId: string, name: string, cidr: string) =>
+    request<Segment>('POST', `/networks/${networkId}/segments`, { name, cidr }),
+  listSegmentGrants: (networkId: string) =>
+    request<SegmentGrant[]>('GET', `/networks/${networkId}/segment-grants`),
+  createSegmentGrant: (
+    networkId: string,
+    source_segment_id: string,
+    destination_segment_id: string,
+  ) =>
+    request<SegmentGrant>(
+      'POST',
+      `/networks/${networkId}/segment-grants`,
+      { source_segment_id, destination_segment_id },
+    ),
+  applySegmentGrant: (networkId: string, grantId: string) =>
+    request<SegmentGrant>(
+      'POST',
+      `/networks/${networkId}/segment-grants/${grantId}/apply`,
+    ),
+  revokeSegmentGrant: (networkId: string, grantId: string) =>
+    request<void>(
+      'DELETE',
+      `/networks/${networkId}/segment-grants/${grantId}`,
+    ),
   listHostForwards: (networkId: string) =>
     request<HostForward[]>('GET', `/networks/${networkId}/host-forwards`),
   createHostForward: (

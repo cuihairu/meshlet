@@ -24,6 +24,7 @@ pub mod diagnostics;
 pub mod metrics;
 pub mod persist;
 pub mod revision;
+pub mod segment;
 pub mod service;
 pub mod store;
 pub mod telemetry;
@@ -911,6 +912,7 @@ pub fn router(state: SharedAppState) -> Router {
         .merge(diagnostics::routes())
         .merge(metrics::routes())
         .merge(revision::routes())
+        .merge(segment::routes())
         .route("/api/v1/system/status", get(status_handler))
         .route("/api/v1/enroll", post(enroll_handler))
         .route(
@@ -1009,6 +1011,8 @@ impl IntoResponse for service::ServiceError {
             | service::ServiceError::DeviceNotFound(_)
             | service::ServiceError::RouteNotFound(_)
             | service::ServiceError::AliasNotFound(_)
+            | service::ServiceError::SegmentNotFound(_)
+            | service::ServiceError::SegmentGrantNotFound(_)
             | service::ServiceError::RevisionNotFound(_)
             | service::ServiceError::DiagnosticsNotRun(_)
             | service::ServiceError::InvalidInviteToken => StatusCode::NOT_FOUND,

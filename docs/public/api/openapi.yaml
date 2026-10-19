@@ -18,6 +18,7 @@ tags:
   - name: devices
   - name: routes
   - name: aliases
+  - name: segments
   - name: diagnostics
   - name: status
 paths:
@@ -697,6 +698,145 @@ paths:
       responses:
         "204": { description: No content }
         "404": { description: Unknown alias (or network). }
+  /networks/{network_id}/segments:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [segments]
+      summary: List network segments
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Segment" }
+    post:
+      tags: [segments]
+      summary: Create a non-default segment
+      description: >
+        A created segment must be a strict subnet of the network overlay and
+        must not reuse an existing exact CIDR. `default` is immutable and is
+        created by the network itself. Rejected creates record no revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SegmentCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Segment" }
+        "400":
+          description: Invalid CIDR, empty name, segment outside the overlay, or CIDR equal to the overlay.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Network name is reserved, or an existing segment uses the same exact CIDR. Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /networks/{network_id}/segment-grants:
+    parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
+    get:
+      tags: [segments]
+      summary: List one-way segment grants
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SegmentGrant" }
+    post:
+      tags: [segments]
+      summary: Create a Pending segment grant
+      description: >
+        The source and destination must both exist in this network and must
+        differ. A new grant always starts Pending; only Applied grants are
+        included in the desired-config hash and plan visibility.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SegmentGrantCreate" }
+      responses:
+        "201":
+          description: Created (status=pending)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SegmentGrant" }
+        "400":
+          description: Source and destination segments are the same.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Network, source segment, or destination segment is not in this network.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: An active grant already exists for this direction. Nothing is changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /networks/{network_id}/segment-grants/{segment_grant_id}/apply:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/SegmentGrantId" }
+    post:
+      tags: [segments]
+      summary: Apply a Pending segment grant
+      description: >
+        Changes only Pending grants to Applied. This is a desired-state
+        transition, not the network-wide revision apply endpoint; the new
+        Applied entry changes the desired-config hash while Pending and
+        Revoked entries do not.
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SegmentGrant" }
+        "404":
+          description: Network or segment grant not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Grant is already Applied or Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /networks/{network_id}/segment-grants/{segment_grant_id}:
+    parameters:
+      - { $ref: "#/components/parameters/NetworkId" }
+      - { $ref: "#/components/parameters/SegmentGrantId" }
+    delete:
+      tags: [segments]
+      summary: Revoke a segment grant
+      description: >
+        Changes Pending or Applied grants to Revoked and records one
+        revision. Revoked grants remain visible with `revoked_at` but are
+        excluded from the desired-config hash; revoking twice is 409.
+      responses:
+        "204": { description: No content }
+        "404":
+          description: Network or segment grant not found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Grant is already Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /networks/{network_id}/diagnostics:
     parameters: [ { $ref: "#/components/parameters/NetworkId" } ]
     get:
@@ -922,6 +1062,8 @@ components:
     DeviceId: { name: device_id, in: path, required: true, schema: { type: string } }
     RouteId: { name: route_id, in: path, required: true, schema: { type: string } }
     AliasId: { name: alias_id, in: path, required: true, schema: { type: string } }
+    SegmentId: { name: segment_id, in: path, required: true, schema: { type: string } }
+    SegmentGrantId: { name: segment_grant_id, in: path, required: true, schema: { type: string } }
   responses:
     Error:
       description: Error
@@ -1356,6 +1498,44 @@ components:
         lan_route_id: { type: string, description: An alias-mode route of this network; one mapping per route }
         alias_cidr: { type: string, description: Must have same prefix length as target route CIDR }
         translation_mode: { type: string, enum: [dnat_only, dnat_snat], default: dnat_snat }
+    Segment:
+      type: object
+      required: [id, network_id, name, cidr, status, created_at, revision_id]
+      properties:
+        id: { type: string }
+        network_id: { type: string }
+        name: { type: string }
+        cidr: { type: string }
+        status: { type: string, enum: [active, quarantined] }
+        created_at: { type: string, format: date-time }
+        revision_id: { type: integer }
+    SegmentCreate:
+      type: object
+      required: [name, cidr]
+      properties:
+        name: { type: string, minLength: 1 }
+        cidr: { type: string }
+    SegmentGrant:
+      type: object
+      required: [id, network_id, source_segment_id, destination_segment_id, status, created_at, revoked_at, revision_id, apply_status]
+      properties:
+        id: { type: string }
+        network_id: { type: string }
+        source_segment_id: { type: string }
+        destination_segment_id: { type: string }
+        status: { type: string, enum: [pending, applied, revoked] }
+        created_at: { type: string, format: date-time }
+        revoked_at:
+          type: [string, "null"]
+          format: date-time
+        revision_id: { type: integer }
+        apply_status: { $ref: "#/components/schemas/ConfigRevision/properties/apply_status" }
+    SegmentGrantCreate:
+      type: object
+      required: [source_segment_id, destination_segment_id]
+      properties:
+        source_segment_id: { type: string }
+        destination_segment_id: { type: string }
     HostForward:
       type: object
       required: [id, network_id, gateway_device_id, target_ipv4, alias_ipv4, translation_mode, status, revision_id, apply_status]
