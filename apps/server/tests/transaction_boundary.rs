@@ -17,7 +17,9 @@ struct Ctx {
 }
 
 async fn app() -> Ctx {
-    let db = std::path::PathBuf::from("/tmp/txdebug").join(format!(
+    let debug_dir = std::env::temp_dir().join("meshlet-txdebug");
+    std::fs::create_dir_all(&debug_dir).unwrap();
+    let db = debug_dir.join(format!(
         "meshlet-tx-boundary-{}-{}-debug.db",
         std::process::id(),
         std::time::SystemTime::now()
