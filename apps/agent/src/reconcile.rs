@@ -39,6 +39,10 @@ pub struct AgentState {
     /// 最近一次应用成功时刻（ISO-8601 UTC，排查用；不影响决策）。
     #[serde(default)]
     pub applied_at: String,
+    /// The full plan last applied to the kernel. It is the rollback source for
+    /// a failed transition; older ledgers without this field replay safely.
+    #[serde(default)]
+    pub last_good_plan: Option<DevicePlan>,
 }
 
 /// 账本路径：`{state_dir}/applied.json`。
@@ -56,6 +60,7 @@ impl AgentState {
             nat_rules: rule_signatures(&plan.nat_rules),
             nat_owners: owners(&plan.nat_rules),
             applied_at: now(),
+            last_good_plan: Some(plan.clone()),
         }
     }
 

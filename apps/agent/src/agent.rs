@@ -189,6 +189,10 @@ impl Agent {
         let ledger = AgentState::load(&self.state_path);
         let state = ledger.clone().unwrap_or_default();
         let ledger_present = ledger.is_ok();
+        let last_good = match ledger.as_ref() {
+            Ok(entry) => entry.last_good_plan.clone(),
+            Err(_) => None,
+        };
         let snapshot = self
             .backend
             .inspect_sync()
@@ -225,28 +229,53 @@ impl Agent {
             .meshlet_nat_owners_sync()
             .map_err(|e| format!("enumerate meshlet nat owners: {e}"))?;
         for owner in stale_owners(&state, plan, &kernel_nat_owners, ledger_present) {
-            self.backend
-                .remove_nat_sync(&owner)
-                .map_err(|e| format!("remove meshlet nat rules of {owner}: {e}"))?;
+            if let Err(error) = self.backend.remove_nat_sync(&owner) {
+                return Err(self.fail_transition(
+                    last_good.as_ref(),
+                    format!("remove meshlet nat rules of {owner}: {error}"),
+                ));
+            }
             tracing::info!(owner = %owner, "removed stale meshlet nat rules");
         }
-        self.backend
+        if let Err(error) = self
+            .backend
             .remove_stale_meshlet_routes_sync(&local_plan.routes)
-            .map_err(|e| format!("remove stale meshlet routes: {e}"))?;
+        {
+            return Err(self.fail_transition(
+                last_good.as_ref(),
+                format!("remove stale meshlet routes: {error}"),
+            ));
+        }
         // hub 入口地址兜底（§16.4：服务端不下发 agent 的网络位置）：计划未带
         // endpoint 时用本地 `[dataplane] hub_endpoint` 填充——只影响本次内核下
         // 发，账本仍按服务端原计划记（desired_config_hash 不因此变化）。
-        self.backend
-            .apply_device_plan_sync(&local_plan, self.private_key.clone(), None)
-            .map_err(|e| format!("apply the desired plan: {e}"))?;
-        if !self
+        let transition =
+            self.backend
+                .apply_device_plan_sync(&local_plan, self.private_key.clone(), None);
+        if let Err(error) = transition {
+            return Err(self.fail_transition(
+                last_good.as_ref(),
+                format!("apply the desired plan: {error}"),
+            ));
+        }
+        let matches = self
             .backend
             .device_plan_matches_sync(&local_plan)
-            .map_err(|e| e.to_string())?
-        {
-            return Err("applied plan did not match kernel readback".into());
+            .map_err(|error| {
+                self.fail_transition(
+                    last_good.as_ref(),
+                    format!("read back the desired plan: {error}"),
+                )
+            })?;
+        if !matches {
+            return Err(self.fail_transition(
+                last_good.as_ref(),
+                "applied plan did not match kernel readback".to_string(),
+            ));
         }
-        AgentState::from_plan(plan).save(&self.state_path)?;
+        let mut ledger_plan = local_plan;
+        ledger_plan.tunnel.private_key = None;
+        AgentState::from_plan(&ledger_plan).save(&self.state_path)?;
         tracing::info!(
             desired_config_hash = %plan.desired_config_hash,
             routes = plan.routes.len(),
@@ -255,6 +284,52 @@ impl Agent {
             "applied the desired device plan"
         );
         Ok(decision)
+    }
+
+    fn fail_transition(
+        &mut self,
+        last_good: Option<&DevicePlan>,
+        transition_error: String,
+    ) -> String {
+        match last_good {
+            None => transition_error,
+            Some(last_good) => {
+                match self
+                    .backend
+                    .apply_device_plan_sync(last_good, self.private_key.clone(), None)
+                {
+                    Ok(()) => {
+                        let restored = self
+                            .backend
+                            .device_plan_matches_sync(last_good)
+                            .map_err(|e| e.to_string());
+                        match restored {
+                        Ok(true) => {
+                            tracing::warn!(
+                                error = %transition_error,
+                                "restored the last successful device plan"
+                            );
+                            format!("{transition_error}; restored last good plan")
+                        }
+                        Ok(false) => format!(
+                            "{transition_error}; restore failed: kernel readback did not match last good plan"
+                        ),
+                        Err(error) => format!(
+                            "{transition_error}; restore readback failed: {error}"
+                        ),
+                    }
+                    }
+                    Err(restore_error) => {
+                        tracing::error!(
+                            error = %transition_error,
+                            restore_error = %restore_error,
+                            "could not restore the last successful device plan"
+                        );
+                        format!("{transition_error}; restore failed: {restore_error}")
+                    }
+                }
+            }
+        }
     }
 
     /// 心跳上报（§12.4/§14.1）：带本地读到的最近握手时间 + 数据面实测证据
