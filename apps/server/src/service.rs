@@ -11,7 +11,7 @@ use meshlet_domain::{
     generate_token, token_hash, AliasError, AliasMapping, AliasMappingId, BootstrapToken,
     DataplaneEvidence, DesiredStateStatus, Device, DeviceId, DeviceRegistration, DeviceRegistry,
     Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network, Platform, RegistryError, ReturnPathMode,
-    RouteMode, Segment, Timestamp, TranslationMode,
+    RouteMode, Segment, SegmentGrant, Timestamp, TranslationMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -417,6 +417,8 @@ pub struct MeshState {
     /// Segment trust groups (ADR-012), restored for startup validation and
     /// policy-plan work that follows.
     segments: HashMap<String, Vec<Segment>>,
+    /// Directed segment grants (ADR-012), restored with segments.
+    grants: HashMap<String, Vec<SegmentGrant>>,
     /// 路由 id 序列（全局单调，删除不复用）。
     route_seq: u64,
     /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
@@ -445,6 +447,7 @@ impl MeshState {
             lan_routes: HashMap::new(),
             aliases: HashMap::new(),
             segments: HashMap::new(),
+            grants: HashMap::new(),
             route_seq: 0,
             presence_thresholds,
             ledger: meshlet_domain::ConfigLedger::new(),
@@ -513,6 +516,20 @@ impl MeshState {
 
     pub(crate) fn segment_count(&self) -> usize {
         self.segments.values().map(Vec::len).sum()
+    }
+
+    pub(crate) fn segments(&self, network_id: &str) -> &[Segment] {
+        self.segments
+            .get(network_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub(crate) fn segment_grants(&self, network_id: &str) -> &[SegmentGrant] {
+        self.grants
+            .get(network_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// 启动重建：灌回一条待审批的注册申请（不进 IPAM、不进期望配置）。
@@ -597,6 +614,33 @@ impl MeshState {
             .entry(segment.network_id.to_string())
             .or_default()
             .push(segment);
+        Ok(())
+    }
+
+    pub(crate) fn restore_segment_grant(
+        &mut self,
+        grant: SegmentGrant,
+    ) -> Result<(), ServiceError> {
+        let segments = self
+            .segments
+            .get(&grant.network_id.to_string())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if !segments
+            .iter()
+            .any(|segment| segment.id == grant.source_segment_id)
+            || !segments
+                .iter()
+                .any(|segment| segment.id == grant.destination_segment_id)
+        {
+            return Err(ServiceError::Internal(
+                "segment grant references an unknown segment".into(),
+            ));
+        }
+        self.grants
+            .entry(grant.network_id.to_string())
+            .or_default()
+            .push(grant);
         Ok(())
     }
 
@@ -908,6 +952,7 @@ pub fn create_network(
     check_forward_prefix(state, "", overlay)?;
     let id = format!("net-{}", state.networks.len() + 1);
     let ts = now();
+    let default_segment_ts = ts.clone();
     let network = Network::new(
         meshlet_domain::NetworkId(id.clone()),
         req.name.clone(),
@@ -922,6 +967,14 @@ pub fn create_network(
     let ipam = Ipam::new(overlay, hub).map_err(|e| ServiceError::Internal(e.to_string()))?;
     state.networks.insert(id.clone(), network);
     state.ipams.insert(id.clone(), ipam);
+    state.restore_segment(Segment {
+        id: meshlet_domain::default_segment_id(&meshlet_domain::NetworkId(id.clone())),
+        network_id: meshlet_domain::NetworkId(id.clone()),
+        name: "default".into(),
+        cidr: overlay,
+        status: meshlet_domain::SegmentStatus::Active,
+        created_at: default_segment_ts,
+    })?;
     // 记录初始期望配置修订（§10.1：DB 写入 ≠ 生效，初始修订为 Pending）。
     record_revision(state, &id)?;
     Ok(to_network_view(state, state.network(&id).unwrap()))

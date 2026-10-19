@@ -21,6 +21,43 @@ use meshlet_network::{DevicePlan, PeerConfig, RouteConfig, SystemBackend, Tunnel
 
 use crate::service::MeshState;
 
+fn segment_for<'a>(
+    mesh: &'a MeshState,
+    network_id: &str,
+    device: &meshlet_domain::Device,
+) -> Option<&'a meshlet_domain::Segment> {
+    mesh.segments(network_id)
+        .iter()
+        .find(|segment| segment.id == device.segment_id)
+}
+
+fn route_visible(
+    mesh: &MeshState,
+    network_id: &str,
+    source_segment: &meshlet_domain::Segment,
+    route: &meshlet_domain::LanRoute,
+) -> bool {
+    let Some(network) = mesh.network_row(network_id) else {
+        return false;
+    };
+    if source_segment.cidr == network.overlay_cidr {
+        return true;
+    }
+    // Custom segments deliberately exclude the hub's Overlay default segment.
+    let Some(gateway) = mesh.registry.find_by_id(&route.gateway_device_id) else {
+        return false;
+    };
+    let Some(gateway_segment) = segment_for(mesh, network_id, gateway) else {
+        return false;
+    };
+    gateway_segment.id == source_segment.id
+        || mesh.segment_grants(network_id).iter().any(|grant| {
+            grant.status == meshlet_domain::SegmentGrantStatus::Applied
+                && grant.source_segment_id == source_segment.id
+                && grant.destination_segment_id == gateway_segment.id
+        })
+}
+
 /// hub 公钥：apply 时从 `[dataplane] private_key_file` 读取并经 `wg pubkey` 推导
 /// （不落库、不出站——ADR-010）。hub 侧首装必须配置该文件。
 pub fn hub_public_key(dataplane: &DataPlaneConfig) -> Result<String, String> {
@@ -79,11 +116,20 @@ pub fn build_device_plan(
     for alias in &mut planned_aliases {
         alias.status = DesiredStateStatus::Applied;
     }
+    let source_segment = segment_for(mesh, network_id, &device)
+        .ok_or_else(|| format!("device {device_id} has no segment assignment"))?;
+    planned_routes.retain(|route| route_visible(mesh, network_id, source_segment, route));
+    let route_ids: std::collections::BTreeSet<_> = planned_routes
+        .iter()
+        .map(|route| route.id.clone())
+        .collect();
+    planned_aliases.retain(|alias| route_ids.contains(&alias.lan_route_id));
     let routes_in = planned_routes.as_slice();
     let aliases = planned_aliases.as_slice();
     // AllowedIPs 走域层唯一推导：Overlay + 他人已发布的 LAN/Alias（自己的本地
     // 网段不回灌，避免环路）。路由与之一一映射：目标前缀经对应网关设备。
-    let allowed_ips = client_hub_peer_allowed_ips(overlay, &device.id, routes_in, aliases);
+    let allowed_ips =
+        client_hub_peer_allowed_ips(source_segment.cidr, &device.id, routes_in, aliases);
     let mut routes = Vec::new();
     for route in routes_in {
         if route.gateway_device_id == device.id || route.status != DesiredStateStatus::Applied {
@@ -203,7 +249,7 @@ mod tests {
     use super::*;
     use meshlet_domain::{
         AliasMappingId, Device, DeviceStatus, LanRouteId, Network, NetworkId, Platform,
-        PresenceThresholds, RouteMode, Segment, TranslationMode,
+        PresenceThresholds, RouteMode, Segment, SegmentId, TranslationMode,
     };
     use std::net::Ipv4Addr;
 
@@ -286,6 +332,91 @@ mod tests {
             enabled: true,
             ..DataPlaneConfig::default()
         }
+    }
+
+    #[test]
+    fn custom_segments_limit_plan_and_applied_grant_restores_visibility() {
+        let mut mesh = mesh();
+        let default_id = meshlet_domain::default_segment_id(&NetworkId("net-1".into()));
+        mesh.restore_segment(Segment {
+            id: SegmentId("seg-a".into()),
+            network_id: NetworkId("net-1".into()),
+            name: "a".into(),
+            cidr: "10.240.1.0/24".parse().unwrap(),
+            status: meshlet_domain::SegmentStatus::Active,
+            created_at: T0.into(),
+        })
+        .unwrap();
+        mesh.restore_segment(Segment {
+            id: SegmentId("seg-b".into()),
+            network_id: NetworkId("net-1".into()),
+            name: "b".into(),
+            cidr: "10.240.2.0/24".parse().unwrap(),
+            status: meshlet_domain::SegmentStatus::Active,
+            created_at: T0.into(),
+        })
+        .unwrap();
+
+        let mut source = device("d-a", "10.240.1.2", DeviceStatus::Active);
+        source.segment_id = SegmentId("seg-a".into());
+        let mut gateway = device("d-b", "10.240.2.2", DeviceStatus::Active);
+        gateway.segment_id = SegmentId("seg-b".into());
+        let mut hub_device = device("d-default", "10.240.0.2", DeviceStatus::Active);
+        hub_device.segment_id = default_id;
+        add(&mut mesh, source);
+        add(&mut mesh, gateway);
+        add(&mut mesh, hub_device);
+        mesh.restore_route(route("rt-same", "192.168.1.0/24", "d-a", RouteMode::Direct));
+        mesh.restore_route(route("rt-b", "192.168.2.0/24", "d-b", RouteMode::Direct));
+        mesh.restore_route(route(
+            "rt-hub",
+            "192.168.3.0/24",
+            "d-default",
+            RouteMode::Direct,
+        ));
+
+        let limited = build_device_plan(
+            &mesh,
+            "net-1",
+            &DeviceId("d-a".into()),
+            &dataplane(),
+            None,
+            "hub-pub",
+        )
+        .unwrap();
+        assert_eq!(
+            limited.tunnel.peers[0].allowed_ips,
+            vec!["10.240.1.0/24".parse().unwrap()]
+        );
+        assert!(limited.routes.is_empty());
+
+        mesh.restore_segment_grant(meshlet_domain::SegmentGrant {
+            id: meshlet_domain::SegmentGrantId("sg-1".into()),
+            network_id: NetworkId("net-1".into()),
+            source_segment_id: SegmentId("seg-a".into()),
+            destination_segment_id: SegmentId("seg-b".into()),
+            status: meshlet_domain::SegmentGrantStatus::Applied,
+            created_at: T0.into(),
+            revoked_at: None,
+        })
+        .unwrap();
+        let granted = build_device_plan(
+            &mesh,
+            "net-1",
+            &DeviceId("d-a".into()),
+            &dataplane(),
+            None,
+            "hub-pub",
+        )
+        .unwrap();
+        assert!(granted
+            .routes
+            .iter()
+            .any(|route| route.destination.to_string() == "192.168.2.0/24"));
+        assert!(granted.tunnel.peers[0]
+            .allowed_ips
+            .iter()
+            .any(|cidr| cidr.to_string() == "192.168.2.0/24"));
     }
 
     #[test]

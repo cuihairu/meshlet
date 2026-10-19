@@ -32,6 +32,7 @@ pub use entities::{
     Network, NetworkId, NetworkStatus, Platform, RegistryError, ReturnPathMode, RevisionError,
     RouteMode, SegmentId, Timestamp, TranslationMode, UserId,
 };
+pub use entities::SegmentGrantId;
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};
 pub use presence::{

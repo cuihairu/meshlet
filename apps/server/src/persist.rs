@@ -492,6 +492,11 @@ fn segment_status_parse(value: &str) -> Result<meshlet_domain::SegmentStatus, St
     meshlet_domain::SegmentStatus::parse(value).ok_or_else(|| format!("unknown status {value:?}"))
 }
 
+fn segment_grant_status_parse(value: &str) -> Result<meshlet_domain::SegmentGrantStatus, String> {
+    meshlet_domain::SegmentGrantStatus::parse(value)
+        .ok_or_else(|| format!("unknown status {value:?}"))
+}
+
 fn apply_status_parse(s: &str) -> Result<meshlet_domain::ApplyStatus, String> {
     use meshlet_domain::ApplyStatus;
     match s {
@@ -1113,6 +1118,41 @@ pub async fn load(
             .map_err(|e| corrupt("restore segment", e.to_string()))?;
     }
     let segments = state.segment_count();
+
+    let segment_grant_rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        ),
+    >(
+        "SELECT id, network_id, source_segment_id, destination_segment_id, status,
+                created_at, revoked_at
+         FROM segment_grants ORDER BY created_at, id",
+    )
+    .fetch_all(pool)
+    .await?;
+    for (id, network_id, source, destination, status, created_at, revoked_at) in segment_grant_rows
+    {
+        let grant = meshlet_domain::SegmentGrant {
+            id: meshlet_domain::SegmentGrantId(id),
+            network_id: NetworkId(network_id),
+            source_segment_id: SegmentId(source),
+            destination_segment_id: SegmentId(destination),
+            status: segment_grant_status_parse(&status)
+                .map_err(|e| corrupt("segment grant status", e))?,
+            created_at,
+            revoked_at,
+        };
+        state
+            .restore_segment_grant(grant)
+            .map_err(|e| corrupt("restore segment grant", e.to_string()))?;
+    }
 
     // 设备：注册表顺序 = 加入顺序（created_at, id）；IPAM 逐一保留地址。
     let device_rows = sqlx::query_as::<
@@ -2098,6 +2138,59 @@ mod tests {
             .unwrap();
         assert_eq!(restored.segment_id, custom_segment);
         assert_eq!(boot.summary.segments, 2);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn segment_grants_survive_database_reload() {
+        let pool = crate::store::connect("sqlite::memory:").await.unwrap();
+        let network_id = NetworkId("net-1".into());
+        let network = Network::new(
+            network_id.clone(),
+            "home",
+            "10.240.0.0/16".parse().unwrap(),
+            "2026-10-17T00:00:00Z".into(),
+        );
+        insert_network(&pool, &network).await.unwrap();
+        sqlx::query(
+            "INSERT INTO segments (id, network_id, name, cidr, status, created_at)
+             VALUES ('seg-net-1-a', ?, 'a', '10.240.1.0/24', 'active', ?),
+                    ('seg-net-1-b', ?, 'b', '10.240.2.0/24', 'active', ?)",
+        )
+        .bind(network_id.to_string())
+        .bind(&network.created_at)
+        .bind(network_id.to_string())
+        .bind(&network.created_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO segment_grants
+             (id, network_id, source_segment_id, destination_segment_id, status,
+              created_at, revoked_at)
+             VALUES ('sg-net-1-1', ?, 'seg-net-1-a', 'seg-net-1-b', 'applied', ?, NULL)",
+        )
+        .bind(network_id.to_string())
+        .bind(&network.created_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let boot = load(&pool, meshlet_domain::PresenceThresholds::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            boot.mesh.segment_grants("net-1"),
+            &[meshlet_domain::SegmentGrant {
+                id: meshlet_domain::SegmentGrantId("sg-net-1-1".into()),
+                network_id: network_id.clone(),
+                source_segment_id: SegmentId("seg-net-1-a".into()),
+                destination_segment_id: SegmentId("seg-net-1-b".into()),
+                status: meshlet_domain::SegmentGrantStatus::Applied,
+                created_at: network.created_at.clone(),
+                revoked_at: None,
+            }]
+        );
         pool.close().await;
     }
 
