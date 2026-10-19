@@ -36,15 +36,36 @@ fn required(output: &Output, what: &str) {
 }
 
 fn prerequisites() -> bool {
-    if sudo(&["true"]).status.success() {
-        return true;
+    if !Command::new("wg")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+    {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
+        eprintln!("SKIP: wireguard-tools (wg) not installed");
+        return false;
     }
-    assert!(
-        std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
-        "required dataplane prerequisite failed"
-    );
-    eprintln!("SKIP: passwordless sudo (sudo -n) unavailable");
-    false
+    if !sudo(&["true"]).status.success() {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
+        eprintln!("SKIP: passwordless sudo (sudo -n) unavailable");
+        return false;
+    }
+    if !sudo(&["ip", "netns", "list"]).status.success() {
+        assert!(
+            std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
+            "required dataplane prerequisite failed"
+        );
+        eprintln!("SKIP: ip netns unavailable");
+        return false;
+    }
+    true
 }
 
 struct Namespace(String);

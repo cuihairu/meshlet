@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked -p meshlet-network --tests -- --nocapture --test-threads=1 2>&1 | tee dataplane-network.log
-          cargo test --locked -p meshlet-agent --test agent_reconcile -- --nocapture --test-threads=1 2>&1 | tee dataplane-agent.log
+          cargo test --locked -p meshlet-agent --test agent_reconcile --test ledger_recovery --test plan_recovery -- --nocapture --test-threads=1 2>&1 | tee dataplane-agent.log
           cargo test --locked -p meshlet-server --test agent_plan --test dual_site_end_to_end --test single_instance -- --nocapture --test-threads=1 2>&1 | tee dataplane-server.log
           if rg 'SKIP:' dataplane-*.log; then
             exit 1

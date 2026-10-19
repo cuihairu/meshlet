@@ -27,7 +27,7 @@
 | CR-03 | P0 / 已验收（API / Linux netns） | 单网关多 LAN 按各目标网段解析 SNAT 源地址；删除规则不残留 | `single_instance.rs` 两 LAN 无返回路由可达；内核规则源分别为 .60.1/.61.1 |
 | CR-04 | P0 / 已验收（API / Linux netns） | 空库并发 bootstrap 仅创建一个管理员，失败请求不能得到会话 | `auth_console.rs::concurrent_bootstrap_has_exactly_one_admin_session` |
 | CR-05 | P0 / 已验收（API / Linux netns） | agent 检查实际地址、Peer/AllowedIPs、转发、路由下一跳和逐条 NAT；局部漂移可修复 | `single_instance.rs` 验证部分 SNAT 丢失、关闭转发后的重放与通信恢复 |
-| QA-01 | P0 / 待验证 | 独立数据面 CI 门禁：前置缺失不算通过，记录实际执行/跳过；重做最终验收矩阵 | `dataplane.yml` hosted 严格门禁与日志制品已通过；真实 VPS 验收矩阵待补 |
+| QA-01 | P0 / 部分验收（hosted 门禁稳定化） | 独立数据面 CI 门禁：前置缺失不算通过，记录实际执行/跳过；重做最终验收矩阵 | `dataplane.yml` hosted 严格门禁与日志制品已通过，`:33` 显式纳入 `ledger_recovery`/`plan_recovery`；普通 CI 缺 `wg` 时明确 SKIP，`MESHLET_REQUIRE_DATAPLANE=1` 仍硬失败；实现 `apps/agent/tests/ledger_recovery.rs:38`、`apps/agent/tests/plan_recovery.rs:1`，备份清理 `apps/server/tests/segments.rs:370`。本机 SKIP 4/4、严格数据面 ledger 4/4 + plan 3/3、segments 6/6、workspace/clippy/fmt/docs 全绿；真实 VPS 验收矩阵待补 |
 | RG-01 | P1 / 待验证 | 不同目标网段分别走指定网关；返回路径正确，网关失效不串站点 | 网关专题；AR-02/AR-05，当前已有基础路由模型 |
 | RG-02 | P0 核验 / 部分验收（Linux netns） | 双站点和客户端本地 LAN 同前缀时用独立 Alias；正式 API/Agent + netns 已验 UDP/TCP 分别命中 local/site1/site2、tcpdump 记录三条目标/端口元组、本地路由保留且重复真实前缀不进隧道；删除 site1 后其路由与 NAT 消失、site2/本地仍可达且 `ip rule` 不变；server/agent 重启后剩余计划精确重建并自动恢复。返回模式变化、同网关歧义、业务失败恢复、备份恢复和 RG-03 冲突/预检仍未验收，不标整项完成 | [重叠 LAN Alias 设计](docs/zh/design/overlapping-lan-alias.md)；AR-01/MOD-03；测试证据：`apps/server/tests/dual_site_end_to_end.rs:1299` TCP、`:1313` 抓包、`:1381` 删除清理、`:1528` 重启恢复；漂移修复：`apps/agent/src/reconcile.rs:138` 实际通过 |
 | RG-03 | 随 P0 修复 / 待设计 | 完整检查 Overlay/Alias/Direct/本地路由及共享多网络冲突域；拒绝覆盖，未知可追踪 | 网关专题；AR-01，精确前缀预检不代表完整冲突检测 |

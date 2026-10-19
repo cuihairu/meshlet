@@ -369,7 +369,7 @@ async fn segments_and_grants_survive_backup_reload() {
     );
     pool.close().await;
     ctx.pool.close().await;
-    std::fs::remove_file(&backup_path).unwrap();
+    cleanup(&backup_path);
     std::fs::remove_dir(&dir).unwrap();
 }
 
