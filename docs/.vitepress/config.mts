@@ -31,6 +31,8 @@ export default defineConfig({
           '/analysis/': [{ text: 'Analysis', items: [
             { text: 'Overview', link: '/analysis/' },
             { text: 'Architecture Review and TODO', link: '/analysis/architecture-review-2026-10-17' },
+            { text: 'Readiness Assessment', link: '/analysis/readiness-2026-10-19' },
+            { text: 'Agent Local API and Authorization', link: '/analysis/agent-local-api-2026-10-19' },
             { text: 'Personal Networking Comparison', link: '/analysis/personal-networking-comparison' },
             { text: 'Product Scope', link: '/analysis/scope' },
             { text: 'Architecture and Technology', link: '/analysis/architecture' },
@@ -104,6 +106,8 @@ export default defineConfig({
           '/zh/analysis/': [{ text: '分析整理', items: [
             { text: '总览', link: '/zh/analysis/' },
             { text: '架构与 TODO 审查', link: '/zh/analysis/architecture-review-2026-10-17' },
+            { text: '可用性评估', link: '/zh/analysis/readiness-2026-10-19' },
+            { text: 'Agent 本地 API 与授权', link: '/zh/analysis/agent-local-api-2026-10-19' },
             { text: '个人组网功能对比', link: '/zh/analysis/personal-networking-comparison' },
             { text: '产品边界与范围', link: '/zh/analysis/scope' },
             { text: '总体架构与技术选型', link: '/zh/analysis/architecture' },

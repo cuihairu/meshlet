@@ -7,6 +7,8 @@
 ## 当前审查与调研
 
 - [架构与 TODO 审查（2026-10-17）](architecture-review-2026-10-17.md)：六项基础缺口、设备分组/端口转发/HTTP 路由设计与重新验收要求。
+- [可用性评估（2026-10-19）](readiness-2026-10-19.md)：状态计数、MVP 边界和剩余环境/设计依赖。
+- [Agent 本地 API 与授权（2026-10-19）](agent-local-api-2026-10-19.md)：控制现状、本地 IPC 方案对比与推荐。
 - [个人组网功能对比](personal-networking-comparison.md)：Meshlet、ZeroTier、Tailscale 的 61 项能力、个人必要性、开发难度、实施依赖与实测方案。
 - [模块化与库复用提案](../architecture/modularity-and-library-design.md)：现有 crate 耦合、分层依赖、渐进提取顺序，以及虚拟网卡与无网卡代理的适用边界。
 - [网关、网段冲突与端口转发](../architecture/gateways-conflicts-and-port-forwarding.md)：目标网段选择网关、重复 LAN 的 Alias、本机/远端端口映射及来源出口的区别。
