@@ -1,0 +1,11 @@
+openapi: 3.1.0
+info:
+  title: Meshlet Control API (R-01 draft)
+  version: 0.1.0-draft
+paths:
+  /api/v1/networks:
+    get:
+      summary: List networks (desired state)
+      responses:
+        '200':
+          description: OK

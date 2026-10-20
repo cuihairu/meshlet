@@ -5,6 +5,7 @@ members = [
     "crates/meshlet-api-types",
     "crates/meshlet-config",
     "crates/meshlet-network",
+    "crates/meshlet-planner",
     "apps/server",
     "apps/agent",
     "apps/cli",
