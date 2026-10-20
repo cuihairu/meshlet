@@ -16,7 +16,7 @@
 |---|---|---|---|
 | AR-01 | P0 / 已验收（Linux netns） | 单实例同时承载两个 Network；应用、撤销、清理、恢复互不干扰；主动越权流量被拒绝 | 实测 `MESHLET_REQUIRE_DATAPLANE=1 cargo test -p meshlet-server --locked --test single_instance -- --test-threads=1`：2 passed / 0 failed（128.18s）。双网络建链与恢复断言 `apps/server/tests/single_instance.rs:277`、`:303`、`:360`；失败回滚与另一网络保留 `:389`；跨网拒绝/撤销后断流且同机另一网络存活 `:623`、`:638`。空 VPS 走查仍归 AR-06 |
 | AR-02 | P0 / 待验证 | 设备按版本/计划哈希确认应用；hub 成功、设备成功、业务健康分别显示；旧 ACK 不覆盖新状态 | `agent_plan.rs` 已覆盖等待/失败/正确 ACK/旧 ACK；控制台拆分状态 |
-| AR-03 | P0 / 待验证 | hub 启动与周期漂移对账；接口丢失、VPS 重启后按期望恢复 | 已持久化成功计划，启动与周期恢复已实现；netns 删接口后恢复通过 |
+| AR-03 | P0 / 部分验收（Linux netns） | hub 启动与周期漂移对账；接口丢失、VPS 重启后按期望恢复 | 本机复跑 `MESHLET_REQUIRE_DATAPLANE=1 cargo test -p meshlet-server --locked --test single_instance -- --test-threads=1`：2 passed / 0 failed（70.62s）。接口删除、按 SQLite 重建状态与周期恢复断言 `apps/server/tests/single_instance.rs:358`、`:359`、`:363`，恢复后 A 链路与 B 网络保留见 `:366`、`:367`；真实 VPS 整机重启仍未验收 |
 | AR-04 | P0 / 已验收（Linux netns） | 保存并恢复上次成功计划；失败恢复不清掉正常连接及其他网络资源 | 实测 `MESHLET_REQUIRE_DATAPLANE=1 cargo test -p meshlet-agent --locked --test plan_recovery -- --test-threads=1`：3 passed / 0 failed（17.85s）。last-good 读回与外来规则保护 `apps/agent/tests/plan_recovery.rs:184`；tunnel/route/NAT 失败恢复分别 `:274`、`:314`、`:347`；重试收敛 `:408`。另一网络保留证据见 AR-01 `apps/server/tests/single_instance.rs:389` |
 | AR-05 | P0 / 待验证 | 补 Direct LAN 的 controlled_snat；Direct/Alias × 保留源/SNAT 分别验证 | 已逐 LAN 编译/解析 SNAT；Direct SNAT、Alias 两模式有真实内核证据；见本轮修复记录 |
 | AR-06 | P0 / 待验证 | 正式 systemd 权限与 hub 执行方式一致；空 VPS 按指南部署并验证数据面 | 正式 unit + drop-in 已以 uid 65534 在隔离 netns 完成真实 apply；空 VPS 走查待做 |
