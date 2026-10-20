@@ -34,6 +34,40 @@ afterEach(() => {
 });
 
 describe('RevisionsSection', () => {
+  it('separates hub, device, and business health status', async () => {
+    vi.spyOn(api.api, 'listRevisions').mockResolvedValue([
+      {
+        ...revision,
+        apply_status: 'applied',
+        convergence: {
+          device_apply_status: 'applied',
+          pending_device_ids: [],
+          device_errors: {},
+          hub_recovery_error: null,
+          business_health: 'not_probed',
+        },
+      },
+    ]);
+
+    render(<RevisionsSection networkId="network-1" />);
+
+    expect(
+      await screen.findByText(
+        (_, element) => element?.textContent === 'Hub: applied',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        (_, element) => element?.textContent === 'Devices: All devices applied',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        (_, element) => element?.textContent === 'Connectivity: Not probed',
+      ),
+    ).toBeTruthy();
+  });
+
   it.each([
     [401, 'unauthorized', 'session expired'],
     [500, 'internal', 'database unavailable'],
