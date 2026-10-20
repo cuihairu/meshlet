@@ -30,10 +30,11 @@ use meshlet_domain::{
     Network, NetworkId, NetworkStatus, Platform, ReturnPathMode, RouteMode, Segment, SegmentGrant,
     SegmentId, TranslationMode,
 };
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::SqlitePool;
+use sqlx::sqlite::SqliteConnection;
+use sqlx::{ConnectOptions, Executor, SqlitePool};
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
+use std::time::Duration;
 
 use crate::service::{MeshState, ServiceError};
 
@@ -1687,30 +1688,29 @@ pub struct BackupReport {
 /// 校验备份文件：独立只读打开 + `quick_check` + 必需表齐全，返回内容摘要。
 ///
 /// 任何一步失败都按 [`BackupError::Corrupt`] / [`BackupError::IncompleteSchema`]
-/// 拒绝——损坏/不完整的备份绝不进入恢复流程。只读连接用后显式关闭
-/// （sqlx 池 drop 是惰性的；Windows 上未关句柄会挡住后续 rename）。
+/// 拒绝——损坏/不完整的备份绝不进入恢复流程。只读连接必须按 RAII drop 释放
+/// （池式 close 对 SQLite 文件句柄的释放是惰性的；Windows 上会挡住恢复拷贝）。
 pub async fn validate_backup(path: &Path) -> Result<MeshStatePersistedView, BackupError> {
-    let options =
+    let mut connection =
         sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite:{}", path.display()))?
-            .read_only(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .map_err(|e| BackupError::Corrupt(e.to_string()))?;
-    // 打开成功但校验查询失败（code 26「file is not a database」等）同样是
-    // 「不是可用数据库」，按 Corrupt 拒绝；schema 不完整单独保留可区分错误。
-    let result = validate_on(&pool).await.map_err(|e| match e {
+            .read_only(true)
+            .connect()
+            .await
+            .map_err(|e| BackupError::Corrupt(e.to_string()))?;
+
+    // 把校验结果先移出连接作用域，再显式 drop，确保 `copy`/`rename` 之前
+    // 没有文件句柄还挂在备份或 staging 文件上。
+    let result = validate_on(&mut connection).await.map_err(|e| match e {
         e @ BackupError::IncompleteSchema { .. } => e,
         e => BackupError::Corrupt(e.to_string()),
     });
-    pool.close().await;
+    drop(connection);
     result
 }
 
-async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, BackupError> {
+async fn validate_on(pool: &mut SqliteConnection) -> Result<MeshStatePersistedView, BackupError> {
     let check: Vec<String> = sqlx::query_scalar("PRAGMA quick_check")
-        .fetch_all(pool)
+        .fetch_all(&mut *pool)
         .await?;
     if check.iter().any(|r| r != "ok") {
         return Err(BackupError::Corrupt(check.join("; ")));
@@ -1720,7 +1720,7 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' \
          AND name NOT LIKE '_sqlx_%'",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *pool)
     .await?;
     let base_missing: Vec<String> = LEGACY_REQUIRED_TABLES
         .iter()
@@ -1735,7 +1735,7 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
     let has_migration_history: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations')",
     )
-    .fetch_one(pool)
+    .fetch_one(&mut *pool)
     .await?;
     if !has_migration_history {
         return Err(BackupError::IncompleteSchema {
@@ -1744,7 +1744,7 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
     }
     let latest: Option<i64> =
         sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success=1")
-            .fetch_one(pool)
+            .fetch_one(&mut *pool)
             .await?;
     let mut required = LEGACY_REQUIRED_TABLES.to_vec();
     if latest.is_some_and(|v| v >= 9) {
@@ -1764,27 +1764,30 @@ async fn validate_on(pool: &SqlitePool) -> Result<MeshStatePersistedView, Backup
 
     let has_segments = tables.iter().any(|table| table == "segments");
     Ok(MeshStatePersistedView {
-        networks: count(pool, "networks").await?,
-        devices: count(pool, "devices").await?,
-        registrations: count(pool, "device_registrations").await?,
-        routes: count(pool, "lan_routes").await?,
-        aliases: count(pool, "alias_mappings").await?,
+        networks: count_on(&mut *pool, "networks").await?,
+        devices: count_on(&mut *pool, "devices").await?,
+        registrations: count_on(&mut *pool, "device_registrations").await?,
+        routes: count_on(&mut *pool, "lan_routes").await?,
+        aliases: count_on(&mut *pool, "alias_mappings").await?,
         segments: if has_segments {
-            count(pool, "segments").await?
+            count_on(&mut *pool, "segments").await?
         } else {
             0
         },
         segment_grants: if has_segments {
-            count(pool, "segment_grants").await?
+            count_on(&mut *pool, "segment_grants").await?
         } else {
             0
         },
-        invites: count(pool, "invitations").await?,
-        revisions: count(pool, "config_revisions").await?,
+        invites: count_on(&mut *pool, "invitations").await?,
+        revisions: count_on(&mut *pool, "config_revisions").await?,
     })
 }
 
-async fn count(pool: &sqlx::SqlitePool, table: &str) -> Result<usize, BackupError> {
+async fn count_on<'e, E>(pool: E, table: &str) -> Result<usize, BackupError>
+where
+    E: Executor<'e, Database = sqlx::Sqlite> + 'e,
+{
     // Callers use fixed schema table names, never user input.
     let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
         .fetch_one(pool)
@@ -1907,28 +1910,23 @@ pub async fn restore_from_backup(
             database.display()
         ))?
         .create_if_missing(false);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(2))
-            .connect_with(options)
-            .await?;
-        let lock = sqlx::query("BEGIN EXCLUSIVE").execute(&pool).await;
-        match lock {
+        let mut connection = options.connect().await?;
+        match sqlx::query("BEGIN EXCLUSIVE")
+            .execute(&mut connection)
+            .await
+        {
             Ok(_) => {
-                let _ = sqlx::query("COMMIT").execute(&pool).await;
+                let _ = sqlx::query("COMMIT").execute(&mut connection).await;
             }
-            Err(e) => {
-                pool.close().await;
-                return Err(BackupError::from(e));
-            }
+            Err(error) => return Err(BackupError::from(error)),
         }
-        pool.close().await;
+        drop(connection);
     }
 
     // 拷贝到临时文件并复验（拷贝本身损坏也拒绝），再原子换名。
     let tmp = database.with_extension("restore-tmp");
     let _ = tokio::fs::remove_file(&tmp).await;
-    tokio::fs::copy(backup, &tmp).await?;
+    copy_with_windows_busy_retry(backup, &tmp).await?;
     restrict_permissions(&tmp);
     validate_backup(&tmp).await?;
 
@@ -1960,7 +1958,7 @@ pub async fn restore_from_backup(
         let _ =
             tokio::fs::remove_file(PathBuf::from(format!("{}{suffix}", database.display()))).await;
     }
-    tokio::fs::rename(&tmp, database).await?;
+    rename_with_windows_busy_retry(&tmp, database).await?;
     sync_parent_dir(database);
 
     Ok(RestoreReport {
@@ -1983,6 +1981,37 @@ fn sync_parent_dir(database: &Path) {
     }
     #[cfg(not(unix))]
     let _ = database;
+}
+
+/// Windows 上 SQLite 句柄关闭后，OS 仍可能短暂挡住文件独占访问。
+/// 只重试「另一个进程正在使用文件」这一类瞬态失败，其它 IO 错误原样返回。
+async fn copy_with_windows_busy_retry(from: &Path, to: &Path) -> Result<(), BackupError> {
+    let mut attempt = 1u32;
+    loop {
+        match tokio::fs::copy(from, to).await {
+            Ok(_) => return Ok(()),
+            Err(error) if error.raw_os_error() == Some(32) && attempt < 10 => {
+                tokio::time::sleep(Duration::from_millis((25 * attempt) as u64)).await;
+                attempt += 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// 同上：原子换名也可能因 staging 文件句柄尚未释放而短暂失败。
+async fn rename_with_windows_busy_retry(from: &Path, to: &Path) -> Result<(), BackupError> {
+    let mut attempt = 1u32;
+    loop {
+        match tokio::fs::rename(from, to).await {
+            Ok(_) => return Ok(()),
+            Err(error) if error.raw_os_error() == Some(32) && attempt < 10 => {
+                tokio::time::sleep(Duration::from_millis((25 * attempt) as u64)).await;
+                attempt += 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
