@@ -8,6 +8,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use std::time::Duration;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tower::ServiceExt;
@@ -42,6 +43,21 @@ fn cleanup(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
+}
+
+fn remove_dir_all_retry(path: &Path) -> std::io::Result<()> {
+    let mut backoff_ms = 50;
+    for attempt in 1..=5 {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt < 5 => {
+                std::thread::sleep(Duration::from_millis(backoff_ms));
+                backoff_ms *= 2;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("retry loop handles every attempt")
 }
 
 async fn ctx() -> Ctx {
@@ -370,7 +386,7 @@ async fn segments_and_grants_survive_backup_reload() {
     pool.close().await;
     ctx.pool.close().await;
     cleanup(&backup_path);
-    std::fs::remove_dir_all(&dir).unwrap();
+    remove_dir_all_retry(&dir).unwrap();
 }
 
 #[tokio::test]
