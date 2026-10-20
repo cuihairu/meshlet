@@ -185,9 +185,7 @@ if [[ $role == server ]]; then
 fi
 install -m 0644 "$package/systemd/meshlet-$role.service" "/etc/systemd/system/meshlet-$role.service"
 install -m 0644 "$package/BUILD_INFO" "/usr/local/share/meshlet/$role-build-info"
-if $start_service; then
-  systemctl daemon-reload
-fi
+systemctl daemon-reload
 if $start_service; then
   systemctl enable "meshlet-$role.service"
   systemctl restart "meshlet-$role.service"

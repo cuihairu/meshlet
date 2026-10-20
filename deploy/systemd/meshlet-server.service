@@ -21,6 +21,7 @@ Group=meshlet
 ExecStart=/usr/local/bin/meshlet-server /etc/meshlet/meshlet.toml
 WorkingDirectory=/var/lib/meshlet
 StateDirectory=meshlet
+StateDirectoryMode=0700
 Restart=on-failure
 RestartSec=2s
 

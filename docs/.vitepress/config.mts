@@ -6,6 +6,11 @@ export default defineConfig({
   title: 'Meshlet',
   description: 'Self-hosted private networking — design documents and project records',
   ignoreDeadLinks: false,
+  vite: {
+    build: {
+      chunkSizeWarningLimit: 1600,
+    },
+  },
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/meshlet/logo-copper.svg' }]],
   themeConfig: {
     logo: '/logo-copper.svg',

@@ -127,12 +127,12 @@ jobs:
           second=/tmp/meshlet-second-bootstrap.json
           first_status=$(curl --silent --show-error --output "$first" --write-out '%{http_code}' \
             -H 'content-type: application/json' \
-            -d '{"email":"admin@localhost","password":"walkthrough-password-123"}' \
+            -d '{"email":"admin@test.local","password":"walkthrough-password-123"}' \
             http://127.0.0.1:8080/api/v1/auth/bootstrap)
           test "$first_status" = 201
           second_status=$(curl --silent --show-error --output "$second" --write-out '%{http_code}' \
             -H 'content-type: application/json' \
-            -d '{"email":"second@localhost","password":"walkthrough-password-123"}' \
+            -d '{"email":"second@test.local","password":"walkthrough-password-123"}' \
             http://127.0.0.1:8080/api/v1/auth/bootstrap)
           test "$second_status" = 409
           sudo systemctl show meshlet-server \
