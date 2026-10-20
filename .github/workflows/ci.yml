@@ -115,7 +115,7 @@ jobs:
           test "$(stat -c '%U:%G %a' /etc/meshlet/hub.key)" = 'meshlet:meshlet 600'
           test "$(stat -c '%U:%G %a' /etc/meshlet/meshlet.toml)" = 'meshlet:meshlet 600'
           test "$(stat -c '%a' /var/lib/meshlet)" = 700
-          grep -Fx 'bind = "127.0.0.1:8080"' /etc/meshlet/meshlet.toml | tee /tmp/meshlet-bind.txt
+          sudo grep -Fx 'bind = "127.0.0.1:8080"' /etc/meshlet/meshlet.toml | tee /tmp/meshlet-bind.txt
           for _ in $(seq 1 30); do
             curl --silent --output /dev/null http://127.0.0.1:8080/api/v1/system/status && break
             sleep 1
