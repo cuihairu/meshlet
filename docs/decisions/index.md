@@ -14,3 +14,4 @@ These records capture durable choices and the conditions that could justify revi
 - [ADR-010: Console authentication and enrollment](/decisions/adr-010-console-auth-enrollment)
 - [ADR-011: Device self-registration and approval](/decisions/adr-011-device-self-registration)
 - [ADR-012: Network segment trust groups](/decisions/adr-012-network-segment-trust)
+- [ADR-013: Cockpit agent as local host-info source](/decisions/adr-013-cockpit-agent-host-info)
