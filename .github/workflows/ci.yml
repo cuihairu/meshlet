@@ -124,7 +124,7 @@ jobs:
           done
           curl --silent --fail http://127.0.0.1:8080/api/v1/system/status >/dev/null
           sudo ss -ltnp | grep -F '127.0.0.1:8080' | grep -F 'users:(("meshlet-server"' | tee /tmp/meshlet-listener.txt
-          sudo test ! -r /etc/meshlet/hub.key
+          test ! -r /etc/meshlet/hub.key
           first=/tmp/meshlet-first-bootstrap.json
           second=/tmp/meshlet-second-bootstrap.json
           first_status=$(curl --silent --show-error --output "$first" --write-out '%{http_code}' \
