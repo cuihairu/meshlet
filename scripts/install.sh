@@ -15,6 +15,7 @@ Usage: install.sh server|agent [options]
   --no-start             Install/configure without starting the service
   --help                Show this help
 Environment: MESHLET_REPO=owner/repo (default: cuihairu/meshlet)
+Offline/staged installs: set MESHLET_INSTALL_ARCHIVE and MESHLET_INSTALL_SHA256SUMS.
 Re-run the same role to upgrade; existing TOML files and private keys are preserved.
 HELP
 }
@@ -89,13 +90,26 @@ work_dir=$(mktemp -d /tmp/meshlet-install.XXXXXXXX)
 trap 'rm -rf -- "$work_dir"' EXIT
 asset="meshlet-linux-${arch}.tar.gz"
 base="https://github.com/${repo}/releases/download/${version}"
-printf 'Downloading Meshlet %s (%s)…\n' "$version" "$arch"
-curl --fail --show-error --silent --location --retry 3 --proto '=https' --tlsv1.2 "$base/$asset" -o "$work_dir/$asset"
-curl --fail --show-error --silent --location --retry 3 --proto '=https' --tlsv1.2 "$base/SHA256SUMS" -o "$work_dir/SHA256SUMS"
-# Select exactly one checksum; never ask sha256sum to read arbitrary release filenames.
-awk -v file="$asset" '$2 == file && $1 ~ /^[0-9a-f]+$/ && length($1) == 64 {print}' "$work_dir/SHA256SUMS" > "$work_dir/selected.sha256"
-[[ $(wc -l < "$work_dir/selected.sha256") == 1 ]] || fail "missing or duplicate checksum for $asset"
-(cd "$work_dir" && sha256sum --check selected.sha256)
+archive=${MESHLET_INSTALL_ARCHIVE:-}
+checksums=${MESHLET_INSTALL_SHA256SUMS:-}
+if [[ -n $archive || -n $checksums ]]; then
+  [[ -n $archive && -n $checksums ]] || fail 'staged installs require both archive and checksum variables'
+  [[ -f $archive && -f $checksums ]] || fail 'staged archive or checksum file is missing'
+  expected=$(awk -v file="$asset" '$2 == file && $1 ~ /^[0-9a-f]+$/ && length($1) == 64 {print $1}' "$checksums")
+  [[ $(wc -l <<<"$expected") == 1 ]] || fail "missing or duplicate checksum for $asset"
+  actual=$(sha256sum "$archive" | awk '{print $1}')
+  [[ "$actual" == "$expected" ]] || fail "checksum failed for $archive"
+  printf 'Verifying staged Meshlet %s (%s)…\n' "$version" "$arch"
+  cp -- "$archive" "$work_dir/$asset"
+else
+  printf 'Downloading Meshlet %s (%s)…\n' "$version" "$arch"
+  curl --fail --show-error --silent --location --retry 3 --proto '=https' --tlsv1.2 "$base/$asset" -o "$work_dir/$asset"
+  curl --fail --show-error --silent --location --retry 3 --proto '=https' --tlsv1.2 "$base/SHA256SUMS" -o "$work_dir/SHA256SUMS"
+  # Select exactly one checksum; never ask sha256sum to read arbitrary release filenames.
+  awk -v file="$asset" '$2 == file && $1 ~ /^[0-9a-f]+$/ && length($1) == 64 {print}' "$work_dir/SHA256SUMS" > "$work_dir/selected.sha256"
+  [[ $(wc -l < "$work_dir/selected.sha256") == 1 ]] || fail "missing or duplicate checksum for $asset"
+  (cd "$work_dir" && sha256sum --check selected.sha256)
+fi
 mkdir "$work_dir/package"
 tar -xzf "$work_dir/$asset" --no-same-owner -C "$work_dir/package"
 package="$work_dir/package"
@@ -171,7 +185,9 @@ if [[ $role == server ]]; then
 fi
 install -m 0644 "$package/systemd/meshlet-$role.service" "/etc/systemd/system/meshlet-$role.service"
 install -m 0644 "$package/BUILD_INFO" "/usr/local/share/meshlet/$role-build-info"
-systemctl daemon-reload
+if $start_service; then
+  systemctl daemon-reload
+fi
 if $start_service; then
   systemctl enable "meshlet-$role.service"
   systemctl restart "meshlet-$role.service"

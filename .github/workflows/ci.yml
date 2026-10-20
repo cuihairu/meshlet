@@ -72,3 +72,84 @@ jobs:
       - name: Type check and build
         working-directory: console
         run: pnpm run build
+
+  walkthrough:
+    name: walkthrough / ubuntu-latest
+    runs-on: ubuntu-latest
+    needs: [test]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.10.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Build release package
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir console build
+          cargo build --locked --release --target x86_64-unknown-linux-gnu --bin meshlet-server --bin meshlet-agent --bin meshlet-cli
+          scripts/package-release.sh x86_64-unknown-linux-gnu x86_64
+          (cd dist && sha256sum meshlet-linux-x86_64.tar.gz > SHA256SUMS)
+      - name: Install from staged release archive
+        run: |
+          set -euo pipefail
+          install_dir=$(mktemp -d)
+          tar -xzf dist/meshlet-linux-x86_64.tar.gz -C "$install_dir"
+          sudo env \
+            MESHLET_INSTALL_ARCHIVE="$PWD/dist/meshlet-linux-x86_64.tar.gz" \
+            MESHLET_INSTALL_SHA256SUMS="$PWD/dist/SHA256SUMS" \
+            bash "$install_dir/install.sh" server --bind 127.0.0.1:8080
+      - name: Verify clean-host walkthrough gates
+        run: |
+          set -euo pipefail
+          sudo systemctl cat meshlet-server | tee /tmp/meshlet-unit.txt
+          sudo systemctl is-active --quiet meshlet-server
+          id meshlet | tee /tmp/meshlet-account.txt
+          test "$(stat -c '%U:%G %a' /etc/meshlet/hub.key)" = 'meshlet:meshlet 600'
+          test "$(stat -c '%U:%G %a' /etc/meshlet/meshlet.toml)" = 'meshlet:meshlet 600'
+          test "$(stat -c '%a' /var/lib/meshlet)" = 700
+          grep -Fx 'bind = "127.0.0.1:8080"' /etc/meshlet/meshlet.toml | tee /tmp/meshlet-bind.txt
+          for _ in $(seq 1 30); do
+            curl --silent --output /dev/null http://127.0.0.1:8080/api/v1/system/status && break
+            sleep 1
+          done
+          curl --silent --fail http://127.0.0.1:8080/api/v1/system/status >/dev/null
+          ss -ltnp | grep '127.0.0.1:8080.*users:(("meshlet-server"' | tee /tmp/meshlet-listener.txt
+          test ! -r /etc/meshlet/hub.key
+          first=/tmp/meshlet-first-bootstrap.json
+          second=/tmp/meshlet-second-bootstrap.json
+          first_status=$(curl --silent --show-error --output "$first" --write-out '%{http_code}' \
+            -H 'content-type: application/json' \
+            -d '{"email":"admin@localhost","password":"walkthrough-password-123"}' \
+            http://127.0.0.1:8080/api/v1/auth/bootstrap)
+          test "$first_status" = 201
+          second_status=$(curl --silent --show-error --output "$second" --write-out '%{http_code}' \
+            -H 'content-type: application/json' \
+            -d '{"email":"second@localhost","password":"walkthrough-password-123"}' \
+            http://127.0.0.1:8080/api/v1/auth/bootstrap)
+          test "$second_status" = 409
+          sudo systemctl show meshlet-server \
+            -p User -p Group -p NoNewPrivileges -p CapabilityBoundingSet \
+            -p ProtectSystem -p PrivateDevices -p RestrictAddressFamilies \
+            | tee /tmp/meshlet-security.txt
+      - name: Upload walkthrough evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: walkthrough-evidence
+          path: |
+            /tmp/meshlet-account.txt
+            /tmp/meshlet-bind.txt
+            /tmp/meshlet-first-bootstrap.json
+            /tmp/meshlet-listener.txt
+            /tmp/meshlet-second-bootstrap.json
+            /tmp/meshlet-security.txt
+            /tmp/meshlet-unit.txt
+          if-no-files-found: ignore
