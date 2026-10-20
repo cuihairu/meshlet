@@ -3,6 +3,8 @@
 
 pub mod outbox;
 
+pub use outbox::{Outbox, OutboxEntry, OutboxError, OutboxStatus, RevisionReceipt};
+
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

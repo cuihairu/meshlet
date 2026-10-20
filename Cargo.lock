@@ -1221,6 +1221,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "meshlet-executor"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "meshlet-network"
 version = "0.1.0"
 dependencies = [
@@ -1261,6 +1268,17 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+]
+
+[[package]]
+name = "meshlet-store"
+version = "0.1.0"
+dependencies = [
+ "meshlet-planner",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

@@ -6,6 +6,8 @@ members = [
     "crates/meshlet-config",
     "crates/meshlet-network",
     "crates/meshlet-planner",
+    "crates/meshlet-store",
+    "crates/meshlet-executor",
     "apps/server",
     "apps/agent",
     "apps/cli",
@@ -42,6 +44,7 @@ meshlet-domain = { path = "crates/meshlet-domain" }
 meshlet-api-types = { path = "crates/meshlet-api-types" }
 meshlet-config = { path = "crates/meshlet-config" }
 meshlet-network = { path = "crates/meshlet-network" }
+meshlet-planner = { path = "crates/meshlet-planner" }
 meshlet-agent = { path = "apps/agent" }
 
 [profile.release]

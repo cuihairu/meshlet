@@ -1,0 +1,11 @@
+[package]
+name = "meshlet-executor"
+description = "Platform-neutral privileged executor contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+tokio.workspace = true
