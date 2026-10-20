@@ -370,7 +370,7 @@ async fn segments_and_grants_survive_backup_reload() {
     pool.close().await;
     ctx.pool.close().await;
     cleanup(&backup_path);
-    std::fs::remove_dir(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[tokio::test]
