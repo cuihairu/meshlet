@@ -5,7 +5,7 @@
 \
 设计原则是：**先确定正确的领域模型、安全语义和状态一致性，再决定代码如何组织；不以保留现有实现为理由妥协。**\
 \
-结合仓库最新的 `TODO.md`，我会把设计目标确定为个人自托管网络基础设施：设备组网、多个网络与信任分组、远端 LAN 接入、重叠网段、TCP/UDP 端口转发、HTTP 服务发布和可靠的网络诊断。\u003cCite refs={[\\"turn326817view0\\",\\"turn326817view1\\"]}/>\
+结合仓库最新的 `TODO.md`，我会把设计目标确定为个人自托管网络基础设施：设备组网、多个网络与信任分组、远端 LAN 接入、重叠网段、TCP/UDP 端口转发、HTTP 服务发布和可靠的网络诊断。<Cite refs={[\"turn326817view0\",\"turn326817view1\"]}/>\
 \
 核心决策先明确：\
 \
@@ -22,27 +22,27 @@
 \
 我不建议把 Meshlet 拆成微服务，但我建议把**管理权限、网络规划、状态协调、操作系统执行**划分为清晰且强制的边界。\
 \
-\u003cCodeBlock language=\\"mermaid\\">\
+```mermaid\
 flowchart TB\
-    UI[\\"React Console / CLI\\"]\
-    API[\\"Control API\u003cbr/>认证 · 授权 · 审计\\"]\
-    DB[(\\"SQLite\u003cbr/>Desired State · Revisions · Outbox\\")]\
-    PLAN[\\"Planner\u003cbr/>IPAM · 路由 · 策略 · 冲突检查\\"]\
-    COORD[\\"Reconciler\u003cbr/>调度 · 重试 · 对账 · 回执\\"]\
-    PROTO[\\"Versioned Agent Protocol\\"]\
-    HUB[\\"Hub Agent / Coordinator\\"]\
-    NETD[\\"meshlet-netd\u003cbr/>受限特权执行器\\"]\
-    LINUX[\\"Linux Backend\u003cbr/>WireGuard · Routing · nftables\\"]\
-    AGENT[\\"Device Agent\\"]\
-    WIN[\\"Windows Backend\u003cbr/>WireGuardNT · WFP\\"]\
-    PROBE[\\"Health \u0026 Diagnostics\\"]\
+    UI[\"React Console / CLI\"]\
+    API[\"Control API<br/>认证 · 授权 · 审计\"]\
+    DB[(\"SQLite<br/>Desired State · Revisions · Outbox\")]\
+    PLAN[\"Planner<br/>IPAM · 路由 · 策略 · 冲突检查\"]\
+    COORD[\"Reconciler<br/>调度 · 重试 · 对账 · 回执\"]\
+    PROTO[\"Versioned Agent Protocol\"]\
+    HUB[\"Hub Agent / Coordinator\"]\
+    NETD[\"meshlet-netd<br/>受限特权执行器\"]\
+    LINUX[\"Linux Backend<br/>WireGuard · Routing · nftables\"]\
+    AGENT[\"Device Agent\"]\
+    WIN[\"Windows Backend<br/>WireGuardNT · WFP\"]\
+    PROBE[\"Health & Diagnostics\"]\
     UI --> API\
-    API \u003c--> DB\
+    API <--> DB\
     DB --> PLAN\
     PLAN --> COORD\
     COORD --> PROTO\
-    PROTO \u003c--> HUB\
-    PROTO \u003c--> AGENT\
+    PROTO <--> HUB\
+    PROTO <--> AGENT\
     HUB --> NETD\
     AGENT --> NETD\
     NETD --> LINUX\
@@ -50,7 +50,7 @@ flowchart TB\
     LINUX --> PROBE\
     WIN --> PROBE\
     PROBE --> COORD\
-\u003c/CodeBlock>\
+```\
 \
 ### 1. 每个进程应该负责什么\
 \
@@ -66,7 +66,7 @@ flowchart TB\
 \
 这里我特别建议新增 `meshlet-netd`。\
 \
-当前仓库已经开始通过专用服务用户和 Linux capabilities 限制权限，但目标设计可以进一步将 Web 管理面与网络管理权限分离。\u003cCite refs={[\\"turn326817view0\\",\\"turn337194view0\\"]}/>\
+当前仓库已经开始通过专用服务用户和 Linux capabilities 限制权限，但目标设计可以进一步将 Web 管理面与网络管理权限分离。<Cite refs={[\"turn326817view0\",\"turn337194view0\"]}/>\
 \
 `meshlet-netd` 使用本机 Unix Domain Socket 与服务进程通信，验证调用方身份和请求类型，只接受明确的操作，例如：\
 \
@@ -93,44 +93,45 @@ Windows 采用对应的受保护 Windows Service，而不是让桌面控制台�
 \
 ### 2.1 统一领域模型\
 \
-\u003cbox border radius=\\"xl\\" padding={3} gap={3}>\
-  \u003cbox background=\\"surface-secondary\\" radius=\\"lg\\" padding={3} gap={1}>\
-    \u003ctitle size=\\"md\\">Network · 虚拟网络\u003c/title>\
-    \u003ctext size=\\"sm\\">一个独立的 WireGuard 网络、地址空间、网络级策略与配置修订域。\u003c/text>\
-  \u003c/box>\
-  \u003cbox padding={{left:3}} gap={2}>\
-    \u003cbox border radius=\\"lg\\" padding={3} gap={1}>\
+```jsx
+<box border radius=\"xl\" padding={3} gap={3}>\
+  <box background=\"surface-secondary\" radius=\"lg\" padding={3} gap={1}>\
+    <title size=\"md\">Network · 虚拟网络</title>\
+    <text size=\"sm\">一个独立的 WireGuard 网络、地址空间、网络级策略与配置修订域。</text>\
+  </box>\
+  <box padding={{left:3}} gap={2}>\
+    <box border radius=\"lg\" padding={3} gap={1}>\
       **Segment · 信任分组**\
 \
-      \u003ctext color=\\"secondary\\" size=\\"sm\\">定义哪些设备属于同一信任域，以及跨组通信的许可。\u003c/text>\
-    \u003c/box>\
-    \u003cbox border radius=\\"lg\\" padding={3} gap={1}>\
+      <text color=\"secondary\" size=\"sm\">定义哪些设备属于同一信任域，以及跨组通信的许可。</text>\
+    </box>\
+    <box border radius=\"lg\" padding={3} gap={1}>\
       **NetworkAttachment · 设备入网关系**\
 \
-      \u003ctext color=\\"secondary\\" size=\\"sm\\">设备加入哪个网络、分配什么地址、属于哪个 Segment、承担什么网关角色。\u003c/text>\
-    \u003c/box>\
-    \u003cbox border radius=\\"lg\\" padding={3} gap={1}>\
+      <text color=\"secondary\" size=\"sm\">设备加入哪个网络、分配什么地址、属于哪个 Segment、承担什么网关角色。</text>\
+    </box>\
+    <box border radius=\"lg\" padding={3} gap={1}>\
       **RouteAdvertisement · 网段发布**\
 \
-      \u003ctext color=\\"secondary\\" size=\\"sm\\">某个网关发布哪个真实 LAN 前缀，如何选择路径，以及返回流量如何路由。\u003c/text>\
-    \u003c/box>\
-    \u003cbox border radius=\\"lg\\" padding={3} gap={1}>\
+      <text color=\"secondary\" size=\"sm\">某个网关发布哪个真实 LAN 前缀，如何选择路径，以及返回流量如何路由。</text>\
+    </box>\
+    <box border radius=\"lg\" padding={3} gap={1}>\
       **PrefixTranslation · 地址映射**\
 \
-      \u003ctext color=\\"secondary\\" size=\\"sm\\">通过 Alias 前缀解决不同 LAN 的地址冲突，明确原始目标、映射目标和适用范围。\u003c/text>\
-    \u003c/box>\
-    \u003cbox border radius=\\"lg\\" padding={3} gap={1}>\
+      <text color=\"secondary\" size=\"sm\">通过 Alias 前缀解决不同 LAN 的地址冲突，明确原始目标、映射目标和适用范围。</text>\
+    </box>\
+    <box border radius=\"lg\" padding={3} gap={1}>\
       **Service / Exposure · 服务与发布入口**\
 \
-      \u003ctext color=\\"secondary\\" size=\\"sm\\">描述目标服务、监听地址、协议、端口、HTTP 域名与路径，以及谁有权访问。\u003c/text>\
-    \u003c/box>\
-  \u003c/box>\
-  \u003cbox background=\\"surface\\" radius=\\"lg\\" padding={3} gap={1}>\
+      <text color=\"secondary\" size=\"sm\">描述目标服务、监听地址、协议、端口、HTTP 域名与路径，以及谁有权访问。</text>\
+    </box>\
+  </box>\
+  <box background=\"surface\" radius=\"lg\" padding={3} gap={1}>\
     **Policy · 统一授权模型**\
 \
-    \u003ctext color=\\"secondary\\" size=\\"sm\\">控制设备、Segment、远端 LAN 和发布服务之间的实际访问权限。\u003c/text>\
-  \u003c/box>\
-\u003c/box>\
+    <text color=\"secondary\" size=\"sm\">控制设备、Segment、远端 LAN 和发布服务之间的实际访问权限。</text>\
+  </box>\
+</box>\
 \
 ### 2.2 必须区分的五种资源\
 \
@@ -170,7 +171,7 @@ Windows 采用对应的受保护 Windows Service，而不是让桌面控制台�
 \
 每个 Attachment 独立拥有网络地址、Segment、网关角色和应用状态。某台设备在一个网络被撤销，不应自动导致它在另一个网络被撤销。\
 \
-当前仓库将一机多网列为暂缓能力；我建议现在就采用这种数据模型，但可以把一机多网的完整执行能力安排到后续阶段。\u003cCite refs={[\\"turn603604view0\\"]}/>\
+当前仓库将一机多网列为暂缓能力；我建议现在就采用这种数据模型，但可以把一机多网的完整执行能力安排到后续阶段。<Cite refs={[\"turn603604view0\"]}/>\
 \
 ---\
 \
@@ -180,62 +181,62 @@ Windows 采用对应的受保护 Windows Service，而不是让桌面控制台�
 \
 我建议将系统中的状态分成四类，不允许它们互相混用。\
 \
-\u003cbox border radius=\\"lg\\" padding={3} gap={3}>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cicon name=\\"database\\" size=\\"xl\\"/>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+<box border radius=\"lg\" padding={3} gap={3}>\
+  <row align=\"start\" gap={3}>\
+    <icon name=\"database\" size=\"xl\"/>\
+    <box flex=\"1\" gap={1}>\
       **1. Desired State：期望状态**\
 \
-      \u003ctext size=\\"sm\\">用户希望网络变成什么样。保存在数据库中，是系统的业务事实来源。\u003c/text>\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cicon name=\\"git-commit-horizontal\\" size=\\"xl\\"/>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+      <text size=\"sm\">用户希望网络变成什么样。保存在数据库中，是系统的业务事实来源。</text>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <icon name=\"git-commit-horizontal\" size=\"xl\"/>\
+    <box flex=\"1\" gap={1}>\
       **2. Revision / Plan：不可变配置修订与执行计划**\
 \
-      \u003ctext size=\\"sm\\">某一代期望状态对应的快照、哈希、执行目标和操作依赖关系。\u003c/text>\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cicon name=\\"activity\\" size=\\"xl\\"/>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+      <text size=\"sm\">某一代期望状态对应的快照、哈希、执行目标和操作依赖关系。</text>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <icon name=\"activity\" size=\"xl\"/>\
+    <box flex=\"1\" gap={1}>\
       **3. Observed State：实际观察状态**\
 \
-      \u003ctext size=\\"sm\\">从 WireGuard、操作系统路由、防火墙和 Agent 读取的真实运行情况。\u003c/text>\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cicon name=\\"check-circle\\" size=\\"xl\\"/>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+      <text size=\"sm\">从 WireGuard、操作系统路由、防火墙和 Agent 读取的真实运行情况。</text>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <icon name=\"check-circle\" size=\"xl\"/>\
+    <box flex=\"1\" gap={1}>\
       **4. Health State：健康状态**\
 \
-      \u003ctext size=\\"sm\\">实际流量是否可达，目标 TCP/UDP 服务是否可用，HTTP 服务是否健康。\u003c/text>\
-    \u003c/box>\
-  \u003c/row>\
-\u003c/box>\
+      <text size=\"sm\">实际流量是否可达，目标 TCP/UDP 服务是否可用，HTTP 服务是否健康。</text>\
+    </box>\
+  </row>\
+</box>\
 \
 ### 3.1 一次配置修改应该怎样运行\
 \
 假设用户创建了一个新的 LAN 路由。\
 \
-\u003clist marker=\\"number\\" gap={2}>\
-  \u003clist-item>读取当前网络期望状态，构造修改后的候选状态。\u003c/list-item>\
-  \u003clist-item>运行地址冲突检查、网关选择检查和授权检查。\u003c/list-item>\
-  \u003clist-item>将候选状态编译成确定性的网络计划，确保规划成功。\u003c/list-item>\
-  \u003clist-item>通过事务提交资源变更、不可变修订快照、审计记录和待执行任务。\u003c/list-item>\
-  \u003clist-item>后台 Reconciler 调用 Hub 和对应设备的执行器。\u003c/list-item>\
-  \u003clist-item>执行器逐项应用计划，读取实际状态并进行核验。\u003c/list-item>\
-  \u003clist-item>各目标返回带有修订号和计划哈希的应用回执。\u003c/list-item>\
-  \u003clist-item>系统独立验证端到端连接和业务健康状态。\u003c/list-item>\
-\u003c/list>\
+<list marker=\"number\" gap={2}>\
+  <list-item>读取当前网络期望状态，构造修改后的候选状态。</list-item>\
+  <list-item>运行地址冲突检查、网关选择检查和授权检查。</list-item>\
+  <list-item>将候选状态编译成确定性的网络计划，确保规划成功。</list-item>\
+  <list-item>通过事务提交资源变更、不可变修订快照、审计记录和待执行任务。</list-item>\
+  <list-item>后台 Reconciler 调用 Hub 和对应设备的执行器。</list-item>\
+  <list-item>执行器逐项应用计划，读取实际状态并进行核验。</list-item>\
+  <list-item>各目标返回带有修订号和计划哈希的应用回执。</list-item>\
+  <list-item>系统独立验证端到端连接和业务健康状态。</list-item>\
+</list>\
 \
 数据库提交成功只意味着新的期望状态已经保存，不能意味着网络已经生效。\
 \
-仓库目前已经实现修订状态、设备回执以及拒绝过期回执的机制；目标设计应该保留这些原则，并进一步统一成正式的状态模型。\u003cCite refs={[\\"turn326817view1\\"]}/>\
+仓库目前已经实现修订状态、设备回执以及拒绝过期回执的机制；目标设计应该保留这些原则，并进一步统一成正式的状态模型。<Cite refs={[\"turn326817view1\"]}/>\
 \
 ### 3.2 修订状态不要再使用一个简单的 `Applied`\
 \
@@ -328,7 +329,7 @@ Desired Network Snapshot\
 \
 ### 4.2 冲突检查必须是全局且与创建顺序无关的\
 \
-这是当前设计需要重点强化的地方。现有 TODO 已经指出 Overlay、Alias、Direct 和共享转发前缀之间仍有更完整的冲突检查工作。\u003cCite refs={[\\"turn337194view2\\",\\"turn603604view0\\"]}/>\
+这是当前设计需要重点强化的地方。现有 TODO 已经指出 Overlay、Alias、Direct 和共享转发前缀之间仍有更完整的冲突检查工作。<Cite refs={[\"turn337194view2\",\"turn603604view0\"]}/>\
 \
 我建议建立统一的冲突分析器，而不是继续在每个 CRUD Handler 中编写一套独立判断。\
 \
@@ -422,7 +423,7 @@ WireGuard `AllowedIPs` 可以限制路由和 Peer 地址归属，但不能单独
 - 设备本地也可以根据需要执行主机级防火墙策略。\
 - Windows 使用 Windows Filtering Platform 等真正的防火墙机制，而不是仅通过路由配置假设访问已被限制。\
 \
-仓库的 Segment 设计文档已经明确要求设备侧路由可见性与 Hub 防火墙同时执行授权。\u003cCite refs={[\\"turn337194view3\\"]}/>\
+仓库的 Segment 设计文档已经明确要求设备侧路由可见性与 Hub 防火墙同时执行授权。<Cite refs={[\"turn337194view3\"]}/>\
 \
 ### 5.4 Linux 网络执行后端怎么选\
 \
@@ -553,7 +554,7 @@ DNS 应当是一个独立功能，而不是顺手修改所有设备的系统 DNS
 \
 我建议的目标目录如下：\
 \
-\u003cCodeBlock language=\\"text\\">\
+```text\
 meshlet/\
 ├── apps/\
 │   ├── server/                 # Control API and orchestration\
@@ -581,7 +582,7 @@ meshlet/\
 ├── protocol/\
 ├── docs/\
 └── scripts/\
-\u003c/CodeBlock>\
+```\
 \
 这些模块之间的依赖关系应该是单向的：\
 \
@@ -593,7 +594,7 @@ meshlet/\
 - 平台 Backend 只负责执行具体网络操作。\
 - `server`、`agent`、`netd` 负责进程生命周期和依赖装配。\
 \
-这与仓库已有的模块化提案方向一致，但这里明确把目标依赖边界作为强约束，而不再以兼容现有 crate 的布局为优先。\u003cCite refs={[\\"turn337194view1\\"]}/>\
+这与仓库已有的模块化提案方向一致，但这里明确把目标依赖边界作为强约束，而不再以兼容现有 crate 的布局为优先。<Cite refs={[\"turn337194view1\"]}/>\
 \
 ---\
 \
@@ -640,7 +641,7 @@ meshlet/\
 \
 私钥应独立保护；如果备份包含密钥，必须是显式选择、加密保护的恢复包。\
 \
-恢复时不能简单地把 SQLite 数据库恢复完成就宣布服务恢复。必须重新读取期望状态、检查凭证和密钥、编译计划，再对账真实内核状态。仓库现有文档已经指出，仅恢复 SQLite 不会自动恢复 Hub 的内核状态。\u003cCite refs={[\\"turn337194view0\\",\\"turn603604view0\\"]}/>\
+恢复时不能简单地把 SQLite 数据库恢复完成就宣布服务恢复。必须重新读取期望状态、检查凭证和密钥、编译计划，再对账真实内核状态。仓库现有文档已经指出，仅恢复 SQLite 不会自动恢复 Hub 的内核状态。<Cite refs={[\"turn337194view0\",\"turn603604view0\"]}/>\
 \
 ---\
 \
@@ -700,7 +701,7 @@ Agent 应使用有抖动的退避重试与长轮询，避免大量设备在服�
 | L4：平台集成 | Windows 虚拟机、服务启动、权限、路由与防火墙 | 开机恢复、重启、撤销、升级 |\
 | L5：部署验收 | 空白 VPS、备份恢复、升级回滚、真实设备 | 端到端可用、故障可恢复 |\
 \
-仓库已经拥有较多 Linux netns 测试，并明确区分本机测试与真实部署验收。目标设计应保留这一原则，同时补齐 Windows 的真实平台测试和真实 VPS 验收。\u003cCite refs={[\\"turn326817view1\\",\\"turn603604view0\\"]}/>\
+仓库已经拥有较多 Linux netns 测试，并明确区分本机测试与真实部署验收。目标设计应保留这一原则，同时补齐 Windows 的真实平台测试和真实 VPS 验收。<Cite refs={[\"turn326817view1\",\"turn603604view0\"]}/>\
 \
 我还建议补充以下自动化能力：\
 \
@@ -721,86 +722,87 @@ Agent 应使用有抖动的退避重试与长轮询，避免大量设备在服�
 \
 虽然不考虑旧结构兼容性，但我仍然建议按照依赖关系实施，而不是同时重写所有模块。\
 \
-\u003cbox border radius=\\"xl\\" padding={3} gap={3}>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cbox background=\\"surface-secondary\\" radius=\\"lg\\" size=\\"42px\\" align=\\"center\\" justify=\\"center\\">\
-      \u003ctitle size=\\"lg\\">01\u003c/title>\
-    \u003c/box>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+<box border radius=\"xl\" padding={3} gap={3}>\
+  <row align=\"start\" gap={3}>\
+    <box background=\"surface-secondary\" radius=\"lg\" size=\"42px\" align=\"center\" justify=\"center\">\
+      <title size=\"lg\">01</title>\
+    </box>\
+    <box flex=\"1\" gap={1}>\
       **基础架构重建**\
 \
-      \u003cbadge color=\\"danger\\">最高优先级\u003c/badge>\
+      <badge color=\"danger\">最高优先级</badge>\
 \
       重新定义领域模型、Revision、Plan、Receipt、协议 Schema 和 crate 依赖。建立纯 Planner、SQLite 事务与 Outbox，以及特权执行器接口。\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cbox background=\\"surface-secondary\\" radius=\\"lg\\" size=\\"42px\\" align=\\"center\\" justify=\\"center\\">\
-      \u003ctitle size=\\"lg\\">02\u003c/title>\
-    \u003c/box>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <box background=\"surface-secondary\" radius=\"lg\" size=\"42px\" align=\"center\" justify=\"center\">\
+      <title size=\"lg\">02</title>\
+    </box>\
+    <box flex=\"1\" gap={1}>\
       **可靠的 Linux 网络基础设施**\
 \
       重建 WireGuard Hub、Peer 管理、路由、nftables、安全撤销、漂移检测、last-good 恢复和单实例多网络隔离。\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cbox background=\\"surface-secondary\\" radius=\\"lg\\" size=\\"42px\\" align=\\"center\\" justify=\\"center\\">\
-      \u003ctitle size=\\"lg\\">03\u003c/title>\
-    \u003c/box>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <box background=\"surface-secondary\" radius=\"lg\" size=\"42px\" align=\"center\" justify=\"center\">\
+      <title size=\"lg\">03</title>\
+    </box>\
+    <box flex=\"1\" gap={1}>\
       **统一网络规划与冲突分析**\
 \
       完成 IPAM、Segment 策略、网关选择、Direct 路由、Alias 映射和全局冲突检查。\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cbox background=\\"surface-secondary\\" radius=\\"lg\\" size=\\"42px\\" align=\\"center\\" justify=\\"center\\">\
-      \u003ctitle size=\\"lg\\">04\u003c/title>\
-    \u003c/box>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <box background=\"surface-secondary\" radius=\"lg\" size=\"42px\" align=\"center\" justify=\"center\">\
+      <title size=\"lg\">04</title>\
+    </box>\
+    <box flex=\"1\" gap={1}>\
       **完成设备端到端组网**\
 \
       先让 Linux Agent 完整支持注册、启动恢复、执行回执、重试、升级和真实连接诊断。\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cbox background=\\"surface-secondary\\" radius=\\"lg\\" size=\\"42px\\" align=\\"center\\" justify=\\"center\\">\
-      \u003ctitle size=\\"lg\\">05\u003c/title>\
-    \u003c/box>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <box background=\"surface-secondary\" radius=\"lg\" size=\"42px\" align=\"center\" justify=\"center\">\
+      <title size=\"lg\">05</title>\
+    </box>\
+    <box flex=\"1\" gap={1}>\
       **Windows 完整客户端**\
 \
       通过真正的平台后端完成隧道服务、系统路由、防火墙、权限提升、开机恢复和卸载清理。\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cbox background=\\"surface-secondary\\" radius=\\"lg\\" size=\\"42px\\" align=\\"center\\" justify=\\"center\\">\
-      \u003ctitle size=\\"lg\\">06\u003c/title>\
-    \u003c/box>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <box background=\"surface-secondary\" radius=\"lg\" size=\"42px\" align=\"center\" justify=\"center\">\
+      <title size=\"lg\">06</title>\
+    </box>\
+    <box flex=\"1\" gap={1}>\
       **服务发布**\
 \
       实现 TCP/UDP 端口转发、HTTP/HTTPS 发布、授权控制、健康探测和内部 DNS 服务目录。\
-    \u003c/box>\
-  \u003c/row>\
-  \u003cdivider color=\\"subtle\\"/>\
-  \u003crow align=\\"start\\" gap={3}>\
-    \u003cbox background=\\"surface-secondary\\" radius=\\"lg\\" size=\\"42px\\" align=\\"center\\" justify=\\"center\\">\
-      \u003ctitle size=\\"lg\\">07\u003c/title>\
-    \u003c/box>\
-    \u003cbox flex=\\"1\\" gap={1}>\
+    </box>\
+  </row>\
+  <divider color=\"subtle\"/>\
+  <row align=\"start\" gap={3}>\
+    <box background=\"surface-secondary\" radius=\"lg\" size=\"42px\" align=\"center\" justify=\"center\">\
+      <title size=\"lg\">07</title>\
+    </box>\
+    <box flex=\"1\" gap={1}>\
       **正式部署与长期运行验收**\
 \
       完成空白 VPS 安装、密钥轮换、备份恢复、升级回滚、性能基线和真实多设备验收。\
-    \u003c/box>\
-  \u003c/row>\
-\u003c/box>\
+    </box>\
+  </row>\
+</box>\
+```
 \
 ## 最后的架构决策\
 \
@@ -828,5 +830,4 @@ If you want, I can:\
 - 继续详细描述 Alias 映射引擎设计\
 - 展开说明 LAN 路由引擎的实施挑战\
 - 介绍端口转发和 HTTP 服务执行引擎设计要点","role","assistant","name",{},"dd",{"_1752":1753,"_1754":1755},"disablePrefetch","shouldPrefetchAccount","shouldPrefetchUser","shouldPrefetchSystemHints","manageRootRouteStylesheet","mobileWebHandoffEnabled","promoteCss","disableSSR","stripModulepreloadImports","paidCampaignAppRedirect","statsigGateEvaluationsPromise",["P",1751],"traceId","338894415199112262","traceTime",1792512542480]
-");</script><!--$?--><template id="B:1"></template><!--/$--></div><script nonce="be1acb19-5ae7-43c5-8b52-5bb758906e9f">$RB=[];$RV=function(a){$RT=performance.now();for(var b=0;b<a.length;b+=2){var c=a[b],e=a[b+1];null!==e.parentNode&&e.parentNode.removeChild(e);var f=c.parentNode;if(f){var g=c.previousSibling,h=0;do{if(c&&8===c.nodeType){var d=c.data;if("/$"===d||"/&"===d)if(0===h)break;else h--;else"$"!==d&&"$?"!==d&&"$~"!==d&&"$!"!==d&&"&"!==d||h++}d=c.nextSibling;f.removeChild(c);c=d}while(c);for(;e.firstChild;)f.insertBefore(e.firstChild,c);g.data="$";g._reactRetry&&requestAnimationFrame(g._reactRetry)}}a.length=0};
 $RC=function(a,b){if(b=document.getElementById(b))(a=document.getElementById(a))?(a.previousSibling.data="$~",$RB.push(a,b),2===

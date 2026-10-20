@@ -2,11 +2,11 @@
 
 当前需求以个人自托管为边界：不同设备、网络内分组、受控的端口转发与 HTTP 服务路由。2026-10-17 静态审查发现，历史条目中部分“已完成”结论超出代码和测试的覆盖范围；不能继续采用“只剩两项环境走查”的汇总。
 
-- [架构与 TODO 审查](docs/analysis/architecture-review-2026-10-17.md)：代码证据、六项缺口、新需求模型和重新验收条件。
-- [Meshlet / ZeroTier / Tailscale 个人组网调研](docs/analysis/personal-networking-comparison.md)：61 项功能对比、官方来源、个人必要性、开发难度与实测方案。
-- [模块化与库复用提案](docs/architecture/modularity-and-library-design.md)：依赖边界、公共库与渐进迁移；常规虚拟网卡为主，无网卡服务入口按需评估。
-- [网关、网段冲突与端口转发专题](docs/architecture/gateways-conflicts-and-port-forwarding.md)：分网段选网关、Alias 冲突域和 A 端口到 B 服务的完整场景与验收。
-- [网段即信任组设计](docs/design/network-segment-trust.md)：ADR-012 已采纳 Network 内 Segment、同段互信、跨段默认拒绝与单向授权契约；IM-01 的模型字段与编译接线、IM-02 的默认段创建/持久化、IM-03 的模型与启动恢复边界校验均已完成；内核策略执行仍由 PN-02 验收。
+- 架构与 TODO 审查：代码证据、六项缺口、新需求模型和重新验收条件。
+- Meshlet / ZeroTier / Tailscale 个人组网调研：61 项功能对比、官方来源、个人必要性、开发难度与实测方案。
+- 模块化与库复用提案：依赖边界、公共库与渐进迁移；常规虚拟网卡为主，无网卡服务入口按需评估。
+- 网关、网段冲突与端口转发专题：分网段选网关、Alias 冲突域和 A 端口到 B 服务的完整场景与验收。
+- 网段即信任组设计：ADR-012 已采纳 Network 内 Segment、同段互信、跨段默认拒绝与单向授权契约；IM-01 的模型字段与编译接线、IM-02 的默认段创建/持久化、IM-03 的模型与启动恢复边界校验均已完成；内核策略执行仍由 PN-02 验收。
 
 ## 当前执行清单（2026-10-17）
 
@@ -29,7 +29,7 @@
 | CR-05 | P0 / 已验收（API / Linux netns） | agent 检查实际地址、Peer/AllowedIPs、转发、路由下一跳和逐条 NAT；局部漂移可修复 | `single_instance.rs` 验证部分 SNAT 丢失、关闭转发后的重放与通信恢复 |
 | QA-01 | P0 / 部分验收（hosted 门禁稳定化） | 独立数据面 CI 门禁：前置缺失不算通过，记录实际执行/跳过；重做最终验收矩阵 | `dataplane.yml` hosted 严格门禁与日志制品已通过，`:33` 显式纳入 `ledger_recovery`/`plan_recovery`；普通 CI 缺 `wg` 时明确 SKIP，`MESHLET_REQUIRE_DATAPLANE=1` 仍硬失败；实现 `apps/agent/tests/ledger_recovery.rs:38`、`apps/agent/tests/plan_recovery.rs:1`，Windows 临时库 `apps/server/tests/transaction_boundary.rs:20`，备份清理 `apps/server/tests/segments.rs:370`。本机 SKIP 4/4、严格数据面 ledger 4/4 + plan 3/3、segments 6/6 + transaction 2/2、workspace/clippy/fmt/docs 全绿；真实 VPS 验收矩阵待补 |
 | RG-01 | P1 / 待验证 | 不同目标网段分别走指定网关；返回路径正确，网关失效不串站点 | 网关专题；AR-02/AR-05，当前已有基础路由模型 |
-| RG-02 | P0 核验 / 部分验收（Linux netns） | 双站点和客户端本地 LAN 同前缀时用独立 Alias；正式 API/Agent + netns 已验 UDP/TCP 分别命中 local/site1/site2、tcpdump 记录三条目标/端口元组、本地路由保留且重复真实前缀不进隧道；删除 site1 后其路由与 NAT 消失、site2/本地仍可达且 `ip rule` 不变；server/agent 重启后剩余计划精确重建并自动恢复。返回模式变化、同网关歧义、业务失败恢复、备份恢复和 RG-03 冲突/预检仍未验收，不标整项完成 | [重叠 LAN Alias 设计](docs/zh/design/overlapping-lan-alias.md)；AR-01/MOD-03；测试证据：`apps/server/tests/dual_site_end_to_end.rs:1299` TCP、`:1313` 抓包、`:1381` 删除清理、`:1528` 重启恢复；漂移修复：`apps/agent/src/reconcile.rs:138` 实际通过 |
+| RG-02 | P0 核验 / 部分验收（Linux netns） | 双站点和客户端本地 LAN 同前缀时用独立 Alias；正式 API/Agent + netns 已验 UDP/TCP 分别命中 local/site1/site2、tcpdump 记录三条目标/端口元组、本地路由保留且重复真实前缀不进隧道；删除 site1 后其路由与 NAT 消失、site2/本地仍可达且 `ip rule` 不变；server/agent 重启后剩余计划精确重建并自动恢复。返回模式变化、同网关歧义、业务失败恢复、备份恢复和 RG-03 冲突/预检仍未验收，不标整项完成 | 重叠 LAN Alias 设计；AR-01/MOD-03；测试证据：`apps/server/tests/dual_site_end_to_end.rs:1299` TCP、`:1313` 抓包、`:1381` 删除清理、`:1528` 重启恢复；漂移修复：`apps/agent/src/reconcile.rs:138` 实际通过 |
 | RG-03 | 随 P0 修复 / 待设计 | 完整检查 Overlay/Alias/Direct/本地路由及共享多网络冲突域；拒绝覆盖，未知可追踪 | 网关专题；AR-01，精确前缀预检不代表完整冲突检测 |
 | PN-01 | P1 / 部分实现（Segment 授权管理 API 与控制台） | 网络内分组已接入计划编译：默认段保持全量可见；自定义段默认只看到同段网关，`Applied` 单向授权才恢复目标可见性，AllowedIPs 缩到源段 CIDR；Segment/授权 CRUD API 已按网络隔离并拒绝未知段、同段、重复与重叠输入，Pending 不进哈希、Applied 进 v4 哈希、Revoked 恢复；控制台可创建/查看/应用/撤销授权；SQLite 提交与备份重载恢复完整。设备/能力模型与真实内核拒绝策略仍未验收 | ADR-012；实现 `apps/server/src/segment.rs:13`、`apps/server/src/service.rs:1924`、`:2038`、`:2102`、`apps/server/src/persist.rs:334`、`:361`、`:391`、`console/src/App.tsx:1082`、`console/src/api.ts:371`；测试 `apps/server/tests/segments.rs:184`、`:252`、`:318`、`console/src/segment-grants.test.tsx:47`；本轮 `MESHLET_REQUIRE_DATAPLANE=1 cargo test -p meshlet-server -p meshlet-domain --locked -- --test-threads=1` 与 workspace clippy `-D warnings` 全绿 |
 | PN-02 | P1 / 待设计 | 最小组到设备/服务端口策略；明确默认行为，允许与拒绝均有内核证据 | PN-01、AR-01、AR-02；P2P 前需端点执行 |
@@ -75,13 +75,13 @@ P0 验收完成前，不以旧的“25/27 有测试证据”口径判断可发�
 
 ## 历史记录的修正口径
 
-历史记录已移至 [历史实施记录](docs/implementation/history-2026-10-17.md)，保留原始证据与执行过程；其中复选框不是当前整项产品能力的完成率。返回路径双模式、回滚安全、故障恢复和恢复后协调的原勾选已重开，分别追踪 AR-05、AR-04、AR-03。配置状态机的既有单机簿记证据保留，分布式应用确认另由 AR-02 验收；多网络隔离由 AR-01 重验。
+历史记录已移至 历史实施记录，保留原始证据与执行过程；其中复选框不是当前整项产品能力的完成率。返回路径双模式、回滚安全、故障恢复和恢复后协调的原勾选已重开，分别追踪 AR-05、AR-04、AR-03。配置状态机的既有单机簿记证据保留，分布式应用确认另由 AR-02 验收；多网络隔离由 AR-01 重验。
 
 状态按实际平台、拓扑和执行结果判定。静态审查、注入测试、真实内核 netns 和真实部署的证据分别列出；缺特权而跳过不能算数据面通过。依赖、目标、状态与验收放在本节，详细历史通过上述独立记录保留；新增进度只更新本页稳定 ID 和对应证据。
 
 ## 本轮验证记录
 
-详见 [P0 修复与 nightly 实施记录](docs/implementation/fixes-and-nightly-2026-10-17.md)。
+详见 P0 修复与 nightly 实施记录。
 
 Segment 实测：`cargo check --workspace --all-targets --offline` 通过；`cargo test -p meshlet-domain -p meshlet-server --offline` 全绿（domain 109 passed；server lib 21 passed，集成套件全部 0 failed，含迁移 12、recovery 5、审批注册 6、邀请加入 13、备份恢复 7、旧备份升级 7）；`pnpm docs:build`（VitePress 1.6.4）打包与页面渲染通过。IM-03 仅验收模型与启动恢复边界；策略执行和真实数据面仍不视为已验收。
 
