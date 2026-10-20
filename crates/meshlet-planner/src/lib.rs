@@ -1,6 +1,8 @@
 //! R-01 纯逻辑规划器（target-architecture 第四章）：不落库、不执行系统命令、不持密钥。
 //! 输入不可变快照，输出确定性计划；修订状态机见 docs/design/r01-domain-model.md。
 
+pub mod outbox;
+
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
