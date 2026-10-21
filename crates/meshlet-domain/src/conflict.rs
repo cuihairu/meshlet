@@ -10,7 +10,7 @@ use crate::entities::{AliasMapping, LanRoute, RouteMode};
 use crate::segments::Segment;
 
 /// 冲突认知来源（§6.3）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConflictKind {
     ServerKnown,
     ClientLocal,
@@ -24,7 +24,7 @@ impl ConflictKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConflictCode {
     OverlayAliasOverlap,
     OverlayExistingRouteOverlap,
@@ -35,9 +35,17 @@ pub enum ConflictCode {
     SegmentSegmentOverlap,
     SegmentAliasOverlap,
     SegmentOutsideOverlay,
+    AmbiguousInput,
+    DuplicateDeviceAddress,
+    ForeignObject,
+    UnknownGateway,
+    UnknownSegmentGrantEndpoint,
+    OrphanAliasMapping,
+    AliasRouteAmbiguous,
+    DeviceOutsideSegment,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Conflict {
     pub code: ConflictCode,
     pub kind: ConflictKind,
@@ -98,15 +106,12 @@ pub fn segment_alias_overlap(segments: &[Segment], aliases: &[AliasMapping]) -> 
         .collect()
 }
 
-/// Strict overlay containment for non-default segments; the default segment
-/// may equal the overlay for zero-behavior-fork legacy backfill.
+/// Strict overlay containment; default and child segments must remain inside
+/// the overlay so child trust boundaries cannot escape their address space.
 pub fn segment_overlay_containment(overlay: Ipv4Cidr, segments: &[Segment]) -> Vec<Conflict> {
     segments
         .iter()
-        .filter(|segment| {
-            (segment.name == "default" && segment.cidr != overlay)
-                || (segment.name != "default" && !overlay.contains_cidr(&segment.cidr))
-        })
+        .filter(|segment| !overlay.contains_cidr(&segment.cidr))
         .map(|segment| Conflict {
             code: ConflictCode::SegmentOutsideOverlay,
             kind: ConflictKind::ServerKnown,
@@ -207,7 +212,9 @@ pub fn lan_route_conflicts(routes: &[LanRoute]) -> Vec<Conflict> {
         for j in (i + 1)..routes.len() {
             let (a, b) = (&routes[i], &routes[j]);
             if a.destination_cidr.overlaps(&b.destination_cidr)
-                && !(a.route_mode == RouteMode::Alias && b.route_mode == RouteMode::Alias)
+                && !(a.route_mode == RouteMode::Alias
+                    && b.route_mode == RouteMode::Alias
+                    && a.gateway_device_id != b.gateway_device_id)
             {
                 out.push(Conflict {
                     code: ConflictCode::LanRouteConflict,
@@ -317,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn segment_containment_conflict_covers_parent_default_and_child_rules() {
+    fn segment_containment_conflict_covers_parent_and_child_rules() {
         let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
         let out = segment_overlay_containment(
             overlay,
@@ -333,7 +340,7 @@ mod tests {
             .iter()
             .map(|conflict| conflict.detail.as_str())
             .collect();
-        assert_eq!(details.len(), 3);
+        assert_eq!(details.len(), 2);
         assert!(details.iter().all(|detail| detail.contains("contained by")));
         assert!(!details.iter().any(|detail| detail.contains("seg-user")));
     }

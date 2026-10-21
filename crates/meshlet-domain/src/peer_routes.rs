@@ -129,7 +129,7 @@ pub fn client_hub_peer_allowed_ips(
 }
 
 /// VPS 隧道中的设备 Peer 条目：每设备独立 Peer（§7.2）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DevicePeer {
     pub device_id: DeviceId,
     pub public_key: String,

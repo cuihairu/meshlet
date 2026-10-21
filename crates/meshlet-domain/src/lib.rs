@@ -34,6 +34,10 @@ pub use entities::{
 };
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};
+pub use peer_routes::{
+    all_published_routes, client_hub_peer_allowed_ips, hub_device_peers, hub_peer_allowed_ips,
+    DevicePeer, PeerRouteError,
+};
 pub use presence::{
     evaluate, evaluate_with_defaults, Presence, PresenceInput, PresenceSource, PresenceState,
     PresenceThresholds,

@@ -90,6 +90,22 @@ impl Ipam {
     pub fn allocated_count(&self) -> usize {
         self.used.len()
     }
+
+    /// 按请求者身份排序后分配，避免 API、扫描或恢复顺序改变身份到地址的绑定。
+    pub fn allocate_by_identity<K>(
+        &mut self,
+        identities: &[K],
+    ) -> Result<Vec<(K, Ipv4Addr)>, IpamError>
+    where
+        K: Ord + Clone,
+    {
+        let mut identities = identities.to_vec();
+        identities.sort_unstable();
+        identities
+            .into_iter()
+            .map(|identity| Ok((identity, self.allocate()?)))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +169,31 @@ mod tests {
             assert!(seen.insert(ip), "duplicate allocation: {ip}");
         }
         assert!(matches!(ipam.allocate(), Err(IpamError::Exhausted(_, 254))));
+    }
+
+    #[test]
+    fn allocation_by_identity_is_independent_of_request_order() {
+        let identities = ["z".to_string(), "a".to_string(), "m".to_string()];
+        let reversed = identities.iter().rev().cloned().collect::<Vec<_>>();
+        let forward = {
+            let mut ipam = Ipam::new(
+                "10.240.0.0/16".parse().unwrap(),
+                "10.240.0.1".parse().unwrap(),
+            )
+            .unwrap();
+            ipam.allocate_by_identity(&identities).unwrap()
+        };
+        let reverse = {
+            let mut ipam = Ipam::new(
+                "10.240.0.0/16".parse().unwrap(),
+                "10.240.0.1".parse().unwrap(),
+            )
+            .unwrap();
+            ipam.allocate_by_identity(&reversed).unwrap()
+        };
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.len(), identities.len());
     }
 
     #[test]

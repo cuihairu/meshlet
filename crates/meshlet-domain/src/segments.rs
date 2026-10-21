@@ -163,7 +163,7 @@ impl Segment {
                 overlay,
             });
         }
-        if !is_default && !overlay.contains_cidr(&self.cidr) {
+        if !overlay.contains_cidr(&self.cidr) {
             return Err(SegmentError::OutsideOverlay {
                 segment: self.cidr,
                 overlay,
