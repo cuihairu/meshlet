@@ -1,0 +1,20 @@
+[package]
+name = "meshlet-net-linux"
+description = "Reliable Linux hub dataplane: WireGuard peers, routes, nftables, drift and last-good recovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meshlet-domain = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+defguard_wireguard_rs = "0.11"
+ipnet = "2"
+nftables = "0.6"
+
+[dev-dependencies]

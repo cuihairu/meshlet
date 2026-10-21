@@ -86,6 +86,7 @@ export default defineConfig({
           '/implementation/': [{ text: 'Implementation Records', items: [
             { text: 'P0 Fixes and Nightly Build', link: '/implementation/fixes-and-nightly-2026-10-17' },
             { text: 'Implementation History', link: '/implementation/history-2026-10-17' },
+            { text: 'R-02 Linux Dataplane', link: '/implementation/r02-linux-dataplane' },
           ] }],
           '/review/': [{ text: 'External Review Archive', items: [
             { text: 'Conversation Archive · 2026-10-13', link: '/review/chatgpt-2026-10-13' },
@@ -161,6 +162,7 @@ export default defineConfig({
           '/zh/implementation/': [{ text: '实施记录', items: [
             { text: 'P0 修复与 nightly', link: '/zh/implementation/fixes-and-nightly-2026-10-17' },
             { text: '历史实施记录', link: '/zh/implementation/history-2026-10-17' },
+            { text: 'R-02 Linux 数据面', link: '/zh/implementation/r02-linux-dataplane' },
           ] }],
           '/zh/review/': [{ text: '外部意见存档', items: [
             { text: '对话存档 · 2026-10-13', link: '/zh/review/chatgpt-2026-10-13' },
