@@ -39,7 +39,10 @@ pub struct InstallResult {
 }
 
 pub fn fetch_manifest(server_url: &str) -> Result<UpdateManifest, String> {
-    let url = format!("{}/api/v1/update-manifest", server_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/v1/update-manifest",
+        server_url.trim_end_matches('/')
+    );
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
@@ -48,7 +51,11 @@ pub fn fetch_manifest(server_url: &str) -> Result<UpdateManifest, String> {
     serde_json::from_str(&body).map_err(|e| format!("parse update manifest: {e}"))
 }
 
-pub fn download_binary(url: &str, expected_sha256: &str, timeout: Duration) -> Result<Vec<u8>, String> {
+pub fn download_binary(
+    url: &str,
+    expected_sha256: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
     let expected = normalize_sha256(expected_sha256)?;
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
@@ -74,10 +81,10 @@ pub fn download_binary(url: &str, expected_sha256: &str, timeout: Duration) -> R
 }
 
 pub fn plan_update(current_version: &str, manifest: UpdateManifest) -> Result<UpdateCheck, String> {
-    let current = Version::parse(current_version)
-        .map_err(|e| format!("parse current agent version: {e}"))?;
-    let target = Version::parse(&manifest.version)
-        .map_err(|e| format!("parse update version: {e}"))?;
+    let current =
+        Version::parse(current_version).map_err(|e| format!("parse current agent version: {e}"))?;
+    let target =
+        Version::parse(&manifest.version).map_err(|e| format!("parse update version: {e}"))?;
     if target <= current {
         return Ok(UpdateCheck::Current);
     }
@@ -227,14 +234,23 @@ mod tests {
                 sha256: manifest().sha256,
             })
         );
-        assert_eq!(plan_update("0.2.0", manifest()).unwrap(), UpdateCheck::Current);
-        assert_eq!(plan_update("0.3.0", manifest()).unwrap(), UpdateCheck::Current);
+        assert_eq!(
+            plan_update("0.2.0", manifest()).unwrap(),
+            UpdateCheck::Current
+        );
+        assert_eq!(
+            plan_update("0.3.0", manifest()).unwrap(),
+            UpdateCheck::Current
+        );
     }
 
     #[test]
     fn invalid_version_or_hash_fails_closed() {
         assert!(plan_update("not-semver", manifest()).is_err());
-        let bad = UpdateManifest { version: "x".into(), ..manifest() };
+        let bad = UpdateManifest {
+            version: "x".into(),
+            ..manifest()
+        };
         assert!(plan_update("0.1.0", bad).is_err());
         assert!(download_binary("http://127.0.0.1:1", "bad", Duration::from_secs(1)).is_err());
     }
@@ -257,7 +273,14 @@ mod tests {
 
     #[test]
     fn install_prepares_atomic_rename_backup_and_restart_marker() {
-        let root = std::env::temp_dir().join(format!("meshlet-self-update-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let root = std::env::temp_dir().join(format!(
+            "meshlet-self-update-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let binary = root.join("meshlet-agent");
         std::fs::write(&binary, b"old").unwrap();
@@ -278,10 +301,14 @@ mod tests {
         };
         let marker = request_restart(root.to_str().unwrap(), &result).unwrap();
         assert_eq!(std::fs::read(&binary).unwrap(), b"new");
-        assert_eq!(std::fs::read(binary.with_file_name("meshlet-agent.previous")).unwrap(), b"old");
+        assert_eq!(
+            std::fs::read(binary.with_file_name("meshlet-agent.previous")).unwrap(),
+            b"old"
+        );
         assert!(!stage.exists());
         assert_eq!(marker, restart_marker_path(root.to_str().unwrap()));
-        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&marker).unwrap()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&marker).unwrap()).unwrap();
         assert_eq!(saved["to_version"], "0.2.0");
         let _ = std::fs::remove_dir_all(root);
         let _ = temp;

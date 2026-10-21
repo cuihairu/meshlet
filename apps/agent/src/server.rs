@@ -29,9 +29,7 @@ pub fn fetch_plan(server_url: &str, token: &str) -> Result<DevicePlan, String> {
 
 /// Public control-plane response reader for endpoints that deliberately have
 /// no device bearer credential (for example the release update manifest).
-pub(crate) fn read_public(
-    response: Result<ureq::Response, ureq::Error>,
-) -> Result<String, String> {
+pub(crate) fn read_public(response: Result<ureq::Response, ureq::Error>) -> Result<String, String> {
     read(response)
 }
 

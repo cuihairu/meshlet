@@ -170,7 +170,8 @@ impl Agent {
         if self.pending_receipts.len() == 16 {
             self.pending_receipts.pop_front();
         }
-        self.pending_receipts.push_back(PendingReceipt { plan, error });
+        self.pending_receipts
+            .push_back(PendingReceipt { plan, error });
     }
 
     fn maybe_self_update(&mut self) {
@@ -194,8 +195,7 @@ impl Agent {
             return;
         };
         let installed = self_update::install(&plan).and_then(|result| {
-            self_update::request_restart(&self.state_dir, &result)
-                .map(|_| result)
+            self_update::request_restart(&self.state_dir, &result).map(|_| result)
         });
         if let Ok(result) = installed {
             tracing::info!(
@@ -676,11 +676,8 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let mut agent = Agent::with_backend(
-            config(root.to_str().unwrap()),
-            None,
-            SystemBackend::new(),
-        );
+        let mut agent =
+            Agent::with_backend(config(root.to_str().unwrap()), None, SystemBackend::new());
         let plan = DevicePlan {
             desired_revision: 1,
             hub_port: None,

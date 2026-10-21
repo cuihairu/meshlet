@@ -682,10 +682,8 @@ poll_interval_secs = 10
         );
         assert_eq!(c.dataplane.poll_interval_secs, 10);
 
-        let c = AgentConfig::from_toml(
-            "[upgrade]\nenabled = true\ncheck_interval_secs = 300",
-        )
-        .unwrap();
+        let c =
+            AgentConfig::from_toml("[upgrade]\nenabled = true\ncheck_interval_secs = 300").unwrap();
         assert!(c.upgrade.enabled);
         assert_eq!(c.upgrade.check_interval_secs, 300);
 
@@ -715,8 +713,7 @@ interface = "  "
         let err = AgentConfig::from_toml("[dataplane]\npoll_interval_secs = 0").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
-        let err =
-            AgentConfig::from_toml("[upgrade]\ncheck_interval_secs = 0").unwrap_err();
+        let err = AgentConfig::from_toml("[upgrade]\ncheck_interval_secs = 0").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidUpgrade(_)));
     }
 }
