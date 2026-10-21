@@ -199,6 +199,7 @@ impl Case {
                 enabled: true,
                 ..DataplaneConfig::default()
             },
+            upgrade: meshlet_config::UpgradeConfig::default(),
         };
         Agent::with_backend(config, None, self.backend())
     }

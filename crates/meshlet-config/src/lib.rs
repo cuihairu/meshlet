@@ -19,6 +19,8 @@ pub enum ConfigError {
     InvalidTunnelMtu(u32),
     #[error("invalid dataplane config: {0}")]
     InvalidDataPlane(String),
+    #[error("invalid upgrade config: {0}")]
+    InvalidUpgrade(String),
     #[error("missing required field: {0}")]
     MissingField(String),
 }
@@ -241,7 +243,15 @@ struct RawAgentConfig {
     /// 自举注册时上报的设备名（同网络内唯一，跨设备/待审批申请）。
     device_name: Option<String>,
     tray: Option<RawTrayConfig>,
+    upgrade: Option<RawUpgradeConfig>,
     dataplane: RawDataplaneConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawUpgradeConfig {
+    enabled: Option<bool>,
+    check_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -266,7 +276,23 @@ pub struct AgentConfig {
     pub device_name: Option<String>,
     /// 桌面集成（P1/P2）：两个能力独立开关，默认均关闭。
     pub tray: TrayConfig,
+    pub upgrade: UpgradeConfig,
     pub dataplane: DataplaneConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpgradeConfig {
+    pub enabled: bool,
+    pub check_interval_secs: u64,
+}
+
+impl Default for UpgradeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            check_interval_secs: 86_400,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -321,6 +347,7 @@ impl Default for AgentConfig {
             bootstrap_token: None,
             device_name: None,
             tray: TrayConfig::default(),
+            upgrade: UpgradeConfig::default(),
             dataplane: DataplaneConfig::default(),
         }
     }
@@ -344,6 +371,19 @@ impl AgentConfig {
                     .unwrap_or(default.tray.status_notifier_item),
             },
             None => default.tray,
+        };
+        let raw_upgrade = raw.upgrade.unwrap_or_default();
+        let check_interval_secs = raw_upgrade
+            .check_interval_secs
+            .unwrap_or(default.upgrade.check_interval_secs);
+        if check_interval_secs < 1 {
+            return Err(ConfigError::InvalidUpgrade(
+                "upgrade.check_interval_secs must be at least 1".into(),
+            ));
+        }
+        let upgrade = UpgradeConfig {
+            enabled: raw_upgrade.enabled.unwrap_or(default.upgrade.enabled),
+            check_interval_secs,
         };
         let dp_interface = dataplane
             .interface
@@ -378,6 +418,7 @@ impl AgentConfig {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             tray,
+            upgrade,
             dataplane: DataplaneConfig {
                 enabled: dataplane.enabled.unwrap_or(default.dataplane.enabled),
                 interface: dp_interface,
@@ -641,6 +682,17 @@ poll_interval_secs = 10
         );
         assert_eq!(c.dataplane.poll_interval_secs, 10);
 
+        let c = AgentConfig::from_toml(
+            "[upgrade]\nenabled = true\ncheck_interval_secs = 300",
+        )
+        .unwrap();
+        assert!(c.upgrade.enabled);
+        assert_eq!(c.upgrade.check_interval_secs, 300);
+
+        let d = AgentConfig::from_toml("").unwrap();
+        assert!(!d.upgrade.enabled);
+        assert_eq!(d.upgrade.check_interval_secs, 86_400);
+
         // 只开 enabled：其余默认。
         let c = AgentConfig::from_toml("[dataplane]\nenabled = true").unwrap();
         assert!(c.dataplane.enabled);
@@ -662,5 +714,9 @@ interface = "  "
 
         let err = AgentConfig::from_toml("[dataplane]\npoll_interval_secs = 0").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err =
+            AgentConfig::from_toml("[upgrade]\ncheck_interval_secs = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidUpgrade(_)));
     }
 }

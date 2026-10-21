@@ -8,6 +8,7 @@
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::Duration;
+use std::time::Instant;
 
 use meshlet_config::{AgentConfig, DataplaneConfig};
 use meshlet_domain::DataplaneEvidence;
@@ -19,6 +20,7 @@ use crate::desktop::{desktop_trigger, DesktopPublish, DesktopTrigger};
 #[cfg(not(target_os = "linux"))]
 use crate::desktop_unsupported::DesktopClient;
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
+use crate::self_update;
 use crate::server;
 use crate::tray::{TraySink, TrayState, TrayStatus};
 use meshlet_config::TrayConfig;
@@ -37,6 +39,10 @@ pub struct Agent {
     private_key: Option<String>,
     /// 账本状态文件（`{state_dir}/applied.json`）。
     state_path: std::path::PathBuf,
+    state_dir: String,
+    upgrade: meshlet_config::UpgradeConfig,
+    last_update_check: Option<Instant>,
+    pending_receipts: std::collections::VecDeque<PendingReceipt>,
     /// 托盘状态落盘（`{state_dir}/tray/`）；headless 下 no-op，见
     /// [`crate::tray`] 与 TODO「运行时系统托盘 icon」。
     tray: TraySink,
@@ -45,6 +51,11 @@ pub struct Agent {
     last_desktop_state: std::cell::RefCell<Option<TrayState>>,
     /// 本机设备名（托盘 tooltip 的文本等价物用）。
     device_name: Option<String>,
+}
+
+struct PendingReceipt {
+    plan: DevicePlan,
+    error: Option<String>,
 }
 
 impl Agent {
@@ -66,6 +77,10 @@ impl Agent {
             server_url: config.server_url,
             token: config.device_token.unwrap_or_default(),
             state_path: state_path(&config.state_dir),
+            state_dir: config.state_dir.clone(),
+            upgrade: config.upgrade,
+            last_update_check: None,
+            pending_receipts: std::collections::VecDeque::new(),
             tray: TraySink::new(&config.state_dir),
             desktop: std::cell::RefCell::new(DesktopClient::default()),
             desktop_config: config.tray,
@@ -106,6 +121,7 @@ impl Agent {
     /// 一轮：拉计划 → 需要则应用 → 心跳上报。待审批（自举注册，ZeroTier 式）
     /// 时拉不到计划：心跳保活让控制中心看到设备活着，批准后自然转入正常循环。
     pub fn tick(&mut self) -> Result<(), String> {
+        self.flush_pending_receipts();
         let plan = match server::fetch_plan(&self.server_url, &self.token) {
             Ok(plan) => plan,
             // 服务端契约：Pending 申请的 desired 端点 404 且消息含
@@ -123,7 +139,7 @@ impl Agent {
         let result = self.reconcile(&plan);
         let error = result.as_ref().err().map(String::as_str);
         if let Err(error) = server::report_apply(&self.server_url, &self.token, &plan, error) {
-            tracing::warn!(%error, "device apply receipt not delivered");
+            self.enqueue_receipt(plan.clone(), Some(error));
         }
         let decision = result?;
         let control_ok = self.report_heartbeat(Some(&plan));
@@ -133,7 +149,61 @@ impl Agent {
             control_ok,
             self.last_handshake().is_some(),
         ));
+        self.maybe_self_update();
         Ok(())
+    }
+
+    fn flush_pending_receipts(&mut self) {
+        while let Some(receipt) = self.pending_receipts.pop_front() {
+            let error = receipt.error.as_deref();
+            if let Err(error) =
+                server::report_apply(&self.server_url, &self.token, &receipt.plan, error)
+            {
+                self.pending_receipts.push_front(receipt);
+                tracing::warn!(%error, "device apply receipt retry not delivered");
+                break;
+            }
+        }
+    }
+
+    fn enqueue_receipt(&mut self, plan: DevicePlan, error: Option<String>) {
+        if self.pending_receipts.len() == 16 {
+            self.pending_receipts.pop_front();
+        }
+        self.pending_receipts.push_back(PendingReceipt { plan, error });
+    }
+
+    fn maybe_self_update(&mut self) {
+        if !self.upgrade.enabled {
+            return;
+        }
+        let due = self
+            .last_update_check
+            .map(|last| last.elapsed() >= Duration::from_secs(self.upgrade.check_interval_secs))
+            .unwrap_or_default();
+        if !due {
+            return;
+        }
+        self.last_update_check = Some(Instant::now());
+        let Ok(manifest) = self_update::fetch_manifest(&self.server_url) else {
+            return;
+        };
+        let Ok(self_update::UpdateCheck::Available(plan)) =
+            self_update::plan_update(env!("CARGO_PKG_VERSION"), manifest)
+        else {
+            return;
+        };
+        let installed = self_update::install(&plan).and_then(|result| {
+            self_update::request_restart(&self.state_dir, &result)
+                .map(|_| result)
+        });
+        if let Ok(result) = installed {
+            tracing::info!(
+                from_version = %result.from_version,
+                to_version = %result.to_version,
+                "agent update installed; restart requested"
+            );
+        }
     }
 
     /// 心跳上报并返回是否送达（失败只记日志，不让数据面循环退避）。
@@ -447,6 +517,7 @@ mod tests {
             bootstrap_token: None,
             device_name: None,
             tray: TrayConfig::OFF,
+            upgrade: meshlet_config::UpgradeConfig::default(),
             dataplane: DataplaneConfig {
                 enabled: true,
                 ..DataplaneConfig::default()
@@ -592,5 +663,59 @@ mod tests {
         assert_eq!(probe_decision(&p), None);
         let p = probe_plan(Some(28), Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(probe_decision(&p), None);
+    }
+
+    #[test]
+    fn pending_receipt_queue_is_bounded_at_sixteen() {
+        let root = std::env::temp_dir().join(format!(
+            "meshlet-agent-receipt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut agent = Agent::with_backend(
+            config(root.to_str().unwrap()),
+            None,
+            SystemBackend::new(),
+        );
+        let plan = DevicePlan {
+            desired_revision: 1,
+            hub_port: None,
+            tunnel: meshlet_network::TunnelConfig {
+                name: "wg0".into(),
+                address: "127.0.0.1".parse().unwrap(),
+                address_prefix: 32,
+                listen_port: None,
+                peers: Vec::new(),
+                mtu: None,
+                private_key: Some("private".into()),
+            },
+            routes: Vec::new(),
+            nat_rules: Vec::new(),
+            hub_address: None,
+            desired_config_hash: "hash".into(),
+        };
+        for index in 0..17 {
+            agent.enqueue_receipt(plan.clone(), Some(format!("error {index}")));
+        }
+        assert_eq!(agent.pending_receipts.len(), 16);
+        assert_eq!(
+            agent
+                .pending_receipts
+                .front()
+                .and_then(|receipt| receipt.error.as_deref()),
+            Some("error 1")
+        );
+        assert_eq!(
+            agent
+                .pending_receipts
+                .back()
+                .and_then(|receipt| receipt.error.as_deref()),
+            Some("error 16")
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

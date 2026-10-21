@@ -487,6 +487,7 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
         bootstrap_token: None,
         device_name: None,
         tray: meshlet_config::TrayConfig::OFF,
+        upgrade: meshlet_config::AgentConfig::default().upgrade,
         dataplane: meshlet_config::DataplaneConfig {
             enabled: true,
             hub_endpoint: Some("172.31.1.1:51820".into()),
@@ -751,6 +752,7 @@ fn forwarding_agent(
         bootstrap_token: None,
         device_name: None,
         tray: meshlet_config::TrayConfig::OFF,
+        upgrade: meshlet_config::AgentConfig::default().upgrade,
         dataplane: meshlet_config::DataplaneConfig {
             enabled: true,
             hub_endpoint: Some(format!("172.31.{index}.1:51820")),

@@ -27,6 +27,14 @@ pub fn fetch_plan(server_url: &str, token: &str) -> Result<DevicePlan, String> {
     serde_json::from_str(&body).map_err(|e| format!("parse the desired plan: {e}"))
 }
 
+/// Public control-plane response reader for endpoints that deliberately have
+/// no device bearer credential (for example the release update manifest).
+pub(crate) fn read_public(
+    response: Result<ureq::Response, ureq::Error>,
+) -> Result<String, String> {
+    read(response)
+}
+
 /// 自举注册响应（`POST /api/v1/device-registrations`）。
 #[derive(Debug, serde::Deserialize)]
 pub struct RegisterDeviceResponse {

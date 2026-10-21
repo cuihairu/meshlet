@@ -177,6 +177,7 @@ impl Case {
                 enabled: true,
                 ..DataplaneConfig::default()
             },
+            upgrade: meshlet_config::UpgradeConfig::default(),
         };
         Agent::with_backend(config, Some(self.private_key.clone()), self.backend())
     }

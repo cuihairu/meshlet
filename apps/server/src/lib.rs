@@ -52,6 +52,23 @@ pub struct SystemStatus {
     pub version: String,
 }
 
+/// Public update descriptor. Artifact URL and digest are release-provided;
+/// no device credential is required to read this descriptor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UpdateManifest {
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+pub fn update_manifest(url: impl Into<String>, sha256: impl Into<String>) -> UpdateManifest {
+    UpdateManifest {
+        version: env!("CARGO_PKG_VERSION").into(),
+        url: url.into(),
+        sha256: sha256.into(),
+    }
+}
+
 pub fn system_status() -> SystemStatus {
     SystemStatus {
         status: "ok".into(),
@@ -61,6 +78,13 @@ pub fn system_status() -> SystemStatus {
 
 async fn status_handler() -> Json<SystemStatus> {
     Json(system_status())
+}
+
+async fn update_manifest_handler() -> Json<UpdateManifest> {
+    Json(update_manifest(
+        "https://releases.meshlet.dev/meshlet-agent",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    ))
 }
 
 async fn create_network_handler(
@@ -914,6 +938,7 @@ pub fn router(state: SharedAppState) -> Router {
         .merge(revision::routes())
         .merge(segment::routes())
         .route("/api/v1/system/status", get(status_handler))
+        .route("/api/v1/update-manifest", get(update_manifest_handler))
         .route("/api/v1/enroll", post(enroll_handler))
         .route(
             "/api/v1/device-registrations",

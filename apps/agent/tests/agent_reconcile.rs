@@ -580,6 +580,7 @@ fn agent_in(node: &Node, state_dir: &str) -> Agent {
         bootstrap_token: None,
         device_name: None,
         tray: meshlet_config::TrayConfig::OFF,
+        upgrade: meshlet_config::UpgradeConfig::default(),
         dataplane: DataplaneConfig {
             enabled: true,
             ..DataplaneConfig::default()

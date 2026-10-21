@@ -1642,6 +1642,7 @@ fn tick_agent(
         bootstrap_token: None,
         device_name: None,
         tray: meshlet_config::TrayConfig::OFF,
+        upgrade: meshlet_config::AgentConfig::default().upgrade,
         dataplane: meshlet_config::DataplaneConfig {
             enabled: true,
             hub_endpoint: hub_endpoint.map(str::to_string),

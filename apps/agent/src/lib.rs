@@ -21,6 +21,7 @@ pub mod desktop;
 #[cfg(not(target_os = "linux"))]
 pub mod desktop_unsupported;
 pub mod reconcile;
+pub mod self_update;
 pub mod server;
 pub mod tray;
 
