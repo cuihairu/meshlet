@@ -1,0 +1,17 @@
+[package]
+name = "meshlet-publish"
+description = "Service publishing runtime: L4 forwarding, HTTP routing, health probes, and split DNS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+meshlet-domain = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+bytes = "1"
+
+[dev-dependencies]
+serde_json = { workspace = true }

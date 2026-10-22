@@ -9,6 +9,7 @@ members = [
     "crates/meshlet-netplan",
     "crates/meshlet-planner",
     "crates/meshlet-store",
+    "crates/meshlet-publish",
     "crates/meshlet-executor",
     "apps/server",
     "apps/agent",
@@ -49,6 +50,7 @@ meshlet-config = { path = "crates/meshlet-config" }
 meshlet-network = { path = "crates/meshlet-network" }
 meshlet-net-linux = { path = "crates/meshlet-net-linux" }
 meshlet-planner = { path = "crates/meshlet-planner" }
+meshlet-publish = { path = "crates/meshlet-publish" }
 meshlet-agent = { path = "apps/agent" }
 
 [profile.release]

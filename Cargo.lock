@@ -1637,6 +1637,19 @@ name = "meshlet-planner"
 version = "0.1.0"
 
 [[package]]
+name = "meshlet-publish"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "meshlet-domain",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "meshlet-server"
 version = "0.1.0"
 dependencies = [
