@@ -89,6 +89,7 @@ export default defineConfig({
             { text: 'R-02 Linux Dataplane', link: '/implementation/r02-linux-dataplane' },
             { text: 'R-03 Unified Network Plan', link: '/implementation/r03-unified-network-plan' },
             { text: 'R-04 Linux Agent Progress', link: '/implementation/r04-linux-agent-e2e' },
+            { text: 'R-06 Service Publishing', link: '/implementation/r06-service-publishing' },
           ] }],
           '/review/': [{ text: 'External Review Archive', items: [
             { text: 'Conversation Archive · 2026-10-13', link: '/review/chatgpt-2026-10-13' },
@@ -167,6 +168,7 @@ export default defineConfig({
             { text: 'R-02 Linux 数据面', link: '/zh/implementation/r02-linux-dataplane' },
             { text: 'R-03 统一网络规划', link: '/zh/implementation/r03-unified-network-plan' },
             { text: 'R-04 Linux Agent 进展', link: '/zh/implementation/r04-linux-agent-e2e' },
+            { text: 'R-06 服务发布', link: '/zh/implementation/r06-service-publishing' },
           ] }],
           '/zh/review/': [{ text: '外部意见存档', items: [
             { text: '对话存档 · 2026-10-13', link: '/zh/review/chatgpt-2026-10-13' },
