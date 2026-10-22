@@ -1,9 +1,10 @@
 //! Windows 防火墙计划层（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
 //!
-//! 本模块是**纯规划**：`netsh advfirewall firewall add/delete rule` 的参数
-//! 构造与失败文本分类，不执行任何命令。计划层函数在任意平台编译并单测
-//! （本仓 CI 的 Linux 侧即可跑绿）；**未在 Windows 上实测**，实测前 Windows
-//! 仍保持 [crate::unsupported] 的显式占位，不接 [crate::SystemBackend]。
+//! 本模块包含**纯规划**与 `#[cfg(windows)]` 执行层：`netsh advfirewall
+//! firewall add/delete rule` 的参数构造、失败文本分类与受控执行。计划层
+//! 函数在任意平台编译并单测（本仓 CI 的 Linux 侧即可跑绿）；执行层**未在
+//! Windows 上实测**，实测前 Windows 仍保持 [crate::unsupported] 的显式
+//! 占位，不接 [crate::SystemBackend]。
 //!
 //! 与 [windows_routes](../../../crates/meshlet-network/src/windows_routes.rs)
 //! 同一纪律：
@@ -106,7 +107,7 @@ pub struct FirewallRule {
     pub description: Option<String>,
 }
 
-/// 一条受控 netsh 防火墙命令（计划态；本轮无执行层）。
+/// 一条受控 netsh 防火墙命令（计划态；执行见 [exec]）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirewallRuleCommand {
     Add { rule: FirewallRule },
@@ -244,9 +245,106 @@ fn first_nonempty_line(output: &str) -> &str {
         .unwrap_or("(no output)")
 }
 
+/// 执行层（`#[cfg(windows)]`）：只负责把计划函数构造的参数交给 netsh、
+/// 把输出交回计划层分类，没有其他逻辑。
+///
+/// **未在 Windows 上实测**（本仓无 Windows 运行时）。TODO #52 的环境走查
+/// 之前 Windows 不接为 [crate::SystemBackend]——非 Linux 平台保持
+/// [crate::unsupported] 的显式占位，不假装有数据面。
+#[cfg(target_os = "windows")]
+pub mod exec {
+    use super::{classify_netsh_firewall_failure, FirewallRuleCommand};
+    use crate::{ApplyResult, NetworkError};
+
+    /// 执行一条受控 netsh 防火墙命令：成功/幂等成功/分类失败三态。
+    pub fn run_firewall_command(
+        command: &FirewallRuleCommand,
+    ) -> Result<ApplyResult, NetworkError> {
+        let output = std::process::Command::new("netsh")
+            .args(command.args())
+            .output()
+            .map_err(|error| NetworkError::Io(format!("spawn netsh: {error}")))?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        if output.status.success() {
+            return Ok(ApplyResult::ok());
+        }
+        // 删除规则已不存在 = 幂等成功（清理路径清到空态不算失败）。
+        if command.is_delete() {
+            if super::firewall_rule_already_absent(&text) {
+                return Ok(ApplyResult::ok());
+            }
+        }
+        classify_netsh_firewall_failure(
+            output.status.code().unwrap_or(-1),
+            &text,
+            command.operation(),
+            command.name(),
+        )?;
+        Ok(ApplyResult::ok())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    mod exec_tests {
+        use super::super::*;
+        use super::rule;
+        use crate::{ApplyResult, NetworkError};
+
+        /// 编译期锁定 exec 入口：签名只接收计划命令、返回计划层结果，测试不
+        /// 启动 netsh。
+        #[test]
+        fn exec_entrypoint_takes_planned_command_and_returns_planned_result() {
+            fn assert_signature(
+                _run: fn(&FirewallRuleCommand) -> Result<ApplyResult, NetworkError>,
+            ) {
+            }
+            assert_signature(super::super::exec::run_firewall_command);
+        }
+
+        /// exec 的删除分支依赖计划层判定：不存在文案 = 幂等成功。
+        #[test]
+        fn exec_delete_absence_classifier_is_idempotent_success() {
+            assert!(firewall_rule_already_absent(
+                "No rules match the specified criteria."
+            ));
+            assert!(classify_netsh_firewall_failure(
+                1,
+                "No rules match the specified criteria.",
+                FirewallRuleCommand::Delete {
+                    name: "Meshlet WireGuard".into(),
+                }
+                .operation(),
+                FirewallRuleCommand::Delete {
+                    name: "Meshlet WireGuard".into(),
+                }
+                .name()
+            )
+            .is_ok());
+        }
+
+        /// exec 的非零退出码交回计划层：权限类必须仍归权限错误。
+        #[test]
+        fn exec_failure_classification_preserves_privilege_mapping() {
+            let command = FirewallRuleCommand::Add { rule: rule() };
+            assert!(matches!(
+                classify_netsh_firewall_failure(
+                    1,
+                    "Access is denied.",
+                    command.operation(),
+                    command.name()
+                ),
+                Err(NetworkError::InsufficientPrivileges(_))
+            ));
+        }
+    }
 
     fn rule() -> FirewallRule {
         FirewallRule {
