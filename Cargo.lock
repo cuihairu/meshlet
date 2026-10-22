@@ -1661,6 +1661,7 @@ dependencies = [
  "meshlet-config",
  "meshlet-domain",
  "meshlet-network",
+ "meshlet-publish",
  "serde",
  "serde_json",
  "sha2",

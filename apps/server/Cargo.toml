@@ -21,6 +21,7 @@ meshlet-api-types = { workspace = true }
 meshlet-config = { workspace = true }
 meshlet-domain = { workspace = true }
 meshlet-network = { workspace = true }
+meshlet-publish = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

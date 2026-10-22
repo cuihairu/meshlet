@@ -23,6 +23,7 @@ pub mod device_plan;
 pub mod diagnostics;
 pub mod metrics;
 pub mod persist;
+pub mod publish_check;
 pub mod revision;
 pub mod segment;
 pub mod service;
@@ -1009,6 +1010,10 @@ pub fn router(state: SharedAppState) -> Router {
             post(convergence::receipt_handler),
         )
         .route("/api/v1/agent/heartbeat", post(agent::heartbeat_handler))
+        .route(
+            "/api/v1/publish/routes/check",
+            post(publish_check::publish_check_handler),
+        )
         .route(
             "/api/v1/agent/device/desired",
             get(agent::desired_device_plan_handler),
