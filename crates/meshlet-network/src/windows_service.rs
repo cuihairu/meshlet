@@ -1,0 +1,193 @@
+//! Windows 服务计划层（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
+//!
+//! 本模块是**纯规划**：`sc.exe create/start/stop/delete/config/failure` 的
+//! 参数构造与失败文本分类，不执行任何命令。计划层函数在任意平台编译并
+//! 单测（本仓 CI 的 Linux 侧即可跑绿）；**未在 Windows 上实测**，实测前
+//! Windows 仍保持 [crate::unsupported] 的显式占位，不接 [crate::SystemBackend]。
+//!
+//! 与 [windows_routes](windows_routes)、[windows_firewall](windows_firewall)
+//! 同一纪律：
+//!
+//! - **受控命令**：只从受管服务名、受控二进制路径和枚举启动类型渲染；
+//!   `Create` 的启动类型固定 `auto|disabled`；失败恢复固定三段 restart；
+//! - **sc.exe 经典形状**：`binPath=` / `start=` / `reset=` / `actions=`
+//!   是「键词元（含尾等号）+ 值独立词元」，不是 netsh 的单词元
+//!   `key=value`；本模块按公开 CLI 形状锁定，尚未真机实测；
+//! - **自启 + 恢复语义**：`config start= auto` 表达开机自启，`failure`
+//!   的 reset/restart 动作表达崩溃后重启恢复；
+//! - **fail closed**：权限文案宽匹配映射为
+//!   [`NetworkError::InsufficientPrivileges`]；服务不存在对 Delete/Stop
+//!   按幂等成功；其他未知失败统一 [`NetworkError::ApplyRejected`]。
+
+use crate::NetworkError;
+
+/// 服务启动类型（`sc` 的 `start=` 受控取值）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceStartMode {
+    Auto,
+    Disabled,
+}
+
+impl ServiceStartMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            ServiceStartMode::Auto => "auto",
+            ServiceStartMode::Disabled => "disabled",
+        }
+    }
+}
+
+/// 一条受控 `sc.exe` 命令（计划态；本轮无执行层）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceCommand {
+    /// `sc create <name> binPath= <path> start= <auto|disabled>`。
+    Create {
+        name: String,
+        bin_path: String,
+        start_mode: ServiceStartMode,
+    },
+    Start {
+        name: String,
+    },
+    Stop {
+        name: String,
+    },
+    Delete {
+        name: String,
+    },
+    /// `sc config <name> start= <mode>`，用于把已存在服务恢复为开机自启。
+    ConfigAutostart {
+        name: String,
+        start_mode: ServiceStartMode,
+    },
+    /// `sc failure <name> reset= <secs> actions= restart/…/restart/…/restart/…`。
+    ConfigRecovery {
+        name: String,
+        reset_secs: u32,
+        restart_delays_secs: [u32; 3],
+    },
+}
+
+impl ServiceCommand {
+    /// `sc.exe` 参数（不含 `sc.exe` 可执行文件路径；计划与未来执行层共用
+    /// 同一构造，避免参数漂移）。
+    pub fn args(&self) -> Vec<String> {
+        match self {
+            ServiceCommand::Create {
+                name,
+                bin_path,
+                start_mode,
+            } => vec![
+                "create".into(),
+                name.clone(),
+                "binPath=".into(),
+                bin_path.clone(),
+                "start=".into(),
+                start_mode.as_str().into(),
+            ],
+            ServiceCommand::Start { name } => vec!["start".into(), name.clone()],
+            ServiceCommand::Stop { name } => vec!["stop".into(), name.clone()],
+            ServiceCommand::Delete { name } => vec!["delete".into(), name.clone()],
+            ServiceCommand::ConfigAutostart { name, start_mode } => vec![
+                "config".into(),
+                name.clone(),
+                "start=".into(),
+                start_mode.as_str().into(),
+            ],
+            ServiceCommand::ConfigRecovery {
+                name,
+                reset_secs,
+                restart_delays_secs,
+            } => vec![
+                "failure".into(),
+                name.clone(),
+                "reset=".into(),
+                reset_secs.to_string(),
+                "actions=".into(),
+                recovery_actions(*restart_delays_secs),
+            ],
+        }
+    }
+
+    /// 操作名（错误消息点名用）。
+    pub fn operation(&self) -> &'static str {
+        match self {
+            ServiceCommand::Create { .. } => "service create",
+            ServiceCommand::Start { .. } => "service start",
+            ServiceCommand::Stop { .. } => "service stop",
+            ServiceCommand::Delete { .. } => "service delete",
+            ServiceCommand::ConfigAutostart { .. } => "service config autostart",
+            ServiceCommand::ConfigRecovery { .. } => "service config recovery",
+        }
+    }
+
+    /// 受管服务名（错误消息点名用）。
+    pub fn name(&self) -> &str {
+        match self {
+            ServiceCommand::Create { name, .. }
+            | ServiceCommand::Start { name }
+            | ServiceCommand::Stop { name }
+            | ServiceCommand::Delete { name }
+            | ServiceCommand::ConfigAutostart { name, .. }
+            | ServiceCommand::ConfigRecovery { name, .. } => name,
+        }
+    }
+}
+
+/// `sc.exe` 失败恢复动作值：三段失败均重启，延迟以秒表达并固定顺序。
+fn recovery_actions(delays_secs: [u32; 3]) -> String {
+    delays_secs
+        .iter()
+        .map(|delay| format!("restart/{delay}"))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// 判断 `sc.exe` 输出是否表示「服务不存在」（幂等 Stop/Delete 的判据）。
+pub fn service_absent(output: &str) -> bool {
+    let lowered = output.to_lowercase();
+    lowered.contains("service does not exist") || lowered.contains("error 1060")
+}
+
+/// 分类 `sc.exe` 失败：卸载重入按幂等成功，提权失败明示，其余 fail closed。
+///
+/// 权限文案用子串宽匹配（大小写不敏感），覆盖 Windows 版本/语言包差异；
+/// `Delete` 或 `Stop` 遇到 service does not exist（ERROR 1060）视为成功，
+/// 使卸载可从半清理状态重入；`Config*` 遇服务不存在不放行。
+pub fn classify_sc_failure(
+    exit_code: i32,
+    output: &str,
+    operation: &str,
+    name: &str,
+) -> Result<(), NetworkError> {
+    if (operation == "service delete" || operation == "service stop") && service_absent(output) {
+        return Ok(());
+    }
+
+    let lowered = output.to_lowercase();
+    if lowered.contains("access is denied")
+        || lowered.contains("requires elevation")
+        || lowered.contains("elevation is required")
+        || lowered.contains("not authorized")
+    {
+        return Err(NetworkError::InsufficientPrivileges(format!(
+            "sc.exe {operation} for service `{name}` requires administrator \
+             privileges (run from an elevated shell); sc.exe said: {}",
+            first_nonempty_line(output)
+        )));
+    }
+
+    Err(NetworkError::ApplyRejected(format!(
+        "sc.exe {operation} for service `{name}` failed (exit {exit_code}): {}",
+        first_nonempty_line(output)
+    )))
+}
+
+/// 输出的首个非空行（错误消息携带 sc.exe 原文，便于诊断）。
+fn first_nonempty_line(output: &str) -> &str {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("(no output)")
+}
