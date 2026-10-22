@@ -33,13 +33,13 @@ jobs:
         # Linux and Windows are the v1-supported agent platforms (archive §15).
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@v1
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -54,12 +54,12 @@ jobs:
     name: console build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 12.10.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -79,13 +79,13 @@ jobs:
     needs: [test]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: pnpm/action-setup@v6.1.0
         with:
           version: 12.10.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -143,7 +143,7 @@ jobs:
             | tee /tmp/meshlet-security.txt
       - name: Upload walkthrough evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: walkthrough-evidence
           path: |

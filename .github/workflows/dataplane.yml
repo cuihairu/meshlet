@@ -16,9 +16,9 @@ jobs:
     env:
       MESHLET_REQUIRE_DATAPLANE: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2.9.3
       - name: Install kernel test prerequisites
         run: |
           sudo apt-get update
@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           cargo build --locked -p meshlet-server --bin meshlet-server
           sudo -n python3 scripts/verify-systemd.py target/debug/meshlet-server 2>&1 | tee dataplane-systemd.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: dataplane-evidence
