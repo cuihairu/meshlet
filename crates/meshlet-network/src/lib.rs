@@ -23,6 +23,7 @@
 
 pub mod keys;
 pub mod nat;
+pub mod windows_firewall;
 pub mod windows_routes;
 
 #[cfg(target_os = "linux")]
