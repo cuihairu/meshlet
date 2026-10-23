@@ -686,6 +686,41 @@ fn check_http_route_free(
     Ok(())
 }
 
+/// 一台设备只绑定一个 HTTP 监听口、只用一种终止模式：计划里只有
+/// `http_listener` 和 `tls_passthrough` 两个位置，其余值会被静默丢弃
+/// （第二个监听口不绑定；混入 TLS 路由会让整台设备切成 SNI 嗅探）。
+fn check_http_socket_consistent(
+    state: &MeshState,
+    network_id: &str,
+    device_id: &str,
+    listener_address: std::net::SocketAddr,
+    tls_termination: bool,
+) -> Result<(), ServiceError> {
+    if let Some(existing) = state
+        .publishes
+        .get(network_id)
+        .and_then(|c| c.http_routes.iter().find(|r| r.device_id == device_id))
+    {
+        if existing.listener_address != listener_address {
+            return Err(ServiceError::Conflict(format!(
+                "device {device_id} already listens for http on {listener} (route {id}); \
+                 one http listener per device",
+                listener = existing.listener_address,
+                id = existing.id,
+            )));
+        }
+        if existing.tls_termination != tls_termination {
+            return Err(ServiceError::Conflict(format!(
+                "device {device_id} already serves route {id} with tls_termination={tls}; \
+                 one termination mode per device",
+                id = existing.id,
+                tls = existing.tls_termination,
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn create_http_route(
     state: &mut MeshState,
     network_id: &str,
@@ -725,6 +760,13 @@ pub fn create_http_route(
     }])
     .map_err(plan_error)?;
     check_http_route_free(state, network_id, &hostname, &req.path_prefix)?;
+    check_http_socket_consistent(
+        state,
+        network_id,
+        &req.device_id,
+        listener_address,
+        req.tls_termination,
+    )?;
     let route = PublishHttpRoute {
         id,
         network_id: network_id.to_string(),

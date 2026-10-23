@@ -245,6 +245,122 @@ export class ApiError extends Error {
   }
 }
 
+/** R-06 L4 publish object: one listener bind on a device, traffic gated by policy. */
+export interface PublishForward {
+  id: string;
+  network_id: string;
+  device_id: string;
+  /** tcp | udp */
+  protocol: string;
+  /** Socket the agent binds on the device, e.g. `0.0.0.0:8081`. */
+  listener_address: string;
+  backend_address: string;
+  allowed_source_cidrs: string[];
+  /** Read-only count: the server never echoes raw bearer tokens. */
+  allowed_bearer_token_count: number;
+  enabled: boolean;
+  created_at: string;
+  revision_id: number;
+}
+
+export interface PublishForwardInput {
+  device_id: string;
+  protocol: string;
+  listener_address: string;
+  backend_address: string;
+  allowed_source_cidrs: string[];
+  /** Raw tokens are shown only on the create form; the read view keeps a count. */
+  allowed_bearer_tokens: string[];
+  enabled: boolean;
+}
+
+/** HTTP(S) route: host + path prefix → backend on the device's shared listener. */
+export interface PublishHttpRoute {
+  id: string;
+  network_id: string;
+  device_id: string;
+  hostname: string;
+  path_prefix: string;
+  backend_address: string;
+  /** The one socket the agent binds for every route on this device. */
+  listener_address: string;
+  allowed_source_cidrs: string[];
+  allowed_bearer_token_count: number;
+  /** true = SNI sniff + TLS byte pass-through; never TLS termination. */
+  tls_termination: boolean;
+  created_at: string;
+  revision_id: number;
+}
+
+export interface PublishHttpRouteInput {
+  device_id: string;
+  hostname: string;
+  path_prefix: string;
+  backend_address: string;
+  listener_address: string;
+  allowed_source_cidrs: string[];
+  allowed_bearer_tokens: string[];
+  tls_termination: boolean;
+}
+
+/** Probe plus the last reported state merged in from the agent's upload. */
+export interface PublishProbe {
+  id: string;
+  network_id: string;
+  device_id: string;
+  /** tcp | http */
+  target_kind: string;
+  address: string;
+  path: string | null;
+  expected_status: number | null;
+  timeout_secs: number;
+  interval_secs: number;
+  enabled: boolean;
+  /** healthy | unreachable; null until the agent has reported. */
+  last_state: string | null;
+  last_checked_at: string | null;
+  last_detail: string | null;
+  created_at: string;
+  revision_id: number;
+}
+
+export interface PublishProbeInput {
+  device_id: string;
+  target_kind: string;
+  address: string;
+  path: string | null;
+  expected_status: number | null;
+  timeout_secs: number;
+  interval_secs: number;
+  enabled: boolean;
+}
+
+/** Split-horizon DNS answer; one socket per device, internal suffix only. */
+export interface PublishDnsRecord {
+  id: string;
+  network_id: string;
+  device_id: string;
+  name: string;
+  address: string;
+  ttl: number;
+  priority: number;
+  /** Socket the first record of this device's set pins the DNS listener to. */
+  bind_address: string;
+  internal_suffix: string;
+  created_at: string;
+  revision_id: number;
+}
+
+export interface PublishDnsRecordInput {
+  device_id: string;
+  name: string;
+  address: string;
+  ttl: number;
+  priority: number;
+  bind_address: string;
+  internal_suffix: string;
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -411,6 +527,31 @@ export const api = {
     }),
   deleteHostForward: (networkId: string, aliasId: string) =>
     request<void>('DELETE', `/networks/${networkId}/host-forwards/${aliasId}`),
+  // --- R-06 service publishing (desired-state objects the agent reconciles) ---
+  listPublishForwards: (networkId: string) =>
+    request<PublishForward[]>('GET', `/networks/${networkId}/publish/forwards`),
+  createPublishForward: (networkId: string, input: PublishForwardInput) =>
+    request<PublishForward>('POST', `/networks/${networkId}/publish/forwards`, input),
+  deletePublishForward: (networkId: string, forwardId: string) =>
+    request<void>('DELETE', `/networks/${networkId}/publish/forwards/${forwardId}`),
+  listPublishHttpRoutes: (networkId: string) =>
+    request<PublishHttpRoute[]>('GET', `/networks/${networkId}/publish/http-routes`),
+  createPublishHttpRoute: (networkId: string, input: PublishHttpRouteInput) =>
+    request<PublishHttpRoute>('POST', `/networks/${networkId}/publish/http-routes`, input),
+  deletePublishHttpRoute: (networkId: string, routeId: string) =>
+    request<void>('DELETE', `/networks/${networkId}/publish/http-routes/${routeId}`),
+  listPublishProbes: (networkId: string) =>
+    request<PublishProbe[]>('GET', `/networks/${networkId}/publish/probes`),
+  createPublishProbe: (networkId: string, input: PublishProbeInput) =>
+    request<PublishProbe>('POST', `/networks/${networkId}/publish/probes`, input),
+  deletePublishProbe: (networkId: string, probeId: string) =>
+    request<void>('DELETE', `/networks/${networkId}/publish/probes/${probeId}`),
+  listPublishDnsRecords: (networkId: string) =>
+    request<PublishDnsRecord[]>('GET', `/networks/${networkId}/publish/dns-records`),
+  createPublishDnsRecord: (networkId: string, input: PublishDnsRecordInput) =>
+    request<PublishDnsRecord>('POST', `/networks/${networkId}/publish/dns-records`, input),
+  deletePublishDnsRecord: (networkId: string, recordId: string) =>
+    request<void>('DELETE', `/networks/${networkId}/publish/dns-records/${recordId}`),
   /** Latest persisted diagnostics snapshot; 404 when never run. */
   getDiagnostics: (networkId: string) =>
     request<DiagnosticsReport>('GET', `/networks/${networkId}/diagnostics`),

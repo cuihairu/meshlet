@@ -1,6 +1,6 @@
 # R-06: Service Publishing Progress
 
-R-06 remains open. Service forwarding, web publishing, authorization, health checks, and the internal service directory are implemented in the current codebase — but **`meshlet-publish` is not wired into the agent runtime path yet**, so the real VPS / real-device end-to-end acceptance cannot be closed (see the gap list below).
+R-06 is wired end to end and has been run on a real device: a real `meshlet-agent` binds forwarding ports, an HTTP listener and a DNS socket from a server-delivered plan, and external traffic reaches the published backends. The full real-device record is in [Live VPS acceptance run, 2026-10-24](#live-vps-acceptance-run-2026-10-24); the surfaces that remain unverified on a real device are listed in [What is still not accepted](#what-is-still-not-accepted).
 
 ## Implemented
 
@@ -9,7 +9,7 @@ R-06 remains open. Service forwarding, web publishing, authorization, health che
 - Authorization control is exposed through `POST /api/v1/publish/routes/check`; the server route is wired at `apps/server/src/lib.rs:1014` through the `meshlet-publish` service adapter.
 - Health probes validate that a published target is reachable before traffic is admitted.
 - The internal DNS service directory supports split-horizon service discovery without overriding public DNS resolution.
-- Automated coverage currently reports `cargo test -p meshlet-publish` as 8 passed and `cargo test -p meshlet-server --test publish_check` as 2 passed.
+- Automated coverage is `cargo test -p meshlet-publish` = 35 passed (21 lib, 1 dns_catalog, 3 forwarding, 4 health_probe, 6 http_publishing), `cargo test -p meshlet-server` = 213 passed across 24 suites including `publish.rs` 11 and `publish_check.rs` 2, `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean, and the console at 17 passed tests plus a clean build.
 
 ## Live VPS Acceptance Record (2026-10-23)
 
@@ -97,14 +97,16 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/
 
 A missing CSRF header `X-Requested-With: XMLHttpRequest` returns 403, consistent with `publish/routes/check 4xx = 1` in `meshlet_http_requests_total`. Authorization is enforced before the service connection is opened (`crates/meshlet-publish/src/forwarding.rs:66`, `forwarding.rs:115`, `http.rs:165`, `http.rs:191`). `AuthorizationPolicy::authorize` (`crates/meshlet-publish/src/authorization.rs:45`) has OR semantics: a CIDR match returns `Allowed` immediately without checking the token; an IPv6 source can never match a CIDR because `Ipv4Cidr` only expresses IPv4, so it can only be admitted via a bearer token.
 
-### Wiring closed on 2026-10-24 (wiring plus tests, not a real-device acceptance)
+### Wiring closed on 2026-10-24 (wiring plus tests)
 
-Every gap listed above is now closed in code and covered by tests. This is control-plane wiring
-plus crate/server integration tests — **no real agent process has served real published traffic yet.**
+Every gap listed above was closed in code and covered by tests. This section records that wiring
+round: control-plane CRUD, the probe-health endpoint and the agent runtime hook, plus the crate and
+server integration tests. The real-device run it was waiting for is recorded in
+[Live VPS acceptance run](#live-vps-acceptance-run-2026-10-24).
 
 | Surface | Where | Test |
 |---|---|---|
-| Control-plane CRUD, four object kinds | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` plus `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs` (10 tests) |
+| Control-plane CRUD, four object kinds | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` plus `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs` (11 tests) |
 | Agent probe-health endpoint | `POST /api/v1/agent/publish-health` — one upserted row per probe in `publish_probe_reports`; a report for a probe the presenting device does not own is 400, an unknown probe id is 404 | `probe_health_report_is_guarded_by_device_id` |
 | DevicePlan carries publish config | `crates/meshlet-network/src/lib.rs` — `publish: Option<PublishPlan>`, folded into `desired_config_hash` | `device_plan_carries_the_publish_segment` |
 | Agent runs the publish layer | `apps/agent/src/agent.rs` — `PublishRuntime` owns a dedicated single-worker tokio runtime; `tick` reconciles the plan even when the kernel apply failed, then uploads buffered reports (256 per batch, front-trimmed) | `meshlet-publish` runtime tests, `apps/agent` tests |
@@ -130,16 +132,318 @@ Two real defects surfaced while writing these tests and were fixed:
 sniffs the SNI, applies the route policy, and forwards the TLS bytes to the backend. **There is still
 no TLS termination** — no certificate, no decryption.
 
+### Console UI entry point (implemented on 2026-10-24)
+
+Creating publish objects was previously REST-only. The network view now has a **Service
+publishing** section (`console/src/App.tsx`, `PublishSection`), driven by four methods in
+`console/src/api.ts` and covered by `console/src/publish.test.tsx`.
+
+Borrowing, recorded so the provenance is auditable:
+
+- **Portainer's service "Port publishing" editor** — the row vocabulary. Each L4 row reads
+  `protocol | published host:port → target host:port`, with the listener and backend split into
+  separate host and port fields exactly as Portainer does; the same vocabulary is reused by
+  Dokploy's per-app port table, which is what makes the port-forward row readable to a reader of
+  either product.
+- **The meshlet host-forwarding conflict card** — how a failure is shown. A refused create renders
+  the same `Publishing conflict — nothing was published.` card the host-forwarding editor uses, so
+  a failure is never a raw error string and never looks like a partial publish.
+- **Portainer's two-step inline delete** — `Delete` turns into `Confirm delete` + `Cancel` in the
+  row, instead of a modal; the shared `DeleteButton` is also used by the other publish tables.
+- Deliberately **not** copied: Tailscale's app dashboard is a read-only status surface with no
+  port-publishing editor, so there was nothing to copy from it beyond the read-only health column.
+
+Bearer tokens appear only on the create forms; every read view keeps a count, so a listing never
+echoes a secret. One device selector drives all four create forms.
+
+Walked through in a real browser against the live console: the section renders the four tables with
+the live rows (two forwards, one route, three probes with `healthy` / `healthy` / `unreachable`
+states from the control plane, one DNS record), `Create` posts the object and the row appears,
+`Delete` requires the second confirmation click, and `API errors` stays empty on every step.
+Creating and deleting a route from the UI produced the corresponding agent reconciliation
+(`started=1 stopped=0`, then `started=0 stopped=1`).
+
+### Live VPS acceptance run (2026-10-24)
+
+Same host as the record above (`ali`, eth0 `172.19.169.82`, public `106.14.216.177`). All outputs
+below are verbatim from the host and unmodified. The device is `dev-reg-2` in `net-1`.
+
+```text
+$ systemctl is-active meshlet-server
+active
+
+$ sha256sum /usr/local/bin/meshlet-server /usr/local/bin/meshlet-agent   # first 16 chars
+9adc19a90092bca7  meshlet-server
+8025b5e3f2ec831a  meshlet-agent
+
+$ ps -eo pid,args | grep meshlet
+2363888 /usr/local/bin/meshlet-server /etc/meshlet/meshlet.toml
+2379033 /usr/local/bin/meshlet-agent /etc/meshlet/agent.toml
+
+$ grep -c panicked /root/agent-publish.log
+1
+```
+
+The one panic line is from the **pre-fix** binary, `2026-10-23T19:02:08Z`. Nothing after the fixed
+binaries were installed at `19:40:54Z` added to it, so the count stays at 1 for the rest of the run.
+
+#### Defect 1: the SNI sniffer panicked on a real ClientHello
+
+The first TLS pass-through attempt crashed the publish worker:
+
+```text
+thread 'meshlet-publish' (2322840) panicked at crates/meshlet-publish/src/http.rs:238:54:
+index out of bounds: the len is 1554 but the index is 7157
+```
+
+Three separate defects behind that one trace:
+
+1. `sniff_sni` indexed into the record with no bounds checks, so a truncated or malformed
+   ClientHello panicked instead of returning `invalid`.
+2. It never stripped the 4-byte handshake header (type + 3-byte length), so even a well-formed
+   ClientHello parsed wrong — the body offset was off by 4.
+3. It consumed the ClientHello and never replayed it, so the backend never received the handshake.
+   This one hid behind the other two and was only found when an integration test hung on
+   `Elapsed` and the backend reported `0` of `N` bytes received.
+
+The fix is a bounds-checked `Cursor` (`take` / `u8` / `u16`, the same idiom as `dns.rs`) and a new
+contract: `sniff_sni` returns `(sni, consumed_record_bytes)` and the caller replays the record with
+`backend.write_all(&hello)` before `copy_bidirectional`.
+
+Real-device proof that the trigger no longer panics — a plain HTTP request to a TLS listener is
+exactly the old crash path:
+
+```text
+$ curl -s -m 5 -H 'Host: tls.mesh.internal' http://127.0.0.1:18090/ -w 'status=%{http_code} bytes=%{size_download}
+'
+status=000 bytes=0
+$ grep -c panicked /root/agent-publish.log
+1
+```
+
+The connection is refused with a reset and the panic count does not move. Regression coverage: 11
+unit tests in `http.rs` (well-formed SNI, extension skipping, plain HTTP rejection, non-ClientHello
+records, truncated cipher block, extension length lying, server-name list lying, name entry lying,
+missing host_name entry, no extensions at all, truncated record body) plus 3 integration tests in
+`tests/http_publishing.rs`.
+
+#### Defect 2: a second listener and a mixed termination mode were silently accepted
+
+The plan has exactly one `http_listener` and one `RouteMode` per device. A second route on another
+port never bound, and one TLS route flipped the whole device into SNI mode. Both failures were
+silent, and the old binary accepted `hr-9` (`tls.mesh.internal` on `18091`) next to a plain route on
+`18090` — the resulting router reset every plain request:
+
+```text
+$ curl -v -m 5 -H "Host: app.mesh.internal" http://127.0.0.1:18090/
+* Request completely sent off
+* Recv failure: Connection reset by peer
+curl: (56) Recv failure: Connection reset by peer
+```
+
+The fix rejects the mismatch at create time (`check_http_socket_consistent` in
+`apps/server/src/publish.rs`, mirroring the existing one-DNS-socket-per-device guard):
+
+```text
+$ # TLS route on a device that already has a plain route
+status=409
+{"error":{"code":"conflict","message":"device dev-reg-2 already serves route hr-3 with tls_termination=false; one termination mode per device"}}
+
+$ # second listener on the same device
+status=409
+{"error":{"code":"conflict","message":"device dev-reg-2 already listens for http on 0.0.0.0:18090 (route hr-3); one http listener per device"}}
+```
+
+Dropping the stale route reconciles cleanly and the phantom listener disappears:
+
+```text
+$ curl -s -X DELETE .../publish/http-routes/hr-9 -w 'status=%{http_code}
+'
+status=204
+applied rev 13 applied
+reconciled the publish plan started=1 stopped=1 failed=[]
+18091 listeners after delete: 0
+```
+
+#### Defect 3: each probe ran once and never again
+
+Probe reports were frozen in `publish_probe_reports` at `checked_at 2026-10-23T18:53:07Z` for hours
+while the process was alive. Reading the scheduler found the cause — `spawn_probe_loop` refreshed
+the due-table for **every** schedule on every 1-second tick, not just the ones it had scheduled:
+
+```rust
+for schedule in &schedules {          // wrong: all of them, every tick
+    last_run.insert(schedule.id.clone(), now);
+}
+```
+
+`duration_since(last_run)` therefore stayed at ~1 second, so any probe with an interval above the
+tick length was never due again. The fix records `last_run` only for the schedules that actually ran.
+Note this is also the true root cause of the frozen `checked_at` observed before the crash fix — the
+worker had not died; the earlier "worker not accepting" reading was Defect 2 resetting plain
+requests.
+
+Continuous reporting, two snapshots 35 seconds apart on the real device:
+
+```text
+== t0 19:58:51Z ==
+pb-5|healthy|2026-10-23T19:58:44Z|2026-10-23T19:58:44Z
+pb-6|healthy|2026-10-23T19:58:34Z|2026-10-23T19:58:44Z
+pb-7|unreachable|2026-10-23T19:58:44Z|2026-10-23T19:58:44Z
+== t+35s 19:59:26Z ==
+pb-5|healthy|2026-10-23T19:59:24Z|2026-10-23T19:59:24Z
+pb-6|healthy|2026-10-23T19:59:14Z|2026-10-23T19:59:14Z
+pb-7|unreachable|2026-10-23T19:59:24Z|2026-10-23T19:59:24Z
+```
+
+And again 65 seconds later: `pb-5`/`pb-7` `20:01:24Z`, `pb-6` `20:01:24Z` (interval 20s). The
+server-side rows advance, which is what `checked_at` in `publish_probe_reports` means. Regression
+test: `the_probe_loop_re_runs_a_due_schedule` in `tests/health_probe.rs`.
+
+#### Accepted surfaces, measured live
+
+Agent bound from the server-delivered plan — `ss -tlnup`:
+
+```text
+udp 0.0.0.0:15353   tcp 0.0.0.0:18090   tcp 0.0.0.0:18083   tcp 0.0.0.0:18080
+```
+
+```text
+$ curl -s -m 6 http://127.0.0.1:18080/                 # forward, allow 0.0.0.0/0
+L4-FORWARD-BACKEND-OK
+
+$ curl -s -m 6 -o /dev/null -w 'status=%{http_code} bytes=%{size_download}
+' http://127.0.0.1:18083/
+                                                        # forward, only 10.9.9.9/32 may in
+status=000 bytes=0                                       # reset, zero bytes
+
+$ curl -s -m 6 -H 'Host: app.mesh.internal' http://127.0.0.1:18090/
+HTTP-ROUTE-BACKEND-OK
+
+$ dig @127.0.0.1 -p 15353 app.mesh.internal +short +time=3 +tries=1
+10.240.0.5
+
+$ dig @127.0.0.1 -p 15353 github.com +short +time=3 +tries=1
+;; no servers could be reached       # a public name is not in the catalog and is not answered
+```
+
+TLS pass-through — the client sees the **backend** certificate, because the agent holds none:
+
+```text
+$ curl -sk -m 8 --resolve tls.mesh.internal:18090:127.0.0.1 https://tls.mesh.internal:18090/ -w 'status=%{http_code} remote=%{remote_ip}
+'
+TLS-PASSTHROUGH-BACKEND-OK
+status=200 remote=127.0.0.1
+$ echo | openssl s_client -connect 127.0.0.1:18090 -servername tls.mesh.internal 2>/dev/null | openssl x509 -noout -subject
+subject=CN=tls.mesh.internal
+
+$ curl -sk -m 8 --resolve tls.mesh.internal:18090:172.19.169.82 https://tls.mesh.internal:18090/ -w 'status=%{http_code} remote=%{remote_ip}
+'
+TLS-PASSTHROUGH-BACKEND-OK
+status=200 remote=172.19.169.82
+subject=CN=tls.mesh.internal
+
+$ curl -sk -m 8 --resolve other.mesh.internal:18090:172.19.169.82 https://other.mesh.internal:18090/ -o /tmp/n.out -w 'status=%{http_code} bytes=%{size_download}
+'
+status=000 bytes=0                    # unknown SNI: reset, backend never connected
+```
+
+One defect was found on the console side of this test and is worth recording: the first script
+pinned `--resolve tls.mesh.internal:18090` against `https://tls.mesh.internal/`, which defaults to
+port 443, so curl never resolved the host (`curl: exit 6`, `remote_ip` empty). That was a script bug,
+not a product bug — `openssl s_client` had already returned the backend certificate through the same
+port. Corrected by putting the port in the URL.
+
+Reconciliation events, all from the agent log:
+
+```text
+reconciled the publish plan started=7 stopped=0 failed=[]      # cold start: 2 forwards, 1 router, 1 dns, 3 probes
+reconciled the publish plan started=1 stopped=1 failed=[]      # route swapped plain -> TLS
+reconciled the publish plan started=1 stopped=1 failed=[]      # route restored TLS -> plain
+reconciled the publish plan started=0 stopped=1 failed=[]      # last route dropped, listener released
+```
+
+#### External reach, measured from a host outside the box
+
+```text
+$ for p in 22 80 443 8080 18080 18090; do timeout 10 bash -c "echo > /dev/tcp/106.14.216.177/$p" && echo OPEN || echo BLOCKED; done
+tcp 22    OPEN
+tcp 80    OPEN
+tcp 443   OPEN
+tcp 8080  OPEN
+tcp 18080 BLOCKED
+tcp 18090 BLOCKED
+
+$ curl -s -m 8 -o /dev/null -w '%{http_code}
+' http://106.14.216.177:8080/api/v1/networks
+401
+$ curl -s -m 8 -o /dev/null -w '%{http_code}
+' http://106.14.216.177:18090/
+000
+```
+
+The control plane is reachable from outside behind its auth gate. The published ports are **not**
+reachable from outside: the cloud security group opens 22, 80, 443 and 8080 only, and the published
+listeners sit on 15353, 18080, 18083 and 18090. Everything in the "Accepted surfaces" table above
+was therefore exercised over loopback or the private IP.
+
+The one public-path proof that did succeed ran through port 80: with a **temporary** nginx vhost
+proxying `app.mesh.internal` to `127.0.0.1:18090`, the published name resolved to the published
+backend from outside —
+
+```text
+$ curl -s -m 8 --resolve app.mesh.internal:80:106.14.216.177 http://app.mesh.internal/
+HTTP-ROUTE-BACKEND-OK
+```
+
+That vhost was removed at the end of the acceptance (reversibility), which is why the same request
+now returns nginx's default page:
+
+```text
+$ curl -s -m 8 --resolve app.mesh.internal:80:106.14.216.177 http://app.mesh.internal/
+<!DOCTYPE html><html><head><title>Welcome to nginx!</title>...
+
+$ ls /etc/nginx/sites-enabled/
+cockpit.cuihairu.site  coding.cuihairu.site  default  oddsmaker.cuihairu.site  wingman.cuihairu.site
+
+$ nginx -t
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+```
+
+So: traffic in through a published name over an open port is proven as a capability, but it is not
+part of the box's permanent configuration and is not verified as such.
+
 ### What is still not accepted
 
-- **No real-device end-to-end run.** No real agent has bound a forwarding port, an HTTP listener or a
-  DNS socket from a server-delivered plan. The forwarding, DNS and probe paths are verified on
-  loopback with high ports (`meshlet-publish` runtime tests); `0.0.0.0:53` still needs root and has
-  not been exercised on a real device.
-- **No console UI** for creating publish objects — CRUD is reachable over the REST API only.
+- **`0.0.0.0:53` has not been bound.** The DNS socket is bound on `0.0.0.0:15353`, which needs no
+  root. Port 53 would need root and no root bind was attempted, so the internal suffix is accepted
+  on a high port only.
+- **No off-box ingress to a published port.** 15353 / 18080 / 18083 / 18090 are all blocked by the
+  cloud security group from any outside host. Verified from outside as `BLOCKED` / `000`.
+- **No off-box TLS ingress.** Port 443 is held by the `cockpit.cuihairu.site` business vhost, so
+  adding an nginx stream pass-through on 443 would conflict with a live business service, and 18090
+  is not exposed by the security group. TLS pass-through is therefore verified via loopback and the
+  private IP only.
+- **No TLS termination.** There is no certificate and no decryption anywhere in this path —
+  `tls_termination` means SNI pass-through.
+- **Public HTTP ingress for a published name is not permanently configured.** It worked only while a
+  temporary nginx vhost was present, and that vhost was removed.
+- **The device-global limit is a design limit, not a bug to fix silently.** One HTTP listener and
+  one termination mode per device, now enforced at create time with 409 instead of silently
+  dropping the second value. A device that needs both a plain and a TLS hostname needs two
+  listeners, which this plan shape cannot express.
 
 ## Outstanding
 
-- Run and archive the real VPS / real-device end-to-end acceptance for published services: a real
-  agent binds a forwarding port, an HTTP listener and a DNS socket from a server-delivered plan,
-  with external traffic in and out. Until then the TODO record stays pending live verification.
+- Express two HTTP listeners (or mixed termination modes) on one device so a plain and a TLS
+  hostname can be published side by side. The plan currently carries one `http_listener` and one
+  `RouteMode`; the 409 guard makes that limit visible at create time instead of silently dropping
+  the second value.
+- Bind and accept on `0.0.0.0:53` on a device where the agent runs as root. Only port 15353 has
+  been accepted on a real device.
+- Wire a published hostname into the box's real ingress (an nginx host header on 80, or a stream
+  pass-through on 443 that coexists with `cockpit.cuihairu.site`) so off-box traffic reaches a
+  published service without a throwaway vhost.
+- Open the published ports in the cloud security group, or accept that on this box only 80 and 443
+  are usable ingress and the published listeners serve a LAN peer.
+- Real TLS termination (certificate, decrypt, re-encrypt) if SNI pass-through stops being enough.

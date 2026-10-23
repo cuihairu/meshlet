@@ -557,6 +557,73 @@ async fn http_route_lifecycle_and_duplicate_rejected() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
+/// 一台设备只能有一个 HTTP 监听口、一种终止模式：计划里只有一个
+/// `http_listener`，第二个监听口不绑定；混入 TLS 路由会把整台设备切成
+/// SNI 嗅探。静默丢弃不可接受，一律 409（与 DNS 套接字口径一致）。
+#[tokio::test]
+async fn http_route_shares_one_listener_and_mode_per_device() {
+    let ctx = memory_ctx().await;
+    let (network_id, device_id, _) = provision(&ctx, "edge-1").await;
+    let uri = format!("/api/v1/networks/{network_id}/publish/http-routes");
+    let route = json!({
+        "device_id": device_id,
+        "hostname": "one.mesh",
+        "path_prefix": "/",
+        "backend_address": "127.0.0.1:8080",
+        "listener_address": "127.0.0.1:80",
+        "allowed_source_cidrs": ["10.240.0.0/16"],
+        "tls_termination": false
+    });
+
+    let (status, created, raw) = post(&ctx, &uri, route.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "baseline: {raw}");
+    assert_eq!(created["id"], "hr-1");
+
+    // 同设备、不同监听口：计划只会绑定第一条路由的地址 → 409。
+    let mut other_listener = route.clone();
+    other_listener["hostname"] = json!("port.mesh");
+    other_listener["listener_address"] = json!("127.0.0.1:81");
+    let (status, body, _) = post(&ctx, &uri, other_listener).await;
+    assert_eq!(status, StatusCode::CONFLICT, "two listeners: {body}");
+    assert!(
+        body.to_string().contains("one http listener per device"),
+        "{body}"
+    );
+
+    // 同设备、混入 TLS 路由：会让整台设备切成 SNI 嗅探 → 409。
+    let mut tls = route.clone();
+    tls["hostname"] = json!("tls.mesh");
+    tls["tls_termination"] = json!(true);
+    let (status, body, _) = post(&ctx, &uri, tls).await;
+    assert_eq!(status, StatusCode::CONFLICT, "mixed tls: {body}");
+    assert!(
+        body.to_string().contains("one termination mode per device"),
+        "{body}"
+    );
+
+    // 同监听口、同模式：合法（多个 hostname 共用一个监听口）。
+    let mut second = route.clone();
+    second["hostname"] = json!("two.mesh");
+    let (status, second_created, raw) = post(&ctx, &uri, second).await;
+    assert_eq!(status, StatusCode::CREATED, "same listener+mode: {raw}");
+    assert_eq!(second_created["id"], "hr-2");
+
+    // 换一台设备互不影响（监听口/模式都按设备判定）。
+    let (device_b, _) = add_device(&ctx, &network_id, "edge-2", "test-public-key-2").await;
+    let mut on_other = route.clone();
+    on_other["device_id"] = json!(device_b);
+    on_other["hostname"] = json!("other.mesh");
+    on_other["listener_address"] = json!("127.0.0.1:8081");
+    on_other["tls_termination"] = json!(true);
+    let (status, other_created, raw) = post(&ctx, &uri, on_other).await;
+    assert_eq!(status, StatusCode::CREATED, "other device: {raw}");
+    assert_eq!(other_created["tls_termination"], true);
+
+    let (status, list) = get(&ctx, &uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list.as_array().unwrap().len(), 3);
+}
+
 // ---------------------------------------------------------------------------
 // 探针 + agent 健康回报
 // ---------------------------------------------------------------------------

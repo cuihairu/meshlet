@@ -116,3 +116,42 @@ async fn probes_report_connection_refusal_and_http_transport_failure() {
     .unwrap();
     assert_eq!(http, ProbeOutcome::Unreachable);
 }
+
+/// 真机验收发现的排程缺陷：到期表整表每秒刷新，interval 大于 tick 步长的探针
+/// 只在启动时跑一次就再也不跑（`checked_at` 永久冻结）。断言同一探针按 cadence
+/// 重复上报。
+#[tokio::test]
+async fn the_probe_loop_re_runs_a_due_schedule() {
+    use meshlet_publish::health::HealthState;
+    use meshlet_publish::{ProbeSchedule, PublishPlan, Publisher};
+
+    let mut publisher = Publisher::new();
+    let plan = PublishPlan {
+        probes: vec![ProbeSchedule {
+            id: "pb-loop".into(),
+            target: ProbeTarget::Tcp {
+                address: "127.0.0.1:9".parse().unwrap(),
+                timeout: Duration::from_millis(50),
+            },
+            interval: Duration::from_millis(200),
+        }],
+        ..Default::default()
+    };
+    publisher.reconcile(Some(&plan)).await.unwrap();
+    // 第二轮 reconcile 幂等：排程不变时不重启探针任务。
+    publisher.reconcile(Some(&plan)).await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    let reports = publisher.drain_reports();
+    let hits = reports
+        .iter()
+        .filter(|report| report.probe_id == "pb-loop")
+        .count();
+    assert!(
+        hits >= 2,
+        "a 200ms probe must re-run across 2.2s, saw {hits} reports"
+    );
+    assert!(reports
+        .iter()
+        .all(|report| report.state == HealthState::Unreachable));
+}

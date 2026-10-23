@@ -405,11 +405,11 @@ fn spawn_probe_loop(
                 })
                 .cloned()
                 .collect();
-            for schedule in due {
+            // 只记录真正排了探针的 schedule：整表每轮刷新会把到期判断推远，
+            // 让 interval 超过 tick 步长的探针只在启动时跑一次（真机验收发现）。
+            for schedule in &due {
                 let sender = sender.clone();
-                tokio::spawn(probe_once(schedule, sender));
-            }
-            for schedule in &schedules {
+                tokio::spawn(probe_once(schedule.clone(), sender));
                 last_run.insert(schedule.id.clone(), now);
             }
             tokio::time::sleep(Duration::from_secs(1)).await;

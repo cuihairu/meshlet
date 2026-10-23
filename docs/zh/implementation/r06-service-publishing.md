@@ -1,6 +1,6 @@
 # R-06：服务发布进展
 
-R-06 仍保持打开。服务转发、Web 发布、授权控制、健康探测和内部服务目录已在当前代码中落地；但 **`meshlet-publish` 尚未接入 agent 运行链路**，因此真实 VPS/真机端到端验收无法闭环（见下节缺口）。
+R-06 已端到端接通并在真机上跑通：真实 `meshlet-agent` 从服务端计划绑定转发端口、HTTP 监听与 DNS 套接字，外部流量打通到发布后端。完整真机记录见 [真实 VPS 验收运行（2026-10-24）](#真实-vps-验收运行2026-10-24)；真机上仍未验证的面见 [仍未验收的部分](#仍未验收的部分)。
 
 ## Implemented
 
@@ -9,7 +9,7 @@ R-06 仍保持打开。服务转发、Web 发布、授权控制、健康探测�
 - 授权控制通过 `POST /api/v1/publish/routes/check` 暴露；server 路由在 `apps/server/src/lib.rs:1014` 接入 `meshlet-publish` 服务适配器。
 - 健康探测会在流量准入前验证发布目标可达。
 - 内部 DNS 服务目录支持分流式服务发现，不覆盖公共 DNS 解析。
-- 当前自动化验证结果为：`cargo test -p meshlet-publish` 8 passed；`cargo test -p meshlet-server --test publish_check` 2 passed。
+- 当前自动化验证结果为：`cargo test -p meshlet-publish` 35 passed（21 lib、1 dns_catalog、3 forwarding、4 health_probe、6 http_publishing），`cargo test -p meshlet-server` 213 passed（24 个套件，其中 `publish.rs` 11、`publish_check.rs` 2），`cargo clippy --workspace --all-targets -- -D warnings` 干净，`cargo fmt --check` 干净，控制台 17 个用例通过且构建干净。
 
 ## 真实 VPS 验收记录（2026-10-23）
 
@@ -97,13 +97,13 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/
 
 缺失 CSRF 头 `X-Requested-With: XMLHttpRequest` 返回 403，与 `meshlet_http_requests_total` 中 `publish/routes/check 4xx = 1` 一致。授权判定在打开服务连接之前就位（`crates/meshlet-publish/src/forwarding.rs:66`、`forwarding.rs:115`、`http.rs:165`、`http.rs:191`）。`AuthorizationPolicy::authorize`（`crates/meshlet-publish/src/authorization.rs:45`）为 OR 语义：CIDR 命中即直接放行、不再校验 token；IPv6 来源因 `Ipv4Cidr` 只表达 IPv4 而无法命中 CIDR，只能依赖 Bearer token 放行。
 
-### 2026-10-24：接线缺口已闭合（接线 + 测试，非真机验收）
+### 2026-10-24：接线缺口已闭合（接线 + 测试）
 
-上方列出的缺口本轮全部在代码里闭合并有测试覆盖。这是控制面接线加 crate/server 集成测试——**尚无任何真实 agent 进程服务过真实发布流量。**
+上方列出的缺口已在此轮全部在代码里闭合并有测试覆盖。本节记录的是接线轮：控制面 CRUD、探针健康端点与 agent 运行时挂钩，加上 crate 与 server 集成测试。它等待的真机运行记录在 [真实 VPS 验收运行](#真实-vps-验收运行2026-10-24)。
 
 | 面 | 位置 | 测试 |
 |---|---|---|
-| 控制面 CRUD，四类对象 | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` 及 `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs`（10 个用例） |
+| 控制面 CRUD，四类对象 | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` 及 `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs`（11 个用例） |
 | Agent 探针健康端点 | `POST /api/v1/agent/publish-health` — 每探针在 `publish_probe_reports` 一条 upsert；为不属于本设备的探针写健康返回 400，未知探针 id 返回 404 | `probe_health_report_is_guarded_by_device_id` |
 | DevicePlan 承载发布配置 | `crates/meshlet-network/src/lib.rs` — `publish: Option<PublishPlan>`，并入 `desired_config_hash` | `device_plan_carries_the_publish_segment` |
 | Agent 运行发布层 | `apps/agent/src/agent.rs` — `PublishRuntime` 持有专用单 worker tokio 运行时；`tick` 在内核 apply 失败时也先对账发布态，再批量上报缓冲区健康（每批 256，超出丢最旧） | `meshlet-publish` runtime 测试、`apps/agent` 测试 |
@@ -118,11 +118,250 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/
 
 `tls_termination` 不再是无人读取的字段：`runtime.rs` 读取它并选 `RouteMode::TlsPassThrough`——嗅探 SNI、套用路由授权策略、把 TLS 字节直通后端。**但仍不做 TLS 终止**，无证书、不解密。
 
+### 控制台发布对象入口（2026-10-24 落地）
+
+创建发布对象此前只能走 REST。网络视图现在多出一个 **Service publishing** 区块（`console/src/App.tsx` 的 `PublishSection`），由 `console/src/api.ts` 里的四个方法驱动，测试见 `console/src/publish.test.tsx`。
+
+抄谁、抄什么，写明来源便于复核：
+
+- **Portainer 服务编辑器里的 "Port publishing"**——行表字段词汇。每条 L4 行读作 `协议 | 发布 host:port → 目标 host:port`，监听与后端拆成独立的 host / port 输入框，与 Portainer 一致；同一套词汇也被 Dokploy 每应用端口表复用，这让熟悉任一产品的人都能读懂转发行。
+- **meshlet 自己的主机转发冲突卡片**——失败怎么呈现。被拒的创建渲染成与主机转发编辑器相同的 `Publishing conflict — nothing was published.` 卡片，失败既不是裸错误串，也不会看起来像发布了一半。
+- **Portainer 的两步内联删除**——`Delete` 变成 `Confirm delete` + `Cancel` 原地确认，不弹窗；共用同一个 `DeleteButton`，其他发布表也用它。
+- **刻意没抄**：Tailscale 应用面板是只读状态面，没有端口发布编辑器，因此除只读健康列之外无可抄。
+
+Bearer token 只出现在创建表单里；所有读视图只保留计数，列表永不一律回显密钥。四个创建表单共用一个设备选择器。
+
+真机浏览器走查：四个表按控制面实况渲染（两条转发、一条路由、三条探针显示 `healthy` / `healthy` / `unreachable`、一条 DNS 记录），`Create` 提交后行出现，`Delete` 需要第二次点击确认，`API errors` 全程为空。从 UI 创建并删除一条路由，agent 侧对应产出 `started=1 stopped=0`，随后 `started=0 stopped=1`。
+
+### 真实 VPS 验收运行（2026-10-24）
+
+主机与上节相同（`ali`，eth0 `172.19.169.82`，公网 `106.14.216.177`）。以下输出均为该主机实测原文，未修饰。设备为 `net-1` 下的 `dev-reg-2`。
+
+```text
+$ systemctl is-active meshlet-server
+active
+
+$ sha256sum /usr/local/bin/meshlet-server /usr/local/bin/meshlet-agent   # 前 16 位
+9adc19a90092bca7  meshlet-server
+8025b5e3f2ec831a  meshlet-agent
+
+$ ps -eo pid,args | grep meshlet
+2363888 /usr/local/bin/meshlet-server /etc/meshlet/meshlet.toml
+2379033 /usr/local/bin/meshlet-agent /etc/meshlet/agent.toml
+
+$ grep -c panicked /root/agent-publish.log
+1
+```
+
+唯一那条 panic 出自**修复前**的二进制，时间 `2026-10-23T19:02:08Z`。`19:40:54Z` 装上修复版之后该计数再未增加，因此整场验收里它一直停在 1。
+
+#### 缺陷一：SNI 嗅探器对真实 ClientHello 直接 panic
+
+第一次跑 TLS 直通就把发布 worker 打崩了：
+
+```text
+thread 'meshlet-publish' (2322840) panicked at crates/meshlet-publish/src/http.rs:238:54:
+index out of bounds: the len is 1554 but the index is 7157
+```
+
+这一条 trace 背后是三个独立缺陷：
+
+1. `sniff_sni` 直接用下标取字节，没有任何边界检查，截断或畸形的 ClientHello 会 panic 而不是返回 `invalid`。
+2. 它从不剥掉 4 字节握手头（type + 3 字节长度），所以即使结构正确的 ClientHello 也解析错——正文偏移差 4。
+3. 它把 ClientHello 吃掉了却不回放，后端永远收不到握手。这一条被前两条盖住，直到一个集成测试卡到 `Elapsed`、后端报告 `0`/`N` 字节才浮出来。
+
+修复是引入带边界的 `Cursor`（`take` / `u8` / `u16`，与 `dns.rs` 同一套写法），并确立新的约定：`sniff_sni` 返回 `(sni, 已消费的整段记录字节)`，调用方必须先用 `backend.write_all(&hello)` 回放，再 `copy_bidirectional`。
+
+真机证明触发路径不再 panic——把纯 HTTP 打到 TLS 监听口正是旧崩溃入口：
+
+```text
+$ curl -s -m 5 -H 'Host: tls.mesh.internal' http://127.0.0.1:18090/ -w 'status=%{http_code} bytes=%{size_download}
+'
+status=000 bytes=0
+$ grep -c panicked /root/agent-publish.log
+1
+```
+
+连接被 reset，panic 计数不动。回归覆盖：`http.rs` 内 11 个单测（正常 SNI、跳过未知扩展、拒绝纯 HTTP、非 ClientHello 记录、截断的加密套件块、扩展长度虚报、server_name 列表虚报、名字条目越界、缺 host_name 条目、无任何扩展、记录体截断），加 `tests/http_publishing.rs` 3 个集成测试。
+
+#### 缺陷二：第二个监听口与混合终止模式被静默接受
+
+计划里每台设备只有一个 `http_listener` 和一种 `RouteMode`。第二端口从不绑定，一条 TLS 路由还会把整台设备切成 SNI 嗅探模式。两种失败都无提示，旧二进制甚至接受了与 `18090` 纯 HTTP 路由并存的 `hr-9`（`tls.mesh.internal` 在 `18091`）——结果该路由器 reset 掉每一条纯 HTTP 请求：
+
+```text
+$ curl -v -m 5 -H "Host: app.mesh.internal" http://127.0.0.1:18090/
+* Request completely sent off
+* Recv failure: Connection reset by peer
+curl: (56) Recv failure: Connection reset by peer
+```
+
+修复是在创建时拒绝（`apps/server/src/publish.rs` 的 `check_http_socket_consistent`，与既有的一设备一 DNS 套接字守卫对称）：
+
+```text
+$ # 已有一条纯 HTTP 路由的设备再建 TLS 路由
+status=409
+{"error":{"code":"conflict","message":"device dev-reg-2 already serves route hr-3 with tls_termination=false; one termination mode per device"}}
+
+$ # 同设备第二个监听口
+status=409
+{"error":{"code":"conflict","message":"device dev-reg-2 already listens for http on 0.0.0.0:18090 (route hr-3); one http listener per device"}}
+```
+
+删掉那条陈旧路由后对账干净，幽灵监听口随之消失：
+
+```text
+$ curl -s -X DELETE .../publish/http-routes/hr-9 -w 'status=%{http_code}
+'
+status=204
+applied rev 13 applied
+reconciled the publish plan started=1 stopped=1 failed=[]
+18091 listeners after delete: 0
+```
+
+#### 缺陷三：每条探针只跑一次，之后再也不跑
+
+`publish_probe_reports` 里的 `checked_at` 冻结在 `2026-10-23T18:53:07Z` 数小时，而进程一直活着。读调度器找到了原因——`spawn_probe_loop` 在每个 1 秒 tick 上给**全部** schedule 刷新到期表，而不是只刷新本次真正排了的：
+
+```rust
+for schedule in &schedules {          // 错：整表每轮刷新
+    last_run.insert(schedule.id.clone(), now);
+}
+```
+
+于是 `duration_since(last_run)` 永远约等于 1 秒，interval 大于 tick 步长的探针再也不会到期。修复为只对真正排出去的 schedule 记录 `last_run`。
+
+补充一句：这也是前面 `checked_at` 冻结的真正根因——worker 并没死，先前那个「worker 不再接收」的判断其实是缺陷二把纯 HTTP 请求 reset 掉了。
+
+连续上报，真机上相隔 35 秒两次快照：
+
+```text
+== t0 19:58:51Z ==
+pb-5|healthy|2026-10-23T19:58:44Z|2026-10-23T19:58:44Z
+pb-6|healthy|2026-10-23T19:58:34Z|2026-10-23T19:58:44Z
+pb-7|unreachable|2026-10-23T19:58:44Z|2026-10-23T19:58:44Z
+== t+35s 19:59:26Z ==
+pb-5|healthy|2026-10-23T19:59:24Z|2026-10-23T19:59:24Z
+pb-6|healthy|2026-10-23T19:59:14Z|2026-10-23T19:59:14Z
+pb-7|unreachable|2026-10-23T19:59:24Z|2026-10-23T19:59:24Z
+```
+
+再过 65 秒：`pb-5`/`pb-7` 到 `20:01:24Z`，`pb-6` 到 `20:01:24Z`（interval 20 秒）。服务端行持续推进，这正是 `publish_probe_reports.checked_at` 的含义。回归测试：`tests/health_probe.rs` 的 `the_probe_loop_re_runs_a_due_schedule`。
+
+#### 已验收面，真机实测
+
+agent 按服务端下发的计划绑定的套接字（`ss -tlnup`）：
+
+```text
+udp 0.0.0.0:15353   tcp 0.0.0.0:18090   tcp 0.0.0.0:18083   tcp 0.0.0.0:18080
+```
+
+```text
+$ curl -s -m 6 http://127.0.0.1:18080/                 # 转发，允许 0.0.0.0/0
+L4-FORWARD-BACKEND-OK
+
+$ curl -s -m 6 -o /dev/null -w 'status=%{http_code} bytes=%{size_download}
+' http://127.0.0.1:18083/
+                                                        # 转发，仅 10.9.9.9/32 可入
+status=000 bytes=0                                       # reset，零字节
+
+$ curl -s -m 6 -H 'Host: app.mesh.internal' http://127.0.0.1:18090/
+HTTP-ROUTE-BACKEND-OK
+
+$ dig @127.0.0.1 -p 15353 app.mesh.internal +short +time=3 +tries=1
+10.240.0.5
+
+$ dig @127.0.0.1 -p 15353 github.com +short +time=3 +tries=1
+;; no servers could be reached       # 公共域名不在目录里，也不会被应答
+```
+
+TLS 直通——客户端看到的是**后端**证书，因为 agent 不持有任何证书：
+
+```text
+$ curl -sk -m 8 --resolve tls.mesh.internal:18090:127.0.0.1 https://tls.mesh.internal:18090/ -w 'status=%{http_code} remote=%{remote_ip}
+'
+TLS-PASSTHROUGH-BACKEND-OK
+status=200 remote=127.0.0.1
+$ echo | openssl s_client -connect 127.0.0.1:18090 -servername tls.mesh.internal 2>/dev/null | openssl x509 -noout -subject
+subject=CN=tls.mesh.internal
+
+$ curl -sk -m 8 --resolve tls.mesh.internal:18090:172.19.169.82 https://tls.mesh.internal:18090/ -w 'status=%{http_code} remote=%{remote_ip}
+'
+TLS-PASSTHROUGH-BACKEND-OK
+status=200 remote=172.19.169.82
+subject=CN=tls.mesh.internal
+
+$ curl -sk -m 8 --resolve other.mesh.internal:18090:172.19.169.82 https://other.mesh.internal:18090/ -o /tmp/n.out -w 'status=%{http_code} bytes=%{size_download}
+'
+status=000 bytes=0                    # 未知 SNI：reset，后端从未被连接
+```
+
+这一项顺带暴露了一个我方脚本缺陷，值得记下：第一版脚本用 `--resolve tls.mesh.internal:18090` 配 `https://tls.mesh.internal/`，而后者默认走 443，于是 curl 根本没解析到主机（`curl: exit 6`，`remote_ip` 为空）。这是脚本 bug，不是产品 bug——`openssl s_client` 在同一端口上早已取回后端证书。把端口写进 URL 后即修正。
+
+对账事件，全部来自 agent 日志：
+
+```text
+reconciled the publish plan started=7 stopped=0 failed=[]      # 冷启动：2 转发、1 路由、1 DNS、3 探针
+reconciled the publish plan started=1 stopped=1 failed=[]      # 路由纯 HTTP → TLS
+reconciled the publish plan started=1 stopped=1 failed=[]      # 路由 TLS → 纯 HTTP 还原
+reconciled the publish plan started=0 stopped=1 failed=[]      # 最后一条路由删除，监听口释放
+```
+
+#### 外部可达性，从盒子之外的机器实测
+
+```text
+$ for p in 22 80 443 8080 18080 18090; do timeout 10 bash -c "echo > /dev/tcp/106.14.216.177/$p" && echo OPEN || echo BLOCKED; done
+tcp 22    OPEN
+tcp 80    OPEN
+tcp 443   OPEN
+tcp 8080  OPEN
+tcp 18080 BLOCKED
+tcp 18090 BLOCKED
+
+$ curl -s -m 8 -o /dev/null -w '%{http_code}
+' http://106.14.216.177:8080/api/v1/networks
+401
+$ curl -s -m 8 -o /dev/null -w '%{http_code}
+' http://106.14.216.177:18090/
+000
+```
+
+控制面可从外部访问，且在鉴权门之后。发布端口从外部**不可达**：云安全组只开 22、80、443、8080，而发布监听落在 15353、18080、18083、18090。所以上面「已验收面」全部是在回环或私网 IP 上验证的。
+
+唯一真正打通的外部路径走的是 80 端口：临时挂一个 nginx vhost 把 `app.mesh.internal` 代理到 `127.0.0.1:18090`，外部用发布域名即可打到发布后端——
+
+```text
+$ curl -s -m 8 --resolve app.mesh.internal:80:106.14.216.177 http://app.mesh.internal/
+HTTP-ROUTE-BACKEND-OK
+```
+
+该 vhost 在验收结束时已按可回退原则删除，所以下一条同样请求现在返回的是 nginx 默认页：
+
+```text
+$ curl -s -m 8 --resolve app.mesh.internal:80:106.14.216.177 http://app.mesh.internal/
+<!DOCTYPE html><html><head><title>Welcome to nginx!</title>...
+
+$ ls /etc/nginx/sites-enabled/
+cockpit.cuihairu.site  coding.cuihairu.site  default  oddsmaker.cuihairu.site  wingman.cuihairu.site
+
+$ nginx -t
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+```
+
+也就是说：经开放端口、用发布域名把流量引入这一能力已证明可行，但它不属于盒子的常设配置，也未按常设配置验证。
+
 ### 仍未验收的部分
 
-- **真机端到端未跑**：尚无任何真实 agent 从服务端下发的计划绑定过转发端口、HTTP 监听或 DNS 套接字。转发、DNS、探针路径只在回环 + 高位端口上验证过（`meshlet-publish` runtime 测试）；`0.0.0.0:53` 仍需 root，未在真机上跑过。
-- **无控制台 UI** 创建发布对象——CRUD 目前只走 REST API。
+- **`0.0.0.0:53` 未绑定过。** DNS 套接字绑定在 `0.0.0.0:15353`，不需要 root；53 需要 root，未做任何 root 绑定尝试，所以内部后缀只在高位端口上验收过。
+- **发布端口没有外部入口。** 15353 / 18080 / 18083 / 18090 从任何外部主机都被云安全组挡住，外部实测为 `BLOCKED` / `000`。
+- **TLS 没有外部入口。** 443 被 `cockpit.cuihairu.site` 业务 vhost 占用，在 443 上加 nginx stream 直通会与线上业务冲突，18090 又不在安全组放行之列。TLS 直通因此只在回环与私网 IP 上验证。
+- **不做 TLS 终止。** 整条链路没有证书、不解密，`tls_termination` 的含义是 SNI 直通。
+- **发布域名的公网 HTTP 入口未常设。** 只在临时 nginx vhost 存在期间可用，该 vhost 已删除。
+- **设备级限制是设计限制，不是静默 bug。** 一台设备一个 HTTP 监听口、一种终止模式，现在在创建期以 409 显式拒绝，而不是静默丢掉第二个值。需要同时发布纯 HTTP 与 TLS 域名的设备需要两个监听口，而当前计划结构表达不了。
 
 ## Outstanding
 
-- 运行并归档真实 VPS/真机端到端服务发布验收：真实 agent 从服务端下发的计划绑定转发端口、HTTP 监听与 DNS 套接字，外部流量进出。在此之前 TODO 记录保持待真机验证。
+- 让一台设备表达两个 HTTP 监听口（或混合终止模式），使纯 HTTP 与 TLS 域名能并排发布。当前计划只带一个 `http_listener` 与一种 `RouteMode`；409 守卫把这个限制在创建期显性化，而不是静默丢掉第二个值。
+- 在 agent 以 root 运行的设备上绑定并接受 `0.0.0.0:53`。目前只在 15353 上完成真机验收。
+- 把发布域名接进盒子真实的入口层（80 端口上的 nginx 主机头，或与 `cockpit.cuihairu.site` 共存的 443 stream 直通），使外部流量无需临时 vhost 即可到达发布服务。
+- 在云安全组里放行发布端口，或者接受这台盒子上只有 80 与 443 是可用的入口、发布监听只服务局域网对端。
+- 真正的 TLS 终止（证书、解密、再加密），若 SNI 直通不再够用。
