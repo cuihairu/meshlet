@@ -37,7 +37,7 @@
   - [x] 备份恢复（2026-10-24）：API 备份 385024 B（`networks=1 devices=2 revisions=3`）；工件为**明文** SQLite `0600 meshlet:meshlet`（显式加密恢复包口径：无加密包，见 docs/zh/architecture/backup-restore.md）；缺 CSRF 头 403；文档顺序 stop→restore→start 实测通过，恢复出的库 `0600 meshlet:meshlet`（修复前 root:root 会 crash-loop），`NRestarts=0`，`system.restore` 审计带源路径，会话随库存活（旧 cookie `/auth/me` 200），无 restore-tmp 残留；**实测发现运行中恢复会把写入送进脱链 inode（一次 201 的 token 铸造消失），重启才重新采用恢复库——文档已把「先停服务」定为强制**。
   - [x] 性能基线（2026-10-24）：进程内 bench 矩阵（file/memory，c=1/16/64/256，footprint 3.5 KiB/网络、0.2 KiB/token）入 docs/architecture/performance.md；运行中服务真实 socket 基线：`/system/status` 126 req/s 串行 / 261 req/s 8 并发、`/networks` 130 req/s、backup 63 req/s（curl 每次 fork，是下限不是上限）。
   - [x] 真实多设备验收（2026-10-24）：第三台设备经 `max_uses=1` token 入网（`dev-reg-3`→10.240.0.4→修订 4 apply），hub 三 peer `/32` 握手新鲜，诊断 `3/3 handshakes`、`mtu_planned` 三设备证据一致（`1420 probe 1392`），token 记账 `bt-1 2/5`、`bt-2 1/1`。
-  - [ ] 升级回滚：release 页只有一个 2026-10-17 nightly（工具链错配导致 nightly 构建连败，本轮已修 nightly.yml）——升级（重跑 install.sh 原地升级）与回滚（离线 `MESHLET_INSTALL_ARCHIVE` 指上一版压缩包）待新 nightly 出来后在空白容器上补测。
+  - [x] 升级回滚（2026-10-24，CT 113 真实 release 资产）：修复 nightly.yml 的 E0463 后 workflow_dispatch 构建成功并发布（`commit=cefd5ef`、`source_dirty=false`）；重建前先把当时已发布的 2026-10-17 资产存到宿主机（对照发布 `SHA256SUMS` 校验 `OK`）。升级=重跑 install.sh：二进制 `4845343087249b66…` → `089893187da04786…`，配置/私钥/设备 token 三哈希逐字节不变，设备未重新注册（`using the saved agent token`），首个 tick 三 peer 握手 11/12/32 秒、DF 1472B ping 3/3 零丢包（平均 0.684 ms）。回滚=旧压缩包走 `MESHLET_INSTALL_ARCHIVE`+`MESHLET_INSTALL_SHA256SUMS` 离线安装（打印 `Verifying staged Meshlet nightly (x86_64)…`）：二进制回到 `4845343087249b66…`、三哈希未动、ping 3/3 零丢包，再次升级后设备停在修复版。回滚到「已发布的旧 tag」仍做不到（无带日期 release），按离线口径覆盖。
   - [ ] 长期运行浸泡：本轮为小时级验收，未做多周持续观察（如实保持未勾）。
 
 ## 关键设计要点（来自评审，实现时逐条对照）

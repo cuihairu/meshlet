@@ -47,7 +47,13 @@ hub 密钥是服务器唯一持有的传输秘密；设备密钥留在设备上�
 
 ## 升级与回滚
 
-在本席位上回滚到**已发布的旧 tag** 目前做不到：release 页只有一个滚动 `nightly`（2026-10-17），因为 nightly 构建被本轮修掉的工具链错配打断，从未发布过带日期的 release。因此升级与回滚的证据在新容器上按以下口径执行：**同一角色重跑即为原地升级**（配置、私钥与状态目录均保留），**回滚走文档化的离线/分阶段安装**（`MESHLET_INSTALL_ARCHIVE` + `MESHLET_INSTALL_SHA256SUMS`）指向上一版压缩包。
+在本席位上回滚到**已发布的旧 tag** 做不到：release 页只有一个滚动 `nightly`，因为 nightly 构建被本轮修掉的工具链错配打断，从未发布过带日期的 release。因此升级与回滚按以下口径在 CT 113 上用真实 release 资产实测：**同一角色重跑 = 原地升级**，**离线/分阶段安装（`MESHLET_INSTALL_ARCHIVE` + `MESHLET_INSTALL_SHA256SUMS`）= 回滚**。触发修复后的 nightly 之前，先把当时已发布的 2026-10-17 资产存到 PVE 宿主机（对照已发布 `SHA256SUMS` 做 `sha256sum -c` → `OK`），保证回滚目标就是真正的上一版压缩包。
+
+**升级（23:25Z）。** 在已安装设备上重跑 `wget -qO- …/install.sh | bash -s -- agent`：安装器退出 0，二进制 `4845343087249b66…bcd644` → `089893187da04786…85192552`，`agent-build-info` 变为 `commit=cefd5ef5ac26e723d9526e71a50255f4995dde6b, built_at=2026-10-23T23:23:14Z, source_dirty=false`。状态逐字节存活——`/etc/meshlet/agent.toml`、`/etc/meshlet/agent.key`、`/var/lib/meshlet-agent/device_token` 三者 `sha256sum` 前后一致（`8e631408…` / `17b2da52…` / `d8bc6393…`）；agent 日志显示 `using the saved agent token`，没有重新注册。重启后第一个 tick：hub 看到三个 peer，握手 11/12/32 秒前，升级后的设备对 `10.240.0.2` 的 DF 1472 字节 ping 3/3 零丢包（平均 0.684 ms）。
+
+**回滚（23:26Z）。** 把存下的 2026-10-17 压缩包、`SHA256SUMS` 与 `install.sh` 推进容器，以 `MESHLET_INSTALL_ARCHIVE=… MESHLET_INSTALL_SHA256SUMS=… bash install.sh agent` 安装：安装器打印 `Verifying staged Meshlet nightly (x86_64)…`、退出 0，二进制回到 `4845343087249b66…bcd644`，三个状态哈希原样未动。无需重新入网：首个 tick 对 `10.240.0.2` ping 3/3 零丢包（平均 0.640 ms），hub 握手新鲜（95/96/116 秒前）。最后再重跑一次升级，设备回到修复后的构建（`089893187da04786…`），hub 持续收到它的心跳与 applied 回执。
+
+一处如实记录、未修的外观瑕疵：安装器结尾的提示会对**升级中的** agent 设备说「在控制台批准此设备，然后应用当前网络修订」——设备早已批准时这句是误导；两个方向上设备侧其实都不需要任何控制台动作。
 
 ## 性能基线
 
