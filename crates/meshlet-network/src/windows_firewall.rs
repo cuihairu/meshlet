@@ -273,10 +273,8 @@ pub mod exec {
             return Ok(ApplyResult::ok());
         }
         // 删除规则已不存在 = 幂等成功（清理路径清到空态不算失败）。
-        if command.is_delete() {
-            if super::firewall_rule_already_absent(&text) {
-                return Ok(ApplyResult::ok());
-            }
+        if command.is_delete() && super::firewall_rule_already_absent(&text) {
+            return Ok(ApplyResult::ok());
         }
         classify_netsh_firewall_failure(
             output.status.code().unwrap_or(-1),

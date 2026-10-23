@@ -24,6 +24,7 @@
 pub mod keys;
 pub mod nat;
 pub mod windows_cleanup;
+pub mod windows_elevation;
 pub mod windows_firewall;
 pub mod windows_routes;
 pub mod windows_service;

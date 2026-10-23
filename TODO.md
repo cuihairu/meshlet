@@ -24,6 +24,7 @@
   - [x] 注册摘要化、启动恢复、执行回执、重试、升级。
   - [ ] 真实连接诊断：大包探测逻辑已进仓，但真实 VPS 到设备的端到端连通验收仍留下轮。
 - [ ] R-05 Windows 完整客户端：隧道服务、系统路由、防火墙、权限提升、开机恢复、~~卸载清理（真平台后端）~~。
+  - [x] 权限提升：`windows_elevation` 计划层（受管 `.exe` 路径校验、`runas` 命令行转义、错误码/文案 → `InsufficientPrivileges` 分类）全平台编译 + Linux 单测（66 通过）；`#[cfg(windows)]` 执行层（ShellExecuteW runas + TokenElevation 查询）已过 `x86_64-pc-windows-msvc` clippy/check，**未在真机 Windows 实测，不得接为 SystemBackend**。
 - [x] R-06 服务发布 - TCP/UDP PortForward。
 - [x] R-06 服务发布 - HTTP/HTTPS 发布。
 - [x] R-06 服务发布 - 授权控制与 server 接线。

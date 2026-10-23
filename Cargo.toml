@@ -43,6 +43,7 @@ ureq = "2"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = "0.22"
+windows-sys = "0.59"
 
 meshlet-domain = { path = "crates/meshlet-domain" }
 meshlet-api-types = { path = "crates/meshlet-api-types" }
