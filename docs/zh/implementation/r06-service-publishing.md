@@ -97,18 +97,32 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/
 
 缺失 CSRF 头 `X-Requested-With: XMLHttpRequest` 返回 403，与 `meshlet_http_requests_total` 中 `publish/routes/check 4xx = 1` 一致。授权判定在打开服务连接之前就位（`crates/meshlet-publish/src/forwarding.rs:66`、`forwarding.rs:115`、`http.rs:165`、`http.rs:191`）。`AuthorizationPolicy::authorize`（`crates/meshlet-publish/src/authorization.rs:45`）为 OR 语义：CIDR 命中即直接放行、不再校验 token；IPv6 来源因 `Ipv4Cidr` 只表达 IPv4 而无法命中 CIDR，只能依赖 Bearer token 放行。
 
-### R-06 端到端验收缺口（保持未勾）
+### 2026-10-24：接线缺口已闭合（接线 + 测试，非真机验收）
 
-真机端到端未闭环，原因是发布链路尚未接入运行时，不是环境限制：
+上方列出的缺口本轮全部在代码里闭合并有测试覆盖。这是控制面接线加 crate/server 集成测试——**尚无任何真实 agent 进程服务过真实发布流量。**
 
-- **无创建 API**：控制面没有任何创建 PortForward / HTTP 路由 / 探针 / DNS 记录的端点，因此也无法在设备上配置一条真实发布项。
-- **无进程绑定监听**：`meshlet-publish` 仅被 `apps/server` 依赖；`apps/agent` 不依赖该 crate，`DevicePlan` 也不承载发布配置，因此没有任何进程实际绑定 TCP/UDP 转发端口或 DNS 套接字。
-- **探针从未排程**：`HealthStatus` 从未被写入，健康探测逻辑只在 crate 内单测中被驱动。
-- **TLS 终止未实现**：`tls_termination: bool` 仅在 `crates/meshlet-publish/src/http.rs:16` 声明、在 `crates/meshlet-publish/tests/http_publishing.rs:29` 设为 `true`，全仓无任何读取点，因此本仓库当前的实际行为是 SNI 嗅探 + 明文字节转发，**不做 TLS 终止**。
-- **无 DNS 迁移**：仓库没有为发布领域对象建表。
+| 面 | 位置 | 测试 |
+|---|---|---|
+| 控制面 CRUD，四类对象 | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` 及 `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs`（10 个用例） |
+| Agent 探针健康端点 | `POST /api/v1/agent/publish-health` — 每探针在 `publish_probe_reports` 一条 upsert；为不属于本设备的探针写健康返回 400，未知探针 id 返回 404 | `probe_health_report_is_guarded_by_device_id` |
+| DevicePlan 承载发布配置 | `crates/meshlet-network/src/lib.rs` — `publish: Option<PublishPlan>`，并入 `desired_config_hash` | `device_plan_carries_the_publish_segment` |
+| Agent 运行发布层 | `apps/agent/src/agent.rs` — `PublishRuntime` 持有专用单 worker tokio 运行时；`tick` 在内核 apply 失败时也先对账发布态，再批量上报缓冲区健康（每批 256，超出丢最旧） | `meshlet-publish` runtime 测试、`apps/agent` 测试 |
+| 发布领域建表 | `migrations/012_publish.sql` — 五张表（`publish_forwards`、`publish_http_routes`、`publish_probes`、`publish_dns_records`、`publish_probe_reports`） | `tests/publish.rs`、`tests/migrations.rs`、`tests/backup.rs` |
 
-以上各点在 `apps/agent` 之外 grep 不到任何调用点，属实现缺口而非配置问题。TODO 中的「R-06 服务发布 - 真实 VPS/真机端到端验收」继续保持未勾。
+新测试钉住的口径：四类对象的建-列-查-删往返；端口冲突按 **(设备, 协议, 监听地址)** 判定——同设备同端口 409，同端口不同协议、同网络别的设备同端口均合法；`allowed_bearer_tokens` 任何读路径都不回显原文（只返回计数），也不写 `audit_events`；既无源 CIDR 又无 Bearer token 的发布对象被拒；每设备一个 DNS 套接字（同设备第二后缀 409）；每条发布写入恰好落一行 `audit_events` 与一行 `config_revisions`；重启后全部对象恢复且全局发布序列继续递增（id 不复用）。
+
+写测试时暴露并修掉的两个真缺陷：
+
+- `upsert_probe_reports` 把 6 个值塞进 7 列表的 `INSERT`（SELECT 列表漏了 `p.id`），导致每次探针健康上报都 500。
+- `apps/agent` 持有的 `tokio::runtime::Runtime` 在异步上下文被 drop 会 panic。现在改为在独立线程里关闭该运行时，任何调用方都安全。
+
+`tls_termination` 不再是无人读取的字段：`runtime.rs` 读取它并选 `RouteMode::TlsPassThrough`——嗅探 SNI、套用路由授权策略、把 TLS 字节直通后端。**但仍不做 TLS 终止**，无证书、不解密。
+
+### 仍未验收的部分
+
+- **真机端到端未跑**：尚无任何真实 agent 从服务端下发的计划绑定过转发端口、HTTP 监听或 DNS 套接字。转发、DNS、探针路径只在回环 + 高位端口上验证过（`meshlet-publish` runtime 测试）；`0.0.0.0:53` 仍需 root，未在真机上跑过。
+- **无控制台 UI** 创建发布对象——CRUD 目前只走 REST API。
 
 ## Outstanding
 
-- 运行并归档真实 VPS/真机端到端服务发布验收。前置条件是把 `meshlet-publish` 接入 agent 运行链路（见上方缺口清单）；在此之前该验收无法完成，TODO 记录保持待真机验证。
+- 运行并归档真实 VPS/真机端到端服务发布验收：真实 agent 从服务端下发的计划绑定转发端口、HTTP 监听与 DNS 套接字，外部流量进出。在此之前 TODO 记录保持待真机验证。

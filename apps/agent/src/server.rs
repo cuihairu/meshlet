@@ -1,10 +1,13 @@
 //! server 交互（agent API，Bearer 凭证；§16.4 无命令下发）。
 //!
-//! 两个端点，都只读/只写**类型化对象**：
+//! 三个端点，都只读/只写**类型化对象**：
 //! - `GET /api/v1/agent/device/desired` → [`DevicePlan`]（隧道/路由/NAT +
-//!   `desired_config_hash`；`private_key` 恒为 `null`）；
+//!   发布段 [`meshlet_publish::PublishPlan`] + `desired_config_hash`；
+//!   `private_key` 恒为 `null`）；
 //! - `POST /api/v1/agent/heartbeat` → 上报本地时间 + 可选握手时间 + 数据面
-//!   实测证据（内核读数 + 大包探测，§7.5/§12.4）。
+//!   实测证据（内核读数 + 大包探测，§7.5/§12.4）；
+//! - `POST /api/v1/agent/publish-health` → 批量上报探针结果
+//!   （[`meshlet_publish::ProbeReport`]，服务端落 `publish_probe_reports`）。
 //!
 //! 认证边界（§13.5）：agent API 用 Bearer 凭证，与管理 API 的 Cookie + CSRF
 //! 完全分离；凭证缺失/失效一律 401，**不得**回退到任何其他认证方式。
@@ -117,6 +120,27 @@ pub fn heartbeat(
         .set("content-type", "application/json")
         .send(payload.as_bytes());
     read(req)
+}
+
+/// 探针结果批量上报（R-06）：`{"reports": [...]}`，服务端按 (probe_id,
+/// device_id) 守卫落库。失败以 `Err` 报出，调用方保留未送达报告下轮重试。
+pub fn report_publish_health(
+    server_url: &str,
+    token: &str,
+    reports: &[meshlet_publish::ProbeReport],
+) -> Result<(), String> {
+    let url = format!(
+        "{}/api/v1/agent/publish-health",
+        server_url.trim_end_matches('/')
+    );
+    let payload = serde_json::json!({ "reports": reports }).to_string();
+    read(
+        ureq::post(&url)
+            .set("authorization", &format!("Bearer {token}"))
+            .set("content-type", "application/json")
+            .send(payload.as_bytes()),
+    )
+    .map(|_| ())
 }
 
 /// 读取响应体（非 2xx → 分类错误）。

@@ -89,6 +89,7 @@ impl From<&ServiceError> for ErrorCategory {
             | ServiceError::DeviceNotFound(_)
             | ServiceError::RouteNotFound(_)
             | ServiceError::AliasNotFound(_)
+            | ServiceError::PublishNotFound(_)
             | ServiceError::SegmentNotFound(_)
             | ServiceError::SegmentGrantNotFound(_)
             | ServiceError::RevisionNotFound(_)

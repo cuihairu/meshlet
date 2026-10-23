@@ -1,6 +1,6 @@
 # migrations
 
-SQLx migrations 落库目录。当前版本：`011_segment_defaults.sql`。
+SQLx migrations 落库目录。当前版本：`012_publish.sql`。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -15,6 +15,7 @@ SQLx migrations 落库目录。当前版本：`011_segment_defaults.sql`。
 | 009_deployments | `hub_deployments`（公共成功计划、恢复错误）+ `device_apply_receipts`（设备版本/哈希回执） |
 | 010_segments | ADR-012 网段信任组：`segments`、`segment_grants` 与设备段归属回填 |
 | 011_segment_defaults | 补齐缺失默认段并回填全部设备；默认段 ID 统一为 `seg-<network_id>` |
+| 012_publish | R-06 服务发布：`publish_forwards`、`publish_http_routes`、`publish_probes`、`publish_dns_records`（四类期望配置对象）+ `publish_probe_reports`（探针健康镜像，每探针一条） |
 
 ## 应用方式
 

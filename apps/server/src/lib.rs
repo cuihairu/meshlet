@@ -23,6 +23,7 @@ pub mod device_plan;
 pub mod diagnostics;
 pub mod metrics;
 pub mod persist;
+pub mod publish;
 pub mod publish_check;
 pub mod revision;
 pub mod segment;
@@ -937,6 +938,7 @@ pub fn router(state: SharedAppState) -> Router {
         .merge(diagnostics::routes())
         .merge(metrics::routes())
         .merge(revision::routes())
+        .merge(publish::routes())
         .merge(segment::routes())
         .route("/api/v1/system/status", get(status_handler))
         .route("/api/v1/update-manifest", get(update_manifest_handler))
@@ -1041,6 +1043,7 @@ impl IntoResponse for service::ServiceError {
             | service::ServiceError::DeviceNotFound(_)
             | service::ServiceError::RouteNotFound(_)
             | service::ServiceError::AliasNotFound(_)
+            | service::ServiceError::PublishNotFound(_)
             | service::ServiceError::SegmentNotFound(_)
             | service::ServiceError::SegmentGrantNotFound(_)
             | service::ServiceError::RevisionNotFound(_)

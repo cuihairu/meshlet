@@ -247,6 +247,7 @@ fn plan(hash: &str, routes: Vec<RouteConfig>) -> DevicePlan {
         routes,
         nat_rules: Vec::new(),
         hub_address: None,
+        publish: None,
         desired_config_hash: hash.into(),
     }
 }

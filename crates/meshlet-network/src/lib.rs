@@ -93,6 +93,9 @@ pub struct RouteConfig {
 ///   注释 `meshlet alias {id}`）；为空 = 非网关或映射已删；
 /// - `hub_address`：hub 的 overlay 地址（服务端 IPAM 分配）——只作 agent
 ///   本地诊断（计划 MTU 的大包探测目标），不是内核配置的一部分；
+/// - `publish`：服务发布计划（R-06，[`meshlet_publish::PublishPlan`]）：本
+///   设备应绑定的 L4 转发 / HTTP 路由 / DNS 套接字与探针排程；缺省
+///   （`None`，旧服务端）表示本设备无发布配置；
 /// - `desired_config_hash`：本计划对应的期望配置哈希——agent 据此判断「有
 ///   变更才重放」（§10.1）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -107,6 +110,9 @@ pub struct DevicePlan {
     /// hub overlay 地址；缺省（旧服务端）表示未知——探测随之省略。
     #[serde(default)]
     pub hub_address: Option<std::net::Ipv4Addr>,
+    /// 服务发布计划；缺省（旧服务端 / 本设备无发布项）表示 `None`。
+    #[serde(default)]
+    pub publish: Option<meshlet_publish::PublishPlan>,
     pub desired_config_hash: String,
 }
 
@@ -370,6 +376,7 @@ mod tests {
             }],
             nat_rules: vec![],
             hub_address: Some("10.240.0.1".parse().unwrap()),
+            publish: None,
             desired_config_hash: "meshlet-desired-v3:ab".into(),
         };
         let value = serde_json::to_value(&plan).unwrap();
@@ -415,6 +422,7 @@ mod tests {
             }],
             nat_rules: vec![],
             hub_address: None,
+            publish: None,
             desired_config_hash: "h".into(),
         };
         let mut value = serde_json::to_value(&plan).unwrap();

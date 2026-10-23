@@ -228,6 +228,7 @@ mod tests {
                             routes: vec![],
                             nat_rules: vec![],
                             hub_address: None,
+                            publish: None,
                             desired_config_hash: "hash".into(),
                         },
                         None,

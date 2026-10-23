@@ -97,18 +97,49 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/
 
 A missing CSRF header `X-Requested-With: XMLHttpRequest` returns 403, consistent with `publish/routes/check 4xx = 1` in `meshlet_http_requests_total`. Authorization is enforced before the service connection is opened (`crates/meshlet-publish/src/forwarding.rs:66`, `forwarding.rs:115`, `http.rs:165`, `http.rs:191`). `AuthorizationPolicy::authorize` (`crates/meshlet-publish/src/authorization.rs:45`) has OR semantics: a CIDR match returns `Allowed` immediately without checking the token; an IPv6 source can never match a CIDR because `Ipv4Cidr` only expresses IPv4, so it can only be admitted via a bearer token.
 
-### R-06 end-to-end acceptance gap (stays unticked)
+### Wiring closed on 2026-10-24 (wiring plus tests, not a real-device acceptance)
 
-The end-to-end pass is not closed, and the reason is a wiring gap rather than an environment limitation:
+Every gap listed above is now closed in code and covered by tests. This is control-plane wiring
+plus crate/server integration tests — **no real agent process has served real published traffic yet.**
 
-- **No creation API**: the control plane has no endpoint for creating a PortForward / HTTP route / probe / DNS record, so there is no way to configure a real published item on a device.
-- **Nothing binds a listener**: `meshlet-publish` is depended on by `apps/server` only. `apps/agent` does not depend on the crate, and `DevicePlan` does not carry publish configuration, so no process actually binds a TCP/UDP forwarding port or a DNS socket.
-- **Probes never scheduled**: `HealthStatus` is never populated, and the health-check logic is only driven from crate-level unit tests.
-- **TLS termination is not implemented**: `tls_termination: bool` is declared at `crates/meshlet-publish/src/http.rs:16` and set to `true` in `crates/meshlet-publish/tests/http_publishing.rs:29`, but has no read site anywhere in the repository. Current real behaviour is SNI sniffing plus plaintext byte forwarding — **no TLS termination**.
-- **No publish migration**: the repository has no database table for publish domain objects.
+| Surface | Where | Test |
+|---|---|---|
+| Control-plane CRUD, four object kinds | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` plus `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs` (10 tests) |
+| Agent probe-health endpoint | `POST /api/v1/agent/publish-health` — one upserted row per probe in `publish_probe_reports`; a report for a probe the presenting device does not own is 400, an unknown probe id is 404 | `probe_health_report_is_guarded_by_device_id` |
+| DevicePlan carries publish config | `crates/meshlet-network/src/lib.rs` — `publish: Option<PublishPlan>`, folded into `desired_config_hash` | `device_plan_carries_the_publish_segment` |
+| Agent runs the publish layer | `apps/agent/src/agent.rs` — `PublishRuntime` owns a dedicated single-worker tokio runtime; `tick` reconciles the plan even when the kernel apply failed, then uploads buffered reports (256 per batch, front-trimmed) | `meshlet-publish` runtime tests, `apps/agent` tests |
+| Publish tables | `migrations/012_publish.sql` — five tables (`publish_forwards`, `publish_http_routes`, `publish_probes`, `publish_dns_records`, `publish_probe_reports`) | `tests/publish.rs`, `tests/migrations.rs`, `tests/backup.rs` |
 
-None of the above have a call site outside the crate, so this is an implementation gap and not a configuration issue. The "R-06 Service Publishing — real VPS / real-device end-to-end acceptance" TODO item stays unticked.
+Behaviour the new tests pin down: create/list/get/delete round-trips for all four kinds; port
+conflicts judged **per (device, protocol, listener)** — same device and same port is 409, while a
+different protocol on the same port and a different device on the same port are both legal;
+`allowed_bearer_tokens` are never echoed by any read path (a count is returned instead) and are
+never written to `audit_events`; a publish object with neither a source CIDR nor a bearer token is
+rejected; one DNS socket per device (a second suffix for the same device is 409); every publish
+write leaves exactly one `audit_events` row and one `config_revisions` row; a restart restores all
+objects and the global publish sequence keeps counting (no id reuse).
+
+Two real defects surfaced while writing these tests and were fixed:
+
+- `upsert_probe_reports` bound six values into a seven-column `INSERT` (the SELECT list omitted
+  `p.id`), so every probe-health upload returned 500.
+- `apps/agent` owned a `tokio::runtime::Runtime` that panicked when dropped from an async context.
+  The runtime is now shut down on a dedicated thread so any caller is safe.
+
+`tls_termination` is no longer an unread field: `runtime.rs` reads it and `RouteMode::TlsPassThrough`
+sniffs the SNI, applies the route policy, and forwards the TLS bytes to the backend. **There is still
+no TLS termination** — no certificate, no decryption.
+
+### What is still not accepted
+
+- **No real-device end-to-end run.** No real agent has bound a forwarding port, an HTTP listener or a
+  DNS socket from a server-delivered plan. The forwarding, DNS and probe paths are verified on
+  loopback with high ports (`meshlet-publish` runtime tests); `0.0.0.0:53` still needs root and has
+  not been exercised on a real device.
+- **No console UI** for creating publish objects — CRUD is reachable over the REST API only.
 
 ## Outstanding
 
-- Run and archive the real VPS / real-device end-to-end acceptance for published services. The prerequisite is wiring `meshlet-publish` into the agent runtime path (see the gap list above); until that lands, this acceptance cannot be completed and the TODO record stays pending live verification.
+- Run and archive the real VPS / real-device end-to-end acceptance for published services: a real
+  agent binds a forwarding port, an HTTP listener and a DNS socket from a server-delivered plan,
+  with external traffic in and out. Until then the TODO record stays pending live verification.

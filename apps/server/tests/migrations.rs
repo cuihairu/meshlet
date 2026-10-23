@@ -361,9 +361,10 @@ async fn migrations_are_idempotent_across_reopens() {
     meshlet_server::store::MIGRATIONS.run(&pool).await.unwrap();
     // 005 新增 mesh_meta（route_seq 等单调计数，§17.3）；006 新增
     // diagnostics_runs（§12.7 诊断快照）；008 新增 bootstrap_tokens +
-    // device_registrations（设备自举注册，Pending 不进 devices）。
+    // device_registrations（设备自举注册，Pending 不进 devices）；012 新增
+    // 四类发布对象 + 探针健康镜像（R-06）。
     let tables = tables(&pool).await;
-    assert_eq!(tables.len(), 20);
+    assert_eq!(tables.len(), 25);
     assert!(tables.contains(&"mesh_meta".to_string()), "{tables:?}");
     assert!(
         tables.contains(&"diagnostics_runs".to_string()),
@@ -375,6 +376,14 @@ async fn migrations_are_idempotent_across_reopens() {
     );
     assert!(
         tables.contains(&"device_registrations".to_string()),
+        "{tables:?}"
+    );
+    assert!(
+        tables.contains(&"publish_forwards".to_string()),
+        "{tables:?}"
+    );
+    assert!(
+        tables.contains(&"publish_probe_reports".to_string()),
         "{tables:?}"
     );
 }

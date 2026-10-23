@@ -1542,10 +1542,12 @@ dependencies = [
  "meshlet-config",
  "meshlet-domain",
  "meshlet-network",
+ "meshlet-publish",
  "semver",
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "ureq",
@@ -1624,6 +1626,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "meshlet-domain",
+ "meshlet-publish",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -1642,6 +1645,7 @@ name = "meshlet-publish"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "chrono",
  "meshlet-domain",
  "serde",
  "serde_json",

@@ -25,12 +25,12 @@
   - [ ] 真实连接诊断：大包探测逻辑已进仓，但真实 VPS 到设备的端到端连通验收仍留下轮。
 - [ ] R-05 Windows 完整客户端：隧道服务、系统路由、防火墙、权限提升、开机恢复、~~卸载清理（真平台后端）~~。
   - [x] 权限提升：`windows_elevation` 计划层（受管 `.exe` 路径校验、`runas` 命令行转义、错误码/文案 → `InsufficientPrivileges` 分类）全平台编译 + Linux 单测（66 通过）；`#[cfg(windows)]` 执行层（ShellExecuteW runas + TokenElevation 查询）已过 `x86_64-pc-windows-msvc` clippy/check，**未在真机 Windows 实测，不得接为 SystemBackend**。
-- [x] R-06 服务发布 - TCP/UDP PortForward。（crate 内实现与单测；未接 agent 运行链路，见下方缺口）
-- [x] R-06 服务发布 - HTTP/HTTPS 发布。（crate 内实现与单测；`tls_termination` 字段全仓无读取点，当前实际行为是 SNI 嗅探 + 明文转发，不做 TLS 终止）
-- [x] R-06 服务发布 - 授权控制与 server 接线。（2026-10-23 VPS 实测：CIDR 放行、Bearer 拒绝、缺 CSRF 403 三路径通过）
-- [x] R-06 服务发布 - 健康探测。（crate 内实现与单测；真实实例上探针从未排程，`HealthStatus` 未被写入）
-- [x] R-06 服务发布 - 内部 DNS 服务目录（分流 DNS，不覆盖公共 DNS）。（crate 内实现与单测；无进程实际绑定 DNS 套接字）
-- [ ] R-06 服务发布 - 真实 VPS/真机端到端验收：**BLOCKED（实现缺口，非环境限制）** — `meshlet-publish` 未接 agent 运行链路：控制面无创建 PortForward/HTTP 路由/探针/DNS 记录的 API；`apps/agent` 不依赖该 crate，`DevicePlan` 不承载发布配置，因此无进程绑定 TCP/UDP 转发端口或 DNS 套接字；探针从未排程；无发布领域建表。真机侧已落盘证据（服务端状态快照、控制面基准 db=file 8s sweep 1/8/32、授权三路径实测、外部链路基线）见 docs/implementation/r06-service-publishing.md。
+- [x] R-06 服务发布 - TCP/UDP PortForward。（crate 实现与单测；2026-10-24 已接控制面 CRUD + agent 运行链路：DevicePlan 携带 publish 段，agent 对账后在进程内绑定监听（回环高位端口验证，真机端到端见下条），端口冲突按设备/协议/监听地址判定，见 apps/server/tests/publish.rs）
+- [x] R-06 服务发布 - HTTP/HTTPS 发布。（crate 实现与单测；已接 CRUD。`tls_termination: true` 走 SNI 嗅探 + TLS 字节直通，**仍不做 TLS 终止**：无证书、不解密）
+- [x] R-06 服务发布 - 授权控制与 server 接线。（2026-10-23 VPS 实测：CIDR 放行、Bearer 拒绝、缺 CSRF 403 三路径通过；2026-10-24 CRUD 写入端点接入 WriteUser + CSRF，10 个集成测试覆盖）
+- [x] R-06 服务发布 - 健康探测。（crate 实现与单测；2026-10-24 已排程：agent 按 interval 周期探测并批量上报 /api/v1/agent/publish-health，服务端按 (probe, device) 守卫 upsert 到 publish_probe_reports）
+- [x] R-06 服务发布 - 内部 DNS 服务目录（分流 DNS，不覆盖公共 DNS）。（crate 实现与单测；2026-10-24 已接 agent reconcile：按计划起 DNS 套接字、仅应答内部后缀，每设备一个套接字）
+- [ ] R-06 服务发布 - 真实 VPS/真机端到端验收：**待验收（实现缺口本轮已闭合，验收未做）** — 2026-10-24 接线完成：控制面四类对象 CRUD + `/api/v1/agent/publish-health`（10 个集成测试）；`DevicePlan` 携带 `publish: Option<PublishPlan>` 并入计划哈希；`apps/agent` 依赖 meshlet-publish，专用 tokio 运行时对账 Publisher（转发/HTTP 路由/DNS 目录/探针排程）并批量上报健康；migration 012 建五张表；server/agent/publish 三包测试全绿。仍未做：真实 agent 进程从服务端计划真实绑定转发端口/HTTP 监听/DNS 套接字并跑外部流量（`0.0.0.0:53` 需 root，未在真机验证），控制台无创建入口（仅 REST API）。历史真机证据见 docs/implementation/r06-service-publishing.md
 - [ ] R-07 正式部署与长期运行验收：空白 VPS 安装、密钥轮换、备份恢复（含显式加密恢复包口径）、升级回滚、性能基线、真实多设备验收。
 
 ## 关键设计要点（来自评审，实现时逐条对照）

@@ -235,6 +235,7 @@ fn plan(
         routes,
         nat_rules,
         hub_address: None,
+        publish: None,
         desired_config_hash: hash.into(),
     }
 }

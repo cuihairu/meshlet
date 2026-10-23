@@ -332,6 +332,9 @@ pub enum ServiceError {
     RouteNotFound(String),
     #[error("alias {0} not found")]
     AliasNotFound(String),
+    /// 发布对象（PortForward / HTTP 路由 / 探针 / DNS 记录）不存在（R-06）。
+    #[error("publish object {0} not found")]
+    PublishNotFound(String),
     #[error("segment {0} not found")]
     SegmentNotFound(String),
     #[error("segment grant {0} not found")]
@@ -373,6 +376,7 @@ impl ServiceError {
             | ServiceError::DeviceNotFound(_)
             | ServiceError::RouteNotFound(_)
             | ServiceError::AliasNotFound(_)
+            | ServiceError::PublishNotFound(_)
             | ServiceError::SegmentNotFound(_)
             | ServiceError::SegmentGrantNotFound(_)
             | ServiceError::RevisionNotFound(_)
@@ -457,6 +461,10 @@ pub struct MeshState {
     /// 所有权归属——删除即整单元清理（alias + 绑定路由），内核规则由修订
     /// apply 交 backend 执行）。
     pub(crate) aliases: HashMap<String, Vec<AliasMapping>>,
+    /// 服务发布对象（R-06：PortForward / HTTP 路由 / 探针 / DNS 记录，
+    /// 按网络索引）。计划构建时按设备过滤（`crate::publish`），设备撤销
+    /// 后不再生效。
+    pub(crate) publishes: HashMap<String, crate::publish::PublishCatalog>,
     /// Segment trust groups (ADR-012), restored for startup validation and
     /// policy-plan work that follows.
     segments: HashMap<String, Vec<Segment>>,
@@ -464,6 +472,9 @@ pub struct MeshState {
     grants: HashMap<String, Vec<SegmentGrant>>,
     /// 路由 id 序列（全局单调，删除不复用）。
     route_seq: u64,
+    /// 发布对象 id 序列（`pf-` / `hr-` / `pb-` / `dn-` 共用一条单调序列，
+    /// 前缀不同故不冲突；持久化到 `mesh_meta.publish_seq`，已删 id 不复用）。
+    publish_seq: u64,
     /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
     /// `pub(crate)`：诊断 §12.7 第 4/8 项按同一窗口判握手/上报新鲜度。
     pub(crate) presence_thresholds: meshlet_domain::PresenceThresholds,
@@ -489,9 +500,11 @@ impl MeshState {
             registry: DeviceRegistry::new(),
             lan_routes: HashMap::new(),
             aliases: HashMap::new(),
+            publishes: HashMap::new(),
             segments: HashMap::new(),
             grants: HashMap::new(),
             route_seq: 0,
+            publish_seq: 0,
             presence_thresholds,
             ledger: meshlet_domain::ConfigLedger::new(),
             bootstrap_tokens: HashMap::new(),
@@ -500,7 +513,7 @@ impl MeshState {
         }
     }
 
-    fn network(&self, id: &str) -> Result<&Network, ServiceError> {
+    pub(crate) fn network(&self, id: &str) -> Result<&Network, ServiceError> {
         self.networks
             .get(id)
             .ok_or_else(|| ServiceError::NetworkNotFound(id.to_string()))
@@ -533,6 +546,15 @@ impl MeshState {
     /// 当前路由 id 序列（持久化到 `mesh_meta`，重启不归零、不重号）。
     pub(crate) fn route_seq(&self) -> u64 {
         self.route_seq
+    }
+
+    /// 当前发布对象 id 序列（持久化到 `mesh_meta`，重启不归零、不重号）。
+    pub(crate) fn publish_seq(&self) -> u64 {
+        self.publish_seq
+    }
+
+    pub(crate) fn set_publish_seq(&mut self, seq: u64) {
+        self.publish_seq = seq;
     }
 
     /// 当前自举码序列（持久化到 `mesh_meta`）。
@@ -848,7 +870,10 @@ pub(crate) fn settle_desired_with_status(
 /// 记录一次期望配置修订（§10.1/§10.4）：对当前网络配置取哈希并写入簿记，
 /// 版本号网络内单调递增，初始状态 `Pending`——此时只完成了 DB 写入，
 /// **尚未**应用到实际网络环境。
-fn record_revision(state: &mut MeshState, network_id: &str) -> Result<u64, ServiceError> {
+pub(crate) fn record_revision(
+    state: &mut MeshState,
+    network_id: &str,
+) -> Result<u64, ServiceError> {
     let overlay = state.network(network_id)?.overlay_cidr;
     let ipam = state
         .ipams
@@ -2436,7 +2461,7 @@ pub fn revoke_device(
 }
 
 /// 网络当前修订引用（网络视图语义复用：无修订时 0/`none`）。
-fn current_revision_ref(state: &MeshState, network_id: &str) -> (u64, String) {
+pub(crate) fn current_revision_ref(state: &MeshState, network_id: &str) -> (u64, String) {
     state
         .ledger
         .current(&meshlet_domain::NetworkId(network_id.to_string()))

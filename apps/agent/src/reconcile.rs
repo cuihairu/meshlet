@@ -332,6 +332,7 @@ mod tests {
                 Vec::new()
             },
             hub_address: None,
+            publish: None,
             desired_config_hash: hash.into(),
         }
     }

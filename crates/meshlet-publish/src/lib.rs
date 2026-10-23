@@ -10,6 +10,7 @@ pub mod forwarding;
 pub mod health;
 pub mod http;
 pub mod plan;
+pub mod runtime;
 
 mod authorization;
 
@@ -20,6 +21,7 @@ pub use forwarding::{
 };
 pub use http::{bind_http, run_http_router, sniff_sni, HttpRoute, HttpRouteSet, RouteMode};
 pub use plan::{DnsPlan, ProbeReport, ProbeSchedule, PublishPlan};
+pub use runtime::{PublishEvents, Publisher, REPORT_CHANNEL_CAPACITY};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PublishError {

@@ -251,6 +251,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
             routes: saved.hub.routes.clone(),
             nat_rules: vec![],
             hub_address: None,
+            publish: None,
             desired_config_hash: String::new(),
         };
         check.tunnel.private_key = self.read_private_key()?;
@@ -314,6 +315,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
             routes: plan.routes.clone(),
             nat_rules: vec![],
             hub_address: None,
+            publish: None,
             desired_config_hash: String::new(),
         };
         if !backend
@@ -350,6 +352,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
                 routes: previous.hub.routes.clone(),
                 nat_rules: vec![],
                 hub_address: None,
+                publish: None,
                 desired_config_hash: String::new(),
             };
             if !backend

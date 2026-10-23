@@ -62,6 +62,8 @@ pub struct MeshStatePersistedView {
     pub registrations: usize,
     pub routes: usize,
     pub aliases: usize,
+    /// 服务发布对象（PortForward / HTTP 路由 / 探针 / DNS 记录，R-06）。
+    pub publishes: usize,
     pub segments: usize,
     pub segment_grants: usize,
     pub invites: usize,
@@ -77,7 +79,7 @@ pub struct AuditDraft<'a> {
     pub detail: Option<serde_json::Value>,
 }
 
-async fn insert_audit_tx(
+pub(crate) async fn insert_audit_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     audit: &AuditDraft<'_>,
 ) -> Result<(), sqlx::Error> {
@@ -97,7 +99,7 @@ async fn insert_audit_tx(
     Ok(())
 }
 
-async fn insert_revision_tx(
+pub(crate) async fn insert_revision_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     revision: &ConfigRevision,
 ) -> Result<(), sqlx::Error> {
@@ -738,7 +740,7 @@ pub async fn insert_route(
     Ok(())
 }
 
-async fn save_seq_tx(
+pub(crate) async fn save_seq_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     key: &str,
     seq: u64,
@@ -1568,6 +1570,9 @@ pub async fn load(
         update_revision_status(pool, r).await?;
     }
 
+    // 服务发布对象（R-06）：四张表 + mesh_meta.publish_seq + 健康证据镜像。
+    crate::publish::persist::load(pool, &mut state).await?;
+
     Ok(BootState {
         summary: MeshStatePersistedView {
             networks,
@@ -1575,6 +1580,7 @@ pub async fn load(
             registrations,
             routes,
             aliases,
+            publishes: crate::publish::publish_object_count(&state),
             segments,
             segment_grants,
             invites,
@@ -1763,6 +1769,7 @@ async fn validate_on(pool: &mut SqliteConnection) -> Result<MeshStatePersistedVi
     }
 
     let has_segments = tables.iter().any(|table| table == "segments");
+    let has_publish = tables.iter().any(|table| table == "publish_forwards");
     Ok(MeshStatePersistedView {
         networks: count_on(&mut *pool, "networks").await?,
         devices: count_on(&mut *pool, "devices").await?,
@@ -1780,6 +1787,14 @@ async fn validate_on(pool: &mut SqliteConnection) -> Result<MeshStatePersistedVi
             0
         },
         invites: count_on(&mut *pool, "invitations").await?,
+        publishes: if has_publish {
+            count_on(&mut *pool, "publish_forwards").await?
+                + count_on(&mut *pool, "publish_http_routes").await?
+                + count_on(&mut *pool, "publish_probes").await?
+                + count_on(&mut *pool, "publish_dns_records").await?
+        } else {
+            0
+        },
         revisions: count_on(&mut *pool, "config_revisions").await?,
     })
 }

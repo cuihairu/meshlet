@@ -232,6 +232,9 @@ pub fn build_device_plan(
         nat_rules,
         // hub overlay 地址只作 agent 本地诊断目标（MTU 大包探测），不进内核。
         hub_address: Some(hub),
+        // 服务发布计划（R-06）：控制面 catalog 按本设备过滤后的期望发布态
+        // （`None` = 本设备无发布项）；计划层校验失败时整个计划构建失败可见。
+        publish: crate::publish::device_publish_plan(mesh, network_id, &device_id.to_string())?,
         desired_config_hash: String::new(),
     };
     // Hash the actual device plan, including MTU, hub key and revision.

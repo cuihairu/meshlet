@@ -111,14 +111,9 @@ impl DnsCatalog {
                 "DNS record service/name/ttl must be non-empty and non-zero",
             ));
         }
-        record.name = record
-            .name
-            .trim()
-            .trim_end_matches('.')
-            .to_ascii_lowercase();
-        if !record.name.ends_with(&self.internal_suffix) {
-            return Err(invalid("DNS record must be under internal suffix"));
-        }
+        // 归一化为内部后缀下的 FQDN（与 `resolve`/`fqdn` 同口径：短名与
+        // FQDN 都可录入，避免 insert 与 resolve 对同一名字给出不同答案）。
+        record.name = fqdn(record.name.trim(), &self.internal_suffix);
         let mut records = self.records.lock().expect("DNS catalog mutex");
         if records.iter().any(|existing| {
             existing.service_id == record.service_id && existing.name == record.name

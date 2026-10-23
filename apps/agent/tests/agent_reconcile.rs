@@ -488,6 +488,7 @@ fn hub_plan(topo: &Topology) -> DevicePlan {
         ],
         nat_rules: Vec::new(),
         hub_address: Some(topo.hub.overlay.parse().unwrap()),
+        publish: None,
         desired_config_hash: "hub-hash".into(),
     }
 }
@@ -549,6 +550,7 @@ fn leaf_plan(
             .collect(),
         nat_rules,
         hub_address: Some(hub.overlay.parse().unwrap()),
+        publish: None,
         desired_config_hash: hash.into(),
     }
 }
