@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   checks:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -29,7 +29,7 @@ jobs:
   dataplane:
     uses: ./.github/workflows/dataplane.yml
   console:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: pnpm/action-setup@v6.1.0
@@ -91,7 +91,7 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/main'
     needs: [build]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     permissions:
       contents: write
     env:

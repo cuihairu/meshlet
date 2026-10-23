@@ -52,7 +52,7 @@ jobs:
 
   console:
     name: console build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -75,7 +75,7 @@ jobs:
 
   walkthrough:
     name: walkthrough / ubuntu-latest
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: [test]
     timeout-minutes: 15
     steps:
