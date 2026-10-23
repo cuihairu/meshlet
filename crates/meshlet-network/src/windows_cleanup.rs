@@ -364,8 +364,8 @@ mod tests {
             path: directory.join("missing.tmp"),
             kind: CleanupFileKind::Temporary,
         };
-        assert_eq!(file.clone().remove().unwrap(), false);
-        assert_eq!(file.remove().unwrap(), false);
+        assert!(!file.clone().remove().unwrap());
+        assert!(!file.remove().unwrap());
 
         let directory_command = CleanupFileCommand {
             path: directory.join("key"),
