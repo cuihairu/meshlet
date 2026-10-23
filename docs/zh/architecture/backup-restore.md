@@ -58,6 +58,10 @@ meshlet-server restore /var/lib/meshlet/backups/meshlet-backup-20261014T13285941
 systemctl start meshlet-server
 ```
 
+**第 1 步不可省略。** 恢复以 rename 把新文件换到活动路径，而运行中的进程仍握着旧 inode：服务保持 `active`、控制面照常应答，但此后每次写入都落进已脱链的文件里——2026-10-24 的验收里一次返回 HTTP 201 的 bootstrap token 铸造就此消失，重启服务后才重新采用恢复出的库。详见[部署验收](/zh/implementation/r07-deployment-acceptance.md)。
+
+**归属同样会自己修好。** `restore` 通常由 root 执行，而随包单元以非特权用户（`User=meshlet`）运行；恢复出的库会恢复原归属——优先取被替换的活动库，其次取数据目录本身。否则文件留在 root 所有，服务启动即 `unable to open database file` 并 crash-loop。2026-10-24 的验收中，root 执行的恢复得到 `0600 meshlet:meshlet meshlet.db`，服务 `active` 且 `NRestarts=0`。
+
 恢复流程（**任何一步失败都不触碰活动库——不留半恢复状态**）：
 
 1. **校验备份**：独立只读打开 + `quick_check` + 必需表齐全；损坏或 schema

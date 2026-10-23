@@ -29,7 +29,7 @@ use std::str::FromStr;
 use crate::nat::{NatAction, NatChain, NatRule};
 use crate::{
     ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
-    RouteConfig, TunnelConfig,
+    RouteConfig, TunnelConfig, DEFAULT_TUNNEL_MTU,
 };
 
 /// iptables 所有权注释前缀：nat 规则带 `meshlet alias {id}`（§12.6），filter
@@ -50,6 +50,21 @@ fn parse_link_mtu(link_show: &str) -> Option<u32> {
         }
     }
     None
+}
+
+/// The MTU the agent enforces. An unset plan value means the WireGuard default
+/// ([`DEFAULT_TUNNEL_MTU`]), not "leave the interface alone" — see
+/// [`mtu_matches_planned`].
+fn enforced_tunnel_mtu(planned: Option<u32>) -> u32 {
+    planned.unwrap_or(DEFAULT_TUNNEL_MTU)
+}
+
+/// Readback half of MTU convergence: true only when the interface carries the
+/// MTU the plan intends. The default is enforced like an explicit value, so an
+/// interface left at a higher MTU (by an older plan or a manual `ip link set`)
+/// is seen as drifted on the next reconcile instead of matching the plan.
+fn mtu_matches_planned(link_show: &str, planned: Option<u32>) -> bool {
+    parse_link_mtu(link_show) == Some(enforced_tunnel_mtu(planned))
 }
 
 /// Kernel-selected source for the actual destination, not an address inside its prefix.
@@ -528,7 +543,7 @@ impl LinuxNetworkBackend {
         {
             return Ok(false);
         }
-        if plan.tunnel.mtu.is_some() && parse_link_mtu(&link_text) != plan.tunnel.mtu {
+        if !mtu_matches_planned(&link_text, plan.tunnel.mtu) {
             return Ok(false);
         }
         let dump = self.run(&["wg", "show", &self.interface, "dump"])?;
@@ -670,9 +685,12 @@ impl LinuxNetworkBackend {
             "dev",
             &ifname,
         ])?;
-        if let Some(mtu) = config.mtu {
-            self.run(&["ip", "link", "set", &ifname, "mtu", &mtu.to_string()])?;
-        }
+        // 未配置的 MTU 也按默认值落盘（不是「不动」）：接口停在更高的 MTU
+        // 时若不收敛回默认，下面 `device_plan_matches_sync` 的读回（同样按
+        // 默认值比较）会一直判漂移，大包探测也持续失败。默认值与显式值
+        // 一视同仁。
+        let mtu = enforced_tunnel_mtu(config.mtu);
+        self.run(&["ip", "link", "set", &ifname, "mtu", &mtu.to_string()])?;
         self.run(&["ip", "link", "set", &ifname, "up"])?;
         if let Some(key) = &config.private_key {
             // 本环境 wg 工具 fopen 普通路径与 /dev/stdin 均报 EPERM（同
@@ -1065,6 +1083,31 @@ impl Default for LinuxNetworkBackend {
 mod tests {
     use super::*;
     use crate::nat::NatAction;
+
+    #[test]
+    fn mtu_readback_enforces_the_default_like_an_explicit_value() {
+        let link_at = |mtu: u32| {
+            format!(
+                "523: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu {mtu} qdisc noqueue state UNKNOWN"
+            )
+        };
+        // Unset plan means the default 1420: an interface left higher by an old
+        // plan must read as drifted (regression: the check used to be skipped
+        // entirely for unset plans, so 1480 never converged back).
+        assert!(!mtu_matches_planned(&link_at(1480), None));
+        assert!(mtu_matches_planned(&link_at(1420), None));
+        assert!(mtu_matches_planned(&link_at(1420), Some(1420)));
+        // An explicit plan value must match exactly, higher or lower.
+        assert!(!mtu_matches_planned(&link_at(1420), Some(1380)));
+        assert!(mtu_matches_planned(&link_at(1380), Some(1380)));
+        // A missing/unparseable mtu field never counts as a match.
+        assert!(!mtu_matches_planned(
+            "523: wg0: <POINTOPOINT,NOARP,UP> qdisc noqueue state UNKNOWN",
+            None
+        ));
+        assert_eq!(enforced_tunnel_mtu(None), DEFAULT_TUNNEL_MTU);
+        assert_eq!(enforced_tunnel_mtu(Some(1380)), 1380);
+    }
 
     #[test]
     fn route_source_uses_kernel_selection_and_rejects_unsafe_egress() {

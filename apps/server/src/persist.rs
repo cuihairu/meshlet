@@ -1853,6 +1853,35 @@ fn restrict_permissions(path: &Path) {
     let _ = path;
 }
 
+/// 恢复后的库应归属谁。
+///
+/// `restore` 子命令通常由 root 执行，而服务以非特权用户运行（随包单元
+/// `User=meshlet`）；不修复归属，恢复出的库是 root 所有，服务启动即
+/// `unable to open database file` 并 crash-loop。优先级：被替换的既有活动库
+/// （原地恢复，最常见），其次数据目录本身（空目录里的首次恢复）。
+#[cfg(unix)]
+fn resolve_restored_database_owner(
+    database: &Path,
+    prior_owner: Option<(u32, u32)>,
+) -> Option<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt as _;
+    prior_owner.or_else(|| {
+        database
+            .parent()
+            .and_then(|dir| dir.metadata().ok())
+            .map(|m| (m.uid(), m.gid()))
+    })
+}
+
+/// 把恢复出的库设回服务用户的归属。必须在换名**之后**调用（换名前读到的
+/// 是旧库）；root 之外执行时 chown 必然 EPERM，而文件本就归当前用户，忽略。
+#[cfg(unix)]
+fn apply_restored_database_owner(database: &Path, prior_owner: Option<(u32, u32)>) {
+    if let Some((uid, gid)) = resolve_restored_database_owner(database, prior_owner) {
+        let _ = std::os::unix::fs::chown(database, Some(uid), Some(gid));
+    }
+}
+
 /// 备份一次并留痕（`system.backup` 审计事件）。端点（actor=操作者）与
 /// 定时任务（actor=None）共用；审计失败即备份失败（与业务同库，§16.5）。
 pub async fn backup_once(
@@ -1939,6 +1968,13 @@ pub async fn restore_from_backup(
     }
 
     // 拷贝到临时文件并复验（拷贝本身损坏也拒绝），再原子换名。
+    // 先记下既有活动库归属：服务以独立用户运行，而恢复通常由 root 执行。
+    #[cfg(unix)]
+    let prior_owner = database.metadata().ok().map(|m| {
+        use std::os::unix::fs::MetadataExt as _;
+        (m.uid(), m.gid())
+    });
+
     let tmp = database.with_extension("restore-tmp");
     let _ = tokio::fs::remove_file(&tmp).await;
     copy_with_windows_busy_retry(backup, &tmp).await?;
@@ -1969,12 +2005,19 @@ pub async fn restore_from_backup(
         .await?;
     pool.close().await;
     validate_backup(&tmp).await?;
-    for suffix in ["-wal", "-shm"] {
-        let _ =
-            tokio::fs::remove_file(PathBuf::from(format!("{}{suffix}", database.display()))).await;
+    // 换名前清掉两类旁挂：既有活动库的 `-wal`/`-shm`（旧库的），以及
+    // staging 文件自身的——pool 关闭后残留在库里即悬空垃圾。
+    for base in [tmp.as_path(), database] {
+        for suffix in ["-wal", "-shm"] {
+            let _ =
+                tokio::fs::remove_file(PathBuf::from(format!("{}{suffix}", base.display()))).await;
+        }
     }
     rename_with_windows_busy_retry(&tmp, database).await?;
     sync_parent_dir(database);
+    // 恢复通常由 root 执行，服务以独立用户运行：不归还归属，服务起来即打不开库。
+    #[cfg(unix)]
+    apply_restored_database_owner(database, prior_owner);
 
     Ok(RestoreReport {
         source: backup.display().to_string(),
@@ -2353,5 +2396,37 @@ mod tests {
         };
         assert!(error.to_string().contains("outside overlay"), "{error}");
         pool.close().await;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restored_database_owner_prefers_the_replaced_file_then_the_data_dir() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir =
+            std::env::temp_dir().join(format!("meshlet-restore-owner-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let database = dir.join("meshlet.db");
+
+        // The live file being replaced wins (in-place restore).
+        assert_eq!(
+            resolve_restored_database_owner(&database, Some((7, 9))),
+            Some((7, 9))
+        );
+
+        // No live file: fall back to the data directory's owner. chown needs
+        // privilege, so the directory is owned by the test user — exactly the
+        // value the fallback must produce.
+        let dir_owner = dir.metadata().unwrap();
+        assert_eq!(
+            resolve_restored_database_owner(&database, None),
+            Some((dir_owner.uid(), dir_owner.gid()))
+        );
+
+        // An unresolvable parent yields None rather than inventing an owner.
+        assert_eq!(
+            resolve_restored_database_owner(Path::new("/nonexistent/meshlet/db"), None),
+            None
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

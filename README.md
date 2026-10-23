@@ -23,7 +23,7 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > audit, backup and device approval are implemented. This revision adds single-instance network
 > isolation, device apply receipts, hub recovery, last-good-plan rollback, Direct LAN SNAT and
 > service permissions, with local Linux kernel and unprivileged service regression evidence.
-> Windows, empty-VPS installation and real-device acceptance remain pending. See [TODO](TODO.md).
+> Windows and long-run soak acceptance remain pending. See [TODO](TODO.md).
 
 ## Nightly builds and one-command installation
 
@@ -34,6 +34,8 @@ The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nig
 ```bash
 curl -fsSL https://github.com/cuihairu/meshlet/releases/download/nightly/install.sh | sudo bash -s -- server
 ```
+
+The installer needs a shell, `curl` (or `wget`) and `sudo`, plus package-manager write access. A minimal Debian container ships none of those, so start with `apt-get update && apt-get install -y curl sudo` — or fetch with `wget -qO-` and pipe into `bash`.
 
 The installer installs dependencies, verifies the archive's SHA-256, creates a service account and local WireGuard key, and enables the service. The console listens on `127.0.0.1:8080` by default. To access a remote VPS:
 

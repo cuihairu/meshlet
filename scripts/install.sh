@@ -76,7 +76,10 @@ for value in "$server_url" "$hub_endpoint" "$bootstrap_token" "$device_name" "$b
 
 if command -v apt-get >/dev/null; then
   apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl tar coreutils iproute2 wireguard-tools iptables iputils-ping
+  # --no-install-recommends: on a container image the Recommends chain for
+  # wireguard-tools can pull a full linux-image (100+ MB of a kernel the
+  # container shares with its host). A missing tool still fails the check below.
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl tar coreutils iproute2 wireguard-tools iptables iputils-ping
 elif command -v dnf >/dev/null; then
   dnf install -y ca-certificates curl tar coreutils iproute wireguard-tools iptables iputils
 else

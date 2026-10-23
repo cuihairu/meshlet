@@ -1,6 +1,6 @@
 # R-04：Linux Agent 端到端进展
 
-R-04 仍未整体完成。注册、启动恢复、执行回执、重试和升级已实现；真实连接诊断还需要真机部署验收。
+R-04 已完成：注册、启动恢复、执行回执、重试与升级均已实现，真实跨主机连接诊断已于 2026-10-24 验收（证据见下方「验收 2026-10-24」）。
 
 ## 已完成
 
@@ -13,4 +13,13 @@ R-04 仍未整体完成。注册、启动恢复、执行回执、重试和升级
 
 ## 遗留
 
-- 执行真实 VPS 到设备的连接诊断验收并归档证据。TODO 中的对应拆分项显式留下轮。
+- ~~执行真实 VPS 到设备的连接诊断验收并归档证据。~~ 本轮已完成，见下方验收记录。
+
+## 验收 2026-10-24（真实跨主机运行）
+
+- 环境：PVE 实验台，hub CT 192.168.5.150（wg0 10.240.0.1/16，:51820）+ 两台设备 CT（10.240.0.2/.3），实验台时钟为 UTC（2026-10-23T22:xxZ）。空库上的完整控制面走查：`POST /api/v1/auth/bootstrap`（201）、登录、二次 bootstrap → 409 `admin user already exists; bootstrap is closed`；`POST /networks` 建 `net-1` 10.240.0.0/16；bootstrap token `max_uses=5` 仅创建时返回原文，列表只给元数据（两台设备入网后 `bt-1 used_count=2`，库里只有 64 字符 SHA-256 摘要，无任何原文）；两台设备持 bootstrap token 自注册、换得 `0600` 保存的 agent token；`POST .../devices/{id}/approve` ×2 立账修订；随后 `POST .../config-revisions/3/apply`（200，`applied` 22:16:37Z）——在该调用之前 desired 端点一律 503 `dataplane_not_configured`，agent 指数退避（实测 `retry_in_secs=256`），apply 后自行收敛。
+- 真实跨主机连通（hub ⇄ 每台设备，wg0 overlay）：基线 20×64 B 双向 20/20（平均 0.47–0.94 ms）；DF 边界 `ping -M do`：载荷 1392（1420−28）双向 5/5；负例 1419/1472 从 hub 侧 → `0 received, +2 errors, 100% packet loss`。一台设备尚停在 1480 时，它自己到 hub 的 DF 1419 能通、已收敛到 1420 的兄弟设备不通——边界跟随各端自己的接口，证明探测测的是真实路径而非桩。
+- 连接诊断（13 项检查）收敛后全绿：`api_reachable`、`server_peer_configured`（2 台带 hub 侧 peer）、`recent_handshake`（`2/2 … inside the 120s window`）、`config_revision_consistent`（`latest revision #3 is applied at 2026-10-23T22:16:37Z`）、`mtu_planned`（`pve-dev-1 reading 1420 probe 1392; pve-dev-2 reading 1420 probe 1392`）全 pass；LAN/alias/NAT 各项按设计为 `not_applicable`/`unavailable`。设备心跳原文证据：`{"tunnel_mtu":1420,"nat_rules_present":false,"nat_snat_rules_present":false,"mtu_probe_payload":1392}`。
+- MTU 收敛（本轮修复的缺陷：旧 agent 把「未配置」当「不动接口」，漂移永不愈合）：修复版 agent（`sha256/16 2114bd9e…`）下，手工抬到 1480 的接口在下个 tick 回到 1420（`applied the desired device plan … reason=KernelDrift`，22:24:53Z）；hub 配置显式 `tunnel_mtu = 1480`（根表）后两台设备一个 tick 内到 1480（`reason=DesiredConfigChanged`），探测报 `probe 1452`，诊断说 `tunnel_mtu = 1480 is explicitly configured; device evidence confirms the plan`；删掉该键后两台设备自行愈合回 1420（22:33:43/22:33:53Z），DF 边界随之回移（1392 通、1452 不通）。
+- 如实记录、未在本轮修：hub 自身 `wg0` 的 MTU 跟随**已 apply 的修订**（approve 时立账），设备计划则读服务器实时配置——配置改 MTU 后 hub 停在 1420、设备已到 1480，hub 侧 DF 探测失败而诊断仍按设备证据判 pass。在新修订立账并 apply 之前，隧道容量受 hub 发送侧限制。后续可把实时 MTU 折进 hub 计划，或让诊断同时比对 hub 接口。
+- 第一次尝试把 `tunnel_mtu` 追加在 hub TOML 的 `[backup]` 表之后，服务器正确地保持了默认值——记录为「该键只属于根表」的反向证明。

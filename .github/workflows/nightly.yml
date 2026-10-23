@@ -63,9 +63,15 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
+      # cargo runs the pinned channel from rust-toolchain.toml, so the musl std
+      # must be installed for that channel. Pinning stable here leaves the pinned
+      # toolchain without the target and fails with E0463 `core` not found.
+      # Keep the channel in sync with rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           targets: ${{ matrix.target }}
+          profile: minimal
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           key: nightly-${{ matrix.target }}
