@@ -1,0 +1,7 @@
+# Pinned toolchain: reproducible builds on dev hosts and CI.
+# dtolnay/rust-toolchain@stable installs stable, but rustup applies this
+# override for every cargo/rustc invocation inside the workspace.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
