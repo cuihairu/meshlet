@@ -12,7 +12,7 @@ pub enum ForwardProtocol {
     Udp,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PortForwardConfig {
     pub id: String,
     pub network_id: String,

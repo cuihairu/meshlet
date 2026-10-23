@@ -9,6 +9,7 @@ pub mod dns;
 pub mod forwarding;
 pub mod health;
 pub mod http;
+pub mod plan;
 
 mod authorization;
 
@@ -18,6 +19,7 @@ pub use forwarding::{
     PortForwardConfig,
 };
 pub use http::{bind_http, run_http_router, sniff_sni, HttpRoute, HttpRouteSet, RouteMode};
+pub use plan::{DnsPlan, ProbeReport, ProbeSchedule, PublishPlan};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PublishError {

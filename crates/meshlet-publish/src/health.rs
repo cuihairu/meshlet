@@ -10,7 +10,7 @@ pub enum HealthState {
     Unreachable,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProbeTarget {
     Tcp {
         address: SocketAddr,
