@@ -51,6 +51,7 @@ export default defineConfig({
             { text: 'Consistency Audit', link: '/analysis/consistency-audit' },
           ] }],
           '/architecture/': [{ text: 'Architecture', items: [
+            { text: 'Target Architecture (Draft)', link: '/architecture/target-architecture' },
             { text: 'Domain Model', link: '/architecture/domain-model' },
             { text: 'Modularity and Library Reuse', link: '/architecture/modularity-and-library-design' },
             { text: 'Gateways, Conflicts, and Forwarding', link: '/architecture/gateways-conflicts-and-port-forwarding' },
@@ -76,10 +77,13 @@ export default defineConfig({
             { text: 'ADR-010 Authentication and Enrollment', link: '/decisions/adr-010-console-auth-enrollment' },
             { text: 'ADR-011 Device Registration and Approval', link: '/decisions/adr-011-device-self-registration' },
             { text: 'ADR-012 Segment Trust Groups', link: '/decisions/adr-012-network-segment-trust' },
+            { text: 'ADR-013 Cockpit Agent as Host-Info Source', link: '/decisions/adr-013-cockpit-agent-host-info' },
+            { text: 'ADR-014 Coexistence with Mesh Networks', link: '/decisions/adr-014-coexistence-personal-positioning' },
           ] }],
           '/design/': [{ text: 'Design', items: [
             { text: 'Network Segment Trust', link: '/design/network-segment-trust' },
             { text: 'Overlapping LAN Aliases', link: '/design/overlapping-lan-alias' },
+            { text: 'R-01 Domain Model (Draft)', link: '/design/r01-domain-model' },
           ] }],
           '/guide/': [{ text: 'Guides', items: [
             { text: 'Installation', link: '/guide/install' },
@@ -95,8 +99,9 @@ export default defineConfig({
             { text: 'R-06 Service Publishing', link: '/implementation/r06-service-publishing' },
             { text: 'R-07 Deployment Acceptance', link: '/implementation/r07-deployment-acceptance' },
           ] }],
-          '/review/': [{ text: 'External Review Archive', items: [
+          '/review/': [{ text: 'Archive', items: [
             { text: 'Conversation Archive · 2026-10-13', link: '/review/chatgpt-2026-10-13' },
+            { text: 'TODO before the 2026-10-20 Rewrite', link: '/archive/todo-pre-refactor-2026-10-20' },
           ] }],
         },
       },
@@ -132,6 +137,7 @@ export default defineConfig({
             { text: '一致性审计', link: '/zh/analysis/consistency-audit' },
           ] }],
           '/zh/architecture/': [{ text: '架构文档', items: [
+            { text: '目标架构（草案）', link: '/zh/architecture/target-architecture' },
             { text: '领域模型', link: '/zh/architecture/domain-model' },
             { text: '模块化与库复用提案', link: '/zh/architecture/modularity-and-library-design' },
             { text: '网关、冲突与端口转发', link: '/zh/architecture/gateways-conflicts-and-port-forwarding' },
@@ -157,10 +163,13 @@ export default defineConfig({
             { text: 'ADR-010 认证与注册安全', link: '/zh/decisions/adr-010-console-auth-enrollment' },
             { text: 'ADR-011 设备自举注册与中心审批', link: '/zh/decisions/adr-011-device-self-registration' },
             { text: 'ADR-012 网段即信任组', link: '/zh/decisions/adr-012-network-segment-trust' },
+            { text: 'ADR-013 Cockpit Agent 作为本机基础信息源', link: '/zh/decisions/adr-013-cockpit-agent-host-info' },
+            { text: 'ADR-014 与 ZeroTier 类组网互为备份', link: '/zh/decisions/adr-014-coexistence-personal-positioning' },
           ] }],
           '/zh/design/': [{ text: '设计', items: [
             { text: '网段信任组', link: '/zh/design/network-segment-trust' },
             { text: '重叠 LAN Alias 设计', link: '/zh/design/overlapping-lan-alias' },
+            { text: 'R-01 领域模型（草案）', link: '/zh/design/r01-domain-model' },
           ] }],
           '/zh/guide/': [{ text: '指南', items: [
             { text: '安装指南', link: '/zh/guide/install' },
@@ -176,8 +185,9 @@ export default defineConfig({
             { text: 'R-06 服务发布', link: '/zh/implementation/r06-service-publishing' },
             { text: 'R-07 部署验收', link: '/zh/implementation/r07-deployment-acceptance' },
           ] }],
-          '/zh/review/': [{ text: '外部意见存档', items: [
+          '/zh/review/': [{ text: '存档', items: [
             { text: '对话存档 · 2026-10-13', link: '/zh/review/chatgpt-2026-10-13' },
+            { text: '2026-10-20 重构前的 TODO', link: '/zh/archive/todo-pre-refactor-2026-10-20' },
           ] }],
         },
       },

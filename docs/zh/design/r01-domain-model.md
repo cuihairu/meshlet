@@ -1,4 +1,3 @@
-简体中文 | English
 # R-01 领域模型（草案）
 
 > 依据 docs/architecture/target-architecture.md；实现以本文件+crates/meshlet-planner 代码为准。
