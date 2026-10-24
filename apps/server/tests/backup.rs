@@ -955,13 +955,30 @@ async fn concurrent_backup_contains_only_complete_business_commits() {
     assert_eq!(revisions, 2);
     assert_eq!(max_revision, 2);
 
-    let report = meshlet_server::persist::restore_from_backup(
-        &backup_path,
-        &db,
-        meshlet_domain::PresenceThresholds::default(),
-    )
-    .await
-    .unwrap();
+    // Windows 会短暂延迟释放 SQLite/WAL 句柄（并发写刚刚停掉尤其明显），
+    // 有限重试只吸收文件锁；业务结果仍强断言（与 sibling 恢复用例一致）。
+    let mut report = None;
+    for _ in 0..10 {
+        match meshlet_server::persist::restore_from_backup(
+            &backup_path,
+            &db,
+            meshlet_domain::PresenceThresholds::default(),
+        )
+        .await
+        {
+            Ok(restored) => {
+                report = Some(restored);
+                break;
+            }
+            Err(meshlet_server::persist::BackupError::Io(error))
+                if error.raw_os_error() == Some(32) =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+    let report = report.expect("restore eventually acquires Windows file handles");
     assert_eq!(report.summary.networks, 1);
     assert_eq!(report.summary.devices, 1);
     assert_eq!(report.summary.routes, 0);
