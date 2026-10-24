@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1480" viewBox="0 0 480 1480" role="img" aria-labelledby="title desc" lang="zh-CN">
+<title id="title">Meshlet 进程拓扑</title><desc id="desc">实线表示业务数据：控制台流量、期望计划与回执、hub 隧道计划、内核变更。虚线表示注册与恢复。server 拥有 hub 隧道，每台设备上跑 agent，内核负责转发。</desc>
+<defs>
+ <marker id="blue" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#245bb2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <marker id="teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#147565" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <style>text{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b45}.sub{fill:#4c5d73}.blue{fill:#245bb2}.teal{fill:#147565}</style>
+</defs><rect width="480" height="1480" fill="#fff"/>
+<text x="24" y="37" font-size="24" font-weight="600" text-anchor="start">进程拓扑</text>
+<text x="24" y="67" font-size="18" font-weight="400" text-anchor="start" class="sub">server 拥有 hub 隧道</text>
+<text x="24" y="92" font-size="18" font-weight="400" text-anchor="start" class="sub">设备上跑 agent，内核转发</text>
+<text x="30" y="140" font-size="18" font-weight="600" text-anchor="start" class="teal">控制平面 · hub 主机</text>
+<g data-node="浏览器控制台">
+<rect x="30" y="158" width="420" height="86" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="190" font-size="23" font-weight="600" text-anchor="start">浏览器控制台</text>
+<text x="48" y="217" font-size="18" font-weight="400" text-anchor="start" class="sub">React SPA · server 静态托管</text>
+</g>
+<path d="M240 244 L240 288" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)"/>
+<rect x="140" y="254" width="200" height="24" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="240" y="270" font-size="18" font-weight="500" text-anchor="middle" class="blue">HTTPS / 会话</text>
+<g data-node="meshlet-server">
+<rect x="30" y="288" width="420" height="132" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="320" font-size="23" font-weight="600" text-anchor="start">meshlet-server</text>
+<text x="48" y="347" font-size="18" font-weight="400" text-anchor="start" class="sub">控制台 + agent HTTP/TLS</text>
+<text x="48" y="373" font-size="18" font-weight="400" text-anchor="start" class="sub">认证 · 自举 Token · 审批</text>
+<text x="48" y="399" font-size="18" font-weight="400" text-anchor="start" class="sub">规划器 · 版本 · 审计</text>
+</g>
+<path d="M240 420 L240 464" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)" marker-start="url(#blue)"/>
+<rect x="130" y="430" width="220" height="24" rx="3" fill="#fff" stroke="none" stroke-width="1.3"/>
+<text x="240" y="446" font-size="18" font-weight="500" text-anchor="middle" class="blue">状态 · 版本</text>
+<g data-node="meshlet.db">
+<rect x="30" y="464" width="420" height="112" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="496" font-size="23" font-weight="600" text-anchor="start">meshlet.db</text>
+<text x="48" y="523" font-size="18" font-weight="400" text-anchor="start" class="sub">SQLite · 单文件 · 0600</text>
+<text x="48" y="549" font-size="18" font-weight="400" text-anchor="start" class="sub">状态 · 版本 · 审计</text>
+</g>
+<text x="30" y="600" font-size="17" font-weight="400" text-anchor="start" class="sub">agent 拉取期望计划，回传回执与心跳。</text>
+<text x="30" y="624" font-size="17" font-weight="400" text-anchor="start" class="sub">设备用自举 Token 注册，等待审批。</text>
+<path d="M450 354 L460 354 L460 768 L410 768" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<path d="M30 976 L16 976 L16 354 L30 354" fill="none" stroke="#147565" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" marker-start="url(#teal)" stroke-dasharray="7 6"/>
+<text x="30" y="712" font-size="18" font-weight="600" text-anchor="start" class="teal">内核数据面 · hub 中继</text>
+<g data-node="hub 隧道">
+<rect x="30" y="728" width="380" height="80" rx="10" fill="#f0f5fe" stroke="#9bb5dc" stroke-width="1.3"/>
+<text x="220" y="752" font-size="21" font-weight="600" text-anchor="middle">WireGuard hub 隧道</text>
+<text x="220" y="780" font-size="16" font-weight="400" text-anchor="middle" class="sub">wg0 10.240.0.0/16 · UDP 51820 · MTU 1420</text>
+</g>
+<text x="30" y="836" font-size="17" font-weight="400" text-anchor="start" class="sub">今天没有设备间直连 P2P：</text>
+<text x="30" y="860" font-size="17" font-weight="400" text-anchor="start" class="sub">所有设备两两流量都经 hub 中转。</text>
+<text x="30" y="900" font-size="18" font-weight="600" text-anchor="start" class="teal">设备 · 每台一个 agent 二进制</text>
+<g data-node="meshlet-agent 设备">
+<rect x="30" y="916" width="420" height="120" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="948" font-size="23" font-weight="600" text-anchor="start">meshlet-agent</text>
+<text x="48" y="975" font-size="17" font-weight="400" text-anchor="start" class="sub">拉期望 → 应用 → 回执 → 心跳</text>
+<text x="48" y="999" font-size="17" font-weight="400" text-anchor="start" class="sub">ip · wg · iptables / nftables</text>
+<text x="48" y="1023" font-size="17" font-weight="400" text-anchor="start" class="sub">账本 applied.json · 读回校验</text>
+</g>
+<g data-node="meshlet-agent 网关">
+<rect x="30" y="1064" width="420" height="120" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="1096" font-size="23" font-weight="600" text-anchor="start">meshlet-agent（网关）</text>
+<text x="48" y="1123" font-size="17" font-weight="400" text-anchor="start" class="sub">发布 LAN 路由 · owner · metric</text>
+<text x="48" y="1147" font-size="17" font-weight="400" text-anchor="start" class="sub">设备上做 SNAT / DNAT</text>
+<text x="48" y="1171" font-size="17" font-weight="400" text-anchor="start" class="sub">服务发布：转发 · HTTP · DNS</text>
+</g>
+<g data-node="局域网">
+<rect x="30" y="1212" width="420" height="64" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="240" y="1238" font-size="21" font-weight="600" text-anchor="middle">局域网</text>
+<text x="240" y="1262" font-size="16" font-weight="400" text-anchor="middle" class="sub">设备后面的真实主机</text>
+</g>
+<g data-node="meshlet-cli">
+<rect x="30" y="1304" width="420" height="88" rx="10" fill="#fff" stroke="#ced8e5" stroke-width="1.3"/>
+<text x="48" y="1336" font-size="23" font-weight="600" text-anchor="start">meshlet-cli</text>
+<text x="48" y="1363" font-size="18" font-weight="400" text-anchor="start" class="sub">CLI 骨架 — 尚无子命令</text>
+</g>
+<path d="M170 1424 L216 1424" fill="none" stroke="#245bb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#blue)"/>
+<text x="228" y="1430" font-size="17" font-weight="400" text-anchor="start" class="sub">业务 / 数据</text>
+<path d="M170 1452 L216 1452" fill="none" stroke="#147565" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" stroke-dasharray="7 6"/>
+<text x="228" y="1458" font-size="17" font-weight="400" text-anchor="start" class="sub">注册 / 控制</text>
+</svg>

@@ -27,7 +27,7 @@ export default defineConfig({
       themeConfig: {
         nav: [
           { text: 'Analysis', link: '/analysis/', activeMatch: '/analysis/' },
-          { text: 'Architecture', link: '/architecture/domain-model', activeMatch: '/architecture/' },
+          { text: 'Architecture', link: '/architecture/overview', activeMatch: '/architecture/' },
           { text: 'Decisions', link: '/decisions/', activeMatch: '/decisions/' },
           { text: 'Archive', link: '/review/chatgpt-2026-10-13', activeMatch: '/review/' },
           { text: 'Guides', link: '/guide/external-caller', activeMatch: '/guide/' },
@@ -51,6 +51,7 @@ export default defineConfig({
             { text: 'Consistency Audit', link: '/analysis/consistency-audit' },
           ] }],
           '/architecture/': [{ text: 'Architecture', items: [
+            { text: 'Process Topology', link: '/architecture/overview' },
             { text: 'Target Architecture (Draft)', link: '/architecture/target-architecture' },
             { text: 'Domain Model', link: '/architecture/domain-model' },
             { text: 'Modularity and Library Reuse', link: '/architecture/modularity-and-library-design' },
@@ -115,7 +116,7 @@ export default defineConfig({
       themeConfig: {
         nav: [
           { text: '分析', link: '/zh/analysis/', activeMatch: '/zh/analysis/' },
-          { text: '架构', link: '/zh/architecture/domain-model', activeMatch: '/zh/architecture/' },
+          { text: '架构', link: '/zh/architecture/overview', activeMatch: '/zh/architecture/' },
           { text: '决策', link: '/zh/decisions/', activeMatch: '/zh/decisions/' },
           { text: '存档', link: '/zh/review/chatgpt-2026-10-13', activeMatch: '/zh/review/' },
           { text: '指南', link: '/zh/guide/external-caller', activeMatch: '/zh/guide/' },
@@ -137,6 +138,7 @@ export default defineConfig({
             { text: '一致性审计', link: '/zh/analysis/consistency-audit' },
           ] }],
           '/zh/architecture/': [{ text: '架构文档', items: [
+            { text: '进程拓扑', link: '/zh/architecture/overview' },
             { text: '目标架构（草案）', link: '/zh/architecture/target-architecture' },
             { text: '领域模型', link: '/zh/architecture/domain-model' },
             { text: '模块化与库复用提案', link: '/zh/architecture/modularity-and-library-design' },
