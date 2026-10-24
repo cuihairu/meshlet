@@ -31,6 +31,9 @@ export default defineConfig({
           { text: 'Decisions', link: '/decisions/', activeMatch: '/decisions/' },
           { text: 'Archive', link: '/review/chatgpt-2026-10-13', activeMatch: '/review/' },
           { text: 'Guides', link: '/guide/external-caller', activeMatch: '/guide/' },
+          // Language entry last; VitePress 1.x renders locale switches as nav
+          // links, and keeps no separate switcher component.
+          { text: '简体中文', link: '/zh/' },
         ],
         sidebar: {
           '/analysis/': [{ text: 'Analysis', items: [
@@ -111,6 +114,7 @@ export default defineConfig({
           { text: '决策', link: '/zh/decisions/', activeMatch: '/zh/decisions/' },
           { text: '存档', link: '/zh/review/chatgpt-2026-10-13', activeMatch: '/zh/review/' },
           { text: '指南', link: '/zh/guide/external-caller', activeMatch: '/zh/guide/' },
+          { text: 'English', link: '/' },
         ],
         sidebar: {
           '/zh/analysis/': [{ text: '分析整理', items: [
