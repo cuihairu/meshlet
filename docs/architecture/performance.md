@@ -53,4 +53,4 @@ Memory footprint: RSS 11300 KiB → 66496 KiB across the file sweep (includes th
 
 Reading: the public status path scales to ~0.9 M req/s because it touches no lock; every authenticated path funnels through the single SQLite connection and saturates in the tens of thousands of req/s, with queueing (not disk) dominating at c=256 — the memory table shows the same collapse, so the bottleneck is the serialized pool, matching the interpretation above. At a realistic self-hosted load (a few agents polling every 30 s plus one console session) these paths sit idle; the numbers exist so future changes can be compared.
 
-Commands: `cargo run --release -p meshlet-server --example bench -- --db file --secs 10 --sweep 1,16,64,256`, then `--db memory`, then `--db file --footprint`. Full raw output: `docs/implementation/r07-deployment-acceptance.md`.
+Commands: `cargo run --release -p meshlet-server --example bench -- --db file --secs 10 --sweep 1,16,64,256`, then `--db memory`, then `--db file --footprint`. Full raw output: [R-07 Deployment Acceptance](/implementation/r07-deployment-acceptance.md).

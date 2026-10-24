@@ -1,6 +1,6 @@
 # R-01 Domain Model (Draft)
 
-> Based on `docs/architecture/target-architecture.md`; for implementation, this document plus the code in `crates/meshlet-planner` are authoritative.
+> Based on [Target Architecture (Draft)](/architecture/target-architecture.md); for implementation, this document plus the code in `crates/meshlet-planner` are authoritative.
 
 ## Five resource types (distinct, per Decision 4)
 

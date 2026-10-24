@@ -1,6 +1,6 @@
 # R-01 领域模型（草案）
 
-> 依据 docs/architecture/target-architecture.md；实现以本文件+crates/meshlet-planner 代码为准。
+> 依据[目标架构（草案）](/zh/architecture/target-architecture.md)；实现以本文件+`crates/meshlet-planner` 代码为准。
 
 ## 五种资源（互不混同，决策 4）
 - Network：虚拟网络本体（id、名称、overlay 网段、默认 Segment）。
