@@ -3,7 +3,7 @@ layout: home
 hero:
   name: Meshlet
   text: Self-hosted private networking
-  tagline: Build and manage private virtual networks through your own VPS. The repository contains a control plane, a Linux WireGuard hub and agent, LAN routes, Alias NAT, and a web console. Architecture gaps, Windows support, and real deployment acceptance remain tracked separately.
+  tagline: Build and manage private virtual networks through your own VPS. The control plane, Linux WireGuard hub and agent, LAN routes, Alias NAT, service publishing and the web console run on Linux today; Windows is not accepted and the TODO says so.
   actions:
     - theme: brand
       text: Browse analysis
@@ -12,21 +12,21 @@ hero:
       text: Read the architecture
       link: /architecture/domain-model
 features:
-  - icon: 🛠️
-    title: A working foundation
-    details: Network control plane · WireGuard hub and agent · LAN routes and Alias NAT · React console · session and API-token authentication · audit log · backup and restore · diagnostics · device registration with operator approval.
+  - icon: 🛰️
+    title: What runs on Linux today
+    details: Control plane · WireGuard hub and agent · LAN routes and Alias NAT · L4, HTTP and DNS service publishing · React console · session and API-token auth · audit log · backup and restore · diagnostics · operator-approved device registration.
     link: /architecture/domain-model
     linkText: Domain model
+  - icon: 📋
+    title: Accepted on real machines, with numbers
+    details: Cross-host acceptance on 2026-10-24 — three devices joined through bootstrap tokens, 13-check diagnostics green, DF-MTU boundaries measured. Deployment acceptance covers blank-container install, key rotation, backup and restore, in-place upgrade and offline rollback.
+    link: /implementation/r04-linux-agent-e2e
+    linkText: Acceptance records
   - icon: ⚠️
-    title: Evidence-led scope
-    details: Reviews distinguish tested topologies from production capability. The current review records architecture gaps, while a separate study compares 61 ZeroTier and Tailscale capabilities against personal use cases.
-    link: /analysis/architecture-review-2026-10-17
-    linkText: Architecture review
-  - icon: 🔍
-    title: Traceable decisions
-    details: Architecture decisions, implementation records, and acceptance evidence are kept alongside the code. External material is treated as reference material and verified before it guides an action.
-    link: /decisions/
-    linkText: Decision records
+    title: What is not done stays unchecked
+    details: No Windows machine has run the client (R-05); the long-run soak collector started on 2026-10-24 and needs weeks of data; no dated release exists yet. The TODO keeps all three visible.
+    link: /implementation/r07-deployment-acceptance
+    linkText: Deployment acceptance
 ---
 
 Meshlet is a self-hosted private networking project. These pages document its architecture, decisions, implementation evidence, and operating procedures. English is the default locale; the Simplified Chinese locale preserves the full Chinese source documents.
