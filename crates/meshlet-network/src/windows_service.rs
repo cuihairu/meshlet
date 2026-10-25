@@ -3,7 +3,9 @@
 //! 本模块包含**纯规划**与 `#[cfg(windows)]` 执行层：
 //! `sc.exe create/start/stop/delete/config/failure` 的参数构造、失败文本
 //! 分类与受控执行。计划层函数在任意平台编译并单测（本仓 CI 的 Linux 侧
-//! 即可跑绿）；执行层**未在 Windows 上实测**，实测前 Windows 仍保持
+//! 即可跑绿）；执行层真机验证（2026-10-26，中文 Windows Server）：
+//! create / stop（含从未启动的 1062 幂等）/ delete / re-delete（1060
+//! 幂等）全链路走通；完整验收前 Windows 仍保持
 //! [crate::unsupported] 的显式占位，不接 [crate::SystemBackend]。
 //!
 //! 与 [windows_routes](windows_routes)、[windows_firewall](windows_firewall)
@@ -147,7 +149,23 @@ fn recovery_actions(delays_secs: [u32; 3]) -> String {
 /// 判断 `sc.exe` 输出是否表示「服务不存在」（幂等 Stop/Delete 的判据）。
 pub fn service_absent(output: &str) -> bool {
     let lowered = output.to_lowercase();
-    lowered.contains("service does not exist") || lowered.contains("error 1060")
+    lowered.contains("service does not exist")
+        || lowered.contains("error 1060")
+        // zh-CN 真机取证（2026-10-25）：sc.exe 删除不存在服务返回
+        // 「[SC] OpenService 失败 1060: 指定的服务未安装。」——本地化文本
+        // 不含英文 "error" 前缀，按完整本地化文案匹配。
+        || output.contains("指定的服务未安装")
+}
+
+/// 判断 `sc.exe` 输出是否表示「服务未运行」（ERROR_SERVICE_NOT_ACTIVE）。
+/// Stop 的目标状态是「已停止」：服务未运行 = 目标已达成，按幂等成功。
+pub fn service_not_active(output: &str) -> bool {
+    let lowered = output.to_lowercase();
+    lowered.contains("has not been started")
+        || lowered.contains("service not active")
+        // zh-CN 真机取证（2026-10-26）：从未启动的服务 stop 返回
+        // 「[SC] ControlService 失败 1062: 服务尚未启动。」
+        || output.contains("服务尚未启动")
 }
 
 /// 分类 `sc.exe` 失败：卸载重入按幂等成功，提权失败明示，其余 fail closed。
@@ -161,7 +179,17 @@ pub fn classify_sc_failure(
     operation: &str,
     name: &str,
 ) -> Result<(), NetworkError> {
-    if (operation == "service delete" || operation == "service stop") && service_absent(output) {
+    // 退出码 1060 = ERROR_SERVICE_DOES_NOT_EXIST，与系统语言无关的权威
+    // 信号；service_absent 文本分类是同一事实的宽匹配双通道
+    // （zh-CN 文案见其注记）。
+    let absent = exit_code == 1060 || service_absent(output);
+    if (operation == "service delete" || operation == "service stop") && absent {
+        return Ok(());
+    }
+    // Stop 的目标状态是「已停止」（ADR-008 生命周期）：服务未运行（1062）
+    // = 目标已达成，同归幂等成功——卸载可从「建了服务但从未启动」的半
+    // 状态重入；其余操作不借道放行。
+    if operation == "service stop" && (exit_code == 1062 || service_not_active(output)) {
         return Ok(());
     }
 
@@ -170,6 +198,10 @@ pub fn classify_sc_failure(
         || lowered.contains("requires elevation")
         || lowered.contains("elevation is required")
         || lowered.contains("not authorized")
+        // zh-CN 标准本地化文案（「拒绝访问」= ERROR_ACCESS_DENIED；
+        // 「需要提升」= ERROR_ELEVATION_REQUIRED）。宽匹配纪律不变。
+        || output.contains("拒绝访问")
+        || output.contains("需要提升")
     {
         return Err(NetworkError::InsufficientPrivileges(format!(
             "sc.exe {operation} for service `{name}` requires administrator \
@@ -196,9 +228,10 @@ fn first_nonempty_line(output: &str) -> &str {
 /// 执行层（`#[cfg(windows)]`）：只负责把计划函数构造的参数交给 sc.exe、
 /// 把输出交回计划层分类，没有其他逻辑。
 ///
-/// **未在 Windows 上实测**（本仓无 Windows 运行时）。TODO #52 的环境走查
-/// 之前 Windows 不接为 [crate::SystemBackend]——非 Linux 平台保持
-/// [crate::unsupported] 的显式占位，不假装有数据面。
+/// 真机实测（2026-10-26，中文 Windows Server）：create / stop（含从未启动
+/// 的 1062 幂等）/ delete / re-delete（1060 幂等）全链路走通；本地化输出
+/// 经 [crate::windows_console] 解码后分类闭环。TODO #52 保持未勾：接
+/// [crate::SystemBackend] 仍以完整验收为准。
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_sc_failure, ServiceCommand};
@@ -210,10 +243,12 @@ pub mod exec {
             .args(command.args())
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn sc.exe: {error}")))?;
+        // sc.exe 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），
+        // UTF-8 优先 + CP_ACP 兑底解码，见 [windows_console]。
         let text = format!(
             "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            crate::windows_console::decode_output(&output.stdout),
+            crate::windows_console::decode_output(&output.stderr),
         );
         if output.status.success() {
             return Ok(ApplyResult::ok());
@@ -295,6 +330,61 @@ mod tests {
                 "service config autostart",
                 "meshlet"
             ),
+            Err(NetworkError::ApplyRejected(_))
+        ));
+    }
+
+    /// zh-CN 真机取证（2026-10-25）：中文缺失报文 + 退出码 1060 双通道命中
+    /// 幂等；Config* 对服务不存在不放行（与英文路径同一纪律）。
+    #[test]
+    fn localized_absence_is_idempotent_only_for_stop_and_delete() {
+        let output = "[SC] OpenService 失败 1060:\r\n\r\n指定的服务未安装。\r\n";
+        for exit_code in [1, 1060] {
+            for operation in ["service stop", "service delete"] {
+                assert!(
+                    classify_sc_failure(exit_code, output, operation, "meshlet").is_ok(),
+                    "exit {exit_code} + zh-CN absence must be idempotent for {operation}"
+                );
+            }
+        }
+        assert!(matches!(
+            classify_sc_failure(1060, output, "service config autostart", "meshlet"),
+            Err(NetworkError::ApplyRejected(_))
+        ));
+    }
+
+    /// zh-CN 标准权限文案归权限类。
+    #[test]
+    fn localized_privilege_text_maps_to_privileges() {
+        assert!(matches!(
+            classify_sc_failure(
+                5,
+                "[SC] OpenService 失败 5:\r\n\r\n拒绝访问。\r\n",
+                "service create",
+                "meshlet"
+            ),
+            Err(NetworkError::InsufficientPrivileges(_))
+        ));
+    }
+
+    /// zh-CN 真机取证（2026-10-26）：从未启动的服务 stop 返回 1062
+    /// 「服务尚未启动。」——Stop 的目标状态是「已停止」，未运行 = 已达成，
+    /// 幂等成功（卸载可从「建了服务没启动」的半状态重入）。
+    #[test]
+    fn stop_of_never_started_service_is_idempotent_success() {
+        let output = "[SC] ControlService 失败 1062:\r\n\r\n服务尚未启动。\r\n";
+        assert!(classify_sc_failure(1062, output, "service stop", "meshlet").is_ok());
+        // 英文同事实文案（1062 = ERROR_SERVICE_NOT_ACTIVE）双通道命中。
+        assert!(classify_sc_failure(
+            1,
+            "[SC] ControlService failed 1062:\r\n\r\nThe service has not been started.\r\n",
+            "service stop",
+            "meshlet"
+        )
+        .is_ok());
+        // 1062 宽容只归 Stop：其余操作不得借道放行。
+        assert!(matches!(
+            classify_sc_failure(1062, output, "service config autostart", "meshlet"),
             Err(NetworkError::ApplyRejected(_))
         ));
     }

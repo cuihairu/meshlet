@@ -10,7 +10,9 @@
 //! - 仅 Windows 编译执行（文件级 `#![cfg]`，Linux 上本二进制为空、
 //!   CI linux job 不受影响）；CI windows-latest job 的
 //!   `cargo test --workspace` 真跑本文件；
-//! - 前提：提权 shell（hosted runner 默认满足）+ en-US 输出（runner 默认）。
+//! - 前提：提权 shell（hosted runner 默认满足）；输出语言不限——zh-CN
+//!   真机取证（2026-10-25）后，探针解码与分类器均按本地化报文闭环
+//!   （netsh 重定向输出为活动代码页编码，见 `windows_console`）。
 //!
 //! 测试网络卫生：前缀取 RFC 5737 文档保留段（`192.0.2.0/24`，绝不承载真实
 //! 流量）；接口用恒在的回环接口；`store=active` 不跨重启持久；失败路径经
@@ -74,8 +76,8 @@ fn netsh_raw(args: &[String]) -> (i32, String) {
         .expect("spawn netsh");
     let text = format!(
         "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        meshlet_network::windows_console::decode_output(&output.stdout),
+        meshlet_network::windows_console::decode_output(&output.stderr)
     );
     (output.status.code().unwrap_or(-1), text)
 }

@@ -5,10 +5,13 @@
 //! 不执行任何命令——计划层函数在任意平台编译并单测（本仓 CI 的 Linux 侧
 //! 即可跑绿）。
 //!
-//! 执行层是 [exec] 子模块，`#[cfg(windows)]` 下只调本模块的计划函数；
-//! **未在 Windows 上实测**（本仓无 Windows 运行时，随 TODO #52 的环境走查
-//! 补齐）。实测前 Windows 不接为 [crate::SystemBackend]——非 Linux 平台仍
-//! 是 [unsupported](../../../crates/meshlet-network/src/unsupported.rs) 的显式
+//! 执行层是 [exec] 子模块，`#[cfg(windows)]` 下只调本模块的计划函数。
+//! 真机验证（2026-10-16 CI runner en-US；2026-10-26 中文 Windows Server
+//! 本机）：add / show 读回 / delete / 幂等 re-delete 全链路走通，本地化
+//! 输出经 [windows_console](crate::windows_console) 解码后分类闭环。
+//! TODO #52 保持未勾：接 [crate::SystemBackend] 仍以完整验收为准
+//! （wireguardnt 隧道全生命周期，见 ADR-008）；非 Linux 平台仍保持
+//! [unsupported](../../../crates/meshlet-network/src/unsupported.rs) 的显式
 //! 占位，绝不假装有数据面（§10.3、§12.2）。
 //!
 //! ADR-008 的取舍在本模块落成三件事：
@@ -135,7 +138,14 @@ pub fn classify_netsh_route_failure(
     interface: &str,
 ) -> NetworkError {
     let lowered = output.to_lowercase();
-    if lowered.contains("requires elevation") || lowered.contains("access is denied") {
+    if lowered.contains("requires elevation")
+        || lowered.contains("access is denied")
+        // zh-CN 标准本地化文案（真机取证：「请求的操作需要提升(作为管理员
+        // 运行)。」= ERROR_ELEVATION_REQUIRED；「拒绝访问」=
+        // ERROR_ACCESS_DENIED）。宽匹配纪律不变：宁可归权限类也不误报。
+        || output.contains("需要提升")
+        || output.contains("拒绝访问")
+    {
         return NetworkError::InsufficientPrivileges(format!(
             "netsh {operation} on interface `{interface}` requires administrator \
              privileges (run from an elevated shell); netsh said: {}",
@@ -152,7 +162,11 @@ pub fn classify_netsh_route_failure(
 /// §10.3 失败可清理）。同样按子串宽匹配，覆盖各版本文案差异。
 pub fn route_already_absent(output: &str) -> bool {
     let lowered = output.to_lowercase();
-    lowered.contains("element not found") || lowered.contains("cannot find")
+    lowered.contains("element not found")
+        || lowered.contains("cannot find")
+        // zh-CN 真机取证（2026-10-25，CP936 解码后）：netsh 删除不存在路由
+        // 的完整报文为「找不到元素。」——按本地化原文匹配。
+        || output.contains("找不到元素")
 }
 
 /// 输出的首个非空行（错误消息携带 netsh 原文，便于诊断）。
@@ -186,10 +200,11 @@ pub fn route_prefixes_on_interface(output: &str, interface: &str) -> Vec<Ipv4Cid
 /// 执行层（`#[cfg(windows)]`）：只负责把计划函数构造的参数交给 netsh、
 /// 把输出交回计划层分类，没有其他逻辑。
 ///
-/// **未在 Windows 上实测**（本仓无 Windows 运行时）。TODO #52 的环境走查
-/// 之前 Windows 不接为 [crate::SystemBackend]——非 Linux 平台保持
-/// [unsupported](../../../crates/meshlet-network/src/unsupported.rs) 的显式
-/// 占位，不假装有数据面。
+/// 真机实测：2026-10-16 CI runner（en-US）与 2026-10-26 中文 Windows
+/// Server 本机——add / show 读回 / delete / 幂等 re-delete 全链路走通，
+/// 本地化（zh-CN）输出经 [crate::windows_console] 解码后分类闭环。
+/// TODO #52 保持未勾：接 [crate::SystemBackend] 仍以完整验收为准
+/// （wireguardnt 隧道全生命周期与提权路径见 ADR-008）。
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_netsh_route_failure, route_already_absent, NetshRouteCommand};
@@ -201,10 +216,12 @@ pub mod exec {
             .args(command.args())
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn netsh: {error}")))?;
+        // netsh 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），
+        // UTF-8 优先 + CP_ACP 兑底解码，见 [windows_console]。
         let text = format!(
             "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            crate::windows_console::decode_output(&output.stdout),
+            crate::windows_console::decode_output(&output.stderr),
         );
         if output.status.success() {
             return Ok(ApplyResult::ok());
@@ -397,6 +414,31 @@ mod tests {
         ));
         assert!(!route_already_absent("Ok."));
         assert!(!route_already_absent(""));
+    }
+
+    /// zh-CN 真机取证（2026-10-25）：中文 Windows 的缺失报文按原文命中
+    /// 幂等判定（`windows_netsh` 集成测试的真机失败正是这里红过）。
+    #[test]
+    fn localized_absence_output_counts_as_idempotent_delete() {
+        assert!(route_already_absent("找不到元素。"));
+    }
+
+    /// zh-CN 真机取证：本地化权限文案归入权限类，绝不误报成 ApplyRejected。
+    #[test]
+    fn localized_privilege_text_maps_to_insufficient_privileges() {
+        assert!(matches!(
+            classify_netsh_route_failure(
+                1,
+                "请求的操作需要提升(作为管理员运行)。",
+                "route add",
+                "meshlet"
+            ),
+            NetworkError::InsufficientPrivileges(_)
+        ));
+        assert!(matches!(
+            classify_netsh_route_failure(1, "拒绝访问。", "route add", "meshlet"),
+            NetworkError::InsufficientPrivileges(_)
+        ));
     }
 
     /// `show route` 表输出按接口过滤前缀：表头/分隔行与 IPv6 行自然跳过，

@@ -205,6 +205,9 @@ pub fn firewall_rule_already_absent(output: &str) -> bool {
     lowered.contains("no rules match the specified criteria")
         || lowered.contains("rule does not exist")
         || lowered.contains("cannot find")
+        // zh-CN 真机取证（2026-10-25，CP936 解码后）：netsh 防火墙删除不
+        // 存在规则的完整报文为「没有与指定标准相匹配的规则。」。
+        || output.contains("没有与指定标准相匹配的规则")
 }
 
 /// 分类 netsh 防火墙失败：幂等删除成功，权限失败明示提权，其余 fail closed。
@@ -222,7 +225,14 @@ pub fn classify_netsh_firewall_failure(
     }
 
     let lowered = output.to_lowercase();
-    if lowered.contains("requires elevation") || lowered.contains("access is denied") {
+    if lowered.contains("requires elevation")
+        || lowered.contains("access is denied")
+        // zh-CN 真机取证：「请求的操作需要提升(作为管理员运行)。」=
+        // ERROR_ELEVATION_REQUIRED；「拒绝访问」= ERROR_ACCESS_DENIED
+        // 的 zh-CN 标准文案。宽匹配纪律不变。
+        || output.contains("需要提升")
+        || output.contains("拒绝访问")
+    {
         return Err(NetworkError::InsufficientPrivileges(format!(
             "netsh {operation} for rule `{name}` requires administrator \
              privileges (run from an elevated shell); netsh said: {}",
@@ -248,9 +258,10 @@ fn first_nonempty_line(output: &str) -> &str {
 /// 执行层（`#[cfg(windows)]`）：只负责把计划函数构造的参数交给 netsh、
 /// 把输出交回计划层分类，没有其他逻辑。
 ///
-/// **未在 Windows 上实测**（本仓无 Windows 运行时）。TODO #52 的环境走查
-/// 之前 Windows 不接为 [crate::SystemBackend]——非 Linux 平台保持
-/// [crate::unsupported] 的显式占位，不假装有数据面。
+/// 真机实测（2026-10-26，中文 Windows Server）：add / show 读回 / delete /
+/// 幂等 re-delete（「没有与指定标准相匹配的规则。」经
+/// [crate::windows_console] 解码后分类）全链路走通。TODO #52 保持未勾：
+/// 接 [crate::SystemBackend] 仍以完整验收为准。
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_netsh_firewall_failure, FirewallRuleCommand};
@@ -264,10 +275,12 @@ pub mod exec {
             .args(command.args())
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn netsh: {error}")))?;
+        // netsh 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），
+        // UTF-8 优先 + CP_ACP 兑底解码，见 [windows_console]。
         let text = format!(
             "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+            crate::windows_console::decode_output(&output.stdout),
+            crate::windows_console::decode_output(&output.stderr),
         );
         if output.status.success() {
             return Ok(ApplyResult::ok());
@@ -434,6 +447,33 @@ mod tests {
                 "Meshlet WireGuard"
             ),
             Err(NetworkError::ApplyRejected(detail)) if detail.contains("exit 1")
+        ));
+    }
+
+    /// zh-CN 真机取证（2026-10-25）：中文缺失报文按原文命中幂等删除判定。
+    #[test]
+    fn localized_absence_output_is_idempotent_success_for_delete() {
+        assert!(firewall_rule_already_absent("没有与指定标准相匹配的规则。"));
+        assert!(classify_netsh_firewall_failure(
+            1,
+            "没有与指定标准相匹配的规则。",
+            "firewall rule delete",
+            "Meshlet WireGuard"
+        )
+        .is_ok());
+    }
+
+    /// zh-CN 真机取证：本地化提权文案归入权限类。
+    #[test]
+    fn localized_privilege_output_maps_to_privileges() {
+        assert!(matches!(
+            classify_netsh_firewall_failure(
+                1,
+                "请求的操作需要提升(作为管理员运行)。",
+                "firewall rule add",
+                "Meshlet WireGuard"
+            ),
+            Err(NetworkError::InsufficientPrivileges(_))
         ));
     }
 

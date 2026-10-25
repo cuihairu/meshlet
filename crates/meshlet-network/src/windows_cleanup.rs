@@ -1,9 +1,11 @@
 //! Windows 完整卸载计划层（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
 //!
 //! 本模块只包含**纯规划**：把 Meshlet 自有卸载步骤渲染成既有模块已经定义、
-//! 已经分类过的受控命令，不执行任何命令。计划层在任意平台编译并单测；
-//! 后续 Windows 执行层**未在 Windows 上实测前**不得接为
-//! [crate::SystemBackend]，非 Linux 平台仍保持
+//! 已经分类过的受控命令，不执行任何命令。计划层在任意平台编译并单测。
+//! 执行层复用 routes/service/firewall 三个已真机验证的 exec 薄封装
+//! （2026-10-26 中文 Windows Server：卸载链重入集成测试
+//! `windows_cleanup_e2e` 闭环）；TODO #52 保持未勾：接
+//! [crate::SystemBackend] 仍以完整验收为准，非 Linux 平台仍保持
 //! [crate::unsupported] 的显式占位（§10.3、§12.2）。
 //!
 //! 与 [windows_service](windows_service)、[windows_routes](windows_routes)、
