@@ -1,226 +1,504 @@
+/* ============================================================================
+   meshlet console — design system
+   Style: Minimalism & Swiss (ops-grade dark)  ·  density: dashboard
+   Generated with ui-ux-pro-max (79 styles / 192 palettes local search).
+   Contract: class names are load-bearing for tests — never rename.
+   ========================================================================== */
+
 :root {
-  font-family: system-ui, sans-serif;
-  color-scheme: light dark;
-  --border: #d8d3c8;
-  --accent: #c97b2e;
-  --muted: #6b7280;
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface-2: #272f42;
+  --border: #334155;
+  --border-strong: #475569;
+
+  /* text */
+  --text: #e2e8f0;
+  --text-strong: #f8fafc;
+  --muted-c: #94a3b8;
+
+  /* brand + semantics (AA on their fills) */
+  --accent: #22c55e;
+  --accent-strong: #4ade80;
+  --on-accent: #0f172a;
+  --info: #60a5fa;
+  --warn: #f59e0b;
+  --danger: #f87171;
+  --danger-strong: #ef4444;
+
+  /* type */
+  --font: Inter, 'Helvetica Neue', 'Segoe UI', system-ui, -apple-system,
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+
+  /* density: dashboard scale (8–32px) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-2: 0 8px 24px rgb(0 0 0 / 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   margin: 0;
+  background:
+    radial-gradient(1200px 400px at 80% -10%, rgb(34 197 94 / 0.06), transparent 60%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
+h1, h2, h3 {
+  color: var(--text-strong);
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  margin: 0 0 var(--space-3);
+}
+
+a { color: var(--info); }
+
+/* Focus rings are part of the design (WCAG 2.4.7) — visible, never removed. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------------------------------------------------------------- layout */
+
 .app {
-  max-width: 880px;
+  max-width: 1140px;
   margin: 0 auto;
-  padding: 0 1rem 3rem;
+  padding: 0 var(--space-4) var(--space-6);
 }
 
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.9rem 0;
+  gap: var(--space-4);
+  margin: 0 calc(-1 * var(--space-4)) var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--accent);
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+  color: var(--text-strong);
+}
+
+.brand::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 12px rgb(34 197 94 / 0.55);
 }
 
 .user {
   display: flex;
-  gap: 0.75rem;
+  gap: var(--space-3);
   align-items: center;
-  color: var(--muted);
-}
-
-.auth {
-  max-width: 22rem;
-  margin: 4rem auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.auth h1 {
-  font-size: 1.25rem;
-}
-
-label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+  color: var(--muted-c);
   font-size: 0.875rem;
 }
 
-input,
-button {
-  font: inherit;
-}
+/* ----------------------------------------------------------------- auth */
 
-input {
-  padding: 0.4rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-
-button {
-  padding: 0.4rem 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: transparent;
-  cursor: pointer;
-}
-
-button[type='submit'] {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-button.link {
-  border: none;
-  color: var(--muted);
-  text-decoration: underline;
-  padding: 0;
-}
-
-.inline {
+.auth {
+  max-width: 24rem;
+  margin: clamp(2rem, 12vh, 6rem) auto 0;
   display: flex;
-  gap: 0.5rem;
-  align-items: end;
-  flex-wrap: wrap;
-  margin-top: 0.75rem;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
 }
+
+.auth h1 { font-size: 1.2rem; }
+
+/* ---------------------------------------------------------------- panels */
+
+.panel,
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.panel > section,
+.detail > div,
+.detail > section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-1);
+}
+
+.detail > section > h2,
+.detail > div:first-child > h2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.95rem;
+  text-transform: none;
+}
+
+h3::before {
+  content: '';
+  width: 3px;
+  height: 1em;
+  border-radius: 2px;
+  background: var(--accent);
+  flex: none;
+}
+
+/* --------------------------------------------------------------- tables */
 
 table {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 0.5rem;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid var(--border);
+  margin: var(--space-3) 0;
   font-size: 0.875rem;
 }
 
-.detail {
-  margin-top: 2rem;
-  padding-top: 1rem;
-  border-top: 2px solid var(--border);
+th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  color: var(--muted-c);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
 }
 
-.detail h2 {
-  display: flex;
-  gap: 0.75rem;
-  align-items: baseline;
+td {
+  text-align: left;
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
 }
+
+tbody tr:last-child td { border-bottom: none; }
+tbody tr { transition: background 120ms ease; }
+tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 60%, transparent); }
+
+/* presence rows: dim the dead, never hide information */
+tr.state-offline td,
+tr.state-unknown td { color: var(--muted-c); }
+
+/* --------------------------------------------------------------- forms */
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 0.8125rem;
+  color: var(--muted-c);
+}
+
+input,
+select,
+button {
+  font: inherit;
+  color: var(--text);
+}
+
+input,
+select {
+  min-height: 38px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color 120ms ease;
+}
+
+input::placeholder { color: color-mix(in srgb, var(--muted-c) 70%, transparent); }
+
+input:hover,
+select:hover { border-color: var(--border-strong); }
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(34 197 94 / 0.18);
+}
+
+.inline {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--border);
+}
+
+.inline label { min-width: 8rem; }
+
+/* --------------------------------------------------------------- buttons */
+
+button {
+  min-height: 38px;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 120ms ease, border-color 120ms ease, transform 60ms ease;
+}
+
+button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--surface-2) 70%, var(--border));
+  border-color: var(--border-strong);
+}
+
+button:active:not(:disabled) { transform: translateY(1px); }
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button[type='submit'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+button[type='submit']:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+button.link {
+  min-height: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--info);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+button.link:hover:not(:disabled) { background: none; color: var(--text-strong); }
+
+button.danger,
+button.link.danger {
+  color: var(--danger);
+}
+
+button.danger {
+  border-color: var(--danger-strong);
+  background: color-mix(in srgb, var(--danger-strong) 12%, var(--surface));
+}
+
+button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-strong) 22%, var(--surface));
+  border-color: var(--danger-strong);
+}
+
+/* ------------------------------------------------------------- feedback */
 
 .muted {
-  color: var(--muted);
+  color: var(--muted-c);
   font-size: 0.875rem;
 }
 
 .error {
-  color: #b91c1c;
+  color: var(--danger);
   font-size: 0.875rem;
 }
 
-/* §8.3: a rejected route create is never silent — name the counterpart and
-   suggest the Alias mapping instead. */
+/* §8.3: a rejected create is never silent — the conflict card explains
+   what happened and what to do instead. */
 .conflict {
-  padding: 0.75rem;
-  border: 1px solid #b91c1c;
-  border-radius: 4px;
-  margin: 0.5rem 0;
+  padding: var(--space-4);
+  border: 1px solid var(--danger-strong);
+  border-left: 4px solid var(--danger-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger-strong) 8%, var(--surface));
+  margin: var(--space-3) 0;
   font-size: 0.875rem;
 }
 
-.conflict p {
-  margin: 0.25rem 0;
-}
+.conflict p { margin: var(--space-1) 0; }
 
 .token-box {
-  padding: 0.75rem;
+  padding: var(--space-4);
   border: 1px dashed var(--accent);
-  border-radius: 4px;
-  margin: 0.5rem 0;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  margin: var(--space-3) 0;
   word-break: break-all;
 }
 
-.fingerprint {
-  font-size: 0.8rem;
+.token-box p { margin: 0 0 var(--space-2); color: var(--text); font-size: 0.875rem; }
+
+/* ------------------------------------------------------------- code-ish */
+
+code {
+  font-family: var(--mono);
+  font-size: 0.82em;
+  padding: 0.1em 0.45em;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
 }
 
-.status {
-  display: inline-block;
-  padding: 0.05rem 0.5rem;
+td code, .token-box code { border: none; background: transparent; }
+
+.fingerprint { font-size: 0.78rem; color: var(--muted-c); }
+.hash { font-size: 0.78rem; color: var(--muted-c); }
+
+/* --------------------------------------------------------- status pills */
+
+.status,
+.diag,
+.dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.1rem 0.6rem;
   border: 1px solid currentColor;
   border-radius: 999px;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
-.status-applied {
-  color: #15803d;
-}
+.status-applied { color: var(--accent); border-style: solid; }
 
 .status-failed,
-.status-rollback_pending {
-  color: #b91c1c;
-}
+.status-rollback_pending { color: var(--danger); }
 
-.status-rolled_back {
-  color: var(--muted);
-}
+.status-rolled_back,
+.status-pending,
+.status-applying { color: var(--muted-c); }
 
-.hash {
-  font-size: 0.8rem;
-}
-
-.danger {
-  color: #b91c1c;
-  border-color: #b91c1c;
-}
-
-/* Diagnostics (§12.7): status pills mirror the API vocabulary. unavailable
-   means "the control plane cannot observe this host-local fact", not a pass. */
-.diag {
-  display: inline-block;
-  padding: 0.05rem 0.5rem;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  font-size: 0.8rem;
-}
-
-.diag-pass {
-  color: #15803d;
-}
-
-.diag-fail {
-  color: #b91c1c;
-}
-
-.diag-warning {
-  color: #a16207;
-}
-
-.diag-unavailable {
-  color: var(--muted);
-}
-
-.diag-not_applicable {
-  color: var(--muted);
-  border-style: dashed;
-}
+/* diagnostics (§12.7): unavailable ≠ pass — it means "cannot observe". */
+.diag-pass { color: var(--accent); }
+.diag-fail { color: var(--danger); }
+.diag-warning { color: var(--warn); }
+.diag-unavailable,
+.diag-not_applicable { color: var(--muted-c); border-style: dashed; }
 
 .diag-suggestion {
-  font-family: ui-monospace, monospace;
-  font-size: 0.85rem;
-  color: #a16207;
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--warn);
   white-space: pre-wrap;
+  background: color-mix(in srgb, var(--warn) 7%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.diag-layer { margin-top: var(--space-2); }
+
+.diag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* presence dot: shape + color both encode state (never color alone) */
+.dot { border: none; padding: 0.1rem 0.6rem 0.1rem 1.35em; position: relative; }
+
+.dot::before {
+  content: '';
+  position: absolute;
+  left: 0.6em;
+  top: 50%;
+  translate: 0 -50%;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.dot.online { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.dot.offline { color: var(--muted-c); background: color-mix(in srgb, var(--muted-c) 10%, transparent); }
+.dot.unknown { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+
+/* ----------------------------------------------------------- responsive */
+
+@media (max-width: 720px) {
+  .app { padding: 0 var(--space-3) var(--space-6); }
+  .topbar { margin: 0 calc(-1 * var(--space-3)) var(--space-4); padding: var(--space-3); }
+  .panel > section,
+  .detail > div,
+  .detail > section { padding: var(--space-4); }
+
+  /* wide evidence tables scroll horizontally instead of squishing (§5) */
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .inline { align-items: stretch; flex-direction: column; }
+  .inline label { min-width: 0; }
+  button, input, select { width: 100%; }
+  .user { font-size: 0.8125rem; }
 }
