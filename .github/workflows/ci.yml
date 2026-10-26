@@ -50,6 +50,17 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace
 
+  deps-gate:
+    name: planner dependency gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # R-01 architecture constraint 2/3: the planner must stay dependency-free
+      # (no store, no executor, no crypto) so it can be reasoned about in isolation.
+      - name: Enforce zero third-party dependencies in meshlet-planner
+        run: scripts/check-planner-deps.sh
+
   console:
     name: console build
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
