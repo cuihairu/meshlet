@@ -318,6 +318,14 @@ netsh interface ipv4 show route    # 预期：无 192.0.2.0/24
 
 「权限拒绝原文命中映射表」「删除幂等原文命中」「清理完成」三项全部符合 → **#52 可勾**（另：Windows 接入 `SystemBackend` 属单独决策，不在此走查范围内）。任一不符 → 记录差距，条目保持未勾。
 
+> **SystemBackend 接线决策的完成状态前置审计（2026-10-27，M5）**：
+> [TODO 完成状态审计](../analysis/todo-completion-audit-2026-10-27.md)「重点三 —— Windows
+> 后端」。结论：Windows 隧道实现**整体缺席**（`wireguardnt`/`wintun` 在 `crates/`、`apps/`
+> 下零代码，仅 `windows_routes.rs:13,207` 两处注释提及），而 `apply_tunnel` 正是 agent 的
+> 首个调用（`apps/agent/src/agent.rs:124`）—— 接线需新建隧道子系统，不是改一行 `cfg`。
+> R-05 两个已勾子项的证据分级（权限提升=证据弱，其执行层**仅代码存在**；数据面真机验收=
+> 有证据）同见该报告。
+
 ---
 
 ## E — Linux 托盘与状态通知（#104 剩余桌面验收）

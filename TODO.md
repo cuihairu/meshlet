@@ -153,10 +153,31 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
       门禁说明：`setup()` 以「sudo 可用 + `wg --version` 成功」判前置条件，本机两者齐备，
       所以 `MESHLET_REQUIRE_DATAPLANE=1` 在本机只是「缺前置条件时硬失败」的开关，不设也真跑
       （workspace 运行即真跑：8 测 71.43s）——验收不能只看 exit code。
-- [ ] M5 TODO 完成状态审计（作为 TODO #52 SystemBackend 接线决策的前置）：逐条核对已勾项的
+- [x] M5 TODO 完成状态审计（作为 TODO #52 SystemBackend 接线决策的前置）：逐条核对已勾项的
       实现路径、测试覆盖、真实验收证据，重点权限撤销/回滚/多网络隔离/Windows 后端，产出审计报告
-      （结论三分类：有证据/证据弱/仅代码存在）。验收：报告入 docs/review/，#52 决策引用它。
-      → 状态（2026-10-27）：未立项完成。M4 收尾只顺带核对了「权限撤销/回滚不重授」一条主线
-      的证据链（见 M4 证据）；全量逐条审计与 `docs/review/` 报告仍未做。
+      （结论三分类：有证据/证据弱/仅代码存在）。验收：报告入 `docs/analysis/`（用户令改为
+      analysis，非 review）并进 vitepress 站，#52 决策引用它。
+      → 已落地（2026-10-27，审计基线 `ebcd9e7`）。证据：
+      `docs/analysis/todo-completion-audit-2026-10-27.md` 及 zh 镜像，侧栏已注册
+      （`docs/.vitepress/config.mts` `/analysis/` 与 `/zh/analysis/` 各一条）。核对已勾项 20 条：
+      **有证据 15**（R-04 与两个子项、R-05 数据面子项、R-06 六个子项含真实 VPS 端到端、
+      R-07 空白安装/密钥轮换/备份恢复/多设备/升级回滚、M1/M2/M3/M4）、
+      **证据弱 5**（R-01、R-02、R-03、R-05 权限提升子项、R-07 性能基线）、
+      **仅代码存在 1 处子面**（`windows_elevation.rs:194` 的 `#[cfg(windows)]` 执行层，
+      模块内零测试、从未在真机运行）。三个重点结论：①权限撤销/回滚链路无旁路——
+      `enforce_authorization` 四个消费点（`revision.rs:208/915`、`persist.rs:1562/2225`）
+      全部核实，并遍历所有 `hub_deployments` 写入与内存计划插入点，未找到绕过；
+      ②多网络隔离由 `single_instance.rs:212` 的正负成对断言证明（B 活着且 A 到不了 B），
+      系单机 netns 级证据而非 WAN/NAT 穿越；③Windows **无法接线**——隧道实现整体缺席
+      （`wireguardnt`/`wintun`/`tun2socks`/`OpenAdapter` 在 `crates/`+`apps/` 下零代码，仅
+      `windows_routes.rs:13,207` 两处注释提及），而 `apply_tunnel` 正是 agent 的首个调用
+      （`apps/agent/src/agent.rs:124`），接线需新建子系统而非改一行 `cfg`。另记 12 处 TODO
+      表述与实际不符（R-02 写 nftables 实为 iptables 且 nftables crate 无任何 app 依赖、
+      `meshlet-netplan` 未被 server 消费、`check-planner-deps.sh` 未接任何 CI、R-04 第 25 行
+      自相矛盾、R-06 第 31 行计数过时、M2 行号区间漂移等，详见报告「发现的不一致」）。
+      指针已加两处：`crates/meshlet-network/src/lib.rs` 模块头（接线决策本体）与
+      `docs/zh/guide/walkthrough.md` §4 判定段（#52 验收门）。验证：`pnpm run docs:build` 绿、
+      `cargo test --workspace` 与 `cargo clippy --workspace --all-targets -D warnings` 绿、
+      `cargo fmt --all -- --check` 绿。落 commit = 本提交（单提交无法自引哈希，见 git log 首条）。
 - 说明：评审的「备份明文加密恢复包」已在 R-07 显式加密恢复包口径内（不重复立项）；
   服务发布授权清单（监听地址/来源 CIDR/UDP 会话生命周期等）在 M1 落地时并入检查单。

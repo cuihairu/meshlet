@@ -18,6 +18,11 @@
 //! 执行层 `#[cfg(windows)]` 只调计划层，**未在 Windows 上实测**（TODO #52
 //! 的环境走查仍卡），实测前 Windows 不接为 [SystemBackend]。
 //!
+//! 接线决策的完成状态前置审计（M5，2026-10-27）见
+//! [docs/analysis/todo-completion-audit-2026-10-27.md](../../docs/analysis/todo-completion-audit-2026-10-27.md)
+//! 「Focus area 3 / Windows 后端」：结论是隧道实现整体缺席（`wireguardnt`/`wintun` 零
+//! 代码，`apply_tunnel` 即 agent 的首个调用），接线需新建子系统而非改这一行 `cfg`。
+//!
 //! [DevicePlan] 是 server → agent 的**结构化配置对象**（§16.4）：agent 只消费
 //! 类型化的隧道/路由/NAT 计划，绝不执行服务端下发的任意 Shell 命令。
 
