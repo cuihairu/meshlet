@@ -1,5 +1,15 @@
 # R-03: Unified Network Planning and Conflict Analysis
 
+> **Crate removed (2026-10-27).** `meshlet-netplan` was never consumed by the
+> server and has been **deleted**. Conflict analysis and plan determinism now
+> live in the product path inside `apps/server`: route and Alias conflict
+> rejection is integration-tested (`apps/server/tests/routes.rs:239`,
+> `apps/server/tests/aliases.rs:288`), and plan-hash stability across route
+> reordering is covered at `apps/server/src/device_plan.rs:590`. What is not
+> carried over is the crate's device/segment/grant shuffle-independence suite —
+> those inputs have no equivalent exercise in the product path. This file is
+> retained as the design record for that lost coverage. See `TODO.md` R-03.
+
 R-03 introduces `meshlet-netplan`, a pure cross-platform planning library. It validates the complete desired state first, then compiles one canonical HubPlan containing hub peers, gateway assignments, and device routes. The planner performs no persistence or platform execution.
 
 Conflict analysis covers Overlay and server-known routes, segment containment and pairwise policy overlaps, Direct-route ownership, Alias uniqueness and target equality, orphan or ambiguous Alias bindings, duplicate device addresses, unknown gateways, and active device membership. The server-known conflict set is sorted and deduplicated before it is returned, so different persistence order produces the same conflict set.

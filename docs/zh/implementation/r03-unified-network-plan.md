@@ -1,5 +1,13 @@
 # R-03：统一网络规划与冲突分析
 
+> **crate 已删除（2026-10-27）。** `meshlet-netplan` 从未被 server 消费，已于同日
+> **删除**。冲突分析与计划确定性现在位于产品路径 `apps/server` 内部：路由与 Alias 的
+> 冲突拒绝有集成测试（`apps/server/tests/routes.rs:239`、
+> `apps/server/tests/aliases.rs:288`），计划哈希对路由重排的稳定性由
+> `apps/server/src/device_plan.rs:590` 覆盖。没有搬过来的是该 crate 的设备/Segment/授权
+> 打乱顺序独立性测试——这些输入在产品路径上没有对位验证。本文作为该部分能力的设计留档
+> 保留。依据见 `TODO.md` R-03。
+
 R-03 引入纯逻辑、跨平台的 `meshlet-netplan`。它先校验完整期望状态，再编译出一个规范 HubPlan，其中包含 Hub Peer、网关分配和设备路由。Planner 不落库，也不接触平台执行器。
 
 冲突分析覆盖 Overlay 与服务端已知路由、Segment 包含关系和两两重叠、Direct 路由所有权、Alias 唯一性与目标一致性、孤立或歧义 Alias 绑定、重复设备地址、未知网关，以及设备是否落在所属 Segment 内。服务端冲突集合返回前会排序去重，因此持久化顺序不同也会得到同一冲突集合。

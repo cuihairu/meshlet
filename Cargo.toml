@@ -5,8 +5,6 @@ members = [
     "crates/meshlet-api-types",
     "crates/meshlet-config",
     "crates/meshlet-network",
-    "crates/meshlet-net-linux",
-    "crates/meshlet-netplan",
     "crates/meshlet-planner",
     "crates/meshlet-store",
     "crates/meshlet-publish",

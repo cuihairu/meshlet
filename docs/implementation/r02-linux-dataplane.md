@@ -1,5 +1,14 @@
 # R-02: Reliable Linux Dataplane
 
+> **Superseded as shipped (2026-10-27).** This record describes
+> `crates/meshlet-net-linux` (nftables compiler, `defguard_wireguard_rs`,
+> netlink). That crate was never consumed by any app and has been **deleted**;
+> the shipped dataplane is `crates/meshlet-network/src/linux.rs`
+> (`LinuxNetworkBackend`), which shells out to `ip`, `wg`, and
+> **iptables**. The nftables work in this file stands as an historical record
+> of the earlier approach only. See `TODO.md` R-02 and the completion status
+> audit for the correction.
+
 R-02 now provides the Linux hub main line as a reusable crate. Desired hub state is validated and deterministically compiled into immutable plans. The plan owns one isolated WireGuard interface, UDP port, IPv4 overlay, peer set, route set, and explicit firewall rules per network.
 
 The Linux backend observes real state through `defguard_wireguard_rs`, netlink, `/proc/sys/net/ipv4/ip_forward`, and the nftables JSON ruleset. The reconciler classifies drift and chooses between desired application, security-preserving recovery, or no-op. Recovery is selected only when sanitized last-good state compiles and matches observed state. Revocations are retained from both last-good and desired state, removed peers are never resurrected, and routes survive only when a surviving peer still covers them.
