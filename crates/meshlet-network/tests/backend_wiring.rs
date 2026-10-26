@@ -242,6 +242,68 @@ impl Drop for Guard {
     }
 }
 
+/// 场景 12（宿主机）的兜底清理：测试在**根命名空间**预埋外来对象并配置 wg0，
+/// 任何断言失败都不许把这些对象留在宿主机上。
+struct RootGuard;
+
+impl Drop for RootGuard {
+    fn drop(&mut self) {
+        // 先按所有权摘掉受管 NAT，再删受管接口（连带其路由与 peer）。
+        let cleanup = LinuxNetworkBackend::new().with_sudo().with_interface("wg0");
+        let _ = cleanup.remove_nat_sync(ALIAS_OWNER);
+        let _ = sudo(&["ip", "link", "del", "wg0"]);
+        let _ = sudo(&["ip", "route", "del", "198.51.101.0/24", "dev", "lo"]);
+        let _ = sudo(&[
+            "iptables",
+            "-t",
+            "nat",
+            "-D",
+            "PREROUTING",
+            "-d",
+            "203.0.113.0/24",
+            "-j",
+            "ACCEPT",
+            "-m",
+            "comment",
+            "--comment",
+            "host rule",
+        ]);
+        let _ = sudo(&[
+            "iptables",
+            "-t",
+            "filter",
+            "-D",
+            "FORWARD",
+            "-i",
+            "lo",
+            "-j",
+            "ACCEPT",
+            "-m",
+            "comment",
+            "--comment",
+            "host rule",
+        ]);
+    }
+}
+
+/// 根命名空间里某条路由的精确渲染行（不存在则 None）——外来对象幸存的比对口径。
+fn root_route_exact(destination: &str) -> Option<String> {
+    let out = sudo(&["ip", "-4", "route", "show", "exact", destination]);
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// 在 iptables -S 输出里找一条同时命中 `needle` 与所有权注释的行。
+fn host_rule_line(stdout: &[u8], needle: &str) -> Option<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .find(|line| line.contains(needle) && line.contains("host rule"))
+        .map(str::to_string)
+}
+
 struct Topology {
     #[allow(dead_code)] // 字段只经 Drop 清理
     guard: Guard,
@@ -1181,6 +1243,190 @@ fn backend_driven_tunnel_routes_and_nat() {
         gw_snap.nat_rules, planned,
         "a foreign nat rule must survive the repair"
     );
+
+    // ---- 12. 宿主机规则不误删（M3 场景 6）：受管 apply 直接跑在**根命名空间**
+    // （生产形态：agent 就跑在宿主机上，旁边还有别人家的路由/NAT/FORWARD）。
+    // 先预埋三条外来对象，再走完整 apply（tunnel + routes + NAT）与回收
+    // （remove_nat + rollback），要求宿主机侧外来对象逐字幸存、ip_forward 基线
+    // 不动。清理由 RootGuard 兜底——任何断言失败都不把测试对象留在宿主机上。
+    if !sudo_ok(&["ip", "link", "show", "wg0"]) && !root_route_exact("198.51.101.0/24").is_some() {
+        let _guard = RootGuard;
+        let forward_before = sudo(&["sysctl", "-n", "net.ipv4.ip_forward"])
+            .stdout
+            .to_vec();
+        require_ok(
+            &sudo(&["ip", "route", "add", "198.51.101.0/24", "dev", "lo"]),
+            "seed host route",
+        );
+        require_ok(
+            &sudo(&[
+                "iptables",
+                "-t",
+                "nat",
+                "-A",
+                "PREROUTING",
+                "-d",
+                "203.0.113.0/24",
+                "-j",
+                "ACCEPT",
+                "-m",
+                "comment",
+                "--comment",
+                "host rule",
+            ]),
+            "seed host nat rule",
+        );
+        require_ok(
+            &sudo(&[
+                "iptables",
+                "-t",
+                "filter",
+                "-A",
+                "FORWARD",
+                "-i",
+                "lo",
+                "-j",
+                "ACCEPT",
+                "-m",
+                "comment",
+                "--comment",
+                "host rule",
+            ]),
+            "seed host forward rule",
+        );
+
+        // 根命名空间后端：无 with_netns。
+        let mut host = LinuxNetworkBackend::new().with_sudo().with_interface("wg0");
+        let own_key = wg_genkey().expect("host private key");
+        let peer_key = wg_genkey().expect("host peer key");
+        let peer_pub = wg_pubkey(&peer_key).expect("host peer public key");
+        let host_tunnel = TunnelConfig {
+            name: "wg0".into(),
+            address: "10.249.0.1".parse().unwrap(),
+            address_prefix: 24,
+            listen_port: None,
+            peers: vec![PeerConfig {
+                public_key: peer_pub,
+                allowed_ips: vec!["10.249.0.2/32".parse().unwrap()],
+                endpoint: None,
+                persistent_keepalive_secs: None,
+            }],
+            mtu: None,
+            private_key: Some(own_key),
+        };
+        host.apply_tunnel_sync(&host_tunnel)
+            .expect("root apply_tunnel");
+        host.apply_routes_sync(&[RouteConfig {
+            destination: "10.249.1.0/24".parse().unwrap(),
+            interface: "wg0".into(),
+            gateway: None,
+        }])
+        .expect("root apply_routes");
+        let rules = meshlet_network::nat::alias_nat_rules(&alias_mapping());
+        host.apply_nat_sync(&rules, "192.168.1.1".parse().unwrap())
+            .expect("root apply_nat");
+
+        // apply 确实落到了宿主机：对象在场。
+        let snap = host.inspect_sync().expect("root inspect");
+        assert!(
+            snap.tunnel_exists,
+            "managed tunnel must exist in the host namespace"
+        );
+        assert_eq!(
+            snap.peers.len(),
+            1,
+            "managed peer must exist in the host namespace"
+        );
+        assert!(
+            snap.installed_routes
+                .contains(&"10.249.1.0/24".parse().unwrap()),
+            "managed route must exist in the host namespace: {:?}",
+            snap.installed_routes
+        );
+        assert!(
+            !snap.nat_rules.is_empty(),
+            "managed NAT rules must exist in the host namespace: {:?}",
+            snap.nat_rules
+        );
+
+        // 宿主机外来对象逐字幸存。
+        assert_eq!(
+            root_route_exact("198.51.101.0/24").as_deref(),
+            Some("198.51.101.0/24 dev lo scope link"),
+            "the host route must survive a managed apply"
+        );
+        let nat_after_apply = sudo(&["iptables", "-t", "nat", "-S", "PREROUTING"]);
+        let filter_after_apply = sudo(&["iptables", "-t", "filter", "-S", "FORWARD"]);
+        assert!(
+            host_rule_line(&nat_after_apply.stdout, "-d 203.0.113.0/24").is_some(),
+            "the host NAT rule must survive a managed apply:\n{}",
+            String::from_utf8_lossy(&nat_after_apply.stdout)
+        );
+        assert!(
+            host_rule_line(&filter_after_apply.stdout, "-i lo").is_some(),
+            "the host FORWARD rule must survive a managed apply:\n{}",
+            String::from_utf8_lossy(&filter_after_apply.stdout)
+        );
+        let forward_after_apply = sudo(&["sysctl", "-n", "net.ipv4.ip_forward"]).stdout;
+        assert_eq!(
+            forward_before, forward_after_apply,
+            "the host ip_forward must not be changed by a host apply"
+        );
+
+        // 回收：只带走 Meshlet 自有对象。
+        host.remove_nat_sync(ALIAS_OWNER).expect("root remove_nat");
+        host.rollback_sync().expect("root rollback");
+        let snap = host.inspect_sync().expect("root inspect after rollback");
+        assert!(
+            snap.peers.is_empty(),
+            "managed peers must be gone after rollback: {:?}",
+            snap.peers
+        );
+        assert!(
+            snap.installed_routes.is_empty(),
+            "managed routes must be gone after rollback: {:?}",
+            snap.installed_routes
+        );
+        assert!(
+            snap.nat_rules.is_empty(),
+            "managed NAT must be gone after rollback: {:?}",
+            snap.nat_rules
+        );
+        assert!(
+            snap.tunnel_exists,
+            "the managed interface is system state and must remain"
+        );
+        // 外来对象在回收之后依旧在场。
+        assert_eq!(
+            root_route_exact("198.51.101.0/24").as_deref(),
+            Some("198.51.101.0/24 dev lo scope link"),
+            "the host route must survive the managed rollback"
+        );
+        let nat_after_rollback = sudo(&["iptables", "-t", "nat", "-S", "PREROUTING"]);
+        let filter_after_rollback = sudo(&["iptables", "-t", "filter", "-S", "FORWARD"]);
+        assert!(
+            host_rule_line(&nat_after_rollback.stdout, "-d 203.0.113.0/24").is_some(),
+            "the host NAT rule must survive the managed rollback:\n{}",
+            String::from_utf8_lossy(&nat_after_rollback.stdout)
+        );
+        assert!(
+            host_rule_line(&filter_after_rollback.stdout, "-i lo").is_some(),
+            "the host FORWARD rule must survive the managed rollback:\n{}",
+            String::from_utf8_lossy(&filter_after_rollback.stdout)
+        );
+        let nat_text = String::from_utf8_lossy(&nat_after_rollback.stdout);
+        assert!(
+            !nat_text.contains(ALIAS_OWNER),
+            "managed alias rules must be gone from the host namespace:\n{nat_text}"
+        );
+        assert_eq!(
+            forward_before,
+            sudo(&["sysctl", "-n", "net.ipv4.ip_forward"]).stdout,
+            "the host ip_forward must not be changed by the managed rollback"
+        );
+    } else {
+        eprintln!("SKIP: the host namespace already holds wg0 or 198.51.101.0/24");
+    }
 
     // teardown 并断言「跑完不留垃圾」。
     drop(topo);

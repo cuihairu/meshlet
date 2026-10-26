@@ -95,10 +95,38 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
       meshlet-agent lib 59 通过、meshlet-network lib 79 通过、
       `cargo clippy --workspace --all-targets -D warnings` 与 `cargo fmt --all -- --check` exit 0、
       `pnpm run docs:build` 成功。证据入 `docs/implementation/r04-linux-agent-e2e.md` 及其 zh 镜像。
-- [ ] M3 故障矩阵验收（评审 54.2 九场景）：Hub 重启恢复受管状态、Agent 重启不信账本单独判断、
-      改路由时进程被杀、删 LAN 路由连带撤销、双网络并行不串网、宿主机规则不误删、
-      撤销在线设备权限后旧计划重试不重授、Hub 公钥轮换迁移、库恢复后内核状态重新一致。
-      验收：逐场景可重复证据入 docs/implementation/；可并入 R-07 浸泡验收执行。
+- [x] M3 故障矩阵验收（评审 54.2 九场景，2026-10-27 落地）：九场景全真跑（真 netns +
+      sudo ip/wg/iptables，`MESHLET_REQUIRE_DATAPLANE=1` 门禁——无门禁时静默 SKIP，
+      证据全部来自设门禁的运行）。串行单测实测：①hub 重启恢复受管状态
+      （`single_instance.rs:1377` 9.38s：重建后 hub 密钥不变、peer 身份行逐字相同、
+      hub 路由与网关 NAT 相等）；②agent 重启不信账本（`ledger_recovery.rs:379` 1.19s：
+      真实 apply 对照组 `UpToDate`，同标记换路由 → `KernelDrift`，外部路由幸存）；
+      ③改路由被杀（`ledger_recovery.rs:442` 3.01s：三个被杀断点各为真实半途内核状态，
+      收敛到计划 B、账本记 `rev-b`）；④删 LAN 路由连带撤销（`single_instance.rs:1510`
+      6.78s：DELETE 204、alias 列表清空、hub 路由与 allowed-ips 收敛、网关
+      `NoLocalLedger` 所有权清扫 owner NAT、overlay 不断）；⑤双网络并行不串网
+      （`single_instance.rs:212` 53.70s，既有测试：A 重启重建/失败修订回滚不动 B）；
+      ⑥宿主机规则不误删（`backend_wiring.rs:704` 场景 12 主体 `:1247` 32.96s：根命名
+      空间 apply，外来路由/NAT/FORWARD/ip_forward 逐字幸存，`RootGuard` 兜底清理）；
+      ⑦撤销在线设备旧计划不重授（`single_instance.rs:1821` 5.94s：凭证 401、旧修订
+      回执 400 过期、当前修订配旧哈希 400 哈希不符、新修订不回加 peer、存活设备握手
+      与流量计数持续；内核侧 `:624-674`）；⑧hub 公钥轮换（`single_instance.rs:1456`
+      6.20s：hub 换钥、peer 身份不变、设备计划与内核持新钥）；⑨库恢复后内核重新一致
+      （`single_instance.rs:1650` 9.81s：备份→删除→恢复→重启→recover_once→hub 路由
+      逐字复原、网关 NAT 复原、LAN 通路恢复）。
+      如实记录两处非缺陷观察：a) hub 接口重建不带会话密钥，设备旧会话 keepalive
+      （REJECT_AFTER_TIME ≈180s）无法解密、hub 学不到 endpoint——WireGuard 标准行为，
+      身份级重建为本场景合同，数据面回归由设备自身收敛步骤验证（`single_instance.rs:1441`
+      注释）；b) 回滚式恢复后「点 apply」不重收敛——`ConfigLedger::apply` 对已
+      `Applied` 修订幂等返回（`config_state.rs:230`），备份后新增修订又不在恢复出的
+      库里，受支持路径是生产启动恢复 `recover_once`（`main.rs:98`）；产品语义决策留作
+      后续项，本轮不改代码。验证：`single_instance` 7 通过（串行 105.89s）、
+      `ledger_recovery` 6 通过 6.35s、`backend_wiring` 1 通过 32.96s、`agent_reconcile`
+      1 通过 27.06s、`dual_site_end_to_end` 1 通过 33.82s、
+      `cargo clippy --workspace --all-targets -D warnings` 与 `cargo fmt --all -- --check`
+      exit 0、`pnpm run docs:build` 成功；证据入 `docs/implementation/m3-fault-matrix.md`
+      及 zh 镜像，侧栏已注册（`docs/.vitepress/config.mts:102`/`:190`）；可并入 R-07
+      浸泡验收执行（场景 2/3/5/6/7 触碰共享内核状态，最值得在浸泡机重复）。
 - [ ] M4 回滚/重试不得重授已撤销权限：安全语义优先于机械恢复。撤销权限、删 Peer、删路由、
       清 NAT 有明确优先级；失败恢复 last_good_plan 前先过当前授权快照。验收：撤销后诱导回滚的
       单测证明访问未重新打开。

@@ -225,6 +225,17 @@ impl Case {
     }
 }
 
+impl Case {
+    /// Ledger path, mirroring [`meshlet_agent::reconcile::state_path`].
+    fn ledger(&self) -> std::path::PathBuf {
+        Path::new(&self.state_dir).join("applied.json")
+    }
+
+    fn routes(&self) -> String {
+        self.ns.output(&["ip", "-4", "route", "show", "dev", "wg0"])
+    }
+}
+
 impl Drop for Case {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.state_dir);
@@ -351,4 +362,158 @@ fn partial_failure_still_removes_old_entries_and_keeps_foreign() {
     assert!(error.contains("already exists on another path"), "{error}");
     case.assert_recovery();
     assert!(!Path::new(&case.state_dir).join("applied.json").exists());
+}
+
+fn route_to(destination: &str) -> RouteConfig {
+    RouteConfig {
+        destination: destination.parse().unwrap(),
+        interface: "wg0".into(),
+        gateway: None,
+    }
+}
+
+/// M3 场景 2「Agent 重启不信账本单独判断」的锋利形态：账本完好、哈希与期望
+/// 一致（重启后读到的正是「上次成功应用」的记录），但内核不是账本描述的状态。
+/// 判定必须来自内核观测——账本说“已应用”不能替内核作证。
+#[test]
+fn a_matching_ledger_does_not_shield_kernel_drift() {
+    if !prerequisites() {
+        return;
+    }
+    let case = Case::new("stale-ledger");
+    let desired = plan("rev-7", vec![route_to("10.241.1.0/24")]);
+
+    // 先由真实 apply 把内核带到与计划一致的状态并留下账本——对照组：账本与
+    // 内核都一致时，tick 必须安静。这证明下面检出的漂移只能来自内核。
+    case.agent().reconcile(&desired).expect("first install");
+    let control = case.agent().reconcile(&desired).expect("control tick");
+    assert_eq!(control.reason, meshlet_agent::Reason::UpToDate);
+
+    // 有人把受管路由整条换成另一条同标记路由：条数仍是 1，身份变了。数量检查
+    // 会漏过这种替换，只有身份比对能抓到。
+    case.ns.run(
+        &["ip", "route", "del", "10.241.1.0/24"],
+        "remove the desired route",
+    );
+    case.ns.run(
+        &[
+            "ip",
+            "route",
+            "add",
+            "10.241.9.0/24",
+            "dev",
+            "wg0",
+            "proto",
+            "198",
+        ],
+        "swap in a different owned route",
+    );
+    case.ns.run(
+        &["ip", "route", "add", "198.51.100.0/24", "dev", "wg0"],
+        "plant foreign route",
+    );
+    let decision = case.agent().reconcile(&desired).expect("drift repair tick");
+    assert_eq!(
+        decision.reason,
+        meshlet_agent::Reason::KernelDrift,
+        "the ledger must not stand in for the kernel"
+    );
+    let routes = case.routes();
+    assert!(
+        routes.contains("10.241.1.0/24"),
+        "desired route must be reinstalled:\n{routes}"
+    );
+    assert!(
+        !routes.contains("10.241.9.0/24"),
+        "the meshlet-owned swap-in must be removed:\n{routes}"
+    );
+    assert!(
+        routes.contains("198.51.100.0/24"),
+        "the foreign route must survive:\n{routes}"
+    );
+    let steady = case.agent().reconcile(&desired).expect("steady-state tick");
+    assert_eq!(steady.reason, meshlet_agent::Reason::UpToDate);
+}
+
+/// M3 场景 3「改路由时进程被杀」：计划 A 已应用并记账，向计划 B 的切换中途
+/// 被杀——内核停在半途状态。下一轮 tick 必须从内核实际状态收敛到 B，既不
+/// 留下 A 的残余，也不动外部路由；账本最终描述 B。
+#[test]
+fn a_half_applied_route_change_from_a_killed_apply_converges() {
+    if !prerequisites() {
+        return;
+    }
+    // 路由切换的三个被杀断点，每个都种下真实的半途内核状态：
+    // - after-add：加了新、旧还没删 → {old, new} 同时在场；
+    // - between：删了旧、新还没加 → 两者都不在场；
+    // - before-write：一条都没动 → {old}。
+    for (suffix, has_old, has_new) in [
+        ("killed-after-add", true, true),
+        ("killed-between-remove-and-add", false, false),
+        ("killed-before-any-write", true, false),
+    ] {
+        let case = Case::new(suffix);
+        let old = plan("rev-a", vec![route_to("10.241.1.0/24")]);
+        let new = plan("rev-b", vec![route_to("10.241.2.0/24")]);
+        // 计划 A 真实应用并记账，之后才按断点制造半途状态。
+        case.agent().reconcile(&old).expect("apply plan A");
+        case.ns.run(
+            &["ip", "route", "add", "198.51.100.0/24", "dev", "wg0"],
+            "plant foreign route",
+        );
+        if !has_old {
+            case.ns.run(
+                &["ip", "route", "del", "10.241.1.0/24"],
+                "old route removed by the killed apply",
+            );
+        }
+        if has_new {
+            case.ns.run(
+                &[
+                    "ip",
+                    "route",
+                    "add",
+                    "10.241.2.0/24",
+                    "dev",
+                    "wg0",
+                    "proto",
+                    "198",
+                ],
+                "half-applied new route",
+            );
+        }
+
+        let decision = case.agent().reconcile(&new).expect("converge tick");
+        assert_ne!(
+            decision.reason,
+            meshlet_agent::Reason::UpToDate,
+            "{suffix}: the half-applied state must not read as up to date"
+        );
+        let routes = case.routes();
+        assert!(
+            routes.contains("10.241.2.0/24"),
+            "{suffix}: the new route must be installed:\n{routes}"
+        );
+        assert!(
+            !routes.contains("10.241.1.0/24"),
+            "{suffix}: the old route must not survive the crash:\n{routes}"
+        );
+        assert!(
+            routes.contains("198.51.100.0/24"),
+            "{suffix}: the foreign route must survive:\n{routes}"
+        );
+        let saved = std::fs::read_to_string(case.ledger()).unwrap();
+        assert!(
+            saved.contains("rev-b"),
+            "{suffix}: the ledger must describe the new plan"
+        );
+
+        // 收敛之后稳态：再 tick 不动作。
+        let decision = case.agent().reconcile(&new).expect("steady-state tick");
+        assert_eq!(
+            decision.reason,
+            meshlet_agent::Reason::UpToDate,
+            "{suffix}: after convergence the tick must be quiet"
+        );
+    }
 }
