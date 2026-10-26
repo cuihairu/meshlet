@@ -27,7 +27,7 @@
   - [x] 权限提升：`windows_elevation` 计划层（受管 `.exe` 路径校验、`runas` 命令行转义、错误码/文案 → `InsufficientPrivileges` 分类）全平台编译 + Linux 单测（66 通过）；`#[cfg(windows)]` 执行层（ShellExecuteW runas + TokenElevation 查询）已过 `x86_64-pc-windows-msvc` clippy/check，**未在真机 Windows 实测，不得接为 SystemBackend**。
   - [x] 数据面真机验收（2026-10-25/26，中文 Windows Server 本机）：抓到并修复本地化根因——netsh/sc.exe 重定向输出是活动代码页（CP936/GBK）而非 UTF-8，`from_utf8_lossy` 丢失全部 zh-CN 文案；新增 `windows_console`（UTF-8 优先 + `MultiByteToWideChar(CP_ACP)` 解码，windows-sys 现有依赖加 `Win32_Globalization`），routes/service/firewall 执行层接入，分类器补真机报文：路由缺失「找不到元素。」、sc 1060「指定的服务未安装。」、防火墙缺失「没有与指定标准相匹配的规则。」、非提权「请求的操作需要提升(作为管理员运行)。」；真机新发现 sc stop 未启动服务返回 1062「服务尚未启动。」——Stop 目标状态是已停止，未运行即已达成，新增幂等成功（含退出码 1060/1062 双通道判定）。新增卸载链重入集成测试 `windows_cleanup_e2e`（服务 create→stop→delete→re-delete、防火墙 add→show→delete→re-delete、空态 CleanupPlan 全步幂等，真机闭环）；`windows_netsh` 原失败用例（幂等 re-delete）转绿。验证：meshlet-network 75 单测 + 3 真机集成全绿；全 workspace `cargo test` 与 clippy（stable-x86_64-pc-windows-gnu）exit 0。
 - [x] R-06 服务发布 - TCP/UDP PortForward。（crate 实现与单测；2026-10-24 已接控制面 CRUD + agent 运行链路：DevicePlan 携带 publish 段，agent 对账后在进程内绑定监听（回环高位端口验证，真机端到端见下条），端口冲突按设备/协议/监听地址判定，见 apps/server/tests/publish.rs）
-- [x] R-06 服务发布 - HTTP/HTTPS 发布。（crate 实现与单测；已接 CRUD。`tls_termination: true` 走 SNI 嗅探 + TLS 字节直通，**仍不做 TLS 终止**：无证书、不解密）
+- [x] R-06 服务发布 - HTTP/HTTPS 发布。（crate 实现与单测；已接 CRUD。`tls_passthrough: true` 走 SNI 嗅探 + TLS 字节直通，**不做 TLS 终止**：无证书、不解密；字段于 M1 由 `tls_termination` 更名，旧名仍被接受）
 - [x] R-06 服务发布 - 授权控制与 server 接线。（2026-10-23 VPS 实测：CIDR 放行、Bearer 拒绝、缺 CSRF 403 三路径通过；2026-10-24 CRUD 写入端点接入 WriteUser + CSRF，11 个集成测试覆盖）
 - [x] R-06 服务发布 - 健康探测。（crate 实现与单测；2026-10-24 已排程：agent 按 interval 周期探测并批量上报 /api/v1/agent/publish-health，服务端按 (probe, device) 守卫 upsert 到 publish_probe_reports）
 - [x] R-06 服务发布 - 内部 DNS 服务目录（分流 DNS，不覆盖公共 DNS）。（crate 实现与单测；2026-10-24 已接 agent reconcile：按计划起 DNS 套接字、仅应答内部后缀，每设备一个套接字）
@@ -57,10 +57,22 @@ last_good_plan、tls_termination+sniff_sni、Outbox、drift 按 peer 数、R-04 
 deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为三设备，实录 2 设备（TODO R-04 行）。
 评审 P0（Windows 闭环、长期运行验收）与既有 R-05/R-07 完全收敛，不重复立项；下面是仓内 TODO 尚无的增量。
 
-- [ ] M1 tls_termination 更名与能力拒绝：当前 http.rs `tls_termination: bool` 实为 SNI 嗅探+TLS 字节
+- [x] M1 tls_termination 更名与能力拒绝（2026-10-26）：当前 http.rs `tls_termination: bool` 实为 SNI 嗅探+TLS 字节
       透传（R-06 验收实录后端证书）。改为显式 `tls_passthrough`（词汇沿用 Luban/Envoy 等通行术语，
-      不自造）；创建期校验拒绝当前不支持的组合（与既有「混合终止模式 409」同口径扩展），
-      文档与控制台文案同步。验收：旧字段名映射或迁移说明、非法组合 409、单测。
+      不自造）。**更名范围**：`crates/meshlet-publish` 的 `HttpRoute`（serde `alias = "tls_termination"`，旧序列化计划仍可读，
+      响应只出新名）、`plan.rs`/`runtime.rs`/单测；`apps/server` 的请求结构 `CreatePublishHttpRouteRequest`（同样带 alias，
+      仍 `deny_unknown_fields`）、视图、INSERT 列、恢复 SELECT 全量更名；console `api.ts`/`App.tsx` 同步。**能力显式拒绝**：新增
+      `check_publish_mode_supported`，passthrough 路由若带 `allowed_bearer_tokens` → 409（路由器只建 socket 级
+      `AuthorizedClient::from_socket`，`auth_header` 永不填充，token 永不校验），`path_prefix != "/"` → 409（选路恒
+      `select(&sni, "/")`，路径前缀永不参与匹配）——把两个此前静默 no-op 的组合改为创建期拒绝。**旧字段名映射**：serde alias 双向兼容 +
+      `migrations/013_publish_tls_passthrough.sql`（仅 `ALTER TABLE … RENAME COLUMN`，值与语义不变），`backup.rs` 迁移硬计数 12→13、
+      `migrations/README.md` 当前版本 013。**单测**：新增 `tls_passthrough_rejects_capabilities_it_cannot_enforce`（旧名请求可读、
+      `tls_termination` 不再出现在响应、两条非法组合各 409 并断言文案、plain HTTP 路由仍允许 token+前缀）；生命周期 fixture 原以
+      `tls_termination: true` 静默接受（正是本缺陷），已改 plain HTTP。验证：meshlet-server publish 12 集成 + backup 9 + migrations 12、
+      meshlet-publish 全绿、console 17 通过（3 文件）、全 workspace `cargo test` 零失败、`cargo clippy --workspace --all-targets -D warnings`
+      与 `cargo fmt --all -- --check` exit 0、`pnpm run docs:build` 成功。**顺带修既有红**：`windows_console.rs` 两个真机取证常量仅被
+      windows 门禁测试引用，Linux 上 clippy `-D warnings` 报 dead_code（临时 worktree 于 pristine HEAD 复现，确认与本单无关），已加同
+      cfg 门禁。
 - [ ] M2 漂移检测升级到身份/所有权级：现状 peer 数量检查（reconcile.rs:139 注释自证「数量≠身份」）。
       逐步升级：预期 Peer 公钥集合、实际 AllowedIPs 逐条比对、受管路由集合（带网络 ID/资源 ID 所有权
       标记）、防火墙规则带所有权注释按所有权清理。验收：每项一个漂移注入单测 + 真机用例；

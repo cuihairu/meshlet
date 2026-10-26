@@ -504,8 +504,7 @@ async fn http_route_lifecycle_and_duplicate_rejected() {
             "backend_address": "127.0.0.1:8080",
             "listener_address": "127.0.0.1:80",
             "allowed_source_cidrs": ["10.240.0.0/16"],
-            "allowed_bearer_tokens": ["s3cret"],
-            "tls_termination": true
+            "allowed_bearer_tokens": ["s3cret"]
         }),
     )
     .await;
@@ -513,7 +512,7 @@ async fn http_route_lifecycle_and_duplicate_rejected() {
     assert_eq!(created["id"].as_str().unwrap(), "hr-1");
     assert_eq!(created["hostname"], "app.mesh");
     assert_eq!(created["path_prefix"], "/api");
-    assert_eq!(created["tls_termination"], true);
+    assert_eq!(created["tls_passthrough"], false);
     assert_eq!(created["allowed_bearer_token_count"], 1);
     assert!(!raw.contains("s3cret"), "tokens must not be echoed: {raw}");
 
@@ -572,7 +571,7 @@ async fn http_route_shares_one_listener_and_mode_per_device() {
         "backend_address": "127.0.0.1:8080",
         "listener_address": "127.0.0.1:80",
         "allowed_source_cidrs": ["10.240.0.0/16"],
-        "tls_termination": false
+        "tls_passthrough": false
     });
 
     let (status, created, raw) = post(&ctx, &uri, route.clone()).await;
@@ -593,7 +592,7 @@ async fn http_route_shares_one_listener_and_mode_per_device() {
     // 同设备、混入 TLS 路由：会让整台设备切成 SNI 嗅探 → 409。
     let mut tls = route.clone();
     tls["hostname"] = json!("tls.mesh");
-    tls["tls_termination"] = json!(true);
+    tls["tls_passthrough"] = json!(true);
     let (status, body, _) = post(&ctx, &uri, tls).await;
     assert_eq!(status, StatusCode::CONFLICT, "mixed tls: {body}");
     assert!(
@@ -614,14 +613,124 @@ async fn http_route_shares_one_listener_and_mode_per_device() {
     on_other["device_id"] = json!(device_b);
     on_other["hostname"] = json!("other.mesh");
     on_other["listener_address"] = json!("127.0.0.1:8081");
-    on_other["tls_termination"] = json!(true);
+    on_other["tls_passthrough"] = json!(true);
     let (status, other_created, raw) = post(&ctx, &uri, on_other).await;
     assert_eq!(status, StatusCode::CREATED, "other device: {raw}");
-    assert_eq!(other_created["tls_termination"], true);
+    assert_eq!(other_created["tls_passthrough"], true);
 
     let (status, list) = get(&ctx, &uri).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list.as_array().unwrap().len(), 3);
+}
+
+/// M1 更名与能力拒绝。passthrough 是 SNI 嗅探 + TLS 字节直通，meshlet
+/// 没有证书、不解密：无法执行的能力（bearer token、非 `/` 路径前缀）
+/// 创建期 409 直接拒绝，不静默忽略；旧字段名 `tls_termination` 仍被映射。
+#[tokio::test]
+async fn tls_passthrough_rejects_capabilities_it_cannot_enforce() {
+    let ctx = memory_ctx().await;
+    let (network_id, device_id, _) = provision(&ctx, "edge-1").await;
+    let uri = format!("/api/v1/networks/{network_id}/publish/http-routes");
+
+    // 旧字段名映射：请求带 `tls_termination`（M1 前的调用方），响应只出新名。
+    let (status, created, raw) = post(
+        &ctx,
+        &uri,
+        json!({
+            "device_id": device_id,
+            "hostname": "legacy.mesh",
+            "path_prefix": "/",
+            "backend_address": "127.0.0.1:8443",
+            "listener_address": "127.0.0.1:443",
+            "allowed_source_cidrs": ["10.240.0.0/16"],
+            "tls_termination": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "legacy field alias: {raw}");
+    assert_eq!(created["tls_passthrough"], true);
+    assert!(created.get("tls_termination").is_none());
+
+    // 新旧名都写一次等于自相矛盾（alias 映射同一字段）：请求解析层按重复
+    // 字段拒绝（422，非应用错误，正文非 JSON 信封）。
+    let (status, body, _) = post(
+        &ctx,
+        &uri,
+        json!({
+            "device_id": device_id,
+            "hostname": "both.mesh",
+            "path_prefix": "/",
+            "backend_address": "127.0.0.1:8446",
+            "listener_address": "127.0.0.1:443",
+            "allowed_source_cidrs": ["10.240.0.0/16"],
+            "tls_passthrough": true,
+            "tls_termination": true
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "both old and new name: {body}"
+    );
+
+    // token 在不透明 TLS 字节上永远无法校验 → 409。
+    let (status, body, _) = post(
+        &ctx,
+        &uri,
+        json!({
+            "device_id": device_id,
+            "hostname": "token.mesh",
+            "path_prefix": "/",
+            "backend_address": "127.0.0.1:8444",
+            "listener_address": "127.0.0.1:443",
+            "allowed_source_cidrs": ["10.240.0.0/16"],
+            "allowed_bearer_tokens": ["s3cret"],
+            "tls_passthrough": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("never terminates TLS"), "{body}");
+
+    // 路径前缀在 SNI 选路下永不参与匹配 → 409。
+    let (status, body, _) = post(
+        &ctx,
+        &uri,
+        json!({
+            "device_id": device_id,
+            "hostname": "path.mesh",
+            "path_prefix": "/api",
+            "backend_address": "127.0.0.1:8445",
+            "listener_address": "127.0.0.1:443",
+            "allowed_source_cidrs": ["10.240.0.0/16"],
+            "tls_passthrough": true
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains("never matches a path"), "{body}");
+
+    // plain HTTP 路由不受影响：token 与路径前缀照常可用（换台设备避开模式 409）。
+    let (device_b, _) = add_device(&ctx, &network_id, "edge-2", "test-public-key-2").await;
+    let (status, created, raw) = post(
+        &ctx,
+        &uri,
+        json!({
+            "device_id": device_b,
+            "hostname": "plain.mesh",
+            "path_prefix": "/api",
+            "backend_address": "127.0.0.1:8080",
+            "listener_address": "127.0.0.1:80",
+            "allowed_source_cidrs": ["10.240.0.0/16"],
+            "allowed_bearer_tokens": ["s3cret"],
+            "tls_passthrough": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "plain keeps features: {raw}");
+    assert_eq!(created["tls_passthrough"], false);
+    assert_eq!(created["allowed_bearer_token_count"], 1);
 }
 
 // ---------------------------------------------------------------------------

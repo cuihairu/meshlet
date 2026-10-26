@@ -71,7 +71,8 @@ fn probe_rule() -> FirewallRule {
 fn uninstall_chain_is_reentrant_from_partial_states() {
     // 0) 空态预热：直接删除不存在的服务/规则必须幂等成功（Drop 兜底清理
     //    走的同一条路径）。
-    run_service_command(&delete_probe_service()).expect("delete of absent service must be idempotent");
+    run_service_command(&delete_probe_service())
+        .expect("delete of absent service must be idempotent");
     run_firewall_command(&delete_probe_rule()).expect("delete of absent rule must be idempotent");
 
     let _guard = ProbeGuard;
@@ -102,10 +103,8 @@ fn uninstall_chain_is_reentrant_from_partial_states() {
 
     // 5) 防火墙 add → delete → re-delete：本地化缺失文案经 windows_console
     //    解码后命中幂等判定。
-    let result = run_firewall_command(&FirewallRuleCommand::Add {
-        rule: probe_rule(),
-    })
-    .expect("netsh add probe rule");
+    let result = run_firewall_command(&FirewallRuleCommand::Add { rule: probe_rule() })
+        .expect("netsh add probe rule");
     assert!(result.applied);
     let result = run_firewall_command(&delete_probe_rule()).expect("netsh delete probe rule");
     assert!(result.applied);

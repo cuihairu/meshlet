@@ -94,7 +94,7 @@ pub struct PublishHttpRoute {
     pub backend_address: std::net::SocketAddr,
     pub listener_address: std::net::SocketAddr,
     pub policy: AuthorizationPolicy,
-    pub tls_termination: bool,
+    pub tls_passthrough: bool,
     pub created_at: String,
 }
 
@@ -235,7 +235,7 @@ pub struct PublishHttpRouteView {
     pub listener_address: String,
     pub allowed_source_cidrs: Vec<String>,
     pub allowed_bearer_token_count: usize,
-    pub tls_termination: bool,
+    pub tls_passthrough: bool,
     pub created_at: String,
     pub revision_id: u64,
 }
@@ -252,8 +252,10 @@ pub struct CreatePublishHttpRouteRequest {
     pub allowed_source_cidrs: Vec<String>,
     #[serde(default)]
     pub allowed_bearer_tokens: Vec<String>,
-    #[serde(default)]
-    pub tls_termination: bool,
+    /// 旧名 `tls_termination` 仍被接受（M1 更名前的调用方不断）：它描述的
+    /// 从来都是直通而非终结。响应一律输出新名。
+    #[serde(default, alias = "tls_termination")]
+    pub tls_passthrough: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -371,7 +373,7 @@ fn to_http_route_view(
             .map(|c| c.to_string())
             .collect(),
         allowed_bearer_token_count: route.policy.allowed_bearer_tokens.len(),
-        tls_termination: route.tls_termination,
+        tls_passthrough: route.tls_passthrough,
         created_at: route.created_at.clone(),
         revision_id,
     }
@@ -694,7 +696,7 @@ fn check_http_socket_consistent(
     network_id: &str,
     device_id: &str,
     listener_address: std::net::SocketAddr,
-    tls_termination: bool,
+    tls_passthrough: bool,
 ) -> Result<(), ServiceError> {
     if let Some(existing) = state
         .publishes
@@ -709,14 +711,50 @@ fn check_http_socket_consistent(
                 id = existing.id,
             )));
         }
-        if existing.tls_termination != tls_termination {
+        if existing.tls_passthrough != tls_passthrough {
             return Err(ServiceError::Conflict(format!(
-                "device {device_id} already serves route {id} with tls_termination={tls}; \
+                "device {device_id} already serves route {id} with tls_passthrough={tls}; \
                  one termination mode per device",
                 id = existing.id,
-                tls = existing.tls_termination,
+                tls = existing.tls_passthrough,
             )));
         }
+    }
+    Ok(())
+}
+
+/// TLS passthrough 是 SNI 嗅探 + 原始字节直通：meshlet 没有证书、不解密。
+/// 因此下面两项能力在该模式上根本不存在，静默忽略等于冒充，创建期一律 409
+/// （与「混合终止模式 409」同口径扩展）：
+/// - `allowed_bearer_tokens`：路由器看不到 HTTP 头（TLS 对它不透明），
+///   token 永远不会被校验；
+/// - `path_prefix` 非 `/`：嗅探只按 SNI 主机名选路（恒以 `/` 匹配），
+///   路径前缀永不参与匹配。
+///
+/// 要这两项能力就用 plain HTTP 路由；真正的 TLS 终结当前不支持，
+/// 直接拒绝而不是假装支持。
+fn check_publish_mode_supported(
+    tls_passthrough: bool,
+    path_prefix: &str,
+    allowed_bearer_tokens: &[String],
+) -> Result<(), ServiceError> {
+    if !tls_passthrough {
+        return Ok(());
+    }
+    if !allowed_bearer_tokens.is_empty() {
+        return Err(ServiceError::Conflict(
+            "tls_passthrough forwards opaque TLS bytes: meshlet never terminates TLS \
+             (no certificate, no decryption), so allowed_bearer_tokens cannot be enforced \
+             on this route; use a plain http route to enforce bearer tokens"
+                .into(),
+        ));
+    }
+    if path_prefix != "/" {
+        return Err(ServiceError::Conflict(
+            "tls_passthrough selects by SNI host name only and never matches a path \
+             prefix; use path_prefix \"/\" or a plain http route"
+                .into(),
+        ));
     }
     Ok(())
 }
@@ -747,6 +785,11 @@ pub fn create_http_route(
         ));
     }
     let policy = parse_policy(&req.allowed_source_cidrs, &req.allowed_bearer_tokens)?;
+    check_publish_mode_supported(
+        req.tls_passthrough,
+        &req.path_prefix,
+        &req.allowed_bearer_tokens,
+    )?;
     let id = format!("hr-{}", state.publish_seq() + 1);
     let hostname = req.hostname.trim().to_string();
     HttpRouteSet::new(vec![HttpRoute {
@@ -756,7 +799,7 @@ pub fn create_http_route(
         path_prefix: req.path_prefix.clone(),
         backend_address,
         policy: policy.clone(),
-        tls_termination: req.tls_termination,
+        tls_passthrough: req.tls_passthrough,
     }])
     .map_err(plan_error)?;
     check_http_route_free(state, network_id, &hostname, &req.path_prefix)?;
@@ -765,7 +808,7 @@ pub fn create_http_route(
         network_id,
         &req.device_id,
         listener_address,
-        req.tls_termination,
+        req.tls_passthrough,
     )?;
     let route = PublishHttpRoute {
         id,
@@ -776,7 +819,7 @@ pub fn create_http_route(
         backend_address,
         listener_address,
         policy,
-        tls_termination: req.tls_termination,
+        tls_passthrough: req.tls_passthrough,
         created_at: crate::service::now(),
     };
     state.set_publish_seq(state.publish_seq() + 1);
@@ -1201,7 +1244,7 @@ pub fn device_publish_plan(
             path_prefix: r.path_prefix.clone(),
             backend_address: r.backend_address,
             policy: r.policy.clone(),
-            tls_termination: r.tls_termination,
+            tls_passthrough: r.tls_passthrough,
         })
         .collect();
     let http_listener = catalog
@@ -2037,7 +2080,7 @@ pub(crate) mod persist {
             "INSERT INTO publish_http_routes
                (id, network_id, device_id, hostname, path_prefix, backend_address,
                 listener_address, allowed_source_cidrs, allowed_bearer_tokens,
-                tls_termination, created_at)
+                tls_passthrough, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&route.id)
@@ -2049,7 +2092,7 @@ pub(crate) mod persist {
         .bind(route.listener_address.to_string())
         .bind(policy_cidrs_json(&route.policy))
         .bind(policy_tokens_json(&route.policy))
-        .bind(route.tls_termination)
+        .bind(route.tls_passthrough)
         .bind(&route.created_at)
         .execute(&mut *tx)
         .await?;
@@ -2322,7 +2365,7 @@ pub(crate) mod persist {
         >(
             "SELECT id, network_id, device_id, hostname, path_prefix, backend_address,
                     listener_address, allowed_source_cidrs, allowed_bearer_tokens,
-                    tls_termination, created_at
+                    tls_passthrough, created_at
              FROM publish_http_routes ORDER BY id",
         )
         .fetch_all(pool)
@@ -2359,7 +2402,7 @@ pub(crate) mod persist {
                 backend_address: backend,
                 listener_address: listener,
                 policy,
-                tls_termination: tls,
+                tls_passthrough: tls,
                 created_at,
             });
         }

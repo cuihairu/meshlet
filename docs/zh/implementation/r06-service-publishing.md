@@ -103,7 +103,7 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/
 
 | 面 | 位置 | 测试 |
 |---|---|---|
-| 控制面 CRUD，四类对象 | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` 及 `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs`（11 个用例） |
+| 控制面 CRUD，四类对象 | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` 及 `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs`（12 个用例） |
 | Agent 探针健康端点 | `POST /api/v1/agent/publish-health` — 每探针在 `publish_probe_reports` 一条 upsert；为不属于本设备的探针写健康返回 400，未知探针 id 返回 404 | `probe_health_report_is_guarded_by_device_id` |
 | DevicePlan 承载发布配置 | `crates/meshlet-network/src/lib.rs` — `publish: Option<PublishPlan>`，并入 `desired_config_hash` | `device_plan_carries_the_publish_segment` |
 | Agent 运行发布层 | `apps/agent/src/agent.rs` — `PublishRuntime` 持有专用单 worker tokio 运行时；`tick` 在内核 apply 失败时也先对账发布态，再批量上报缓冲区健康（每批 256，超出丢最旧） | `meshlet-publish` runtime 测试、`apps/agent` 测试 |
@@ -116,7 +116,25 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/
 - `upsert_probe_reports` 把 6 个值塞进 7 列表的 `INSERT`（SELECT 列表漏了 `p.id`），导致每次探针健康上报都 500。
 - `apps/agent` 持有的 `tokio::runtime::Runtime` 在异步上下文被 drop 会 panic。现在改为在独立线程里关闭该运行时，任何调用方都安全。
 
-`tls_termination` 不再是无人读取的字段：`runtime.rs` 读取它并选 `RouteMode::TlsPassThrough`——嗅探 SNI、套用路由授权策略、把 TLS 字节直通后端。**但仍不做 TLS 终止**，无证书、不解密。
+`tls_passthrough` 不再是无人读取的字段：`runtime.rs` 读取它并选 `RouteMode::TlsPassThrough`——嗅探 SNI、套用路由授权策略、把 TLS 字节直通后端。**但仍不做 TLS 终止**，无证书、不解密。
+
+### 字段更名与能力显式拒绝（M1，2026-10-26 落地）
+
+这个字段原叫 `tls_termination`，但实现从来不做这件事。现已在全部位置改名为 `tls_passthrough`：
+API 字段、内存模型（`HttpRoute`）、请求与视图结构、控制台类型与文案，以及数据库列
+（`migrations/013_publish_tls_passthrough.sql` 原地改列名，取值与语义不变）。请求仍可用旧名：
+它作为 serde alias 被接受，存量调用方不断；响应一律只输出新名。新旧两个名字同时出现在
+一个请求里会被当作重复字段拒绝。
+
+更名后，原本会被静默忽略的非法组合在创建期改成 409 显式拒绝（与既有「混合终止模式 409」同口径）：
+
+- `tls_passthrough: true` + `allowed_bearer_tokens` → 409。路由器看不到 HTTP 头（TLS 字节对它不透明），
+  bearer token 本来永远不会被校验。
+- `tls_passthrough: true` + 非 `/` 的 `path_prefix` → 409。SNI 嗅探只按主机名选路、恒以 `/` 匹配，
+  路径前缀本来永不参与路由。
+
+要这两项能力就用 plain HTTP 路由，两者在那里都照常可用。真正的 TLS 终止当前不支持：
+创建期拒绝才是诚实的答复，而不是用一个暗示支持的名字。
 
 ### 控制台发布对象入口（2026-10-24 落地）
 
@@ -200,7 +218,7 @@ curl: (56) Recv failure: Connection reset by peer
 ```text
 $ # 已有一条纯 HTTP 路由的设备再建 TLS 路由
 status=409
-{"error":{"code":"conflict","message":"device dev-reg-2 already serves route hr-3 with tls_termination=false; one termination mode per device"}}
+{"error":{"code":"conflict","message":"device dev-reg-2 already serves route hr-3 with tls_passthrough=false; one termination mode per device"}}
 
 $ # 同设备第二个监听口
 status=409
@@ -354,7 +372,7 @@ nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
 - **`0.0.0.0:53` 未绑定过。** DNS 套接字绑定在 `0.0.0.0:15353`，不需要 root；53 需要 root，未做任何 root 绑定尝试，所以内部后缀只在高位端口上验收过。
 - **发布端口没有外部入口。** 15353 / 18080 / 18083 / 18090 从任何外部主机都被云安全组挡住，外部实测为 `BLOCKED` / `000`。
 - **TLS 没有外部入口。** 443 被 `cockpit.cuihairu.site` 业务 vhost 占用，在 443 上加 nginx stream 直通会与线上业务冲突，18090 又不在安全组放行之列。TLS 直通因此只在回环与私网 IP 上验证。
-- **不做 TLS 终止。** 整条链路没有证书、不解密，`tls_termination` 的含义是 SNI 直通。
+- **不做 TLS 终止。** 整条链路没有证书、不解密，`tls_passthrough` 的含义是 SNI 直通。
 - **发布域名的公网 HTTP 入口未常设。** 只在临时 nginx vhost 存在期间可用，该 vhost 已删除。
 - **设备级限制是设计限制，不是静默 bug。** 一台设备一个 HTTP 监听口、一种终止模式，现在在创建期以 409 显式拒绝，而不是静默丢掉第二个值。需要同时发布纯 HTTP 与 TLS 域名的设备需要两个监听口，而当前计划结构表达不了。
 

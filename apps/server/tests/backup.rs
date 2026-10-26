@@ -354,11 +354,11 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
         c.pool.close().await;
     }
 
-    // 备份文件独立可打开：25 表 + 12 个迁移齐全；内容停留在备份时刻
+    // 备份文件独立可打开：25 表 + 13 个迁移齐全；内容停留在备份时刻
     // （路由 1 条、route_seq=1），不随活动库后续变更回写。
     let (tables, migrations, routes, seq) = inspect_backup(&backup_path).await;
     assert_eq!(tables, 25, "schema complete in backup");
-    assert_eq!(migrations, 12, "migrations 001-012 recorded in backup");
+    assert_eq!(migrations, 13, "migrations 001-013 recorded in backup");
     assert_eq!(routes, 1, "backup frozen at snapshot moment");
     assert_eq!(seq.as_deref(), Some("1"));
 
@@ -1076,7 +1076,7 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
     let default_segments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments")
         .fetch_one(&pool)
         .await

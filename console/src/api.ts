@@ -287,7 +287,7 @@ export interface PublishHttpRoute {
   allowed_source_cidrs: string[];
   allowed_bearer_token_count: number;
   /** true = SNI sniff + TLS byte pass-through; never TLS termination. */
-  tls_termination: boolean;
+  tls_passthrough: boolean;
   created_at: string;
   revision_id: number;
 }
@@ -300,7 +300,7 @@ export interface PublishHttpRouteInput {
   listener_address: string;
   allowed_source_cidrs: string[];
   allowed_bearer_tokens: string[];
-  tls_termination: boolean;
+  tls_passthrough: boolean;
 }
 
 /** Probe plus the last reported state merged in from the agent's upload. */

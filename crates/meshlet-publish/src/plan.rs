@@ -145,7 +145,7 @@ mod tests {
             path_prefix: "/".into(),
             backend_address: "127.0.0.1:8080".parse().unwrap(),
             policy: Default::default(),
-            tls_termination: false,
+            tls_passthrough: false,
         };
         plan.http_routes = HttpRouteSet::new(vec![route]).unwrap();
         assert!(!plan.is_empty());
@@ -202,7 +202,7 @@ mod tests {
                 path_prefix: "/".into(),
                 backend_address: "192.168.1.10:8080".parse().unwrap(),
                 policy: Default::default(),
-                tls_termination: false,
+                tls_passthrough: false,
             }])
             .unwrap(),
             dns: Some(DnsPlan {

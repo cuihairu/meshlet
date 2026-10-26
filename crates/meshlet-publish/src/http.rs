@@ -13,7 +13,12 @@ pub struct HttpRoute {
     pub path_prefix: String,
     pub backend_address: SocketAddr,
     pub policy: AuthorizationPolicy,
-    pub tls_termination: bool,
+    /// SNI sniffing plus raw TLS byte forwarding. The meshlet holds no
+    /// certificate and never decrypts, so this is passthrough, not
+    /// termination. The `tls_termination` alias keeps plans written under
+    /// the old, misleading field name readable.
+    #[serde(alias = "tls_termination")]
+    pub tls_passthrough: bool,
 }
 
 impl HttpRoute {

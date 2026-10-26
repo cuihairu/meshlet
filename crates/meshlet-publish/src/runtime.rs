@@ -230,7 +230,7 @@ impl Publisher {
         let wanted_tls_passthrough = wanted_routes
             .routes()
             .iter()
-            .any(|route| route.tls_termination);
+            .any(|route| route.tls_passthrough);
         let unchanged = matches!(
             self.http_router.as_ref(),
             Some(running)

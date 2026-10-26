@@ -26,7 +26,7 @@ fn routes(backend: SocketAddr) -> HttpRouteSet {
         path_prefix: "/".into(),
         backend_address: backend,
         policy: policy(),
-        tls_termination: true,
+        tls_passthrough: true,
     }])
     .unwrap()
 }
@@ -241,7 +241,7 @@ fn tls_routes(backend: SocketAddr) -> HttpRouteSet {
             allowed_source_cidrs: vec!["127.0.0.0/8".parse().unwrap()],
             allowed_bearer_tokens: vec![],
         },
-        tls_termination: true,
+        tls_passthrough: true,
     }])
     .unwrap()
 }

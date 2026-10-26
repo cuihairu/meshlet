@@ -106,7 +106,7 @@ server integration tests. The real-device run it was waiting for is recorded in
 
 | Surface | Where | Test |
 |---|---|---|
-| Control-plane CRUD, four object kinds | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` plus `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs` (11 tests) |
+| Control-plane CRUD, four object kinds | `apps/server/src/publish.rs` — `POST/GET /api/v1/networks/{network_id}/publish/{forwards,http-routes,probes,dns-records}` plus `GET/DELETE /publish/{kind}/{id}` | `apps/server/tests/publish.rs` (12 tests) |
 | Agent probe-health endpoint | `POST /api/v1/agent/publish-health` — one upserted row per probe in `publish_probe_reports`; a report for a probe the presenting device does not own is 400, an unknown probe id is 404 | `probe_health_report_is_guarded_by_device_id` |
 | DevicePlan carries publish config | `crates/meshlet-network/src/lib.rs` — `publish: Option<PublishPlan>`, folded into `desired_config_hash` | `device_plan_carries_the_publish_segment` |
 | Agent runs the publish layer | `apps/agent/src/agent.rs` — `PublishRuntime` owns a dedicated single-worker tokio runtime; `tick` reconciles the plan even when the kernel apply failed, then uploads buffered reports (256 per batch, front-trimmed) | `meshlet-publish` runtime tests, `apps/agent` tests |
@@ -128,9 +128,30 @@ Two real defects surfaced while writing these tests and were fixed:
 - `apps/agent` owned a `tokio::runtime::Runtime` that panicked when dropped from an async context.
   The runtime is now shut down on a dedicated thread so any caller is safe.
 
-`tls_termination` is no longer an unread field: `runtime.rs` reads it and `RouteMode::TlsPassThrough`
+`tls_passthrough` is no longer an unread field: `runtime.rs` reads it and `RouteMode::TlsPassThrough`
 sniffs the SNI, applies the route policy, and forwards the TLS bytes to the backend. **There is still
 no TLS termination** — no certificate, no decryption.
+
+### Field rename and explicit capability refusal (M1, implemented on 2026-10-26)
+
+The field was called `tls_termination`, which the implementation never did. It is now
+`tls_passthrough` everywhere — the API field, the in-memory model (`HttpRoute`), the request and
+view structs, the console types and wording, and the database column
+(`migrations/013_publish_tls_passthrough.sql` renames it in place; value and semantics unchanged).
+Requests may still send the old name: it is accepted as a serde alias so existing callers keep
+working, and responses always emit the new name. Sending both names in one request is rejected
+as a duplicate field, so the alias cannot be used to contradict itself.
+
+The rename also makes the unsupported combinations fail loudly at create time, with the same 409
+idiom as the mixed-termination guard, instead of being silently ignored:
+
+- `tls_passthrough: true` plus `allowed_bearer_tokens` → 409. The router never sees HTTP headers
+  (the TLS bytes are opaque to it), so a bearer token would never have been checked.
+- `tls_passthrough: true` plus a `path_prefix` other than `/` → 409. SNI sniffing selects by host
+  name only and always matches `/`, so the prefix could never have taken part in routing.
+
+Want either capability? Use a plain HTTP route — both work there. True TLS termination is not
+supported; refusing it at create time is the honest answer, not a name that implies it.
 
 ### Console UI entry point (implemented on 2026-10-24)
 
@@ -247,7 +268,7 @@ The fix rejects the mismatch at create time (`check_http_socket_consistent` in
 ```text
 $ # TLS route on a device that already has a plain route
 status=409
-{"error":{"code":"conflict","message":"device dev-reg-2 already serves route hr-3 with tls_termination=false; one termination mode per device"}}
+{"error":{"code":"conflict","message":"device dev-reg-2 already serves route hr-3 with tls_passthrough=false; one termination mode per device"}}
 
 $ # second listener on the same device
 status=409
@@ -425,7 +446,7 @@ part of the box's permanent configuration and is not verified as such.
   is not exposed by the security group. TLS pass-through is therefore verified via loopback and the
   private IP only.
 - **No TLS termination.** There is no certificate and no decryption anywhere in this path —
-  `tls_termination` means SNI pass-through.
+  `tls_passthrough` means SNI pass-through.
 - **Public HTTP ingress for a published name is not permanently configured.** It worked only while a
   temporary nginx vhost was present, and that vhost was removed.
 - **The device-global limit is a design limit, not a bug to fix silently.** One HTTP listener and

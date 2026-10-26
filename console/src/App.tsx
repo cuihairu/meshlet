@@ -2087,7 +2087,7 @@ export function PublishSection({
         allowed_source_cidrs: splitList(routeCidrs),
         allowed_bearer_tokens:
           routeBearer.trim() === '' ? [] : [routeBearer.trim()],
-        tls_termination: tlsPassthrough,
+        tls_passthrough: tlsPassthrough,
       });
       setHostname('');
       setRouteBackendPort('');
@@ -2346,7 +2346,7 @@ export function PublishSection({
                 <td>
                   <code>{route.listener_address}</code>
                 </td>
-                <td>{route.tls_termination ? 'SNI pass-through' : 'plain'}</td>
+                <td>{route.tls_passthrough ? 'SNI pass-through' : 'plain'}</td>
                 <td className="muted">
                   {route.allowed_source_cidrs.join(', ') || '—'}
                 </td>
