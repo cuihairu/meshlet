@@ -404,7 +404,9 @@ impl Agent {
             route.interface = self.dataplane.interface.clone();
         }
         for rule in &mut local_plan.nat_rules {
-            if rule.incoming_interface.is_some() {
+            // `-i` 只对 PREROUTING 生效（`iptables_args` 同一口径）；改写
+            // POSTROUTING 规则的惰性元数据只会让指纹对不上内核。
+            if rule.chain == meshlet_network::nat::NatChain::Prerouting {
                 rule.incoming_interface = Some(self.dataplane.interface.clone());
             }
         }
@@ -554,8 +556,14 @@ impl Agent {
         let snapshot = self.backend.inspect_sync().ok();
         DataplaneEvidence {
             tunnel_mtu: snapshot.as_ref().and_then(|s| s.tunnel_mtu),
-            nat_rules_present: snapshot.as_ref().map(|s| s.nat_rules_present),
-            nat_snat_rules_present: snapshot.as_ref().map(|s| s.nat_snat_rules_present),
+            // 证据口径不变（布尔），但从规则指纹集合推导：指纹里出现受控 SNAT
+            // 动作即「SNAT 规则在场」，比单独枚举 POSTROUTING 链更贴近语义。
+            nat_rules_present: snapshot.as_ref().map(|s| !s.nat_rules.is_empty()),
+            nat_snat_rules_present: snapshot.as_ref().map(|s| {
+                s.nat_rules
+                    .iter()
+                    .any(|signature| signature.contains("|snat_to_gateway_lan|"))
+            }),
             mtu_probe_payload: plan.and_then(|p| {
                 let (target, payload) = probe_decision(p)?;
                 self.backend

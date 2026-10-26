@@ -875,6 +875,133 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "evidence must report the kernel after the ownership cleanup"
     );
 
+    // ---- 4.5 身份级漂移端到端（M2）：Reason 归因 + 非 meshlet 资源永不动 ----
+    // (a) 隧道上多出一个外来 peer（身份不在计划里）→ KernelDrift 并清掉。
+    let stranger_private = wg_genkey().expect("generate a stranger key");
+    let stranger_public = wg_pubkey(&stranger_private).expect("derive the stranger key");
+    require_ok(
+        &netns_exec(
+            &topo.a.netns,
+            &[
+                "wg",
+                "set",
+                "wg0",
+                "peer",
+                &stranger_public,
+                "allowed-ips",
+                "10.244.0.0/24",
+            ],
+        ),
+        "plant a foreign peer on A's tunnel",
+    );
+    let decision = a_agent
+        .reconcile(&mtu_plan)
+        .expect("reconcile after peer injection");
+    assert!(decision.needs_apply, "an extra peer is kernel drift");
+    assert_eq!(decision.reason, Reason::KernelDrift);
+    let peers = a_backend
+        .inspect_sync()
+        .expect("A snapshot after repair")
+        .peers;
+    assert!(
+        !peers.iter().any(|p| p.public_key == stranger_public),
+        "the foreign peer must be removed: {peers:?}"
+    );
+    assert_eq!(
+        peers
+            .iter()
+            .map(|p| p.public_key.clone())
+            .collect::<Vec<_>>(),
+        vec![topo.hub.public_key.clone()],
+        "A's planned peer must survive the repair"
+    );
+    assert!(
+        topo.ping_within(&topo.a.netns, &topo.b.overlay, HANDSHAKE_TIMEOUT),
+        "data path must survive the peer repair"
+    );
+
+    // (b) 隧道接口上一条未打 Meshlet 标记的路由 → 不算漂移（UpToDate），
+    // 且该路由原样保留：非本 meshlet 资源永不动。
+    require_ok(
+        &netns_exec(
+            &topo.a.netns,
+            &["ip", "route", "add", "10.245.0.0/24", "dev", "wg0"],
+        ),
+        "plant an unmarked route on A's tunnel",
+    );
+    let decision = a_agent
+        .reconcile(&mtu_plan)
+        .expect("reconcile with a foreign route");
+    assert!(
+        !decision.needs_apply,
+        "a foreign route is not drift: {:?}",
+        decision.reason
+    );
+    let shown = String::from_utf8_lossy(
+        &netns_exec(
+            &topo.a.netns,
+            &["ip", "route", "show", "exact", "10.245.0.0/24"],
+        )
+        .stdout,
+    )
+    .to_string();
+    assert!(
+        shown.contains("wg0"),
+        "the foreign route must survive untouched: {shown}"
+    );
+
+    // (c) 网关上一条 Meshlet 所有权注释、但不在计划里的 NAT 规则（多余自有
+    // 对象）→ KernelDrift 并按指纹清理；外来规则保留。
+    gw_agent
+        .reconcile(&gw_plan)
+        .expect("gateway re-applies nat plan");
+    require_ok(
+        &netns_exec(
+            &topo.gw.netns,
+            &[
+                "iptables",
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-d",
+                "203.0.113.0/24",
+                "-j",
+                "SNAT",
+                "--to-source",
+                "192.168.1.1",
+                "-m",
+                "comment",
+                "--comment",
+                ALIAS_OWNER,
+            ],
+        ),
+        "plant an extra meshlet-owned nat rule",
+    );
+    let decision = gw_agent
+        .reconcile(&gw_plan)
+        .expect("reconcile after nat injection");
+    assert!(decision.needs_apply, "an extra meshlet-owned rule is drift");
+    assert_eq!(decision.reason, Reason::KernelDrift);
+    let postrouting = topo.nat_rules(&topo.gw.netns, "POSTROUTING");
+    assert!(
+        !postrouting.contains("203.0.113.0/24"),
+        "the extra meshlet-owned rule must be removed:\n{postrouting}"
+    );
+    assert!(
+        postrouting.contains(ALIAS_OWNER),
+        "the planned snat rule must survive:\n{postrouting}"
+    );
+    let prerouting = topo.nat_rules(&topo.gw.netns, "PREROUTING");
+    assert!(
+        prerouting.contains("user rule"),
+        "the foreign rule must survive the fingerprint cleanup:\n{prerouting}"
+    );
+    assert!(
+        !a_agent.reconcile(&mtu_plan).unwrap().needs_apply,
+        "no drift left on A"
+    );
+
     // teardown 并断言「跑完不留垃圾」（按本进程标签计，历史残留由
     // `preflight_cleanup` 负责）。
     drop(topo);

@@ -32,13 +32,14 @@
 
 #![cfg(target_os = "linux")]
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use meshlet_domain::{AliasMapping, AliasMappingId, LanRouteId, NetworkId, TranslationMode};
 use meshlet_network::linux::LinuxNetworkBackend;
-use meshlet_network::{PeerConfig, RouteConfig, TunnelConfig};
+use meshlet_network::{NetworkSnapshot, PeerConfig, RouteConfig, TunnelConfig};
 
 /// 对象名前缀（与其它 netns 测试区分）。
 const PREFIX: &str = "mltb";
@@ -591,6 +592,52 @@ fn alias_mapping() -> AliasMapping {
 
 const ALIAS_OWNER: &str = "meshlet alias al-1";
 
+/// 快照指纹集合里是否存在受控 SNAT 动作（按指纹内容判读，不靠单独枚举
+/// POSTROUTING 链——与 `collect_evidence` 同一口径）。
+fn snapshot_has_snat(snap: &NetworkSnapshot) -> bool {
+    snap.nat_rules
+        .iter()
+        .any(|sig| sig.contains("|snat_to_gateway_lan|"))
+}
+
+/// 指纹集合比较用：两侧都排序。观测侧由 `BTreeSet` 产出（已排序），计划侧
+/// 由 `Vec` 产出（计划顺序），规则顺序不是身份的一部分。
+fn sorted_signatures(signatures: &[String]) -> Vec<String> {
+    let mut out = signatures.to_vec();
+    out.sort();
+    out
+}
+
+/// 把快照里的 peer 身份渲染成集合（`公钥:allowed-ips,…`）。集合比对天然不看
+/// 顺序，断言用它就能检查「身份」而非「条数」：条数相同但身份被换的场景由此可见。
+fn peer_identities(snap: &NetworkSnapshot) -> BTreeSet<String> {
+    snap.peers
+        .iter()
+        .map(|p| {
+            format!(
+                "{}:{}",
+                p.public_key,
+                p.allowed_ips
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })
+        .collect()
+}
+
+/// 期望的 peer 身份集合（与 `peer_identities` 同一渲染口径）。
+fn planned_peer_identities(a: &Node, b: &Node, gw: &Node) -> BTreeSet<String> {
+    [
+        format!("{}:10.240.0.2/32", a.public_key),
+        format!("{}:10.240.0.3/32", b.public_key),
+        format!("{}:10.240.0.4/32,10.241.1.0/24", gw.public_key),
+    ]
+    .into_iter()
+    .collect()
+}
+
 #[test]
 fn backend_driven_tunnel_routes_and_nat() {
     let topo = match Topology::setup() {
@@ -660,7 +707,13 @@ fn backend_driven_tunnel_routes_and_nat() {
     }
     let snap = hub_backend.inspect_sync().expect("hub inspect");
     assert!(snap.tunnel_exists);
-    assert_eq!(snap.peer_count, 3, "hub peers: A + B + G");
+    assert_eq!(snap.peers.len(), 3, "hub peers: A + B + G");
+    // 身份级（M2）：条数之外的公钥 + allowed-ips 身份必须如实读出。
+    assert_eq!(
+        peer_identities(&snap),
+        planned_peer_identities(&topo.a, &topo.b, &topo.gw),
+        "hub peers must be read by identity, not just by count"
+    );
     assert_eq!(snap.forwarding_enabled, Some(true));
     assert!(
         snap.installed_routes
@@ -668,14 +721,34 @@ fn backend_driven_tunnel_routes_and_nat() {
         "hub must route the alias prefix: {:?}",
         snap.installed_routes
     );
-    assert!(!snap.nat_rules_present, "hub carries no NAT rules");
+    assert!(
+        snap.nat_rules.is_empty(),
+        "hub carries no NAT rules: {:?}",
+        snap.nat_rules
+    );
 
     // 网关 G 的快照：规则在场 + 受控 SNAT 读数在场（dnat_snat 模式，
     // §8.2「内核实测所采用模式」的证据源）。
     let gw_snap = gw_backend.inspect_sync().expect("gw inspect");
-    assert!(gw_snap.nat_rules_present, "gw carries meshlet NAT rules");
     assert!(
-        gw_snap.nat_snat_rules_present,
+        !gw_snap.nat_rules.is_empty(),
+        "gw carries meshlet NAT rules: {:?}",
+        gw_snap.nat_rules
+    );
+    // 计划侧与内核侧指纹逐字节一致（M2：同一计划升级前后产出同一指纹，
+    // 存量账本不作废）。
+    assert_eq!(
+        gw_snap.nat_rules,
+        sorted_signatures(
+            &rules
+                .iter()
+                .map(|rule| rule.signature())
+                .collect::<Vec<_>>()
+        ),
+        "kernel fingerprints must equal plan fingerprints"
+    );
+    assert!(
+        snapshot_has_snat(&gw_snap),
         "dnat_snat mode: controlled SNAT rule kernel-verified"
     );
 
@@ -787,7 +860,11 @@ fn backend_driven_tunnel_routes_and_nat() {
     let snap = hub_backend
         .inspect_sync()
         .expect("hub inspect after rollback");
-    assert_eq!(snap.peer_count, 0, "rollback removes all peers");
+    assert!(
+        snap.peers.is_empty(),
+        "rollback removes all peers: {:?}",
+        snap.peers
+    );
     assert!(
         snap.installed_routes.is_empty(),
         "rollback removes tunnel routes: {:?}",
@@ -828,9 +905,9 @@ fn backend_driven_tunnel_routes_and_nat() {
         )
         .expect("gw apply_nat dnat_only");
     let snap = gw_backend.inspect_sync().expect("gw inspect dnat_only");
-    assert!(snap.nat_rules_present, "dnat rules present in kernel");
+    assert!(!snap.nat_rules.is_empty(), "dnat rules present in kernel");
     assert!(
-        !snap.nat_snat_rules_present,
+        !snapshot_has_snat(&snap),
         "dnat_only: no meshlet SNAT rule in kernel (original sources preserved)"
     );
     gw_backend
@@ -843,9 +920,9 @@ fn backend_driven_tunnel_routes_and_nat() {
         )
         .expect("gw apply_nat dnat_snat");
     let snap = gw_backend.inspect_sync().expect("gw inspect dnat_snat");
-    assert!(snap.nat_rules_present);
+    assert!(!snap.nat_rules.is_empty());
     assert!(
-        snap.nat_snat_rules_present,
+        snapshot_has_snat(&snap),
         "dnat_snat: controlled SNAT rule kernel-verified"
     );
 
@@ -892,6 +969,218 @@ fn backend_driven_tunnel_routes_and_nat() {
     hub_backend
         .apply_routes_sync(&hub_routes())
         .expect("hub apply_routes idempotent");
+
+    // ---- 11. 身份级漂移注入（M2）：观测层如实报出身份，外来资源不入集合
+    // 本文件只允许一个 netns 前缀，故并入本测试末尾而非另开 #[test]。
+    hub_backend
+        .apply_tunnel_sync(&hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true))
+        .expect("hub re-apply for drift injection");
+    gw_backend
+        .apply_nat_sync(&rules, "192.168.1.1".parse().unwrap())
+        .expect("gw re-apply nat for drift injection");
+    assert!(
+        topo.wait_handshake(&topo.hub.netns),
+        "hub handshake after re-apply"
+    );
+
+    // (a) peer 身份：条数相同、身份被换 → 快照必须报出新身份（旧条数检查看不见）。
+    let stranger_private = wg_genkey().expect("generate a stranger key");
+    let stranger_public = wg_pubkey(&stranger_private).expect("derive the stranger key");
+    require_ok(
+        &netns_exec(
+            &topo.hub.netns,
+            &["wg", "set", "wg0", "peer", &topo.b.public_key, "remove"],
+        ),
+        "drop B's peer from the hub",
+    );
+    require_ok(
+        &netns_exec(
+            &topo.hub.netns,
+            &[
+                "wg",
+                "set",
+                "wg0",
+                "peer",
+                &stranger_public,
+                "allowed-ips",
+                &format!("{}/32", topo.b.overlay),
+            ],
+        ),
+        "plant a stranger peer at B's address",
+    );
+    let snap = hub_backend
+        .inspect_sync()
+        .expect("hub inspect after peer substitution");
+    assert_eq!(
+        snap.peers.len(),
+        3,
+        "count is still 3 — the blind spot of a count check"
+    );
+    let ids = peer_identities(&snap);
+    assert!(
+        !ids.iter().any(|id| id.starts_with(&topo.b.public_key)),
+        "B's identity must be gone after substitution: {ids:?}"
+    );
+    assert!(
+        ids.iter()
+            .any(|id| id == &format!("{stranger_public}:{}/32", topo.b.overlay)),
+        "the stranger's identity and its allowed-ips must be read out: {ids:?}"
+    );
+
+    // (b) 身份未变但 allowed-ips 被改宽 → 快照按身份报出改动。
+    require_ok(
+        &netns_exec(
+            &topo.hub.netns,
+            &[
+                "wg",
+                "set",
+                "wg0",
+                "peer",
+                &topo.a.public_key,
+                "allowed-ips",
+                "0.0.0.0/0",
+            ],
+        ),
+        "widen A's allowed-ips",
+    );
+    let widened_snap = hub_backend
+        .inspect_sync()
+        .expect("hub inspect after widening");
+    let widened = widened_snap
+        .peers
+        .iter()
+        .find(|p| p.public_key == topo.a.public_key)
+        .expect("A's peer is still there");
+    assert_eq!(
+        widened.allowed_ips,
+        vec!["0.0.0.0/0".parse().unwrap()],
+        "widened allowed-ips must be read back by identity"
+    );
+
+    // (c) 路由所有权：未打 Meshlet 标记的路由不入观测集合；打了标记的残留
+    // 会被看到（因此能被 reconcile 按所有权清理）。
+    require_ok(
+        &netns_exec(
+            &topo.hub.netns,
+            &["ip", "route", "add", "10.245.0.0/24", "dev", "wg0"],
+        ),
+        "plant an unmarked route on the managed interface",
+    );
+    require_ok(
+        &netns_exec(
+            &topo.hub.netns,
+            &[
+                "ip",
+                "route",
+                "add",
+                "10.246.0.0/24",
+                "dev",
+                "wg0",
+                "proto",
+                "198",
+            ],
+        ),
+        "plant a meshlet-marked stale route",
+    );
+    let snap = hub_backend
+        .inspect_sync()
+        .expect("hub inspect after route injection");
+    assert!(
+        !snap
+            .installed_routes
+            .contains(&"10.245.0.0/24".parse().unwrap()),
+        "an unmarked route is foreign and must stay out of the owned set: {:?}",
+        snap.installed_routes
+    );
+    assert!(
+        snap.installed_routes
+            .contains(&"10.246.0.0/24".parse().unwrap()),
+        "a meshlet-marked stale route must be visible so it can be cleaned: {:?}",
+        snap.installed_routes
+    );
+
+    // (d) NAT 指纹：非 Meshlet 所有权注释的规则不入集合，自有指纹与计划侧
+    // 逐字节一致。
+    let planned = sorted_signatures(
+        &rules
+            .iter()
+            .map(|rule| rule.signature())
+            .collect::<Vec<_>>(),
+    );
+    require_ok(
+        &netns_exec(
+            &topo.gw.netns,
+            &[
+                "iptables",
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-d",
+                "203.0.113.0/24",
+                "-j",
+                "MASQUERADE",
+                "-m",
+                "comment",
+                "--comment",
+                "user rule",
+            ],
+        ),
+        "plant a foreign nat rule on the gateway",
+    );
+    let gw_snap = gw_backend
+        .inspect_sync()
+        .expect("gw inspect after nat injection");
+    assert_eq!(
+        gw_snap.nat_rules, planned,
+        "a foreign rule must not enter the meshlet-owned signature set"
+    );
+
+    // 修复：再 apply 一次清掉 Meshlet 自有的注入，外来路由与外来规则保留。
+    hub_backend
+        .apply_tunnel_sync(&hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true))
+        .expect("hub apply clears the meshlet-owned peers");
+    hub_backend
+        .apply_routes_sync(&hub_routes())
+        .expect("hub apply clears the meshlet-owned stale route");
+    let snap = hub_backend
+        .inspect_sync()
+        .expect("hub inspect after repair");
+    let ids = peer_identities(&snap);
+    assert_eq!(
+        ids,
+        planned_peer_identities(&topo.a, &topo.b, &topo.gw),
+        "re-apply restores the exact planned peer identities"
+    );
+    assert!(
+        !ids.iter().any(|id| id.starts_with(&stranger_public)),
+        "the substituted stranger must be gone: {ids:?}"
+    );
+    assert!(
+        !snap
+            .installed_routes
+            .contains(&"10.246.0.0/24".parse().unwrap()),
+        "the meshlet-owned stale route must be removed: {:?}",
+        snap.installed_routes
+    );
+    let shown = String::from_utf8_lossy(
+        &netns_exec(
+            &topo.hub.netns,
+            &["ip", "route", "show", "exact", "10.245.0.0/24"],
+        )
+        .stdout,
+    )
+    .to_string();
+    assert_eq!(
+        shown.trim(),
+        "10.245.0.0/24 dev wg0 scope link",
+        "the foreign route must survive the repair untouched: {shown:?}"
+    );
+    let gw_snap = gw_backend.inspect_sync().expect("gw inspect after repair");
+    assert_eq!(
+        gw_snap.nat_rules, planned,
+        "a foreign nat rule must survive the repair"
+    );
 
     // teardown 并断言「跑完不留垃圾」。
     drop(topo);

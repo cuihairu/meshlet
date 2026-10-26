@@ -23,3 +23,69 @@ R-04 已完成：注册、启动恢复、执行回执、重试与升级均已实
 - MTU 收敛（本轮修复的缺陷：旧 agent 把「未配置」当「不动接口」，漂移永不愈合）：修复版 agent（`sha256/16 2114bd9e…`）下，手工抬到 1480 的接口在下个 tick 回到 1420（`applied the desired device plan … reason=KernelDrift`，22:24:53Z）；hub 配置显式 `tunnel_mtu = 1480`（根表）后两台设备一个 tick 内到 1480（`reason=DesiredConfigChanged`），探测报 `probe 1452`，诊断说 `tunnel_mtu = 1480 is explicitly configured; device evidence confirms the plan`；删掉该键后两台设备自行愈合回 1420（22:33:43/22:33:53Z），DF 边界随之回移（1392 通、1452 不通）。
 - 如实记录、未在本轮修：hub 自身 `wg0` 的 MTU 跟随**已 apply 的修订**（approve 时立账），设备计划则读服务器实时配置——配置改 MTU 后 hub 停在 1420、设备已到 1480，hub 侧 DF 探测失败而诊断仍按设备证据判 pass。在新修订立账并 apply 之前，隧道容量受 hub 发送侧限制。后续可把实时 MTU 折进 hub 计划，或让诊断同时比对 hub 接口。
 - 第一次尝试把 `tunnel_mtu` 追加在 hub TOML 的 `[backup]` 表之后，服务器正确地保持了默认值——记录为「该键只属于根表」的反向证明。
+
+## 漂移检测升级到身份级（M2，2026-10-27 落地）
+
+`drifted()` 此前按**数量**而非身份比对内核与计划——旧址 `apps/agent/src/reconcile.rs:139`
+的注释自己就写着「数量≠身份」。因此三类漂移不可见：peer 总数不变但换掉一个（计划内
+peer 被删、混入陌生 peer）、存活 peer 的 `allowed-ips` 被改宽、有人在本 meshlet 所有权
+注释下手插一条 NAT 规则。
+
+快照现在携带身份（`NetworkSnapshot` 在 `crates/meshlet-network/src/lib.rs:160`、
+`PeerObserved` 在 `:177`），判定改为身份集合比对：
+
+| 对象 | 观测侧 | 比对 |
+| --- | --- | --- |
+| 隧道 | 存在性、地址、MTU（计划显式配置才判） | 不变 |
+| peer | `wg show <if> dump` 逐行解析，`parse_peer_dump_line` 在 `crates/meshlet-network/src/linux.rs:238`——公钥必须是 44 字符 base64 且以 `=` 结尾，表头行与 `(none)` 永远不会变成 peer | `BTreeSet<(公钥, {allowed-ips})>` 在 `apps/agent/src/reconcile.rs:165` |
+| 路由 | 只统计带 Meshlet 标记 `proto 198` 的路由（`MESHLET_ROUTE_PROTO` 在 `crates/meshlet-network/src/linux.rs:40`） | 缺失或多余 → 漂移，在 `apps/agent/src/reconcile.rs:179` |
+| NAT | `iptables -S` 解析成与计划同形的指纹，`nat_rule_signature_from_iptables` 在 `crates/meshlet-network/src/linux.rs:941` | `BTreeSet<指纹>` 在 `apps/agent/src/reconcile.rs:209` |
+
+所有权是对象能否被看见的前提：未标记的路由、没有 Meshlet 注释的 NAT 规则根本进不了
+观测集合，因此在结构上就不可能被判成漂移、也不可能被删。
+
+指纹形如 `chain|目的|动作|所有权|源|入向接口`（`NatRule::signature` 在
+`crates/meshlet-network/src/nat.rs:79`）。它只反映内核实际渲染的字段：`-i` 只对
+PREROUTING 渲染，POSTROUTING 指纹一律记 `none`（`:87`）。可选项缺省渲染 `none` 而不是
+`{:?}`——后者会打印结构体内部字段，永远对不上。账本里的 `nat_rules` 只做计划对计划的
+比对，口径变更最多触发一次幂等重放。
+
+### 真机测试抓出的三个真实缺陷
+
+1. **NETMAP 的 `--to` 从未被解析。** `iptables -S` 把 `--to` 和取值渲染成两个 token，
+   解析器只读一个，所有 DNAT 指纹都成了空 target 的 `net_map:`，与计划永远对不上。
+2. **计划侧与内核侧指纹形状不同。** 计划侧打印 `{:?}`，得到
+   `Some(Ipv4Cidr { network: …, prefix: … })`，内核侧是裸 CIDR 串——任何规则都不可能
+   round-trip。
+3. **新清理逻辑误删了计划内的 SNAT 规则。** POSTROUTING 规则被塞了 `iptables_args`
+   从不渲染的 `incoming_interface` 元数据，计划指纹因此是 `…|wg0` 而内核侧是 `…|none`，
+   规则被当成计划外删除，下一次读回报 "applied plan did not match kernel readback"。
+   现在两侧统一口径：签名对 POSTROUTING 忽略该字段（`crates/meshlet-network/src/nat.rs:87`），
+   `incoming_interface` 只写在 PREROUTING 规则上（`apps/server/src/device_plan.rs:189`、
+   `apps/agent/src/agent.rs:409`）。
+
+计划外的 meshlet 自有 NAT 规则现在会被移除，而不只是「从不新增」：
+`remove_stale_nat_rules_sync`（`crates/meshlet-network/src/linux.rs:913`）删除所有指纹
+不在计划内的 meshlet 注释规则，形状解析不出的规则跳过不删。`apply_device_plan_sync`
+在新增之后调用它（`:1142`）。
+
+### 证据
+
+单测（不依赖内核）——`missing_route_peer_or_nat_counts_as_drift`、
+`a_substituted_or_extra_peer_is_drift_with_an_equal_count`、
+`peer_allowed_ips_widened_is_drift_and_order_is_ignored`、
+`missing_or_extra_nat_fingerprint_is_drift`、`orphan_nat_rules_on_a_demoted_gateway_are_drift`
+（`apps/agent/src/reconcile.rs:419`–`:544`）；`peer_dump_line_yields_identity_not_a_count`、
+`nat_signature_round_trips_through_kernel_rendering`、
+`nat_signature_rejects_shapes_the_renderer_never_emits`
+（`crates/meshlet-network/src/linux.rs:1470`–`:1551`）。
+
+真机内核（`MESHLET_REQUIRE_DATAPLANE` 门禁：双 netns、真实 `wg0`、真实 `iptables -t nat`、
+root 运行）：
+
+- `crates/meshlet-network/tests/backend_wiring.rs:977`–`:1182`——陌生 peer 被检出并移除、
+  计划内 peer 存活；未标记路由 `10.245.0.0/24 dev wg0` **不是**漂移、不进受管集合、修复
+  后原行原样存活；多余的 meshlet 注释 SNAT 被检出并移除，计划内 SNAT 与外部「用户规则」
+  双双存活。
+- `apps/agent/tests/agent_reconcile.rs:878`–`:992`——同样三类注入走真实 agent 判定路径，
+  逐项断言 `reason=KernelDrift`，收尾断言 `!needs_apply`。

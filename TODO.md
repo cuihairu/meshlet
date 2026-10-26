@@ -73,10 +73,28 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
       与 `cargo fmt --all -- --check` exit 0、`pnpm run docs:build` 成功。**顺带修既有红**：`windows_console.rs` 两个真机取证常量仅被
       windows 门禁测试引用，Linux 上 clippy `-D warnings` 报 dead_code（临时 worktree 于 pristine HEAD 复现，确认与本单无关），已加同
       cfg 门禁。
-- [ ] M2 漂移检测升级到身份/所有权级：现状 peer 数量检查（reconcile.rs:139 注释自证「数量≠身份」）。
-      逐步升级：预期 Peer 公钥集合、实际 AllowedIPs 逐条比对、受管路由集合（带网络 ID/资源 ID 所有权
-      标记）、防火墙规则带所有权注释按所有权清理。验收：每项一个漂移注入单测 + 真机用例；
-      非本 meshlet 资源永不动。
+- [x] M2 漂移检测升级到身份/所有权级（2026-10-27 落地）。`NetworkSnapshot` 改为携带身份
+      （`lib.rs:160`/`PeerObserved lib.rs:177`）：peer 按 `wg show` 逐行解析公钥+allowed-ips
+      （`linux.rs:238`，公钥须 44 位 base64 且以 `=` 结尾）；路由只统计 `proto 198` 标记
+      （`linux.rs:40`）；NAT 指纹 `chain|目的|动作|所有权|源|入向接口`（`nat.rs:79`，内核侧
+      `linux.rs:941` 解析同形），集合比对见 `reconcile.rs:165/179/209`。未标记路由与无 Meshlet
+      注释的 NAT 规则进不了观测集合，结构上不会被判漂移也不会被删。新增计划外 meshlet 规则清理
+      （`linux.rs:913`，解析不出形状则跳过不删），`apply_device_plan_sync` 调用（`:1142`）。
+      真机测试抓出并修掉三个真实缺陷：① `iptables -S` 把 `--to` 与取值渲染为两个 token，
+      旧解析器只读一个 → 所有 DNAT 指纹为空 target；② 计划侧指纹用 `{:?}` 打印结构体内部字段，
+      与内核裸 CIDR 串永不对齐；③ POSTROUTING 被塞 `-i` 永不渲染的 `incoming_interface`，
+      计划指纹 `|wg0` 对内核 `|none`，新清理逻辑误删计划内 SNAT 致读回失败
+      （已改为链级规范化：`nat.rs:87`，`device_plan.rs:189`/`agent.rs:409` 只对 PREROUTING 赋值）。
+      验收：单测 8 个（`reconcile.rs:419-544` 五个 + `linux.rs:1470-1551` 三个，含 peer 解析、
+      指纹 round-trip、拒绝渲染器永不产出的形状）；真机注入三项各带修复断言
+      （`backend_wiring.rs:977-1182` 陌生 peer 移除/计划 peer 存活、未标记路由 `10.245.0.0/24
+      dev wg0` 原行原样存活、多余 meshlet 注释 SNAT 移除且计划 SNAT 与外部规则存活；
+      `agent_reconcile.rs:878-992` 同三项走真实 agent 判定，逐项 `reason=KernelDrift`）。
+      验证：`cargo test --workspace` exit 0、`backend_wiring` 1/1 (31.66s)、
+      `agent_reconcile` 1/1 (26.95s)、`dual_site_end_to_end` 1/1 (36.63s)、
+      meshlet-agent lib 59 通过、meshlet-network lib 79 通过、
+      `cargo clippy --workspace --all-targets -D warnings` 与 `cargo fmt --all -- --check` exit 0、
+      `pnpm run docs:build` 成功。证据入 `docs/implementation/r04-linux-agent-e2e.md` 及其 zh 镜像。
 - [ ] M3 故障矩阵验收（评审 54.2 九场景）：Hub 重启恢复受管状态、Agent 重启不信账本单独判断、
       改路由时进程被杀、删 LAN 路由连带撤销、双网络并行不串网、宿主机规则不误删、
       撤销在线设备权限后旧计划重试不重授、Hub 公钥轮换迁移、库恢复后内核状态重新一致。

@@ -29,7 +29,7 @@ use std::str::FromStr;
 use crate::nat::{NatAction, NatChain, NatRule};
 use crate::{
     ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
-    RouteConfig, TunnelConfig, DEFAULT_TUNNEL_MTU,
+    PeerObserved, RouteConfig, TunnelConfig, DEFAULT_TUNNEL_MTU,
 };
 
 /// iptables 所有权注释前缀：nat 规则带 `meshlet alias {id}`（§12.6），filter
@@ -213,12 +213,47 @@ impl LinuxNetworkBackend {
 
     /// `wg show <if> peers` 输出（每行一个公钥）。
     fn existing_peers(&self) -> Result<Vec<String>, NetworkError> {
-        let out = self.run(&["wg", "show", &self.interface, "peers"])?;
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
+        Ok(self
+            .peers_on_interface()?
+            .into_iter()
+            .map(|peer| peer.public_key)
             .collect())
+    }
+
+    /// `wg show <if> dump` 的 peer 行 → 身份级读数（公钥 + allowed-ips）。
+    /// 漂移判定按**身份集合**而非条数：多一个不该在的 peer、某 peer 的
+    /// allowed-ips 被改宽，都与「少一个 peer」同样必须重放纠回。
+    fn peers_on_interface(&self) -> Result<Vec<PeerObserved>, NetworkError> {
+        let dump = self.run(&["wg", "show", &self.interface, "dump"])?;
+        let body = String::from_utf8_lossy(&dump.stdout);
+        Ok(body
+            .lines()
+            .skip(1) // 首行是本机（private_key 起头），其后每行一个 peer。
+            .filter_map(Self::parse_peer_dump_line)
+            .collect())
+    }
+
+    /// 单行 peer dump 解析（`pubkey presharedkey endpoint allowed-ips …`，
+    /// allowed-ips 逗号分隔、可为空）。纯函数，单测直接覆盖。
+    fn parse_peer_dump_line(line: &str) -> Option<PeerObserved> {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // 公钥固定为 44 字符 base64（32 字节 curve25519）且以 `=` 结尾：
+        // 空行 / 残行 / 占位串不臆造 peer。
+        let public_key = fields.first()?;
+        if public_key.len() != 44 || !public_key.ends_with('=') {
+            return None;
+        }
+        let public_key = public_key.to_string();
+        let allowed_ips = fields
+            .get(3)
+            .unwrap_or(&"")
+            .split(',')
+            .filter_map(|c| c.trim().parse().ok())
+            .collect();
+        Some(PeerObserved {
+            public_key,
+            allowed_ips,
+        })
     }
 
     /// 对账式 peer 下发：目标集之外的 peer 显式移除（撤销即失效，§11.5）。
@@ -388,27 +423,23 @@ impl LinuxNetworkBackend {
                 "0" => Some(false),
                 _ => None,
             });
-        let peer_count = if tunnel_exists {
-            self.existing_peers()?.len() as u32
+        let peers = if tunnel_exists {
+            self.peers_on_interface()?
         } else {
-            0
+            Vec::new()
         };
         let installed_routes = if tunnel_exists {
             self.routes_on_interface()?
         } else {
             Vec::new()
         };
-        let nat_rules_present = !self.meshlet_nat_rules(None)?.is_empty();
-        let nat_snat_rules_present = !self
-            .meshlet_nat_rules_in(NatChain::Postrouting, None)?
-            .is_empty();
+        let nat_rules = self.meshlet_nat_signatures_sync()?;
         Ok(NetworkSnapshot {
             tunnel_exists,
             forwarding_enabled,
-            peer_count,
+            peers,
             installed_routes,
-            nat_rules_present,
-            nat_snat_rules_present,
+            nat_rules,
             tunnel_mtu,
         })
     }
@@ -852,6 +883,126 @@ impl LinuxNetworkBackend {
         Ok(owners)
     }
 
+    /// Meshlet 所有权注释下的 NAT 规则身份指纹集合（`NatRule::signature` 同一
+    /// 形状，去重排序）。集合只含 Meshlet 自有规则——注释前缀过滤在前，非本
+    /// meshlet 规则在此处即已被排除，因此该集合的集合比对绝不会把用户规则
+    /// 误判为漂移。
+    pub fn meshlet_nat_signatures_sync(&self) -> Result<Vec<String>, NetworkError> {
+        let signatures = self
+            .meshlet_nat_rules(None)?
+            .into_iter()
+            .filter_map(|tokens| {
+                // 删除参数形如 `-D CHAIN -d … -j … --comment …`。
+                let [_, chain, args @ ..] = tokens.as_slice() else {
+                    return None;
+                };
+                Self::nat_rule_signature_from_iptables(chain, args)
+            })
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect();
+        Ok(signatures)
+    }
+
+    /// 按身份指纹移除「有 Meshlet 所有权注释、但不在计划里」的 NAT 规则
+    /// （M2）：计划侧与内核侧产出同一指纹，集合差集即多余对象。非本 meshlet
+    /// 规则（注释不符）进不了该枚举，永不被触碰。
+    ///
+    /// 认了所有权却认不出形状的规则在此不删——那是异常而非匹配失败，交给
+    /// 整单元清理路径（`remove_nat_sync` 按所有权）处置。
+    pub fn remove_stale_nat_rules_sync(
+        &self,
+        planned: &[String],
+    ) -> Result<ApplyResult, NetworkError> {
+        let keep: BTreeSet<&str> = planned.iter().map(String::as_str).collect();
+        for del_args in self.meshlet_nat_rules(None)? {
+            let [_, chain, args @ ..] = del_args.as_slice() else {
+                continue;
+            };
+            let Some(signature) = Self::nat_rule_signature_from_iptables(chain, args) else {
+                continue;
+            };
+            if keep.contains(signature.as_str()) {
+                continue;
+            }
+            let mut full = vec!["iptables".to_string(), "-t".to_string(), "nat".to_string()];
+            full.extend(del_args);
+            let args: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
+            self.run(&args)?;
+        }
+        Ok(ApplyResult::ok())
+    }
+
+    /// 单行 iptables 规则的删除参数 → 身份指纹。形状必须与
+    /// [`NatRule::signature`] 逐字节一致（两侧据此做集合比对），且只接受
+    /// 本网关渲染器会产出的两种动作：`NETMAP --to <cidr>` 与 `SNAT`。
+    /// 无法识别的规则形状返回 `None`——按注释认领了却不认得，属异常而非匹配
+    /// 失败，交由所有权清理路径处置（`remove_nat_sync` 按注释精确移除）。
+    fn nat_rule_signature_from_iptables(chain: &str, args: &[String]) -> Option<String> {
+        let mut match_dest = String::new();
+        let mut source = String::new();
+        let mut interface = String::new();
+        let mut action = String::new();
+        let mut owner = String::new();
+        let mut i = 0;
+        while i < args.len() {
+            let flag = args[i].as_str();
+            let value = args.get(i + 1).map(String::as_str).unwrap_or("");
+            match flag {
+                "-d" => match_dest = value.to_string(),
+                "-s" => source = value.to_string(),
+                "-i" | "-o" => interface = value.to_string(),
+                "-j" => {
+                    let target = args.get(i + 1).cloned().unwrap_or_default();
+                    // `-S` 输出里 `--to` / `--to-source` 的值是**下一个 token**
+                    // （`split_iptables_line` 已按空白切开）：两个 token 都要
+                    // 消费，否则 NETMAP 的网段会被漏读成空串。
+                    let (to, extra) = if matches!(
+                        args.get(i + 2).map(String::as_str),
+                        Some("--to") | Some("--to-source")
+                    ) {
+                        (args.get(i + 3).cloned().unwrap_or_default(), 3)
+                    } else {
+                        (String::new(), 1)
+                    };
+                    action = if target == "NETMAP" {
+                        format!("net_map:{to}")
+                    } else if target == "SNAT" {
+                        "snat_to_gateway_lan".to_string()
+                    } else {
+                        return None;
+                    };
+                    i += extra; // 循环末尾的 +1 再跳过剩余位置
+                }
+                "-m" | "--comment" if flag == "--comment" => {
+                    owner = value.to_string();
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        if action.is_empty() || owner.is_empty() || match_dest.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{}|{}|{}|{}|{}|{}",
+            chain,
+            match_dest,
+            action,
+            owner,
+            if source.is_empty() {
+                "none".to_string()
+            } else {
+                source
+            },
+            if interface.is_empty() {
+                "none".to_string()
+            } else {
+                interface
+            },
+        ))
+    }
+
     /// Remove Meshlet-marked routes that are absent from the desired plan.
     ///
     /// The managed-interface route marker is deliberately narrow: connected,
@@ -983,6 +1134,15 @@ impl LinuxNetworkBackend {
                 ));
             }
         }
+        // 计划外的 Meshlet 自有规则按身份指纹清理（M2）：`apply_nat_sync` 只增
+        // 不删，改名前后的旧指纹、半途失败的中间态会永远留在表里；按指纹
+        // 差集清掉，非本 meshlet 规则不在该枚举内、永不被触碰。
+        let planned_signatures: Vec<String> =
+            plan.nat_rules.iter().map(|rule| rule.signature()).collect();
+        let stale = self.remove_stale_nat_rules_sync(&planned_signatures)?;
+        if !stale.applied {
+            return Err(NetworkError::ApplyRejected(stale.error.unwrap_or_default()));
+        }
         Ok(())
     }
 
@@ -1082,7 +1242,7 @@ impl Default for LinuxNetworkBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nat::NatAction;
+    use crate::nat::{NatAction, NatChain, NatRule};
 
     #[test]
     fn mtu_readback_enforces_the_default_like_an_explicit_value() {
@@ -1304,5 +1464,153 @@ mod tests {
         // 里照常出现，经受管接口则不算冲突。
         let line = "10.240.0.0/24 proto kernel scope link src 10.240.0.1 dev wg0";
         assert!(foreign_route_line(line, "wg0").is_none());
+    }
+
+    #[test]
+    fn peer_dump_line_yields_identity_not_a_count() {
+        // dump 行序：pubkey presharedkey endpoint allowed-ips …（endpoint
+        // none、allowed-ips 空串是未握手 peer 的常态）。allowed-ips 用逗号
+        // 连接且**不带空格**（`wg show dump` 的实测输出）。
+        let key = "B".repeat(43) + "=";
+        let peer = LinuxNetworkBackend::parse_peer_dump_line(&format!(
+            "{key} (none) 10.240.0.3:16190 10.240.0.3/32,10.241.1.0/24 0 0 0 0"
+        ))
+        .unwrap();
+        assert_eq!(peer.public_key, key);
+        assert_eq!(
+            peer.allowed_ips,
+            vec![
+                "10.240.0.3/32".parse::<Ipv4Cidr>().unwrap(),
+                "10.241.1.0/24".parse::<Ipv4Cidr>().unwrap(),
+            ]
+        );
+
+        // 未握手 / 未放行任何前缀的 peer：allowed-ips 为空是合法状态，
+        // 不等于「少了一条 peer」。
+        let none = LinuxNetworkBackend::parse_peer_dump_line(&format!(
+            "{key} (none) (none) (none) 0 0 0 0"
+        ))
+        .unwrap();
+        assert!(none.allowed_ips.is_empty());
+
+        // 缺 44 字符公钥的残行不产 peer（不臆造身份）。
+        assert!(LinuxNetworkBackend::parse_peer_dump_line("(none) 10.240.0.3/32 0 0 0").is_none());
+        assert!(LinuxNetworkBackend::parse_peer_dump_line("tooshort").is_none());
+    }
+
+    #[test]
+    fn nat_signature_round_trips_through_kernel_rendering() {
+        // 计划侧指纹必须能从内核渲染出的 iptables 参数读回同值——两侧据此
+        // 做集合精确比对，形状不一致就等于看不见漂移。用 `-S` 的字段顺序
+        // （`-s` 在 `-d` 前、`-m comment` 在 `-j` 前）而非 `iptables_args`
+        // 的顺序，证明解析与字段顺序无关。
+        let rules = [
+            NatRule {
+                source_cidr: Some("10.240.0.0/16".parse().unwrap()),
+                incoming_interface: Some("wg0".into()),
+                chain: NatChain::Prerouting,
+                match_dest: "10.241.1.0/24".parse().unwrap(),
+                action: NatAction::NetMap {
+                    to: "192.168.1.0/24".parse().unwrap(),
+                },
+                owner: "meshlet alias al-2".into(),
+            },
+            // POSTROUTING 不渲染 `-i`：`incoming_interface` 对它是惰性元数据，
+            // 两侧都必须按 `none` 对齐（曾因此把在表内的 SNAT 规则误判为多余）。
+            NatRule {
+                source_cidr: Some("10.240.0.0/16".parse().unwrap()),
+                incoming_interface: Some("wg0".into()),
+                chain: NatChain::Postrouting,
+                match_dest: "192.168.1.0/24".parse().unwrap(),
+                action: NatAction::SnatToGatewayLan,
+                owner: "meshlet alias al-2".into(),
+            },
+        ];
+        for rule in &rules {
+            let rendered = rule.iptables_args("192.168.1.1".parse().unwrap());
+            let kernel: Vec<String> = rendered
+                .iter()
+                .map(|arg| {
+                    if arg == "-A" {
+                        "-D".to_string()
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect();
+            let [_, chain, rest @ ..] = kernel.as_slice() else {
+                panic!("malformed rendering: {rendered:?}")
+            };
+            let signature = LinuxNetworkBackend::nat_rule_signature_from_iptables(chain, rest)
+                .unwrap_or_else(|| panic!("unparsable rendering: {rendered:?}"));
+            assert_eq!(signature, rule.signature(), "plan vs kernel fingerprint");
+        }
+    }
+
+    #[test]
+    fn nat_signature_rejects_shapes_the_renderer_never_emits() {
+        // 认了 Meshlet 所有权、形状却超出本网关渲染器产出的范围 → 不产指纹：
+        // 既不冒充计划内规则，也不会被差集清理误删（交由整单元清理路径处置）。
+        let unparsable = [
+            (
+                "POSTROUTING",
+                vec![
+                    "-d".to_string(),
+                    "203.0.113.0/24".into(),
+                    "-j".into(),
+                    "MASQUERADE".into(),
+                    "-m".into(),
+                    "comment".into(),
+                    "--comment".into(),
+                    "meshlet alias al-9".into(),
+                ],
+            ),
+            (
+                "POSTROUTING",
+                vec![
+                    "-d".to_string(),
+                    "203.0.113.0/24".into(),
+                    "-j".into(),
+                    "SNAT".into(),
+                    "--to-source".into(),
+                    "192.168.1.1".into(),
+                ],
+            ),
+            (
+                "PREROUTING",
+                vec![
+                    "-j".to_string(),
+                    "NETMAP".into(),
+                    "--to".into(),
+                    "192.168.1.0/24".into(),
+                    "--comment".into(),
+                    "meshlet alias al-9".into(),
+                ],
+            ),
+        ];
+        for (chain, args) in unparsable {
+            assert!(
+                LinuxNetworkBackend::nat_rule_signature_from_iptables(chain, &args).is_none(),
+                "{chain} {args:?}"
+            );
+        }
+
+        // 非 Meshlet 注释的规则带进来的也是它自己的注释：指纹永远撞不上计划
+        // 侧的任何指纹，所以差集清理碰不到它。
+        let foreign = vec![
+            "-d".to_string(),
+            "10.0.0.0/24".into(),
+            "-j".into(),
+            "SNAT".into(),
+            "--to-source".into(),
+            "192.168.1.1".into(),
+            "-m".into(),
+            "comment".into(),
+            "--comment".into(),
+            "user rule".into(),
+        ];
+        let signature =
+            LinuxNetworkBackend::nat_rule_signature_from_iptables("POSTROUTING", &foreign).unwrap();
+        assert!(signature.contains("|user rule|"));
     }
 }

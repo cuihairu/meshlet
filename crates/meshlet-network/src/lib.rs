@@ -152,20 +152,31 @@ pub struct ConfigRevisionRef {
 }
 
 /// inspect 快照：诊断与配置协调的事实来源（§12.7、§17.3）。
+///
+/// 全部字段按**身份**而非**数量**采集：peer 是公钥集合、路由是带所有权标记的
+/// 目的地集合、NAT 是所有权注释下的规则指纹集合。漂移判定因此能区分「少装了」
+/// 与「多装了本不该在的」，且只看 Meshlet 自有对象——非本 meshlet 资源永不动。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NetworkSnapshot {
     pub tunnel_exists: bool,
     pub forwarding_enabled: Option<bool>,
-    pub peer_count: u32,
+    /// 受管接口上实际存在的 WireGuard peer（公钥 + allowed-ips 原样读出）。
+    pub peers: Vec<PeerObserved>,
+    /// 带 Meshlet 所有权标记的路由目的地（后端只枚举标记过的对象）。
     pub installed_routes: Vec<Ipv4Cidr>,
-    pub nat_rules_present: bool,
-    /// 内核中存在 Meshlet 受控 SNAT 规则（POSTROUTING 链按所有权注释扫描）。
-    /// 与 `nat_rules_present` 组合区分 `dnat_snat`（有 SNAT）与 `dnat_only`
-    /// （仅 DNAT，保留原始源，ADR-005）。
-    pub nat_snat_rules_present: bool,
+    /// 内核中 Meshlet 所有权注释下的 NAT 规则指纹（`NatRule::signature` 同一
+    /// 形状）；计划侧与内核侧据此做集合精确比对。
+    pub nat_rules: Vec<String>,
     /// 隧道接口的实际 MTU 读数（`ip link show` 解析；计划显式配置 MTU
     /// 时用于漂移判定：内核读数与计划不符即重放纠回）。
     pub tunnel_mtu: Option<u32>,
+}
+
+/// 受管接口上读出的一个 WireGuard peer（身份级事实：公钥 + allowed-ips）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PeerObserved {
+    pub public_key: String,
+    pub allowed_ips: Vec<Ipv4Cidr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -235,10 +246,18 @@ mod tests {
             Ok(NetworkSnapshot {
                 tunnel_exists: true,
                 forwarding_enabled: Some(true),
-                peer_count: 2,
+                peers: vec![
+                    PeerObserved {
+                        public_key: format!("{}=", "A".repeat(43)),
+                        allowed_ips: vec!["10.240.0.2/32".parse().unwrap()],
+                    },
+                    PeerObserved {
+                        public_key: format!("{}=", "B".repeat(43)),
+                        allowed_ips: vec!["10.240.0.0/16".parse().unwrap()],
+                    },
+                ],
                 installed_routes: vec!["10.240.0.0/16".parse().unwrap()],
-                nat_rules_present: false,
-                nat_snat_rules_present: false,
+                nat_rules: Vec::new(),
                 tunnel_mtu: Some(1420),
             })
         }
@@ -283,7 +302,7 @@ mod tests {
         }
         let snap = use_backend(&DummyBackend).await;
         assert!(snap.tunnel_exists);
-        assert_eq!(snap.peer_count, 2);
+        assert_eq!(snap.peers.len(), 2);
 
         let mut mutable_backend = DummyBackend;
         mutable_backend

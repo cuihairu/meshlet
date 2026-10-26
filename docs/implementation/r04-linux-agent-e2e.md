@@ -19,3 +19,77 @@ R-04 is complete: the registration, startup recovery, receipt persistence, retry
 - MTU convergence, the defect this round fixed (agent enforced an unset plan as "leave the interface alone", so drift never healed): with the fixed agent (`sha256/16 2114bd9e…`), a device interface manually raised to 1480 returned to 1420 on its next tick (`applied the desired device plan … reason=KernelDrift`, 22:24:53Z); a hub config with explicit `tunnel_mtu = 1480` (root table) moved both devices to 1480 within one tick with `reason=DesiredConfigChanged`, device probes then report `probe 1452` and the diagnostic says `tunnel_mtu = 1480 is explicitly configured; device evidence confirms the plan: pve-dev-1 reading 1480 probe 1452`; removing the key healed both devices back to 1420 (`reason=DesiredConfigChanged`, 22:33:43/22:33:53Z) and the DF boundary followed (1392 carries, 1452 fails).
 - Recorded as observed behavior, not fixed here: the hub's own `wg0` MTU follows the *applied revision* (booked when approved), while device plans read the live server config, so immediately after a config MTU change the hub stays at 1420 while devices sit at 1480 — DF probes from the hub side then fail even though the diagnostic passes on device evidence. Tunnel capacity is bounded by the hub's send path until a new revision is booked/applied. A follow-up could fold the live MTU into the hub plan or make the diagnostic compare the hub interface as well.
 - First acceptance attempt appended `tunnel_mtu` below the `[backup]` table in the hub TOML and the server correctly kept the default — recorded because it is the negative proof that the key is root-table-only.
+
+## Identity-level drift detection (M2, implemented 2026-10-27)
+
+`drifted()` compared kernel state against the plan by **counts**, not identities — its own
+comment at the former `apps/agent/src/reconcile.rs:139` admitted "a count is not an
+identity". Three shapes of drift were therefore invisible: a planned peer swapped for a
+stranger at equal total, a surviving peer's `allowed-ips` widened, and a NAT rule planted
+by hand under a Meshlet ownership comment.
+
+The snapshot now carries identities (`NetworkSnapshot` at `crates/meshlet-network/src/lib.rs:160`,
+`PeerObserved` at `:177`) and the decision compares identity sets:
+
+| Item | Observed side | Comparison |
+| --- | --- | --- |
+| Tunnel | existence, address, MTU (MTU only when the plan sets one) | unchanged |
+| Peers | `wg show <if> dump` parsed line by line, `parse_peer_dump_line` at `crates/meshlet-network/src/linux.rs:238` — a public key must be 44 base64 chars ending in `=`, so header lines and `(none)` never become peers | `BTreeSet<(pubkey, {allowed-ips})>` at `apps/agent/src/reconcile.rs:165` |
+| Routes | only routes carrying the Meshlet marker `proto 198` (`MESHLET_ROUTE_PROTO` at `crates/meshlet-network/src/linux.rs:40`) | missing or extra → drift, at `apps/agent/src/reconcile.rs:179` |
+| NAT | `iptables -S` parsed into the same fingerprint as the plan, `nat_rule_signature_from_iptables` at `crates/meshlet-network/src/linux.rs:941` | `BTreeSet<fingerprint>` at `apps/agent/src/reconcile.rs:209` |
+
+Ownership is what makes an object visible at all: unmarked routes and NAT rules without a
+Meshlet comment never enter the observed set, so they are structurally incapable of being
+judged as drift or deleted.
+
+The fingerprint is `chain|dest|action|owner|source|interface` (`NatRule::signature` at
+`crates/meshlet-network/src/nat.rs:79`). It reflects only what the kernel actually renders:
+`-i` exists on PREROUTING rules only, so `POSTROUTING` signatures always carry `none`
+(`:87`). Absent optional fields render as `none`, not `{:?}`, which would print struct
+internals and never match. The ledger's `nat_rules` is compared plan-vs-plan only, so this
+wording change costs at most one idempotent re-apply.
+
+### Three real bugs the real-kernel harness found
+
+1. **`NETMAP --to` was never parsed.** `iptables -S` renders `--to` and its value as
+   separate tokens; the parser read one, so every DNAT fingerprint came back `net_map:` with
+   an empty target and nothing matched the plan.
+2. **Plan and kernel fingerprints differed in shape.** The plan side printed `{:?}`, giving
+   `Some(Ipv4Cidr { network: …, prefix: … })` against the kernel's bare CIDR string — no
+   rule could ever round-trip.
+3. **The new cleanup deleted a planned SNAT rule.** `POSTROUTING` rules had been given
+   `incoming_interface` metadata that `iptables_args` never renders, so the plan fingerprint
+   said `…|wg0` while the kernel's said `…|none`. The rule was treated as unplanned and
+   removed, and the next readback failed with "applied plan did not match kernel readback".
+   Both sides now canonicalize: the signature ignores the field for POSTROUTING
+   (`crates/meshlet-network/src/nat.rs:87`), and `incoming_interface` is only set on
+   PREROUTING rules (`apps/server/src/device_plan.rs:189`, `apps/agent/src/agent.rs:409`).
+
+Unplanned meshlet-owned NAT rules are now removed rather than merely never added:
+`remove_stale_nat_rules_sync` (`crates/meshlet-network/src/linux.rs:913`) deletes every
+meshlet-commented rule whose fingerprint is absent from the plan, and skips unparseable
+shapes instead of deleting them. `apply_device_plan_sync` calls it after adding
+(`:1142`).
+
+### Evidence
+
+Unit tests, no kernel — `missing_route_peer_or_nat_counts_as_drift`,
+`a_substituted_or_extra_peer_is_drift_with_an_equal_count`,
+`peer_allowed_ips_widened_is_drift_and_order_is_ignored`,
+`missing_or_extra_nat_fingerprint_is_drift`, `orphan_nat_rules_on_a_demoted_gateway_are_drift`
+(`apps/agent/src/reconcile.rs:419`–`:544`); `peer_dump_line_yields_identity_not_a_count`,
+`nat_signature_round_trips_through_kernel_rendering`,
+`nat_signature_rejects_shapes_the_renderer_never_emits`
+(`crates/meshlet-network/src/linux.rs:1470`–`:1551`).
+
+Real kernel under `MESHLET_REQUIRE_DATAPLANE` (two network namespaces, a real `wg0`, real
+`iptables -t nat`, running as root):
+
+- `crates/meshlet-network/tests/backend_wiring.rs:977`–`:1182` — a stranger peer is
+  detected and removed while the planned peer survives; an unmarked `10.245.0.0/24 dev wg0`
+  is **not** drift, stays out of the owned set, and survives the repair on its exact line;
+  an extra meshlet-commented SNAT is detected and removed while the planned SNAT and a
+  foreign "user rule" both survive.
+- `apps/agent/tests/agent_reconcile.rs:878`–`:992` — the same three injections through the
+  real agent decision path, asserting `reason=KernelDrift` on each and `!needs_apply` at the
+  end.

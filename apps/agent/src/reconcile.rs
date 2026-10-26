@@ -13,7 +13,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use meshlet_network::nat::{NatAction, NatRule};
+use meshlet_network::nat::NatRule;
 use meshlet_network::{DevicePlan, NetworkSnapshot};
 use serde::{Deserialize, Serialize};
 
@@ -133,12 +133,17 @@ pub fn needs_apply(state: &AgentState, snapshot: &NetworkSnapshot, plan: &Device
     }
 }
 
-/// Kernel state versus desired drift.
+/// Kernel state versus desired drift（身份级，非数量级）。
 ///
+/// 每一项都按**对象身份**判，不按计数——「数量相同」不代表「身份相同」：
 /// - 隧道：不存在，或地址与期望不是同一个 → 漂移（重启后接口消失是常态）；
-/// - peer 数：少于期望 peers 数 → 漂移（部分 peer 被手工删掉）；
-/// - 路由：期望里有的目的前缀没装上，或受管接口上出现不再期望的路由 → 漂移；
-/// - NAT：期望有规则而内核一条 Meshlet 规则都没有 → 漂移（重启清空 iptables）。
+/// - peer：期望与实际按 `公钥 → allowed-ips` 集合逐项比对。少一个（手工删
+///   peer）、多一个（受管接口上多装的本 meshlet peer）、allowed-ips 被改宽，
+///   三条都判漂移；
+/// - 路由：期望里有的目的前缀没装上，或受管接口上出现带 Meshlet 标记但不
+///   再期望的路由 → 漂移（未标记路由属他人，不进观测集合）；
+/// - NAT：期望与实际按规则指纹集合精确比对（所有权注释认领，重启清空
+///   iptables 后两边都空也一致）。
 fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) -> bool {
     if !snapshot.tunnel_exists || snapshot.forwarding_enabled != Some(true) {
         return true;
@@ -151,7 +156,24 @@ fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) ->
     if plan.tunnel.mtu.is_some() && snapshot.tunnel_mtu != plan.tunnel.mtu {
         return true;
     }
-    if snapshot.peer_count < plan.tunnel.peers.len() as u32 {
+    // Peer 身份（不是条数）：公钥 → allowed-ips 两侧逐项比对。数量相同但换了
+    // 一个 peer、或某个 peer 的 allowed-ips 被改宽，与「少一个 peer」同样必须
+    // 重放纠回——受管接口上的 peer 都是 Meshlet 自有对象，多出即漂移。
+    let ips = |cidrs: &[meshlet_domain::Ipv4Cidr]| -> BTreeSet<String> {
+        cidrs.iter().map(ToString::to_string).collect()
+    };
+    let expected_peers = plan
+        .tunnel
+        .peers
+        .iter()
+        .map(|peer| (peer.public_key.clone(), ips(&peer.allowed_ips)))
+        .collect::<BTreeSet<_>>();
+    let observed_peers = snapshot
+        .peers
+        .iter()
+        .map(|peer| (peer.public_key.clone(), ips(&peer.allowed_ips)))
+        .collect::<BTreeSet<_>>();
+    if expected_peers != observed_peers {
         return true;
     }
     let installed: BTreeSet<String> = snapshot
@@ -179,12 +201,15 @@ fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) ->
     if extra {
         return true;
     }
-    (!plan.nat_rules.is_empty() && !snapshot.nat_rules_present)
-        || (plan
-            .nat_rules
-            .iter()
-            .any(|r| r.action == NatAction::SnatToGatewayLan)
-            && !snapshot.nat_snat_rules_present)
+    // NAT 身份：规则指纹集合精确比对（不是「有没有 NAT 规则」）。少一条要装的
+    // DNAT/SNAT、或多出一条 Meshlet 注释下的规则（下发只增不删，旧单元残留），
+    // 都必须重放；计划里已无 NAT 而内核里还有 Meshlet 规则（网关降级、映射被
+    // 删但清理失败）同样命中。观测集合只含注释前缀认领的规则，非本 meshlet
+    // 规则在此不可见，永远不会被判成漂移。
+    let expected_nat: BTreeSet<String> =
+        plan.nat_rules.iter().map(|rule| rule.signature()).collect();
+    let observed_nat: BTreeSet<String> = snapshot.nat_rules.iter().cloned().collect();
+    expected_nat != observed_nat
 }
 
 /// 本轮重放前要按所有权注释清理的 NAT 单元（§12.6 精确清理）。
@@ -229,26 +254,13 @@ pub fn stale_owners(
     state.nat_owners.clone()
 }
 
-/// 计划 NAT 规则的指纹集合（`chain|match|action|owner`，去重且与顺序无关）：
-/// 集合相同即认为内核里的规则无需重刷。
+/// 计划 NAT 规则的指纹集合（`chain|目的|动作|所有权|源|入向接口`，去重且与
+/// 顺序无关）：集合相同即认为内核里的规则无需重刷。指纹来自
+/// [`NatRule::signature`]——内核侧解析出的指纹同一形状，两侧据此集合比对。
 fn rule_signatures(rules: &[NatRule]) -> Vec<String> {
     rules
         .iter()
-        .map(|r| {
-            let action = match r.action {
-                NatAction::NetMap { to } => format!("net_map:{to}"),
-                NatAction::SnatToGatewayLan => "snat_to_gateway_lan".to_string(),
-            };
-            format!(
-                "{}|{}|{}|{}|{:?}|{:?}",
-                r.chain.as_str(),
-                r.match_dest,
-                action,
-                r.owner,
-                r.source_cidr,
-                r.incoming_interface
-            )
-        })
+        .map(|r| r.signature())
         .collect::<BTreeSet<String>>()
         .into_iter()
         .collect()
@@ -281,7 +293,7 @@ mod tests {
     use super::*;
     use meshlet_domain::Ipv4Cidr;
     use meshlet_network::nat::{NatAction, NatChain};
-    use meshlet_network::{PeerConfig, RouteConfig, TunnelConfig};
+    use meshlet_network::{PeerConfig, PeerObserved, RouteConfig, TunnelConfig};
     use std::net::Ipv4Addr;
 
     fn plan(hash: &str, with_nat: bool) -> DevicePlan {
@@ -337,15 +349,24 @@ mod tests {
         }
     }
 
-    /// 与该计划一致的内核快照（“已按计划装好”）。
-    fn healthy() -> NetworkSnapshot {
+    /// 与该计划一致的内核快照（“已按计划装好”）。peer 身份、路由与 NAT 指纹
+    /// 全部**从计划派生**，而不是手写一份相似值——快照与计划本就应当同源，
+    /// 手写容易悄悄漂移（那正是被改掉的旧测试）。
+    fn healthy(plan: &DevicePlan) -> NetworkSnapshot {
         NetworkSnapshot {
             tunnel_exists: true,
             forwarding_enabled: Some(true),
-            peer_count: 1,
-            installed_routes: vec!["192.168.9.0/24".parse().unwrap()],
-            nat_rules_present: true,
-            nat_snat_rules_present: true,
+            peers: plan
+                .tunnel
+                .peers
+                .iter()
+                .map(|peer| PeerObserved {
+                    public_key: peer.public_key.clone(),
+                    allowed_ips: peer.allowed_ips.clone(),
+                })
+                .collect(),
+            installed_routes: plan.routes.iter().map(|route| route.destination).collect(),
+            nat_rules: plan.nat_rules.iter().map(|rule| rule.signature()).collect(),
             tunnel_mtu: Some(1420),
         }
     }
@@ -357,7 +378,7 @@ mod tests {
     #[test]
     fn up_to_date_plan_is_not_reapplied() {
         let p = plan("hash-a", true);
-        let d = needs_apply(&state_of(&p), &healthy(), &p);
+        let d = needs_apply(&state_of(&p), &healthy(&p), &p);
         assert!(!d.needs_apply);
         assert_eq!(d.reason, Reason::UpToDate);
         assert_eq!(d.reason.as_str(), "up_to_date");
@@ -367,7 +388,7 @@ mod tests {
     fn missing_ledger_triggers_apply() {
         // 首次安装：没有账本必须重放，不能凭“内存是空的”推断已生效。
         let p = plan("hash-a", false);
-        let d = needs_apply(&AgentState::default(), &healthy(), &p);
+        let d = needs_apply(&AgentState::default(), &healthy(&p), &p);
         assert!(d.needs_apply);
         assert_eq!(d.reason, Reason::NoLocalLedger);
     }
@@ -376,7 +397,7 @@ mod tests {
     fn new_server_revision_triggers_apply() {
         let old = plan("hash-a", false);
         let new = plan("hash-b", false);
-        let d = needs_apply(&state_of(&old), &healthy(), &new);
+        let d = needs_apply(&state_of(&old), &healthy(&new), &new);
         assert!(d.needs_apply);
         assert_eq!(d.reason, Reason::DesiredConfigChanged);
     }
@@ -387,7 +408,7 @@ mod tests {
         let p = plan("hash-a", false);
         let rebooted = NetworkSnapshot {
             tunnel_exists: false,
-            ..healthy()
+            ..healthy(&p)
         };
         let d = needs_apply(&state_of(&p), &rebooted, &p);
         assert!(d.needs_apply, "a vanished tunnel must be replayed");
@@ -395,13 +416,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_route_or_nat_counts_as_drift() {
+    fn missing_route_peer_or_nat_counts_as_drift() {
         let p = plan("hash-a", true);
         let state = state_of(&p);
 
         let no_route = NetworkSnapshot {
             installed_routes: Vec::new(),
-            ..healthy()
+            ..healthy(&p)
         };
         assert_eq!(
             needs_apply(&state, &no_route, &p).reason,
@@ -409,17 +430,134 @@ mod tests {
         );
 
         let no_nat = NetworkSnapshot {
-            nat_rules_present: false,
-            ..healthy()
+            nat_rules: Vec::new(),
+            ..healthy(&p)
         };
         assert_eq!(needs_apply(&state, &no_nat, &p).reason, Reason::KernelDrift);
 
         let no_peer = NetworkSnapshot {
-            peer_count: 0,
-            ..healthy()
+            peers: Vec::new(),
+            ..healthy(&p)
         };
         assert_eq!(
             needs_apply(&state, &no_peer, &p).reason,
+            Reason::KernelDrift
+        );
+    }
+
+    #[test]
+    fn a_substituted_or_extra_peer_is_drift_with_an_equal_count() {
+        // 数量相同、身份不同（受管接口上被换了 peer）→ 必须重放。旧检查只看
+        // `peer_count`，对这种注入判「未漂移」——这正是升级到身份级的动因。
+        let p = plan("hash-a", false);
+        let swapped = NetworkSnapshot {
+            peers: vec![PeerObserved {
+                public_key: "somebody-else".into(),
+                allowed_ips: vec!["10.240.0.0/16".parse().unwrap()],
+            }],
+            ..healthy(&p)
+        };
+        assert_eq!(
+            needs_apply(&state_of(&p), &swapped, &p).reason,
+            Reason::KernelDrift
+        );
+
+        // 不替换、只是多一个 peer：本接口上的 peer 都是 Meshlet 自有对象，
+        // 多出即漂移（同样会绕过错位的 peer_count 判定）。
+        let extra = {
+            let mut snapshot = healthy(&p);
+            snapshot.peers.push(PeerObserved {
+                public_key: "lurker".into(),
+                allowed_ips: vec!["10.240.0.9/32".parse().unwrap()],
+            });
+            snapshot
+        };
+        assert_eq!(
+            needs_apply(&state_of(&p), &extra, &p).reason,
+            Reason::KernelDrift
+        );
+    }
+
+    #[test]
+    fn peer_allowed_ips_widened_is_drift_and_order_is_ignored() {
+        // 身份相同、allowed-ips 被改宽（放行全网段）→ 必须重放纠回。
+        let p = plan("hash-a", false);
+        let widened = NetworkSnapshot {
+            peers: vec![PeerObserved {
+                public_key: "hub-pub".into(),
+                allowed_ips: vec!["0.0.0.0/0".parse().unwrap()],
+            }],
+            ..healthy(&p)
+        };
+        assert_eq!(
+            needs_apply(&state_of(&p), &widened, &p).reason,
+            Reason::KernelDrift
+        );
+
+        // 集合相同、顺序不同不算漂移（内核枚举顺序不由我们决定）。
+        let mut multi = plan("hash-a", false);
+        multi.tunnel.peers[0].allowed_ips = vec![
+            "10.240.0.0/16".parse().unwrap(),
+            "192.168.9.0/24".parse().unwrap(),
+        ];
+        let reordered = NetworkSnapshot {
+            peers: vec![PeerObserved {
+                public_key: multi.tunnel.peers[0].public_key.clone(),
+                allowed_ips: vec![
+                    "192.168.9.0/24".parse().unwrap(),
+                    "10.240.0.0/16".parse().unwrap(),
+                ],
+            }],
+            ..healthy(&multi)
+        };
+        assert!(!needs_apply(&state_of(&multi), &reordered, &multi).needs_apply);
+    }
+
+    #[test]
+    fn missing_or_extra_nat_fingerprint_is_drift() {
+        // 少一条：DNAT 被手工删掉、SNAT 还在 → 集合不一致。旧的
+        // `nat_rules_present` 布尔值对此判「未漂移」——有一条在就等于全在。
+        let p = plan("hash-a", true);
+        let mut dnat_missing = healthy(&p);
+        dnat_missing.nat_rules = vec![p.nat_rules[1].signature()];
+        assert_eq!(
+            needs_apply(&state_of(&p), &dnat_missing, &p).reason,
+            Reason::KernelDrift
+        );
+
+        // 多一条：下发只增不删，旧映射单元的残留必须被检出（不能等它自己消失）。
+        let mut stale_rule = p.nat_rules[0].clone();
+        stale_rule.match_dest = "10.241.8.0/24".parse().unwrap();
+        stale_rule.action = NatAction::NetMap {
+            to: "192.168.8.0/24".parse().unwrap(),
+        };
+        stale_rule.owner = "meshlet alias al-0".into();
+        let mut extra_rule = healthy(&p);
+        extra_rule.nat_rules.push(stale_rule.signature());
+        assert_eq!(
+            needs_apply(&state_of(&p), &extra_rule, &p).reason,
+            Reason::KernelDrift
+        );
+    }
+
+    #[test]
+    fn orphan_nat_rules_on_a_demoted_gateway_are_drift() {
+        // 计划已无 NAT（网关降级 / 映射被删），内核里还留着 Meshlet 注释的规则
+        // → 必须重放以走所有权清理。旧逻辑对「计划无 NAT」直接放行，残留会
+        // 一直留到有人手动清理。
+        let p = plan("hash-a", false);
+        let orphan = NatRule {
+            source_cidr: None,
+            incoming_interface: None,
+            chain: NatChain::Postrouting,
+            match_dest: "192.168.9.0/24".parse().unwrap(),
+            action: NatAction::SnatToGatewayLan,
+            owner: "meshlet alias al-1".into(),
+        };
+        let mut leftover = healthy(&p);
+        leftover.nat_rules = vec![orphan.signature()];
+        assert_eq!(
+            needs_apply(&state_of(&p), &leftover, &p).reason,
             Reason::KernelDrift
         );
     }
@@ -432,7 +570,7 @@ mod tests {
 
         let wrong = NetworkSnapshot {
             tunnel_mtu: Some(1420),
-            ..healthy()
+            ..healthy(&p)
         };
         assert_eq!(
             needs_apply(&state_of(&p), &wrong, &p).reason,
@@ -441,7 +579,7 @@ mod tests {
 
         let matching = NetworkSnapshot {
             tunnel_mtu: Some(1380),
-            ..healthy()
+            ..healthy(&p)
         };
         assert!(!needs_apply(&state_of(&p), &matching, &p).needs_apply);
     }
@@ -452,7 +590,7 @@ mod tests {
         let p = plan("hash-a", false);
         let other = NetworkSnapshot {
             tunnel_mtu: Some(1300),
-            ..healthy()
+            ..healthy(&p)
         };
         assert!(!needs_apply(&state_of(&p), &other, &p).needs_apply);
     }
@@ -462,8 +600,8 @@ mod tests {
         // 非网关设备：内核本来就没有 Meshlet NAT 规则，不算漂移。
         let p = plan("hash-a", false);
         let no_nat = NetworkSnapshot {
-            nat_rules_present: false,
-            ..healthy()
+            nat_rules: Vec::new(),
+            ..healthy(&p)
         };
         assert!(!needs_apply(&state_of(&p), &no_nat, &p).needs_apply);
     }

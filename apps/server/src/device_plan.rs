@@ -183,7 +183,12 @@ pub fn build_device_plan(
 
     for rule in &mut nat_rules {
         rule.source_cidr = Some(overlay);
-        rule.incoming_interface = Some(dataplane.interface.clone());
+        // `-i` 只对 PREROUTING 生效（`NatRule::iptables_args` 同一口径）：
+        // 给 POSTROUTING 规则塞接口是惰性元数据，会渲染不出、也让指纹口径
+        // 在计划侧与内核侧之间对不上。
+        if rule.chain == meshlet_network::nat::NatChain::Prerouting {
+            rule.incoming_interface = Some(dataplane.interface.clone());
+        }
     }
     // Canonical order keeps plan hashes stable across DB reloads and input ordering.
     routes.sort_by(|a, b| {

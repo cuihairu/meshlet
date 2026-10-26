@@ -62,6 +62,46 @@ pub struct NatRule {
 }
 
 impl NatRule {
+    /// 规则身份指纹（`chain|目的|动作|所有权|源|入向接口`），与网关 LAN 地址
+    /// 无关。计划侧与内核侧（[crate::linux] 解析 iptables `-S` 输出）产出
+    /// 同一形状的字符串，因此两侧可直接做集合精确比对。
+    ///
+    /// 指纹只反映**内核实际渲染的字段**（见 [`Self::iptables_args`]）：
+    /// `-i` 只对 PREROUTING 渲染，POSTROUTING 规则上的 `incoming_interface`
+    /// 是惰性元数据，指纹一律记 `none`——否则计划侧带接口、内核侧没有，
+    /// 同一条规则两侧指纹对不上，会被误判成计划外的多余对象。
+    ///
+    /// 可选项写成 CIDR 的 Display 裸串、缺省写 `none`——内核侧从命令行读到的
+    /// 本就是裸串，用 `{:?}` 会打印出结构体内部字段而永远对不上。
+    ///
+    /// 账本（`applied.json` 的 `nat_rules`）只与同一计划的另一份指纹比对、从
+    /// 不与内核侧比对，所以这里的口径变更最多触发一次幂等重放。
+    pub fn signature(&self) -> String {
+        let action = match self.action {
+            NatAction::NetMap { to } => format!("net_map:{to}"),
+            NatAction::SnatToGatewayLan => "snat_to_gateway_lan".to_string(),
+        };
+        let source = self
+            .source_cidr
+            .map_or_else(|| "none".to_string(), |cidr| cidr.to_string());
+        let interface = match self.chain {
+            NatChain::Prerouting => self
+                .incoming_interface
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+            NatChain::Postrouting => "none".to_string(),
+        };
+        format!(
+            "{}|{}|{}|{}|{}|{}",
+            self.chain.as_str(),
+            self.match_dest,
+            action,
+            self.owner,
+            source,
+            interface
+        )
+    }
+
     /// 渲染为 iptables 参数（`-t nat` 之外的部分；单测与未来执行器共用同
     /// 一渲染，避免计划与执行漂移）。`gateway_lan_addr` 供
     /// [NatAction::SnatToGatewayLan] 使用，NETMAP 规则不读它。
