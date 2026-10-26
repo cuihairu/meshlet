@@ -157,6 +157,42 @@ pub struct HubDataPlaneBackend {
     make_backend: Arc<dyn Fn() -> SystemBackend + Send + Sync>,
 }
 
+/// 撤销集合优先于机械恢复：已保存的 hub 部署在下发内核或写回恢复日志前，
+/// 必须对当前授权快照重新过滤——安全语义优先于机械恢复。过滤顺序即优先级：
+/// 被撤销设备的 peer 先走，网关不再活跃的路由随之删除，失去所属路由的
+/// alias 再删，最后删掉失去 peer allowed-ips 依据的 hub 转发路由（网关侧
+/// NAT 随路由集合在 agent 侧收敛，无需单独过滤）。
+pub(crate) fn enforce_authorization(mesh: &MeshState, network_id: &str, saved: &mut Deployment) {
+    let active_keys: std::collections::HashSet<_> = mesh
+        .registry
+        .devices()
+        .iter()
+        .filter(|d| d.is_active() && d.network_id.0 == network_id)
+        .map(|d| d.public_key.as_str())
+        .collect();
+    saved
+        .hub
+        .tunnel
+        .peers
+        .retain(|p| active_keys.contains(p.public_key.as_str()));
+    saved.routes.retain(|r| {
+        mesh.registry
+            .find_by_id(&r.gateway_device_id)
+            .is_some_and(|d| d.is_active())
+    });
+    saved
+        .aliases
+        .retain(|a| saved.routes.iter().any(|r| r.id == a.lan_route_id));
+    saved.hub.routes.retain(|r| {
+        saved
+            .hub
+            .tunnel
+            .peers
+            .iter()
+            .any(|p| p.allowed_ips.contains(&r.destination))
+    });
+}
+
 impl HubDataPlaneBackend {
     /// 从期望状态快照构造（网络不存在/缺 IPAM 等构造错误延迟到 apply 报告，
     /// 保持工厂不可失败的签名）；后端构造可注入（netns 集成测试用）。
@@ -169,34 +205,7 @@ impl HubDataPlaneBackend {
     ) -> Self {
         let mut previous = mesh.deployments.get(network_id).cloned();
         if let Some(saved) = &mut previous {
-            let active_keys: std::collections::HashSet<_> = mesh
-                .registry
-                .devices()
-                .iter()
-                .filter(|d| d.is_active() && d.network_id.0 == network_id)
-                .map(|d| d.public_key.as_str())
-                .collect();
-            saved
-                .hub
-                .tunnel
-                .peers
-                .retain(|p| active_keys.contains(p.public_key.as_str()));
-            saved.routes.retain(|r| {
-                mesh.registry
-                    .find_by_id(&r.gateway_device_id)
-                    .is_some_and(|d| d.is_active())
-            });
-            saved
-                .aliases
-                .retain(|a| saved.routes.iter().any(|r| r.id == a.lan_route_id));
-            saved.hub.routes.retain(|r| {
-                saved
-                    .hub
-                    .tunnel
-                    .peers
-                    .iter()
-                    .any(|p| p.allowed_ips.contains(&r.destination))
-            });
+            enforce_authorization(mesh, network_id, saved);
         }
         let previous_error = previous.as_ref().and_then(|saved| {
             saved.hub.routes.iter().find_map(|r| {
@@ -901,15 +910,9 @@ async fn rollback_revision_impl(
         if rolled.apply_status == meshlet_domain::ApplyStatus::RolledBack && state.dataplane.enabled
         {
             if let Some(mut saved) = guard.deployments.get(&network_id).cloned() {
-                saved.routes.retain(|r| {
-                    guard
-                        .registry
-                        .find_by_id(&r.gateway_device_id)
-                        .is_some_and(|d| d.is_active())
-                });
-                saved
-                    .aliases
-                    .retain(|a| saved.routes.iter().any(|r| r.id == a.lan_route_id));
+                // 回滚回落到上一份已确认计划（可能早于最近的撤销），写回日志前
+                // 先过当前授权快照，否则被撤销的设备会随日志重新获得授权。
+                enforce_authorization(&guard, &network_id, &mut saved);
                 guard
                     .lan_routes
                     .insert(network_id.clone(), saved.routes.clone());

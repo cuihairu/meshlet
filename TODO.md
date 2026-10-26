@@ -127,11 +127,36 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
       exit 0、`pnpm run docs:build` 成功；证据入 `docs/implementation/m3-fault-matrix.md`
       及 zh 镜像，侧栏已注册（`docs/.vitepress/config.mts:102`/`:190`）；可并入 R-07
       浸泡验收执行（场景 2/3/5/6/7 触碰共享内核状态，最值得在浸泡机重复）。
-- [ ] M4 回滚/重试不得重授已撤销权限：安全语义优先于机械恢复。撤销权限、删 Peer、删路由、
+- [x] M4 回滚/重试不得重授已撤销权限：安全语义优先于机械恢复。撤销权限、删 Peer、删路由、
       清 NAT 有明确优先级；失败恢复 last_good_plan 前先过当前授权快照。验收：撤销后诱导回滚的
       单测证明访问未重新打开。
+      → 已落地（2026-10-27）。优先级顺序落在两处：撤销动作本身 `service.rs:2417`
+      `revoke_device` 即按 §11.5/§12.6 先删该设备发布的 LAN 路由及其绑定 alias（撤销 >
+      删路由 > 清 NAT，NAT 随路由集合在网关收敛）；恢复侧新增 `revision.rs:165`
+      `enforce_authorization` 作为唯一过滤点——先删被撤销设备的 peer，再删网关不再活跃的
+      路由，再删失去所属路由的 alias，最后删失去 peer allowed-ips 依据的 hub 转发路由。
+      四个消费边界共用它：内核目标 `revision.rs:208`（apply/rollback/recover 的
+      last_good_plan）、回滚结算 `revision.rs:915`（写回内存恢复日志前）、装载
+      `persist.rs:1562`（失败修订让日志短暂滞留旧计划时，重启读到的是已授权子集）、
+      回滚落库 `persist.rs:2222`（回滚把过滤后的部署写回 `hub_deployments`；原先只写
+      路由/alias，下次重启会从日志读回含被撤销设备的计划）。验收测试
+      `single_instance.rs:2008` `rolling_back_a_failed_revoke_does_not_reopen_access`
+      （日志断言走 `journal_plan`，`:1311`）：撤销 + 两次失败 apply（外来路由占住目的段）
+      → 隧道步已移除被撤销 peer 而 apply 仍失败（撤销优先于机械恢复）→ 回滚后 hub peer
+      列表仍不含被撤销公钥、`ping` 仍不通、日志 JSON 的 peer/路由/alias 均不含它、
+      存活设备握手与流量计数持续累加 → `persist::load` + `recover_once` 重启后同样不复活。
+      取证反向验证：临时摘掉回滚结算的过滤，该测在 `single_instance.rs:2123` 失败，日志
+      JSON 记录回两个 peer（含被撤销公钥 `zdzp…`）——证明断言抓的是本次修的缺陷，而非
+      已被 `from_mesh_with` 覆盖的内核侧。实测：该测单跑 8.44s；`single_instance` 8 通过
+      （串行 116.83s）；`cargo test --workspace`、`cargo clippy --workspace --all-targets
+      -- -D warnings`、`cargo fmt --all -- --check`、`pnpm run docs:build` 全绿。
+      门禁说明：`setup()` 以「sudo 可用 + `wg --version` 成功」判前置条件，本机两者齐备，
+      所以 `MESHLET_REQUIRE_DATAPLANE=1` 在本机只是「缺前置条件时硬失败」的开关，不设也真跑
+      （workspace 运行即真跑：8 测 71.43s）——验收不能只看 exit code。
 - [ ] M5 TODO 完成状态审计（作为 TODO #52 SystemBackend 接线决策的前置）：逐条核对已勾项的
       实现路径、测试覆盖、真实验收证据，重点权限撤销/回滚/多网络隔离/Windows 后端，产出审计报告
       （结论三分类：有证据/证据弱/仅代码存在）。验收：报告入 docs/review/，#52 决策引用它。
+      → 状态（2026-10-27）：未立项完成。M4 收尾只顺带核对了「权限撤销/回滚不重授」一条主线
+      的证据链（见 M4 证据）；全量逐条审计与 `docs/review/` 报告仍未做。
 - 说明：评审的「备份明文加密恢复包」已在 R-07 显式加密恢复包口径内（不重复立项）；
   服务发布授权清单（监听地址/来源 CIDR/UDP 会话生命周期等）在 M1 落地时并入检查单。

@@ -1556,7 +1556,10 @@ pub async fn load(
             .fetch_all(pool)
             .await?
     {
-        let saved = serde_json::from_str(&json).map_err(|e| corrupt("hub deployment", e))?;
+        let mut saved = serde_json::from_str(&json).map_err(|e| corrupt("hub deployment", e))?;
+        // 日志可能在失败修订（journal 未更新）与撤销并存时短暂滞留旧计划：
+        // 装载即按当前授权快照过滤，恢复路径读到的永远是已授权子集。
+        crate::revision::enforce_authorization(&state, &id, &mut saved);
         state.deployments.insert(id, saved);
     }
 
@@ -2216,6 +2219,11 @@ pub(crate) async fn commit_rollback(
                 sqlx::query("INSERT INTO alias_mappings(id,network_id,lan_route_id,alias_cidr,target_cidr,translation_mode,status,created_at) VALUES(?,?,?,?,?,?,?,?)")
                     .bind(a.id.to_string()).bind(&network).bind(a.lan_route_id.to_string()).bind(a.alias_cidr.to_string()).bind(a.target_cidr.to_string()).bind(a.translation_mode.as_str()).bind("pending").bind(crate::service::now()).execute(&mut *tx).await?;
             }
+            // 已确认的 hub 计划同样回落到回滚结果（调用方已按当前授权快照
+            // 过滤），否则下次重启会从日志里读回更早的、含被撤销设备的计划。
+            let json = serde_json::to_string(saved).map_err(|e| corrupt("hub deployment", e))?;
+            sqlx::query("INSERT INTO hub_deployments(network_id,plan_json) VALUES(?,?) ON CONFLICT(network_id) DO UPDATE SET plan_json=excluded.plan_json,recovery_error=NULL")
+                .bind(&network).bind(json).execute(&mut *tx).await?;
         }
         sqlx::query("DELETE FROM device_apply_receipts WHERE device_id IN (SELECT id FROM devices WHERE network_id=?)").bind(&network).execute(&mut *tx).await?;
     }

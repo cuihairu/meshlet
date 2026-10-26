@@ -1306,6 +1306,18 @@ async fn converge_device(sandbox: &Sandbox, boot: &Boot, index: usize) -> Device
     plan
 }
 
+/// 恢复日志（`hub_deployments.plan_json`）里的 hub 部署，供断言被撤销设备
+/// 是否仍然被记账。
+async fn journal_plan(pool: &sqlx::SqlitePool, network: &str) -> Value {
+    let json: String =
+        sqlx::query_scalar("SELECT plan_json FROM hub_deployments WHERE network_id=?")
+            .bind(network)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    serde_json::from_str(&json).unwrap()
+}
+
 fn wg_own_public_key(sandbox: &Sandbox, index: usize) -> String {
     let out = ns(&sandbox.names[index], &["wg", "show", "wg0", "public-key"]);
     assert!(
@@ -1986,5 +1998,194 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
     assert!(
         live_handshaking,
         "the surviving device must keep handshaking: {dump}"
+    );
+}
+
+/// M4：回滚/重试不得重授已撤销权限。安全语义优先于机械恢复——撤销后诱导
+/// 一次失败应用再回滚，恢复出的 last_good_plan 必须先过当前授权快照，
+/// 被撤销设备的访问不得重新打开，恢复日志也不得再记它。
+#[tokio::test]
+async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
+    let Some(sandbox) = setup() else {
+        return;
+    };
+    let boot = boot_network(&sandbox, "revoke-rollback.key").await;
+
+    // hub 上记住的 peer 身份（peer 列表是 CSV，按字符串比对公钥）。
+    let peers_of = |sandbox: &Sandbox| -> String {
+        String::from_utf8_lossy(&ns(&sandbox.names[0], &["wg", "show", "wg0", "peers"]).stdout)
+            .to_string()
+    };
+    let revoked_key = wg_own_public_key(&sandbox, 1);
+    let live_key = wg_own_public_key(&sandbox, 2);
+    assert!(
+        peers_of(&sandbox).contains(&revoked_key),
+        "both devices must be authorized before the revoke"
+    );
+    assert!(peers_of(&sandbox).contains(&live_key));
+
+    // 外来路由占住目的段，后续 apply 的路由步必失败——失败应用可控。
+    net(
+        &sandbox.names[0],
+        &["ip", "route", "add", "192.168.99.0/24", "dev", "lo"],
+    );
+    admin(
+        &boot.app,
+        &boot.cookie,
+        &format!("/api/v1/networks/{}/routes", boot.network),
+        json!({
+            "gateway_device_id": boot.device_ids[1],
+            "destination_cidr": "192.168.99.0/24",
+            "route_mode": "direct",
+            "return_path_mode": "dual_route"
+        }),
+    )
+    .await;
+    let failed_route = apply(&boot.app, &boot.cookie, &boot.network).await;
+    assert_eq!(failed_route["apply_status"], "failed", "{failed_route}");
+    // 失败修订不更新恢复日志：日志里还是最初那份已确认计划，含被撤销设备的
+    // peer——这正是回滚必须过滤的原因。
+    assert!(
+        journal_plan(&boot.pool, &boot.network)
+            .await
+            .to_string()
+            .contains(&revoked_key),
+        "the journal still holds the last confirmed plan after a failed apply"
+    );
+
+    // 撤销优先于机械恢复：同一坏路由仍在，撤销修订的 apply 依然失败，但
+    // 隧道步已经把被撤销设备移出 hub。
+    let revoked = admin(
+        &boot.app,
+        &boot.cookie,
+        &format!(
+            "/api/v1/networks/{}/devices/{}/revoke",
+            boot.network, boot.device_ids[0]
+        ),
+        json!({}),
+    )
+    .await;
+    let revoke_revision = revoked["revision_id"].as_u64().unwrap();
+    let failed_revoke = apply(&boot.app, &boot.cookie, &boot.network).await;
+    assert_eq!(failed_revoke["apply_status"], "failed", "{failed_revoke}");
+    assert!(
+        !peers_of(&sandbox).contains(&revoked_key),
+        "revocation must take effect even though the apply failed"
+    );
+    assert!(peers_of(&sandbox).contains(&live_key));
+    assert!(
+        !ping(&sandbox.names[2], "10.240.0.2"),
+        "the revoked device must be unreachable"
+    );
+
+    // 回滚失败修订 → 机械上该恢复上一份已确认计划（含被撤销设备）；授权快照
+    // 必须先行，被撤销设备不得随 last_good_plan 复活。
+    let rolled = admin(
+        &boot.app,
+        &boot.cookie,
+        &format!(
+            "/api/v1/networks/{}/config-revisions/{}/rollback",
+            boot.network, revoke_revision
+        ),
+        json!({}),
+    )
+    .await;
+    assert_eq!(rolled["apply_status"], "rolled_back", "{rolled}");
+    assert!(
+        !peers_of(&sandbox).contains(&revoked_key),
+        "rollback must not re-admit the revoked peer"
+    );
+    assert!(peers_of(&sandbox).contains(&live_key));
+    assert!(
+        !ping(&sandbox.names[2], "10.240.0.2"),
+        "rollback must not reopen access for the revoked device"
+    );
+    // 网关侧 LAN 路由随回滚回落到上一份计划（那份计划里没有它），alias 无孤儿。
+    let (_, routes) = request(
+        &boot.app,
+        "GET",
+        &format!("/api/v1/networks/{}/routes", boot.network),
+        Value::Null,
+        Some(&boot.cookie),
+        None,
+    )
+    .await;
+    assert!(routes.as_array().unwrap().is_empty(), "{routes}");
+
+    // 恢复日志（持久化的 hub 部署）已按授权快照过滤：不含被撤销设备的 peer，
+    // 也没有指向已撤销网关的路由。
+    let journal = journal_plan(&boot.pool, &boot.network).await;
+    let peers: Vec<&Value> = journal["hub"]["tunnel"]["peers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .collect();
+    assert!(
+        peers
+            .iter()
+            .all(|p| p["public_key"].as_str().unwrap() != revoked_key.as_str()),
+        "the journal must not re-record the revoked peer: {journal}"
+    );
+    assert!(
+        peers
+            .iter()
+            .any(|p| p["public_key"].as_str().unwrap() == live_key.as_str()),
+        "the surviving device must stay in the journal: {journal}"
+    );
+    assert!(
+        journal["routes"].as_array().unwrap().is_empty(),
+        "{journal}"
+    );
+    assert!(
+        journal["hub"]["routes"].as_array().unwrap().is_empty(),
+        "{journal}"
+    );
+
+    // 存活设备不受牵连：hub 侧握手与流量计数持续累加（peer 行尾部四列是
+    // handshake / received / sent / keepalive）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let (live_handshaking, dump) = loop {
+        let dump =
+            String::from_utf8_lossy(&ns(&sandbox.names[0], &["wg", "show", "wg0", "dump"]).stdout)
+                .to_string();
+        let live_line = dump
+            .lines()
+            .find(|line| line.starts_with(live_key.as_str()));
+        let fields: Vec<&str> = live_line.unwrap_or_default().split_whitespace().collect();
+        let ok = fields.len() >= 4
+            && fields[fields.len() - 4]
+                .trim()
+                .parse::<u64>()
+                .is_ok_and(|handshake| handshake > 0)
+            && fields[fields.len() - 3]
+                .trim()
+                .parse::<u64>()
+                .is_ok_and(|received| received > 0);
+        if ok || std::time::Instant::now() > deadline {
+            break (ok, dump);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    };
+    assert!(
+        live_handshaking,
+        "the surviving device must keep handshaking: {dump}"
+    );
+
+    // 重启恢复：日志里没有被撤销设备，恢复路径因此不会把它带回来。
+    let loaded = meshlet_server::persist::load(&boot.pool, Default::default())
+        .await
+        .unwrap();
+    *boot.shared.lock().unwrap() = loaded.mesh;
+    meshlet_server::convergence::recover_once(boot.state.clone())
+        .await
+        .unwrap();
+    assert!(
+        !peers_of(&sandbox).contains(&revoked_key),
+        "restart must not resurrect the revoked peer from the journal"
+    );
+    assert!(peers_of(&sandbox).contains(&live_key));
+    assert!(
+        !ping(&sandbox.names[2], "10.240.0.2"),
+        "the revoked device must stay unreachable after restart"
     );
 }
