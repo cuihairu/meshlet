@@ -31,3 +31,6 @@ docs/.vitepress/dist/
 
 # Release archives
 /dist/
+
+# Local test/build logs
+/cargo-*.log
