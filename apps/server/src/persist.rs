@@ -1925,17 +1925,39 @@ pub struct RestoreReport {
 /// 从备份文件恢复活动库（存档 §17.4）。
 ///
 /// 流程（任何一步失败都不触碰活动库——**不留半恢复状态**）：
-/// 1. 校验备份（[`validate_backup`]：独立打开 + quick_check + 必需表齐全）；
-/// 2. 活动库可独占加锁（否则提示先停 meshlet-server）；
-/// 3. 备份 → 临时文件 → 再校验 → 原子换名；替换前清掉旧 `-wal`/`-shm`；
-/// 4. 打开恢复后的库，留痕 `system.restore` 审计事件；
-/// 5. 复用 §17.3 [`load`] 重建 + 收敛（applying → failed、rollback_pending
+/// 1. 实例锁（[`crate::instance_lock`]）：meshlet-server 在跑则整体拒绝——
+///    WAL 下空闲服务不持写事务，第 4 步的 `BEGIN EXCLUSIVE` 拦不住「换名后
+///    旧 inode 继续吃写入」的丢数据路径（2026-10-24 验收实录）；
+/// 2. 校验备份（[`validate_backup`]：独立打开 + quick_check + 必需表齐全）；
+/// 3. 拒绝旁挂非空 WAL 的备份（只拷主文件会静默丢已提交事务）；
+/// 4. 活动库可独占加锁（否则提示先停 meshlet-server；advisory 锁之外的
+///    外来 SQLite 连接由这一步兜底）；
+/// 5. 备份 → 临时文件 → 再校验 → 原子换名；替换前清掉旧 `-wal`/`-shm`；
+/// 6. 打开恢复后的库，留痕 `system.restore` 审计事件；
+/// 7. 复用 §17.3 [`load`] 重建 + 收敛（applying → failed、rollback_pending
 ///    保留、applied 不重放——与正常启动完全同一条路径，不比现在更弱）。
 pub async fn restore_from_backup(
     backup: &Path,
     database: &Path,
     thresholds: meshlet_domain::PresenceThresholds,
 ) -> Result<RestoreReport, BackupError> {
+    // 实例锁守卫：拿不到（服务在跑）或打不开（无法证明没服务在跑）都拒绝。
+    // 锁持有到函数返回，恢复期间启动的服务会得到明确失败而不是半恢复。
+    let _instance_guard = match crate::instance_lock::try_acquire(database) {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            return Err(BackupError::Locked(format!(
+                "lock {} is held (meshlet-server is running); stop meshlet-server before restore",
+                crate::instance_lock::lock_path(database).display(),
+            )));
+        }
+        Err(error) => {
+            return Err(BackupError::Locked(format!(
+                "cannot verify the live database is unused ({}: {error}); stop meshlet-server before restore",
+                crate::instance_lock::lock_path(database).display(),
+            )));
+        }
+    };
     let view = validate_backup(backup).await?;
 
     // 备份旁挂着**非空**的 WAL（有人对备份文件写过且未 checkpoint）——只拷贝

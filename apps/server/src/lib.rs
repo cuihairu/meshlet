@@ -21,6 +21,7 @@ pub mod backup;
 pub mod convergence;
 pub mod device_plan;
 pub mod diagnostics;
+pub mod instance_lock;
 pub mod metrics;
 pub mod persist;
 pub mod publish;

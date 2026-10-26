@@ -60,6 +60,8 @@ systemctl start meshlet-server
 
 **第 1 步不可省略。** 恢复以 rename 把新文件换到活动路径，而运行中的进程仍握着旧 inode：服务保持 `active`、控制面照常应答，但此后每次写入都落进已脱链的文件里——2026-10-24 的验收里一次返回 HTTP 201 的 bootstrap token 铸造就此消失，重启服务后才重新采用恢复出的库。详见[部署验收](/zh/implementation/r07-deployment-acceptance.md)。
 
+**这一步现在由代码强制执行，不再只靠散文约束。** 常驻 `meshlet-server` 启动即对 `<db>.lock` 拿排他锁并持有到进程退出（`apps/server/src/instance_lock.rs`，unix 用 flock、windows 用 LockFileEx，进程崩溃由 OS 自动释放）；`restore` 在触碰任何文件**之前**尝试拿同一把锁，拿不到就整体拒绝（`BackupError::Locked`，提示先停服务），活动库一字不动。原先恢复前的 `BEGIN EXCLUSIVE` 探测在 WAL 下拦不住这个场景——空闲服务不持写事务，探测照样成功而进程仍握着旧 inode。锁是 advisory：只约束同样走本机制的 meshlet 进程；外来进程直持 SQLite 连接不经过它，那一类仍由下一步的独占探测兜底。
+
 **归属同样会自己修好。** `restore` 通常由 root 执行，而随包单元以非特权用户（`User=meshlet`）运行；恢复出的库会恢复原归属——优先取被替换的活动库，其次取数据目录本身。否则文件留在 root 所有，服务启动即 `unable to open database file` 并 crash-loop。2026-10-24 的验收中，root 执行的恢复得到 `0600 meshlet:meshlet meshlet.db`，服务 `active` 且 `NRestarts=0`。
 
 恢复流程（**任何一步失败都不触碰活动库——不留半恢复状态**）：
@@ -68,12 +70,16 @@ systemctl start meshlet-server
    不完整的备份明确拒绝，并点名缺失的表；
 2. **拒绝未合并的 WAL**：备份旁挂着非空 `-wal` 时拒绝（只拷贝主文件会静默
    丢已提交事务）——重取备份再恢复；
-3. **占用检查**：活动库存在时要求可独占加锁，失败即提示「先停
-   meshlet-server」；
-4. **拷贝 → 复验 → 原子换名**：备份复制到 `<db>.restore-tmp` 并再次校验，
+3. **实例锁守卫**：先对 `<db>.lock` 拿排他锁（服务进程持锁期间必然拿不到），
+   拿不到即整体拒绝并提示「先停 meshlet-server」；锁文件打不开也拒绝——无法
+   证明没有服务在跑时宁可不恢复；
+4. **独占事务探测**：活动库存在时要求可独占加锁（`BEGIN EXCLUSIVE`），
+   失败同样拒绝。WAL 下空闲服务不持写事务，这条单独拦不住运行中恢复，
+   所以需要前面那把进程锁；两条合起来覆盖 meshlet 进程与外来 SQLite 连接；
+5. **拷贝 → 复验 → 原子换名**：备份复制到 `<db>.restore-tmp` 并再次校验，
    清掉旧 `-wal`/`-shm`，再原子换名覆盖活动库（中途失败仍停在旧库）；
-5. **留痕**：`system.restore` 审计事件（actor 为空，detail 记源路径与内容摘要）；
-6. **按期望状态协调**：复用 §17.3 的启动重建——IPAM 已分配集合、路由 id
+6. **留痕**：`system.restore` 审计事件（actor 为空，detail 记源路径与内容摘要）；
+7. **按期望状态协调**：复用 §17.3 的启动重建——IPAM 已分配集合、路由 id
    序列、修订序列与 `desired_config_hash` 逐字段恢复。
 
 ### 恢复的收敛语义与正常启动完全一致

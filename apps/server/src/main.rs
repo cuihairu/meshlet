@@ -10,6 +10,9 @@
 //! - `meshlet-server restore <backup.db> [config.toml]`：从一致性备份离线
 //!   恢复活动库（§17.4；先停服务再恢复），留痕 `system.restore` 审计事件
 //!   并按 §17.3 语义收敛，随后正常启动即恢复到期望状态。
+//!
+//! 上述两条子命令互斥于同一个数据库文件：常驻进程全程持有活动库锁
+//! （[instance_lock](meshlet_server::instance_lock)），恢复命令拿不到锁即拒绝。
 
 use meshlet_config::ServerConfig;
 use tracing::info;
@@ -53,6 +56,18 @@ async fn main() {
     } else {
         format!("sqlite:{}", config.database_path)
     };
+    // §17.4 恢复守卫：进程全程持有活动库锁。`restore` 子命令在动任何文件之前
+    // 拿同一把锁，拿不到就整体拒绝——运行中恢复会把写入送进脱链 inode（旧库
+    // 被换名覆盖），而 `systemctl` 全程显示 active。
+    let _instance_lock = meshlet_server::instance_lock::try_acquire(std::path::Path::new(
+        config.database_path.trim_start_matches("sqlite:"),
+    ))
+    .unwrap_or_else(|e| {
+        panic!(
+            "database lock for {} not acquired ({e}); another meshlet-server is likely already running",
+            config.database_path
+        )
+    });
     let pool = meshlet_server::store::connect(&database_url)
         .await
         .unwrap_or_else(|e| panic!("database {}: {e}", config.database_path));
