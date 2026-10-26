@@ -7,9 +7,9 @@ R-04 已完成：注册、启动恢复、执行回执、重试与升级均已实
 - 自举注册优先复用已保存的 agent 凭证，把凭证写成 `0600` 秘密文件；本机私钥只生成或复用，绝不上送。流程与权限证据在 `apps/agent/src/bootstrap.rs:17`、`apps/agent/src/bootstrap.rs:67`、`apps/agent/src/bootstrap.rs:146`。
 - 服务端只保存 Bootstrap Token 的 SHA-256 摘要（`crates/meshlet-domain/src/entities.rs:141`）。注册把摘要连同使用与撤销状态入库，列表响应不泄露摘要（`apps/server/tests/device_registration.rs:278`）。
 - 启动恢复读取已应用计划账本，通过期望哈希与内核状态对比识别漂移和损坏账本，只在需要时重放。证据在 `apps/agent/src/reconcile.rs:68`、`apps/agent/src/reconcile.rs:86`。
-- 每次计划应用都上报精确 Revision 回执；失败会留在内存队列，并在下一个 tick 开始时重试。证据在 `apps/agent/src/agent.rs:136`、`apps/agent/src/agent.rs:140`。队列上限 16 且丢弃最旧条目由 `apps/agent/src/agent.rs:701` 锁定。
-- 自更新先拉取公开 manifest，再校验二进制 SHA-256，通过后原子替换二进制、保留备份并写入 restart 标记。版本选择、哈希不匹配、Current 不动作和安装覆盖在 `apps/agent/src/self_update.rs:219` 到 `apps/agent/src/self_update.rs:259`。服务端在 `apps/server/src/lib.rs:941` 暴露 `/api/v1/update-manifest`。
-- 心跳采集真实内核证据，并向 Hub 发送不分片的大包探测；缺失值明确表示未证实，不会补默认值。证据在 `apps/agent/src/agent.rs:422`、`crates/meshlet-domain/src/entities.rs:156`。
+- 每次计划应用都上报精确 Revision 回执；失败会留在内存队列，并在下一个 tick 开始时重试。证据在 `apps/agent/src/agent.rs:235`（`enqueue_receipt`）与 `apps/agent/src/agent.rs:222`（`flush_pending_receipts`）。队列上限 16 在 `apps/agent/src/agent.rs:236`，丢弃最旧条目的行为由 `apps/agent/src/agent.rs:842` 的测试锁定。
+- 自更新先拉取公开 manifest，再校验二进制 SHA-256，通过后原子替换二进制、保留备份并写入 restart 标记。版本选择、哈希不匹配、Current 不动作和安装覆盖在 `apps/agent/src/self_update.rs:227` 到 `apps/agent/src/self_update.rs:275`。服务端在 `apps/server/src/lib.rs:945` 暴露 `/api/v1/update-manifest`。
+- 心跳采集真实内核证据，并向 Hub 发送不分片的大包探测；缺失值明确表示未证实，不会补默认值。证据在 `apps/agent/src/agent.rs:555`（`collect_evidence`，MTU 探测载荷在 `:567`）、`crates/meshlet-domain/src/entities.rs:156`。
 
 ## 遗留
 
@@ -31,8 +31,8 @@ R-04 已完成：注册、启动恢复、执行回执、重试与升级均已实
 peer 被删、混入陌生 peer）、存活 peer 的 `allowed-ips` 被改宽、有人在本 meshlet 所有权
 注释下手插一条 NAT 规则。
 
-快照现在携带身份（`NetworkSnapshot` 在 `crates/meshlet-network/src/lib.rs:160`、
-`PeerObserved` 在 `:177`），判定改为身份集合比对：
+快照现在携带身份（`NetworkSnapshot` 在 `crates/meshlet-network/src/lib.rs:169`、
+`PeerObserved` 在 `:182`），判定改为身份集合比对：
 
 | 对象 | 观测侧 | 比对 |
 | --- | --- | --- |
@@ -83,9 +83,9 @@ PREROUTING 渲染，POSTROUTING 指纹一律记 `none`（`:87`）。可选项缺
 真机内核（`MESHLET_REQUIRE_DATAPLANE` 门禁：双 netns、真实 `wg0`、真实 `iptables -t nat`、
 root 运行）：
 
-- `crates/meshlet-network/tests/backend_wiring.rs:977`–`:1182`——陌生 peer 被检出并移除、
+- `crates/meshlet-network/tests/backend_wiring.rs:1048`–`:1245`——陌生 peer 被检出并移除、
   计划内 peer 存活；未标记路由 `10.245.0.0/24 dev wg0` **不是**漂移、不进受管集合、修复
   后原行原样存活；多余的 meshlet 注释 SNAT 被检出并移除，计划内 SNAT 与外部「用户规则」
   双双存活。
-- `apps/agent/tests/agent_reconcile.rs:878`–`:992`——同样三类注入走真实 agent 判定路径，
+- `apps/agent/tests/agent_reconcile.rs:878`–`:1003`——同样三类注入走真实 agent 判定路径，
   逐项断言 `reason=KernelDrift`，收尾断言 `!needs_apply`。

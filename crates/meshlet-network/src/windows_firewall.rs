@@ -2,9 +2,10 @@
 //!
 //! 本模块包含**纯规划**与 `#[cfg(windows)]` 执行层：`netsh advfirewall
 //! firewall add/delete rule` 的参数构造、失败文本分类与受控执行。计划层
-//! 函数在任意平台编译并单测（本仓 CI 的 Linux 侧即可跑绿）；执行层**未在
-//! Windows 上实测**，实测前 Windows 仍保持 [crate::unsupported] 的显式
-//! 占位，不接 [crate::SystemBackend]。
+//! 函数在任意平台编译并单测（本仓 CI 的 Linux 侧即可跑绿）；执行层真机
+//! 验证（2026-10-26，中文 Windows Server）：add / show 读回 / delete /
+//! 幂等 re-delete 全链路走通；完整验收前 Windows 仍保持 [crate::unsupported]
+//! 的显式占位，不接 [crate::SystemBackend]。
 //!
 //! 与 [windows_routes](../../../crates/meshlet-network/src/windows_routes.rs)
 //! 同一纪律：

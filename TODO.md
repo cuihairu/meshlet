@@ -22,13 +22,13 @@
 - [x] R-03 统一网络规划与冲突分析：IPAM、Segment 策略、网关选择（确定性）、Direct 路由、Alias 映射、全局且与创建顺序无关的冲突检查。（**2026-10-27 事实修正（M5 审计）**：`meshlet-netplan` 从未被 server 消费——server 在 `apps/server/src` 内自建冲突检查（409 语义：`routes.rs:239` 同网段重叠、`aliases.rs:288` 重叠前缀点名对端等集成测试覆盖），计划哈希对路由重排的稳定性由产品路径测试 `device_plan.rs:590` 保证；该纯库连同其打乱顺序独立性测试已于同日删除，`docs/implementation/r03-unified-network-plan.md` 顶部已加注。本项已勾的依据是 server 产品路径的上述性质，不再引用已删除 crate。）
 - [x] R-04 设备端到端组网（Linux Agent）：注册（Bootstrap Token 只存摘要）、启动恢复、执行回执、重试、升级、真实连接诊断。（2026-10-24 PVE 实验台真机验收：空库真实 bootstrap→登录→409 负例→建网→token 只回原文一次→两台设备持 token 自注册→approve→apply→收敛；跨主机基线 20/20 双向、DF 1392 通/1419 与 1472 `+2 errors 100% loss`；13 项诊断收敛后全绿（`recent_handshake 2/2`、`mtu_planned` 引用设备读数 `1420 probe 1392`）；MTU 漂移 1480→1420 一个 tick 愈合（`KernelDrift`）、显式 `tunnel_mtu=1480` 一个 tick 生效（设备探测 `probe 1452`）、删键后自行愈合（`DesiredConfigChanged`）；验收还实测 hub 侧 MTU 跟随已 apply 修订而设备侧读实时配置的不对称，已记为后续项。证据：docs/implementation/r04-linux-agent-e2e.md）
   - [x] 注册摘要化、启动恢复、执行回执、重试、升级。
-  - [x] 真实连接诊断：大包探测逻辑已进仓，但真实 VPS 到设备的端到端连通验收仍留下轮。（2026-10-24 完成，见父行与 docs/implementation/r04-linux-agent-e2e.md）
+  - [x] 真实连接诊断：大包探测逻辑已进仓；真实 VPS 到设备的端到端连通验收已于 2026-10-24 完成（见父行与 docs/implementation/r04-linux-agent-e2e.md）。
 - [ ] R-05 Windows 完整客户端：隧道服务、系统路由、防火墙、权限提升、开机恢复、~~卸载清理（真平台后端）~~。（缺的条件，如实记录：一台可实际安装的 Windows 机器——Win10/11 或 Server、管理员权限、允许装 WireGuardNT 驱动并能重启验证开机恢复；编译门不缺：CI 已在 windows-latest 原生跑全 workspace `clippy -D warnings` + `cargo test --workspace`，本机也有单 crate msvc 交叉 check/clippy 绿。2026-10-26 起本机（中文 Windows Server 2022）以 GNU 工具链补齐全 workspace 测试/clippy 绿，路由/防火墙/服务数据面真机验收见子项。仍缺：WireGuardNT 驱动安装后的隧道全生命周期、提权执行层与开机恢复重启验证，以及据此做出的 SystemBackend 接线决策。）
   - [x] 权限提升：`windows_elevation` 计划层（受管 `.exe` 路径校验、`runas` 命令行转义、错误码/文案 → `InsufficientPrivileges` 分类）全平台编译 + Linux 单测（66 通过）；`#[cfg(windows)]` 执行层（ShellExecuteW runas + TokenElevation 查询）已过 `x86_64-pc-windows-msvc` clippy/check，**未在真机 Windows 实测，不得接为 SystemBackend**。
   - [x] 数据面真机验收（2026-10-25/26，中文 Windows Server 本机）：抓到并修复本地化根因——netsh/sc.exe 重定向输出是活动代码页（CP936/GBK）而非 UTF-8，`from_utf8_lossy` 丢失全部 zh-CN 文案；新增 `windows_console`（UTF-8 优先 + `MultiByteToWideChar(CP_ACP)` 解码，windows-sys 现有依赖加 `Win32_Globalization`），routes/service/firewall 执行层接入，分类器补真机报文：路由缺失「找不到元素。」、sc 1060「指定的服务未安装。」、防火墙缺失「没有与指定标准相匹配的规则。」、非提权「请求的操作需要提升(作为管理员运行)。」；真机新发现 sc stop 未启动服务返回 1062「服务尚未启动。」——Stop 目标状态是已停止，未运行即已达成，新增幂等成功（含退出码 1060/1062 双通道判定）。新增卸载链重入集成测试 `windows_cleanup_e2e`（服务 create→stop→delete→re-delete、防火墙 add→show→delete→re-delete、空态 CleanupPlan 全步幂等，真机闭环）；`windows_netsh` 原失败用例（幂等 re-delete）转绿。验证：meshlet-network 75 单测 + 3 真机集成全绿；全 workspace `cargo test` 与 clippy（stable-x86_64-pc-windows-gnu）exit 0。
 - [x] R-06 服务发布 - TCP/UDP PortForward。（crate 实现与单测；2026-10-24 已接控制面 CRUD + agent 运行链路：DevicePlan 携带 publish 段，agent 对账后在进程内绑定监听（回环高位端口验证，真机端到端见下条），端口冲突按设备/协议/监听地址判定，见 apps/server/tests/publish.rs）
 - [x] R-06 服务发布 - HTTP/HTTPS 发布。（crate 实现与单测；已接 CRUD。`tls_passthrough: true` 走 SNI 嗅探 + TLS 字节直通，**不做 TLS 终止**：无证书、不解密；字段于 M1 由 `tls_termination` 更名，旧名仍被接受）
-- [x] R-06 服务发布 - 授权控制与 server 接线。（2026-10-23 VPS 实测：CIDR 放行、Bearer 拒绝、缺 CSRF 403 三路径通过；2026-10-24 CRUD 写入端点接入 WriteUser + CSRF，11 个集成测试覆盖）
+- [x] R-06 服务发布 - 授权控制与 server 接线。（2026-10-23 VPS 实测：CIDR 放行、Bearer 拒绝、缺 CSRF 403 三路径通过；2026-10-24 CRUD 写入端点接入 WriteUser + CSRF，12 个集成测试覆盖）
 - [x] R-06 服务发布 - 健康探测。（crate 实现与单测；2026-10-24 已排程：agent 按 interval 周期探测并批量上报 /api/v1/agent/publish-health，服务端按 (probe, device) 守卫 upsert 到 publish_probe_reports）
 - [x] R-06 服务发布 - 内部 DNS 服务目录（分流 DNS，不覆盖公共 DNS）。（crate 实现与单测；2026-10-24 已接 agent reconcile：按计划起 DNS 套接字、仅应答内部后缀，每设备一个套接字）
 - [x] R-06 服务发布 - 真实 VPS/真机端到端验收。（2026-10-24 验收完成，完整证据见 docs/implementation/r06-service-publishing.md「真实 VPS 验收运行（2026-10-24）」）真实 agent 从服务端计划真实绑定并跑出流量：2 条 L4 转发（18080 允许 0.0.0.0/0 → `L4-FORWARD-BACKEND-OK`；18083 仅允许 10.9.9.9/32 → reset 零字节）、HTTP 路由 18090（本地与经 80 端口的发布域名均回 `HTTP-ROUTE-BACKEND-OK`）、UDP 15353 分流 DNS（`dig @127.0.0.1 -p 15353 app.mesh.internal` → 10.240.0.5，公共域名不应答）、TLS SNI 直通（客户端取回**后端**证书 `CN=tls.mesh.internal`，200 + `TLS-PASSTHROUGH-BACKEND-OK`，未知 SNI 与纯 HTTP 均 reset 且不触碰后端）、探针健康持续上报（`publish_probe_reports.checked_at` 跨周期推进）。验收中发现并修复三个真缺陷：SNI 嗅探器无边界检查在真机 panic 崩掉发布 worker（另附未剥握手头、吃掉 ClientHello 不回灌两个缺陷，11 单测 + 3 集成测试回归）、第二监听口/混合终止模式被静默接受（改为创建期 409，与既有每设备一 DNS 套接字守卫对称）、探针调度整表刷新导致每条探针只跑一次（`checked_at` 曾冻结数小时，已改为只记录真正排出去的 schedule）。**真机未验证，不冒充**：`0.0.0.0:53` 从未绑定过（只在 15353 上验收，53 需 root）；发布端口 15353/18080/18083/18090 被云安全组挡住，外部实测 BLOCKED（该盒子仅 22/80/443/8080 开放，控制面 8080 外部可达并返回 401）；TLS 无外部入口（443 被 cockpit 业务 vhost 占用，加 stream 直通会与线上业务冲突）；经发布域名走 80 的外部流量只在临时 nginx vhost 存在期间成立，该 vhost 已按可回退原则删除。控制台已补创建入口：`App.tsx` 的 `PublishSection` + `api.ts` 四个方法 + `publish.test.tsx`，行字段词汇抄 Portainer 服务「Port publishing」编辑器与 Dokploy 端口表、冲突用同一张 nothing-was-published 卡片、两步内联删除，真浏览器走查通过。历史真机证据与本次验收同见该文档
@@ -74,7 +74,7 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
       windows 门禁测试引用，Linux 上 clippy `-D warnings` 报 dead_code（临时 worktree 于 pristine HEAD 复现，确认与本单无关），已加同
       cfg 门禁。
 - [x] M2 漂移检测升级到身份/所有权级（2026-10-27 落地）。`NetworkSnapshot` 改为携带身份
-      （`lib.rs:160`/`PeerObserved lib.rs:177`）：peer 按 `wg show` 逐行解析公钥+allowed-ips
+      （`lib.rs:169`/`PeerObserved lib.rs:182`）：peer 按 `wg show` 逐行解析公钥+allowed-ips
       （`linux.rs:238`，公钥须 44 位 base64 且以 `=` 结尾）；路由只统计 `proto 198` 标记
       （`linux.rs:40`）；NAT 指纹 `chain|目的|动作|所有权|源|入向接口`（`nat.rs:79`，内核侧
       `linux.rs:941` 解析同形），集合比对见 `reconcile.rs:165/179/209`。未标记路由与无 Meshlet
@@ -87,9 +87,9 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
       （已改为链级规范化：`nat.rs:87`，`device_plan.rs:189`/`agent.rs:409` 只对 PREROUTING 赋值）。
       验收：单测 8 个（`reconcile.rs:419-544` 五个 + `linux.rs:1470-1551` 三个，含 peer 解析、
       指纹 round-trip、拒绝渲染器永不产出的形状）；真机注入三项各带修复断言
-      （`backend_wiring.rs:977-1182` 陌生 peer 移除/计划 peer 存活、未标记路由 `10.245.0.0/24
+      （`backend_wiring.rs:1048-1245` 陌生 peer 移除/计划 peer 存活、未标记路由 `10.245.0.0/24
       dev wg0` 原行原样存活、多余 meshlet 注释 SNAT 移除且计划 SNAT 与外部规则存活；
-      `agent_reconcile.rs:878-992` 同三项走真实 agent 判定，逐项 `reason=KernelDrift`）。
+      `agent_reconcile.rs:878-1003` 同三项走真实 agent 判定，逐项 `reason=KernelDrift`）。
       验证：`cargo test --workspace` exit 0、`backend_wiring` 1/1 (31.66s)、
       `agent_reconcile` 1/1 (26.95s)、`dual_site_end_to_end` 1/1 (36.63s)、
       meshlet-agent lib 59 通过、meshlet-network lib 79 通过、
@@ -98,28 +98,28 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
 - [x] M3 故障矩阵验收（评审 54.2 九场景，2026-10-27 落地）：九场景全真跑（真 netns +
       sudo ip/wg/iptables，`MESHLET_REQUIRE_DATAPLANE=1` 门禁——无门禁时静默 SKIP，
       证据全部来自设门禁的运行）。串行单测实测：①hub 重启恢复受管状态
-      （`single_instance.rs:1377` 9.38s：重建后 hub 密钥不变、peer 身份行逐字相同、
+      （`single_instance.rs:1389` 9.38s：重建后 hub 密钥不变、peer 身份行逐字相同、
       hub 路由与网关 NAT 相等）；②agent 重启不信账本（`ledger_recovery.rs:379` 1.19s：
       真实 apply 对照组 `UpToDate`，同标记换路由 → `KernelDrift`，外部路由幸存）；
       ③改路由被杀（`ledger_recovery.rs:442` 3.01s：三个被杀断点各为真实半途内核状态，
-      收敛到计划 B、账本记 `rev-b`）；④删 LAN 路由连带撤销（`single_instance.rs:1510`
+      收敛到计划 B、账本记 `rev-b`）；④删 LAN 路由连带撤销（`single_instance.rs:1522`
       6.78s：DELETE 204、alias 列表清空、hub 路由与 allowed-ips 收敛、网关
       `NoLocalLedger` 所有权清扫 owner NAT、overlay 不断）；⑤双网络并行不串网
       （`single_instance.rs:212` 53.70s，既有测试：A 重启重建/失败修订回滚不动 B）；
       ⑥宿主机规则不误删（`backend_wiring.rs:704` 场景 12 主体 `:1247` 32.96s：根命名
       空间 apply，外来路由/NAT/FORWARD/ip_forward 逐字幸存，`RootGuard` 兜底清理）；
-      ⑦撤销在线设备旧计划不重授（`single_instance.rs:1821` 5.94s：凭证 401、旧修订
+      ⑦撤销在线设备旧计划不重授（`single_instance.rs:1833` 5.94s：凭证 401、旧修订
       回执 400 过期、当前修订配旧哈希 400 哈希不符、新修订不回加 peer、存活设备握手
-      与流量计数持续；内核侧 `:624-674`）；⑧hub 公钥轮换（`single_instance.rs:1456`
+      与流量计数持续；内核侧 `:624-673`）；⑧hub 公钥轮换（`single_instance.rs:1468`
       6.20s：hub 换钥、peer 身份不变、设备计划与内核持新钥）；⑨库恢复后内核重新一致
-      （`single_instance.rs:1650` 9.81s：备份→删除→恢复→重启→recover_once→hub 路由
+      （`single_instance.rs:1662` 9.81s：备份→删除→恢复→重启→recover_once→hub 路由
       逐字复原、网关 NAT 复原、LAN 通路恢复）。
       如实记录两处非缺陷观察：a) hub 接口重建不带会话密钥，设备旧会话 keepalive
       （REJECT_AFTER_TIME ≈180s）无法解密、hub 学不到 endpoint——WireGuard 标准行为，
       身份级重建为本场景合同，数据面回归由设备自身收敛步骤验证（`single_instance.rs:1441`
       注释）；b) 回滚式恢复后「点 apply」不重收敛——`ConfigLedger::apply` 对已
       `Applied` 修订幂等返回（`config_state.rs:230`），备份后新增修订又不在恢复出的
-      库里，受支持路径是生产启动恢复 `recover_once`（`main.rs:98`）；产品语义决策留作
+      库里，受支持路径是生产启动恢复 `recover_once`（`main.rs:113`）；产品语义决策留作
       后续项，本轮不改代码。验证：`single_instance` 7 通过（串行 105.89s）、
       `ledger_recovery` 6 通过 6.35s、`backend_wiring` 1 通过 32.96s、`agent_reconcile`
       1 通过 27.06s、`dual_site_end_to_end` 1 通过 33.82s、
@@ -138,12 +138,13 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
       四个消费边界共用它：内核目标 `revision.rs:208`（apply/rollback/recover 的
       last_good_plan）、回滚结算 `revision.rs:915`（写回内存恢复日志前）、装载
       `persist.rs:1562`（失败修订让日志短暂滞留旧计划时，重启读到的是已授权子集）、
-      回滚落库 `persist.rs:2222`（回滚把过滤后的部署写回 `hub_deployments`；原先只写
+      回滚落库 `persist.rs:2247`（回滚把过滤后的部署写回 `hub_deployments`；原先只写
       路由/alias，下次重启会从日志读回含被撤销设备的计划）。验收测试
       `single_instance.rs:2008` `rolling_back_a_failed_revoke_does_not_reopen_access`
       （日志断言走 `journal_plan`，`:1311`）：撤销 + 两次失败 apply（外来路由占住目的段）
       → 隧道步已移除被撤销 peer 而 apply 仍失败（撤销优先于机械恢复）→ 回滚后 hub peer
-      列表仍不含被撤销公钥、`ping` 仍不通、日志 JSON 的 peer/路由/alias 均不含它、
+      列表仍不含被撤销公钥、`ping` 仍不通、日志 JSON 的 peer 与路由均不含它（`journal["aliases"]`
+      未单独断言，alias 无孤儿在内核侧收敛验证）、
       存活设备握手与流量计数持续累加 → `persist::load` + `recover_once` 重启后同样不复活。
       取证反向验证：临时摘掉回滚结算的过滤，该测在 `single_instance.rs:2123` 失败，日志
       JSON 记录回两个 peer（含被撤销公钥 `zdzp…`）——证明断言抓的是本次修的缺陷，而非

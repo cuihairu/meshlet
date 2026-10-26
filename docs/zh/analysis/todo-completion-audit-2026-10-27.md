@@ -33,7 +33,7 @@
 | R-05 子项：权限提升 | 证据弱（执行层仅代码存在） | 计划层 + 11 个测试；`#[cfg(windows)]` 执行层零测试、从未在真机运行。 |
 | R-05 子项：数据面真机验收 | **有证据** | 2026-10-25/26 中文 Server 2022 真机，CP936 修复带字节级回归。 |
 | R-06 转发/HTTP-TLS/授权/探测/DNS | **有证据** | 2026-10-24 真实 VPS 原始主机日志；入向缺口如实记录。 |
-| R-06 真实 VPS 端到端 | **有证据** | 同一次运行；TODO 第 34 行全部数值与文档一致。 |
+| R-06 真实 VPS 端到端 | **有证据** | 同一次运行；TODO 的 R-06 真机验收条目全部数值与文档一致。 |
 | R-07 空白容器安装 | **有证据** | sha256 与发布 `SHA256SUMS` 一致，107 MB 镜像泄漏已修。 |
 | R-07 密钥轮换 | **有证据** | 45 秒三设备收敛；负例检测是遗留缺口。 |
 | R-07 备份恢复 | **有证据** | 11 个集成测试 + 真实运行；验收以「先停」这一约定为前提。 |
@@ -103,7 +103,7 @@
   真机（2026-10-25/26）跑通了全生命周期测试；CP936/GBK 重定向缺陷被发现并修复，带字节级
   回归（`windows_console.rs:43` `MultiByteToWideChar(CP_ACP)`，
   `[target.'cfg(windows)'.dependencies]` 已含 `Win32_Globalization`）。
-- **剩余缺口**与 TODO 第 26 行一致：隧道全生命周期、提权执行层（从未在真机运行、零测试）、
+- **剩余缺口**与 TODO 的 R-05 条目一致：隧道全生命周期、提权执行层（从未在真机运行、零测试）、
   以及开机恢复的**重启**验证（因验收机是不许重启的常驻 worker 而跳过，仅做设计核对）。
 - 一处内部不一致：`windows_firewall.rs` 模块头（`:3-7`）仍写「执行层未在 Windows 上实测」，
   而它自己的执行层文档（`:261-263`）已记录 2026-10-26 真机运行。模块头过时了。
@@ -126,9 +126,10 @@ executor 4，全部无门禁。设计文档齐备。**但没有任何验收记�
 `apps/server/tests/device_revoke.rs`（8 测）覆盖；last-good 恢复在
 `apps/agent/src/agent.rs:502`。`docs/implementation/r02-linux-dataplane.md` 是九行散文，
 **没有任何日期、哈希或数值**，描述的是 `crates/meshlet-net-linux` —— 而**没有任何 app
-依赖它**（nftables 实现，实质是死代码）。
+依赖它**（nftables 实现，实质是死代码）。**已于 2026-10-27 删除**，该文档现带有「已不随产品发布」的注记。
 
 ### R-03 — 证据弱
+**`crates/meshlet-netplan` 已于 2026-10-27 删除**（后续项 #2），所以下面的 symbol:行号引用是历史记录，仅为留档保留：
 `crates/meshlet-netplan`（`canonical_conflicts:18`、`analyze_network_conflicts:103`、
 `validate_network:131`、`plan_hub_peers:330`、`plan_network:411`）。12 个测试 / 23 个函数，
 无门禁，含顺序无关性声称：`stable_ipam_allocates_lowest_free_addresses_independent_of_input_order:248`、
@@ -182,7 +183,7 @@ TLS 直通经 `openssl s_client` 从 `127.0.0.1` 与 `172.19.169.82` 两处取�
 `CN=tls.mesh.internal`；探针 `checked_at` 在两个相隔 35 s 的快照间推进。发现并修掉三个真
 缺陷并加回归。
 
-**明确未验证**的部分，TODO 第 34 行全部如实披露：`0.0.0.0:53` 从未绑定（root 绑定需要
+**明确未验证**的部分，TODO 的 R-06 真机验收条目全部如实披露：`0.0.0.0:53` 从未绑定（root 绑定需要
 特权）；`15353/18080/18083/18090` 被云安全组挡住，故所有数据面证据都只在回环/内网地址上
 成立；无外部 TLS 入口（443 被 cockpit vhost 占用）；经发布域名的公网 HTTP 入口只在临时
 nginx vhost 存在期间成立，该 vhost 已删除。缺口在**入向**，不在证据。
@@ -222,7 +223,7 @@ passthrough 路由带 `allowed_bearer_tokens` 与 `path_prefix != "/"` 各返回
 每次都会真跑。
 
 ### M2 — 有证据
-被引行号全部命中：`NetworkSnapshot`/`PeerObserved`（`lib.rs:160/177`）、`wg show` peer
+被引行号全部落在范围内。复核时（2026-10-27）发现并修正一处几行偏差：`NetworkSnapshot`/`PeerObserved` 被引为 `lib.rs:160/177`，但 `peers` 字段与结构体实际在 `:169`/`:182`——`TODO.md` 与 `r04-linux-agent-e2e.md` 现已改为这两个行号。其余引用与所写完全一致：`wg show` peer
 解析（`linux.rs:238`，44 位 base64 且以 `=` 结尾）、`proto 198` 标记（`linux.rs:40`）、
 NAT 指纹 `chain|dest|action|owner|source|interface`（`nat.rs:79`，`:87` 处
 POSTROUTING→`none`）、内核侧解析（`linux.rs:941`）、集合比对（`reconcile.rs:165/179/209`）、
@@ -254,18 +255,15 @@ POSTROUTING→`none`）、内核侧解析（`linux.rs:941`）、集合比对（`
    任务或 Makefile 引用它。
 4. **R-02 与 R-03 的验收文档不含任何实测值** —— 各九行散文，只是复述单测覆盖范围。这是
    两者只能算证据弱的原因。
-5. **R-04 的 TODO 第 25 行自相矛盾**：「真实 VPS 到设备的端到端连通验收仍留下轮」紧跟着
+5. **R-04 的「真实连接诊断」子项自相矛盾**：「真实 VPS 到设备的端到端连通验收仍留下轮」紧跟着
    「（2026-10-24 完成，见父行…）」。实施文档把它标为已完成。
-6. **TODO 第 31 行的测试计数过时**：11 个集成测试是 M1 之前的数字，M1 新增一个测试后为
-   12。`r06-service-publishing.md` 内部也不自洽（`:12` 写 11，`:109` 写 12）。
+6. **TODO 的 R-06「授权控制」条目测试计数过时**：11 个集成测试是 M1 之前的数字，M1 新增一个测试后为
+   12。`r06-service-publishing.md` 内部也不自洽（覆盖小节写 11，能力表写 12）。
 7. **`backup.rs` 的「迁移硬计数」不在源码里。** `apps/server/src/backup.rs` 没有计数常量；
    迁移数来自 `store.rs:17` 的 `sqlx::migrate!("../../migrations")`，13 是测试里的断言
-   （`backup.rs:361`、`:1079`）。结论成立，措辞暗示了不存在的源码常量。
-8. **「crate 实现与单测」对 DNS、健康探测与转发的单测位置说过头了**（TODO 第 29、32-33
-   行）：这些源文件内部没有单测，覆盖来自 `tests/` 下的集成测试与 `runtime.rs` 的 lib 测试。
-9. **M2 的 TODO 行号区间已漂移**：`backend_wiring.rs:977-1182` 实际是 `:1035-:1244`；
-   `agent_reconcile.rs:878-992` 实际约到 `:1003`。被引内容都在，只是行号不对。R-04 文档
-   的引用也在 M2 提交后漂移（回执 `:136/:140` → 实际 `:222-239`；上限 `:701` → `:236`）。
+   （`backup.rs:368`、`:1086`）。结论成立，措辞暗示了不存在的源码常量。
+8. **「crate 实现与单测」对 DNS、健康探测与转发的单测位置说过头了**（TODO 的 R-06 DNS、健康探测与 PortForward 条目）：这些源文件内部没有单测，覆盖来自 `tests/` 下的集成测试与 `runtime.rs` 的 lib 测试。
+9. **M2 的 TODO 行号区间已漂移**：`backend_wiring.rs:977-1182` 是场景 11——该区段实际从 `:1035`（标记行）到 `:1245`，三类注入自 `:1048` 开始；`agent_reconcile.rs:878-992` 实际到 `:1003` 结束。被引内容都在，只是行号不对。R-04 文档的引用也在 M2 提交后漂移：回执 `:136/:140` → `enqueue_receipt :235` / `flush_pending_receipts :222`；上限 `:701` → `:236`（测试在 `:842`）；心跳 `:422` → `collect_evidence :555`（探测载荷 `:567`）；`/api/v1/update-manifest` 的 `lib.rs:941` → `:945`；自更新测试区间 `:219-259` → `:227-275`。均于 2026-10-27 修正。
 10. **`windows_firewall.rs` 模块头过时** —— 见重点三。
 11. **「真实 VPS」用于 R-04 与 R-07 不准确** —— 两者都跑在本地 PVE 实验台 + 容器上；
     R-06 那次才是真正的云 VPS。不算错，但用词松。
@@ -292,6 +290,11 @@ POSTROUTING→`none`）、内核侧解析（`linux.rs:941`）、集合比对（`
   本机运行记录在文件头的内容。
 
 ## 本地可推进的后续项
+
+**状态（2026-10-27，同日）：四项全部落地。** #1 见 `ee1cf12`，#2 见 `eb6ce1b`，#3 见
+`2fe3fd5`（flock 实例锁，而非只加探测），#4 见覆盖 `TODO.md`、`r04-linux-agent-e2e.md`、
+`r06-service-publishing.md` 与两个 `windows_*.rs` 模块头的行号清理（本报告自己的 TODO 行号
+引用也一并改为按条目名引用，避免再次腐化）。
 
 1. 把 `scripts/check-planner-deps.sh` 接入 CI（或删掉它），让 R-01 的依赖边界真正被
    强制执行。

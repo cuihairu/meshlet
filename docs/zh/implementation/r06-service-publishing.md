@@ -6,10 +6,10 @@ R-06 已端到端接通并在真机上跑通：真实 `meshlet-agent` 从服务�
 
 - TCP 和 UDP PortForward 可通过 mesh 发布本地服务，并保留所选传输协议。
 - HTTP 和 HTTPS 发布可将外部流量路由到 mesh 服务。
-- 授权控制通过 `POST /api/v1/publish/routes/check` 暴露；server 路由在 `apps/server/src/lib.rs:1014` 接入 `meshlet-publish` 服务适配器。
+- 授权控制通过 `POST /api/v1/publish/routes/check` 暴露；server 路由在 `apps/server/src/lib.rs:1017` 接入 `meshlet-publish` 服务适配器。
 - 健康探测会在流量准入前验证发布目标可达。
 - 内部 DNS 服务目录支持分流式服务发现，不覆盖公共 DNS 解析。
-- 当前自动化验证结果为：`cargo test -p meshlet-publish` 35 passed（21 lib、1 dns_catalog、3 forwarding、4 health_probe、6 http_publishing），`cargo test -p meshlet-server` 213 passed（24 个套件，其中 `publish.rs` 11、`publish_check.rs` 2），`cargo clippy --workspace --all-targets -- -D warnings` 干净，`cargo fmt --check` 干净，控制台 17 个用例通过且构建干净。
+- 当前自动化验证结果为：`cargo test -p meshlet-publish` 35 passed（21 lib、1 dns_catalog、3 forwarding、4 health_probe、6 http_publishing），`cargo test -p meshlet-server` 213 passed（24 个套件，其中 `publish.rs` 12、`publish_check.rs` 2——`publish.rs` 计数为 2026-10-27 核对值，213/24 总数是 2026-10-24 验收快照、随新套件已增长），`cargo clippy --workspace --all-targets -- -D warnings` 干净，`cargo fmt --check` 干净，控制台 17 个用例通过且构建干净。
 
 ## 真实 VPS 验收记录（2026-10-23）
 

@@ -6,10 +6,10 @@ R-06 is wired end to end and has been run on a real device: a real `meshlet-agen
 
 - TCP and UDP PortForward publish local services through the mesh and preserve the selected transport protocol.
 - HTTP and HTTPS publishing routes external traffic to mesh services.
-- Authorization control is exposed through `POST /api/v1/publish/routes/check`; the server route is wired at `apps/server/src/lib.rs:1014` through the `meshlet-publish` service adapter.
+- Authorization control is exposed through `POST /api/v1/publish/routes/check`; the server route is wired at `apps/server/src/lib.rs:1017` through the `meshlet-publish` service adapter.
 - Health probes validate that a published target is reachable before traffic is admitted.
 - The internal DNS service directory supports split-horizon service discovery without overriding public DNS resolution.
-- Automated coverage is `cargo test -p meshlet-publish` = 35 passed (21 lib, 1 dns_catalog, 3 forwarding, 4 health_probe, 6 http_publishing), `cargo test -p meshlet-server` = 213 passed across 24 suites including `publish.rs` 11 and `publish_check.rs` 2, `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean, and the console at 17 passed tests plus a clean build.
+- Automated coverage is `cargo test -p meshlet-publish` = 35 passed (21 lib, 1 dns_catalog, 3 forwarding, 4 health_probe, 6 http_publishing), `cargo test -p meshlet-server` = 213 passed across 24 suites including `publish.rs` 12 and `publish_check.rs` 2 (the per-suite count re-verified 2026-10-27; the 213/24 totals are the 2026-10-24 acceptance snapshot and have since grown with new suites), `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean, and the console at 17 passed tests plus a clean build.
 
 ## Live VPS Acceptance Record (2026-10-23)
 

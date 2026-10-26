@@ -7,9 +7,9 @@ R-04 is complete: the registration, startup recovery, receipt persistence, retry
 - Bootstrap registration reuses a saved agent token before registering, writes the agent token as a `0600` secret, and generates or reuses the local private key without transmitting it. The flow and permissions are covered by `apps/agent/src/bootstrap.rs:17`, `apps/agent/src/bootstrap.rs:67`, and `apps/agent/src/bootstrap.rs:146`.
 - The server stores only the Bootstrap Token SHA-256 digest (`crates/meshlet-domain/src/entities.rs:141`). Registration stores the hashed token alongside use and revocation state, and registration reports omit the digest (`apps/server/tests/device_registration.rs:278`).
 - Startup reconciliation loads the applied-plan journal, detects drift and corrupt state, and replays only after comparing the desired hash with kernel state. Evidence is in `apps/agent/src/reconcile.rs:68` and `apps/agent/src/reconcile.rs:86`.
-- Every plan application reports an exact revision receipt; failures are retained in memory and flushed before the next tick. Evidence is in `apps/agent/src/agent.rs:136` and `apps/agent/src/agent.rs:140`. The queue is capped at 16 and dropping the oldest entry is locked by `apps/agent/src/agent.rs:701`.
-- Self-update fetches a public manifest, verifies the artifact SHA-256 before staging, atomically replaces the binary, preserves a backup, and writes a restart marker. Coverage spans version selection, hash mismatch, current-version behavior, and installation at `apps/agent/src/self_update.rs:219` through `apps/agent/src/self_update.rs:259`. The server exposes `/api/v1/update-manifest` at `apps/server/src/lib.rs:941`.
-- Heartbeats collect real kernel evidence and a do-not-fragment MTU probe against the hub, with absent values explicitly represented as unverified rather than synthesized. Evidence is in `apps/agent/src/agent.rs:422` and `crates/meshlet-domain/src/entities.rs:156`.
+- Every plan application reports an exact revision receipt; failures are retained in memory and flushed before the next tick. Evidence is in `apps/agent/src/agent.rs:235` (`enqueue_receipt`) and `apps/agent/src/agent.rs:222` (`flush_pending_receipts`). The queue is capped at 16 at `apps/agent/src/agent.rs:236`, and the drop-oldest behavior is locked by the test at `apps/agent/src/agent.rs:842`.
+- Self-update fetches a public manifest, verifies the artifact SHA-256 before staging, atomically replaces the binary, preserves a backup, and writes a restart marker. Coverage spans version selection, hash mismatch, current-version behavior, and installation at `apps/agent/src/self_update.rs:227` through `apps/agent/src/self_update.rs:275`. The server exposes `/api/v1/update-manifest` at `apps/server/src/lib.rs:945`.
+- Heartbeats collect real kernel evidence and a do-not-fragment MTU probe against the hub, with absent values explicitly represented as unverified rather than synthesized. Evidence is in `apps/agent/src/agent.rs:555` (`collect_evidence`, with the MTU probe payload at `:567`) and `crates/meshlet-domain/src/entities.rs:156`.
 
 ## Acceptance 2026-10-24 (real cross-host run)
 
@@ -28,8 +28,8 @@ identity". Three shapes of drift were therefore invisible: a planned peer swappe
 stranger at equal total, a surviving peer's `allowed-ips` widened, and a NAT rule planted
 by hand under a Meshlet ownership comment.
 
-The snapshot now carries identities (`NetworkSnapshot` at `crates/meshlet-network/src/lib.rs:160`,
-`PeerObserved` at `:177`) and the decision compares identity sets:
+The snapshot now carries identities (`NetworkSnapshot` at `crates/meshlet-network/src/lib.rs:169`,
+`PeerObserved` at `:182`) and the decision compares identity sets:
 
 | Item | Observed side | Comparison |
 | --- | --- | --- |
@@ -85,11 +85,11 @@ Unit tests, no kernel — `missing_route_peer_or_nat_counts_as_drift`,
 Real kernel under `MESHLET_REQUIRE_DATAPLANE` (two network namespaces, a real `wg0`, real
 `iptables -t nat`, running as root):
 
-- `crates/meshlet-network/tests/backend_wiring.rs:977`–`:1182` — a stranger peer is
+- `crates/meshlet-network/tests/backend_wiring.rs:1048`–`:1245` — a stranger peer is
   detected and removed while the planned peer survives; an unmarked `10.245.0.0/24 dev wg0`
   is **not** drift, stays out of the owned set, and survives the repair on its exact line;
   an extra meshlet-commented SNAT is detected and removed while the planned SNAT and a
   foreign "user rule" both survive.
-- `apps/agent/tests/agent_reconcile.rs:878`–`:992` — the same three injections through the
+- `apps/agent/tests/agent_reconcile.rs:878`–`:1003` — the same three injections through the
   real agent decision path, asserting `reason=KernelDrift` on each and `!needs_apply` at the
   end.

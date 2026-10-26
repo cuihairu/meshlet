@@ -35,7 +35,7 @@ its 11 tests at `:282` all sit outside the gated module and exercise the plan la
 | R-05 sub: elevation | 证据弱 (exec layer 仅代码存在) | Plan layer + 11 tests; the `#[cfg(windows)]` exec layer has zero tests and was never run on a machine. |
 | R-05 sub: dataplane real-machine | **有证据** | zh-CN Server 2022 real-machine 2026-10-25/26, CP936 fix with byte-level regressions. |
 | R-06 PortForward / HTTP-TLS / authz / probes / DNS | **有证据** | Real VPS 2026-10-24 with verbatim host logs; ingress gaps recorded honestly. |
-| R-06 real VPS E2E | **有证据** | Same run; all measured numbers in TODO line 34 match the doc. |
+| R-06 real VPS E2E | **有证据** | Same run; all measured numbers in TODO's R-06 real-machine acceptance entry match the doc. |
 | R-07 blank container install | **有证据** | sha256 match against published `SHA256SUMS`, 107 MB image leak fixed. |
 | R-07 key rotation | **有证据** | 45 s convergence for 3 devices; negative-case detection is an open gap. |
 | R-07 backup/restore | **有证据** | 11 integration tests + real run; the acceptance rests on a prose-only "stop first". |
@@ -117,7 +117,7 @@ The security-critical chain is real and has no gap in the paths I swept.
   and the CP936/GBK redirection bug was found and fixed with byte-level regression tests
   (`windows_console.rs:43` `MultiByteToWideChar(CP_ACP)`; `Win32_Globalization` present in
   `[target.'cfg(windows)'.dependencies]`).
-- **The remaining gaps**, matching TODO line 26: tunnel full lifecycle, elevation exec
+- **The remaining gaps**, matching TODO's R-05 entry: tunnel full lifecycle, elevation exec
   layer (never run on a machine, zero tests), and boot-recovery **restart** verification
   (skipped because the acceptance host was a resident worker that could not be restarted —
   design check only).
@@ -145,9 +145,11 @@ rollback `:1158`, drift detection `:819/1388/1435`. Revoke ordering covered by
 `apps/agent/src/agent.rs:502`. `docs/implementation/r02-linux-dataplane.md` is nine lines
 of prose with **no dates, hashes, or numbers** — it describes
 `crates/meshlet-net-linux/`, which **no app depends on** (nftables implementation,
-effectively dead code).
+effectively dead code). **Deleted 2026-10-27**; the doc now carries a superseded note.
 
 ### R-03 — 证据弱
+**`crates/meshlet-netplan` was deleted 2026-10-27** (follow-up #2), so the symbol:line
+references below are historical, kept for the record:
 `crates/meshlet-netplan` (`canonical_conflicts:18`, `analyze_network_conflicts:103`,
 `validate_network:131`, `plan_hub_peers:330`, `plan_network:411`). 12 tests / 23 fns,
 ungated, including the order-independence claims: `stable_ipam_allocates_lowest_free_addresses_independent_of_input_order:248`,
@@ -205,7 +207,8 @@ public names unanswered, TLS passthrough returning the **backend** cert
 probe `checked_at` advancing across two 35 s snapshots. Three real defects found and fixed
 with regressions.
 
-**Explicitly not verified**, and TODO line 34 discloses all of it accurately: `0.0.0.0:53`
+**Explicitly not verified**, and TODO's R-06 real-machine acceptance entry discloses all of
+it accurately: `0.0.0.0:53`
 was never bound (root binding needs privileges); `15353/18080/18083/18090` are blocked by
 the cloud security group, so all data-plane evidence is loopback/private-IP only; no
 off-box TLS ingress (443 held by a cockpit vhost); public HTTP ingress worked only via a
@@ -253,7 +256,10 @@ readable, `tls_termination` no longer appears in responses, and both 409s name t
 **No test in `meshlet-publish` is gated** — all always run.
 
 ### M2 — 有证据
-Every cited line resolves: `NetworkSnapshot`/`PeerObserved` (`lib.rs:160/177`), peer
+Every cited line resolves to in-range content. One off-by-a-few-lines case found and
+corrected on re-check (2026-10-27): `NetworkSnapshot`/`PeerObserved` was cited as
+`lib.rs:160/177`, but the `peers` field and the struct are at `:169`/`:182` — TODO.md and
+`r04-linux-agent-e2e.md` now cite those. Everything else verified exactly as cited: peer
 parsing from `wg show` (`linux.rs:238`, 44-char base64 ending `=`), `proto 198` marker
 (`linux.rs:40`), NAT fingerprint `chain|dest|action|owner|source|interface` (`nat.rs:79`,
 POSTROUTING→`none` at `:87`), kernel-side parser (`linux.rs:941`), set comparisons
@@ -290,22 +296,26 @@ run.
    correct but referenced by no CI job and no Makefile.
 4. **R-02 and R-03 acceptance docs contain no measured values** — nine lines of prose each,
    restating what unit tests cover. That is why both are 证据弱.
-5. **R-04 TODO line 25 is self-contradictory**: "真实 VPS 到设备的端到端连通验收仍留下轮"
+5. **R-04's 真实连接诊断 sub-item is self-contradictory**: "真实 VPS 到设备的端到端连通验收仍留下轮"
    followed by "(2026-10-24 完成，见父行…)". The implementation doc marks it done.
-6. **Stale test counts in TODO line 31**: 11 integration tests is the pre-M1 number; M1's
-   added test makes 12. `r06-service-publishing.md` also disagrees with itself
-   (`:12` says 11, `:109` says 12).
+6. **Stale test count in TODO's R-06 授权控制 entry**: 11 integration tests is the pre-M1
+   number; M1's added test makes 12. `r06-service-publishing.md` also disagreed with itself
+   (11 in the coverage bullet, 12 in the surface table).
 7. **`backup.rs` "migration hard count" is not in source.** There is no count constant in
    `apps/server/src/backup.rs`; the migration count comes from
    `sqlx::migrate!("../../migrations")` at `store.rs:17`, and 13 is asserted in the tests
-   (`backup.rs:361`, `:1079`). Claim true, wording implies a source constant.
+   (`backup.rs:368`, `:1086`). Claim true, wording implies a source constant.
 8. **"crate 实现与单测" overstates unit-test placement** for DNS, health probes, and
-   forwarding (TODO lines 29, 32-33): those source files contain no in-file unit tests —
+   forwarding (TODO's R-06 DNS, 健康探测, and PortForward entries): those source files contain no in-file unit tests —
    coverage is integration tests plus lib tests in `runtime.rs`.
-9. **Line ranges drifted in the M2 TODO text**: `backend_wiring.rs:977-1182` is actually
-   `:1035-:1244`; `agent_reconcile.rs:878-992` actually ends near `:1003`. All claimed
+9. **Line ranges drifted in the M2 TODO text**: `backend_wiring.rs:977-1182` is scenario 11
+   — the block actually spans `:1035` (marker) through `:1245`, with the three injections
+   starting at `:1048`; `agent_reconcile.rs:878-992` actually ends at `:1003`. All claimed
    content exists, at different lines. The R-04 doc's citations also drifted after the M2
-   commit (receipts `:136/:140` → actual `:222-239`; cap `:701` → `:236`).
+   commit: receipts `:136/:140` → `enqueue_receipt :235` / `flush_pending_receipts :222`;
+   cap `:701` → `:236` (test at `:842`); heartbeat `:422` → `collect_evidence :555` with
+   the probe at `:567`; update-manifest `lib.rs:941` → `:945`; self-update test span
+   `:219-259` → `:227-275`. All corrected on 2026-10-27.
 10. **`windows_firewall.rs` module header is stale** — see Focus area 3.
 11. **"真实 VPS" is imprecise for R-04 and R-07** — both ran on a local PVE lab host with
     containers. R-06's run was on a real cloud VPS. Not false, but the terms are used
@@ -334,6 +344,12 @@ None of these can be advanced locally. Nothing was changed in those TODO lines.
   windows-latest plus the 2026-10-25/26 local runs recorded in the file headers.
 
 ## Follow-ups that are locally actionable
+
+**Status (2026-10-27, same day): all four landed.** #1 in `ee1cf12`, #2 in `eb6ce1b`,
+#3 in `2fe3fd5` (flock-based instance lock, not just a probe), #4 in the line-number sweep
+across `TODO.md`, `r04-linux-agent-e2e.md`, `r06-service-publishing.md` and the two
+`windows_*.rs` headers (this report's own TODO references were made line-independent so
+they cannot rot the same way).
 
 1. Wire `scripts/check-planner-deps.sh` into CI (or delete it) so the R-01 dependency
    boundary is actually enforced.

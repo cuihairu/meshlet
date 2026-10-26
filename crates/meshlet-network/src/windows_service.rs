@@ -15,7 +15,7 @@
 //!   `Create` 的启动类型固定 `auto|disabled`；失败恢复固定三段 restart；
 //! - **sc.exe 经典形状**：`binPath=` / `start=` / `reset=` / `actions=`
 //!   是「键词元（含尾等号）+ 值独立词元」，不是 netsh 的单词元
-//!   `key=value`；本模块按公开 CLI 形状锁定，尚未真机实测；
+//!   `key=value`；本模块按公开 CLI 形状锁定；
 //! - **自启 + 恢复语义**：`config start= auto` 表达开机自启，`failure`
 //!   的 reset/restart 动作表达崩溃后重启恢复；
 //! - **fail closed**：权限文案宽匹配映射为
