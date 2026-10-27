@@ -13,15 +13,20 @@
 //! [nat](nat) 模块是纯**计划**层（§9.4–§9.5）：从 Alias 映射确定性推导网关侧
 //! NAT 规则；执行随数据面接线（ADR-007）。
 //!
-//! [windows_routes](windows_routes) 是 Windows 路由的**计划层**（ADR-008）：
-//! netsh 命令参数构造、`show route` 解析与权限失败分类，Linux 上单测跑绿；
-//! 执行层 `#[cfg(windows)]` 只调计划层，**未在 Windows 上实测**（TODO #52
-//! 的环境走查仍卡），实测前 Windows 不接为 [SystemBackend]。
+//! [windows_routes](windows_routes) / [windows_firewall](windows_firewall) /
+//! [windows_service](windows_service) / [windows_tunnel](windows_tunnel) 是
+//! Windows 数据面的**计划层**（ADR-008）：命令参数构造、解析与失败文本
+//! 分类，Linux 上单测跑绿；执行层 `#[cfg(windows)]` 只调计划层。路由/防火
+//! 墙/服务执行层已在真机验证（2026-10-16 CI runner en-US；2026-10-26 中文
+//! Windows Server）；隧道执行层原语已交付，但 WireGuardNT 驱动安装后的全
+//! 生命周期仍未真机验证（见 [windows_tunnel] 模块文档）。完整验收前
+//! Windows 不接为 [SystemBackend]。
 //!
 //! 接线决策的完成状态前置审计（M5，2026-10-27）见
 //! [docs/analysis/todo-completion-audit-2026-10-27.md](../../docs/analysis/todo-completion-audit-2026-10-27.md)
-//! 「Focus area 3 / Windows 后端」：结论是隧道实现整体缺席（`wireguardnt`/`wintun` 零
-//! 代码，`apply_tunnel` 即 agent 的首个调用），接线需新建子系统而非改这一行 `cfg`。
+//! 「Focus area 3 / Windows 后端」：结论是隧道实现整体缺席，接线需新建子
+//! 系统而非改这一行 `cfg`。`windows_tunnel` 计划层 + `#[cfg(windows)]` 执行
+//! 层原语已于 2026-10-27 落地；`apply_tunnel` 接线与真机全生命周期仍缺席。
 //!
 //! [DevicePlan] 是 server → agent 的**结构化配置对象**（§16.4）：agent 只消费
 //! 类型化的隧道/路由/NAT 计划，绝不执行服务端下发的任意 Shell 命令。
@@ -34,6 +39,7 @@ pub mod windows_elevation;
 pub mod windows_firewall;
 pub mod windows_routes;
 pub mod windows_service;
+pub mod windows_tunnel;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
