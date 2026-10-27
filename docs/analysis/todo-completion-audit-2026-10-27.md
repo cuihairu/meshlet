@@ -188,7 +188,8 @@ with `cargo test --workspace`). Real zh-CN bytes are embedded as assertions
 (`GBK_ELEMENT_ABSENT` = `D5 D2 B2 BB B5 BD D4 AA CB D8 A1 A3` → `找不到元素。`), including
 sc 1060/1062 idempotency. Note the decoder is `#[cfg(windows)]` with a Linux
 `utf8_lossy` stub, so CP936 decoding is only verified on real Windows. Also: `docs/implementation/r05-windows-acceptance.md` **does not exist** and was never committed —
-`dispatch/` is untracked scratch.
+`dispatch/` is untracked scratch. (后补见本次提交新增的
+`docs/implementation/r05-windows-acceptance.md` —— R-05 数据面真机验收记录。)
 
 ### R-06 — 有证据 (six sub-items)
 `forwarding.rs` (TCP `:53/59`, UDP `:95/101/128`), `http.rs` (route selection `:75`,

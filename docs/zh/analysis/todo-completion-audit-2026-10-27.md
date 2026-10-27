@@ -165,7 +165,8 @@ MTU 漂移 1480→1420 一个 tick 愈合（`KernelDrift`，22:24:53Z）；显�
 sc 1060/1062 幂等。注意解码器是 `#[cfg(windows)]`、Linux 侧是 `utf8_lossy` 桩，所以 CP936
 解码只在真 Windows 上验证过。另外
 `docs/implementation/r05-windows-acceptance.md` **并不存在**，也从未提交 ——
-`dispatch/` 只是未跟踪的草稿目录。
+`dispatch/` 只是未跟踪的草稿目录。（后补见本次提交新增的
+`docs/zh/implementation/r05-windows-acceptance.md` —— R-05 数据面真机验收记录。）
 
 ### R-06 — 有证据（六个子项）
 `forwarding.rs`（TCP `:53/59`、UDP `:95/101/128`）、`http.rs`（选路 `:75`、TLS 分支 `:165`、
