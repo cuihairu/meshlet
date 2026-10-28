@@ -1,6 +1,6 @@
 # TODO Completion Status Audit — 2026-10-27
 
-**Scope:** M5 in `TODO.md` — verify, item by item, every **checked** box: implementation
+**Scope:** M5 in `todo.md` — verify, item by item, every **checked** box: implementation
 path, test coverage, and real acceptance evidence. This report is also the required
 upstream input to the still-pending **TODO #52 SystemBackend wiring decision**
 (`crates/meshlet-network/src/lib.rs:44-49`).
@@ -259,7 +259,7 @@ readable, `tls_termination` no longer appears in responses, and both 409s name t
 ### M2 — 有证据
 Every cited line resolves to in-range content. One off-by-a-few-lines case found and
 corrected on re-check (2026-10-27): `NetworkSnapshot`/`PeerObserved` was cited as
-`lib.rs:160/177`, but the `peers` field and the struct are at `:169`/`:182` — TODO.md and
+`lib.rs:160/177`, but the `peers` field and the struct are at `:169`/`:182` — todo.md and
 `r04-linux-agent-e2e.md` now cite those. Everything else verified exactly as cited: peer
 parsing from `wg show` (`linux.rs:238`, 44-char base64 ending `=`), `proto 198` marker
 (`linux.rs:40`), NAT fingerprint `chain|dest|action|owner|source|interface` (`nat.rs:79`,
@@ -348,16 +348,16 @@ None of these can be advanced locally. Nothing was changed in those TODO lines.
 
 **Status (2026-10-27, same day): all four landed.** #1 in `ee1cf12`, #2 in `eb6ce1b`,
 #3 in `2fe3fd5` (flock-based instance lock, not just a probe), #4 in the line-number sweep
-across `TODO.md`, `r04-linux-agent-e2e.md`, `r06-service-publishing.md` and the two
+across `todo.md`, `r04-linux-agent-e2e.md`, `r06-service-publishing.md` and the two
 `windows_*.rs` headers (this report's own TODO references were made line-independent so
 they cannot rot the same way).
 
 1. Wire `scripts/check-planner-deps.sh` into CI (or delete it) so the R-01 dependency
    boundary is actually enforced.
-2. Correct the two factual errors in `TODO.md` (nftables → iptables; `meshlet-netplan`
+2. Correct the two factual errors in `todo.md` (nftables → iptables; `meshlet-netplan`
    not on the product path) or delete the unwired crates.
 3. Decide the backup-restore guard: either a code-level refusal of a restore while the
    service holds an open database, or an automated check that would have caught the
    detached-inode write loss.
-4. Update the stale line ranges and test counts in `TODO.md` and
+4. Update the stale line ranges and test counts in `todo.md` and
    `r04-linux-agent-e2e.md`, and fix the stale `windows_firewall.rs` header.

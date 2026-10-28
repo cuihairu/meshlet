@@ -2,7 +2,7 @@
 
 ## Scope and counting method
 
-This assessment answers “how long until Meshlet can be used?” without making a calendar promise. It counts the 33 top-level entries in `TODO.md`'s “Current execution checklist (2026-10-17)” (AR-01…06, REL-01/02, CR-01…05, QA-01, RG-01…03, PN-01…10, MOD-01…06). A partially implemented item is counted by its remaining acceptance work, not by the code that already exists. IM-01…12 are implementation records and are not additional product checklist items.
+This assessment answers “how long until Meshlet can be used?” without making a calendar promise. It counts the 33 top-level entries in `todo.md`'s “Current execution checklist (2026-10-17)” (AR-01…06, REL-01/02, CR-01…05, QA-01, RG-01…03, PN-01…10, MOD-01…06). A partially implemented item is counted by its remaining acceptance work, not by the code that already exists. IM-01…12 are implementation records and are not additional product checklist items.
 
 ## Status by acceptance state
 
@@ -32,7 +32,7 @@ The explicit P0 rows total 14 (AR-01…06, REL-01/02, CR-01…05 and QA-01); inc
 
 ## What “usable for daily use” means
 
-The product boundary remains personal self-hosting on user-controlled devices and networks, with grouped devices, controlled port forwarding and HTTP service routing (TODO.md opening paragraph). Under that boundary:
+The product boundary remains personal self-hosting on user-controlled devices and networks, with grouped devices, controlled port forwarding and HTTP service routing (todo.md opening paragraph). Under that boundary:
 
 **Minimum usable set (MVP):** a self-hosted Linux VPS hub; Linux agent install and enrollment; administrator bootstrap/login, device approval and scoped API token; versioned desired-plan apply with device receipt; recovery and rollback; private Overlay connectivity; LAN route/Alias configuration for an explicitly tested topology; backup/restore procedure; logs/status sufficient to diagnose whether hub, device and business connectivity succeeded. This is **10 concrete capability groups**: (1) install/server, (2) agent, (3) identity/enrollment, (4) plan/apply receipt, (5) recovery/rollback, (6) Overlay, (7) LAN route/Alias, (8) backup/restore, (9) status/diagnostics, (10) deployment and data-plane acceptance on target topology. This is a usable *Linux personal self-hosting slice*, not a claim that all ten groups are presently production-accepted: the real VPS/device walkthroughs remain outstanding.
 

@@ -12,4 +12,4 @@ The repository's nightly workflow builds and packages supported artifacts for it
 
 ## Evidence and limits
 
-Rust checks, unit and integration suites, console builds, shell linting, and hosted CI provide distinct evidence. Real service installation, effective permissions, WireGuard traffic, LAN forwarding, and restore behavior on a production-like host require the walkthrough. The latest project status lives in `TODO.md`; historical green checks must not override current failures or pending acceptance.
+Rust checks, unit and integration suites, console builds, shell linting, and hosted CI provide distinct evidence. Real service installation, effective permissions, WireGuard traffic, LAN forwarding, and restore behavior on a production-like host require the walkthrough. The latest project status lives in `todo.md`; historical green checks must not override current failures or pending acceptance.

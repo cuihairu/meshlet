@@ -6,7 +6,7 @@
 > the shipped dataplane is `crates/meshlet-network/src/linux.rs`
 > (`LinuxNetworkBackend`), which shells out to `ip`, `wg`, and
 > **iptables**. The nftables work in this file stands as an historical record
-> of the earlier approach only. See `TODO.md` R-02 and the completion status
+> of the earlier approach only. See `todo.md` R-02 and the completion status
 > audit for the correction.
 
 R-02 now provides the Linux hub main line as a reusable crate. Desired hub state is validated and deterministically compiled into immutable plans. The plan owns one isolated WireGuard interface, UDP port, IPv4 overlay, peer set, route set, and explicit firewall rules per network.

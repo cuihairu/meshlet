@@ -5,7 +5,7 @@
 > 消费，已于同日**删除**；实际交付的数据面是
 > `crates/meshlet-network/src/linux.rs`（`LinuxNetworkBackend`），执行 `ip`、`wg` 与
 > **iptables**。本文件中的 nftables 内容仅作为早期方案的留档。修正依据见
-> `TODO.md` R-02 与完成状态审计。
+> `todo.md` R-02 与完成状态审计。
 
 R-02 已交付 Linux 中心节点主线，并沉淀为可复用 crate。期望的 Hub 状态先校验，再确定性编译成不可变计划；每个网络拥有独立的 WireGuard 接口、UDP 端口、IPv4 overlay、Peer 集合、路由集合和显式防火墙规则。
 

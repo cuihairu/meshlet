@@ -1,6 +1,6 @@
 # 全仓一致性审计（docs ↔ code ↔ tests）
 
-> 范围：把文档（`docs/**`、`README*.md`、根 `TODO.md`）里对**代码的引用**与实际仓库做机械比对，产出差异清单。
+> 范围：把文档（`docs/**`、`README*.md`、根 `todo.md`）里对**代码的引用**与实际仓库做机械比对，产出差异清单。
 > 方法：脚本抽取（非人工通读），结果可复现。
 > 日期：2026-10-16。结论：**一致，发现 2 处真实漂移并已修复**（见 §2）。
 
@@ -31,7 +31,7 @@
 | 文档中 `nf_conntrack` / `nf_conntrack_max` | 内核 sysctl 名（`docs/architecture/routing-optimization.md`），非代码标识符 |
 | 存档 §14.3 的 agent 状态 `applying_config` | 外部设计状态名，`docs/analysis/agent-platform.md` 已标 **【待核】**（登记的外部意见状态，非实现现状） |
 | C1 抽取出的 4 例「缺失路径」（`console/`、`src/windows_routes.rs`、`tests/revisions.rs`、`tests/windows_netsh.rs`） | 抽取器对跨多段反引号内容的截断产物；真实文件均存在（`console/src/…`、`crates/meshlet-network/src/windows_routes.rs`、`apps/server/tests/revisions.rs`、`crates/meshlet-network/tests/windows_netsh.rs`） |
-| `TODO.md` 中的简写 crate 路径（`domain/src/peer_routes.rs`、`api-types/src/lib.rs`、`config/src/lib.rs`） | 指代真实文件（`crates/meshlet-domain/…` 等），但非字面路径；属账本书写习惯，不影响可追溯性（仓内已能用简写定位） |
+| `todo.md` 中的简写 crate 路径（`domain/src/peer_routes.rs`、`api-types/src/lib.rs`、`config/src/lib.rs`） | 指代真实文件（`crates/meshlet-domain/…` 等），但非字面路径；属账本书写习惯，不影响可追溯性（仓内已能用简写定位） |
 
 ## 4. 结论与建议
 

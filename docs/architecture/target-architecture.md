@@ -1,13 +1,13 @@
 # Target Architecture (Draft)
 
 > Nature: review transcript of a ChatGPT shared-page refactor plan (2026-10-20; user link `t_6ad791db...`; user directive: use it as the new implementation baseline).
-> Constraint: this document is the source for Meshlet's target design and implementation order. `TODO.md` was rewritten from it; the old TODO is archived and is not a premise.
+> Constraint: this document is the source for Meshlet's target design and implementation order. `todo.md` was rewritten from it; the old TODO is archived and is not a premise.
 
 I will design Meshlet from a **Greenfield Target Architecture**: no compatibility with the old API, old database schema, old configuration files, or existing module layout is assumed. The data model, protocols, migration system, and network execution backend may be rebuilt where necessary.
 
 The design principle is: **establish the correct domain model, security semantics, and state consistency first, then decide how code is organized; do not compromise to preserve the current implementation.**
 
-Combining the repository's latest `TODO.md`, I define the design goal as personal self-hosted network infrastructure: device networking, multiple networks and trust groups, remote LAN access, overlapping prefixes, TCP/UDP port forwarding, HTTP service publication, and reliable network diagnostics.
+Combining the repository's latest `todo.md`, I define the design goal as personal self-hosted network infrastructure: device networking, multiple networks and trust groups, remote LAN access, overlapping prefixes, TCP/UDP port forwarding, HTTP service publication, and reliable network diagnostics.
 
 Core decisions come first:
 
@@ -702,7 +702,7 @@ If this proposal proceeds, I recommend formally adopting the following principle
 
 I believe this is more valuable than continuing to layer features onto the current structure. What Meshlet should truly become is not a "WireGuard configuration manager", but a **self-hosted network control system with a clear security model, declarative network orchestration, reliable failure recovery, and unified service publication**.
 
-The most reasonable next deliverable is to codify this target design in `docs/architecture/target-architecture.md`, redefine the domain model, protocol, data tables, execution state machine, and acceptance criteria, and rewrite the Code Agent-oriented `TODO.md` accordingly. This should become the new implementation baseline rather than continuing to treat the module boundaries in the old TODO as immutable premises.
+The most reasonable next deliverable is to codify this target design in `docs/architecture/target-architecture.md`, redefine the domain model, protocol, data tables, execution state machine, and acceptance criteria, and rewrite the Code Agent-oriented `todo.md` accordingly. This should become the new implementation baseline rather than continuing to treat the module boundaries in the old TODO as immutable premises.
 
 If desired, I can:
 

@@ -6,7 +6,7 @@
 > `apps/server/tests/aliases.rs:288`），计划哈希对路由重排的稳定性由
 > `apps/server/src/device_plan.rs:590` 覆盖。没有搬过来的是该 crate 的设备/Segment/授权
 > 打乱顺序独立性测试——这些输入在产品路径上没有对位验证。本文作为该部分能力的设计留档
-> 保留。依据见 `TODO.md` R-03。
+> 保留。依据见 `todo.md` R-03。
 
 R-03 引入纯逻辑、跨平台的 `meshlet-netplan`。它先校验完整期望状态，再编译出一个规范 HubPlan，其中包含 Hub Peer、网关分配和设备路由。Planner 不落库，也不接触平台执行器。
 

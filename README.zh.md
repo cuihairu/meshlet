@@ -18,7 +18,7 @@
 > 已实现控制面、WireGuard hub/agent、LAN 路由与 Alias NAT、React 控制台、认证、审计、备份和设备审批。
 > 本轮补充单实例多网络隔离、设备应用回执、hub 恢复、成功计划回滚、Direct LAN SNAT 和正式服务权限，
 > 已有 Linux 真实内核与非 root 服务回归证据。Windows 完整后端、空 VPS 安装和真实设备走查仍待完成。
-> 每日构建与一键安装见下节，当前验收范围见 [TODO](TODO.md)。
+> 每日构建与一键安装见下节，当前验收范围见 [TODO](todo.md)。
 
 ## 每日构建与一键安装
 
@@ -76,7 +76,7 @@ cat /usr/local/share/meshlet/server-build-info
 - [架构与 TODO 审查](docs/analysis/architecture-review-2026-10-17.md) —— 实现缺口、重新验收要求与建议优先级
 - [个人组网功能对比](docs/analysis/personal-networking-comparison.md) —— 与 ZeroTier、Tailscale 的 61 项能力对比、官方来源与开发可行性
 - [外部意见存档（2026-10-13）](https://cuihairu.github.io/meshlet/review/chatgpt-2026-10-13.html) —— 外部对话逐字存档；仅代表外部意见，任何主张行动前须对代码核验
-- [TODO](TODO.md) —— 落地跟踪条目，带期次与验收标准
+- [TODO](todo.md) —— 落地跟踪条目，带期次与验收标准
 - [Logo 配色对比](https://cuihairu.github.io/meshlet/design/logo-preview.html)
 
 ## 状态
@@ -89,7 +89,7 @@ cat /usr/local/share/meshlet/server-build-info
 
 本轮架构修复及 Linux 回归记录见 [P0 修复与 nightly 实施记录](docs/implementation/fixes-and-nightly-2026-10-17.md)。
 整体部署验收仍未完成：ARM64 构建、默认分支首次 nightly 发布、空 VPS 一键安装、Windows 后端（ADR-008）
-和真实设备走查保持待验证。当前工作以 [TODO](TODO.md) 顶部清单为准，本地测试不替代真实部署验收。
+和真实设备走查保持待验证。当前工作以 [TODO](todo.md) 顶部清单为准，本地测试不替代真实部署验收。
 
 ## 本地测试口径
 

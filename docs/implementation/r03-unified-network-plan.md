@@ -8,7 +8,7 @@
 > reordering is covered at `apps/server/src/device_plan.rs:590`. What is not
 > carried over is the crate's device/segment/grant shuffle-independence suite —
 > those inputs have no equivalent exercise in the product path. This file is
-> retained as the design record for that lost coverage. See `TODO.md` R-03.
+> retained as the design record for that lost coverage. See `todo.md` R-03.
 
 R-03 introduces `meshlet-netplan`, a pure cross-platform planning library. It validates the complete desired state first, then compiles one canonical HubPlan containing hub peers, gateway assignments, and device routes. The planner performs no persistence or platform execution.
 

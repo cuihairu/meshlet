@@ -6,7 +6,7 @@ real Chinese Windows Server 2022 during 2026-10-25/26. No value or conclusion on
 this page was newly measured here. The R-05 parent item stays unchecked: three
 real-machine gaps remain and are listed under [Still blocked](#still-blocked).
 
-Sources: the `TODO.md` R-05 data-plane sub-item (2026-10-25/26 record) and the
+Sources: the `todo.md` R-05 data-plane sub-item (2026-10-25/26 record) and the
 module headers of `crates/meshlet-network/src/windows_*.rs`.
 
 ## Machine and toolchain (as recorded)

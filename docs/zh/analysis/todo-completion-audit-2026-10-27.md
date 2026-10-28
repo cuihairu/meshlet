@@ -1,6 +1,6 @@
 # TODO 完成状态审计 — 2026-10-27
 
-**范围**：`TODO.md` 的 M5 —— 逐条核对**已勾**项的实现路径、测试覆盖与真实验收证据。本
+**范围**：`todo.md` 的 M5 —— 逐条核对**已勾**项的实现路径、测试覆盖与真实验收证据。本
 报告同时是尚未落定的 **TODO #52 SystemBackend 接线决策**（`crates/meshlet-network/src/lib.rs:44-49`）
 要求的前置输入。
 
@@ -224,7 +224,7 @@ passthrough 路由带 `allowed_bearer_tokens` 与 `path_prefix != "/"` 各返回
 每次都会真跑。
 
 ### M2 — 有证据
-被引行号全部落在范围内。复核时（2026-10-27）发现并修正一处几行偏差：`NetworkSnapshot`/`PeerObserved` 被引为 `lib.rs:160/177`，但 `peers` 字段与结构体实际在 `:169`/`:182`——`TODO.md` 与 `r04-linux-agent-e2e.md` 现已改为这两个行号。其余引用与所写完全一致：`wg show` peer
+被引行号全部落在范围内。复核时（2026-10-27）发现并修正一处几行偏差：`NetworkSnapshot`/`PeerObserved` 被引为 `lib.rs:160/177`，但 `peers` 字段与结构体实际在 `:169`/`:182`——`todo.md` 与 `r04-linux-agent-e2e.md` 现已改为这两个行号。其余引用与所写完全一致：`wg show` peer
 解析（`linux.rs:238`，44 位 base64 且以 `=` 结尾）、`proto 198` 标记（`linux.rs:40`）、
 NAT 指纹 `chain|dest|action|owner|source|interface`（`nat.rs:79`，`:87` 处
 POSTROUTING→`none`）、内核侧解析（`linux.rs:941`）、集合比对（`reconcile.rs:165/179/209`）、
@@ -293,15 +293,15 @@ POSTROUTING→`none`）、内核侧解析（`linux.rs:941`）、集合比对（`
 ## 本地可推进的后续项
 
 **状态（2026-10-27，同日）：四项全部落地。** #1 见 `ee1cf12`，#2 见 `eb6ce1b`，#3 见
-`2fe3fd5`（flock 实例锁，而非只加探测），#4 见覆盖 `TODO.md`、`r04-linux-agent-e2e.md`、
+`2fe3fd5`（flock 实例锁，而非只加探测），#4 见覆盖 `todo.md`、`r04-linux-agent-e2e.md`、
 `r06-service-publishing.md` 与两个 `windows_*.rs` 模块头的行号清理（本报告自己的 TODO 行号
 引用也一并改为按条目名引用，避免再次腐化）。
 
 1. 把 `scripts/check-planner-deps.sh` 接入 CI（或删掉它），让 R-01 的依赖边界真正被
    强制执行。
-2. 修正 `TODO.md` 的两处事实错误（nftables → iptables；`meshlet-netplan` 不在产品路径上），
+2. 修正 `todo.md` 的两处事实错误（nftables → iptables；`meshlet-netplan` 不在产品路径上），
    或删掉那两个未接线的 crate。
 3. 就备份恢复守卫做决定：要么在代码层拒绝「服务持有打开的数据库时恢复」，要么加一个能
    捕获脱链 inode 丢写问题的自动化检查。
-4. 更新 `TODO.md` 与 `r04-linux-agent-e2e.md` 中过时的行号区间和测试计数，并修
+4. 更新 `todo.md` 与 `r04-linux-agent-e2e.md` 中过时的行号区间和测试计数，并修
    `windows_firewall.rs` 的过时模块头。

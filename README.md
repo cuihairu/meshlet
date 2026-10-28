@@ -19,7 +19,7 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > audit, backup and device approval are implemented. This revision adds single-instance network
 > isolation, device apply receipts, hub recovery, last-good-plan rollback, Direct LAN SNAT and
 > service permissions, with local Linux kernel and unprivileged service regression evidence.
-> Windows and long-run soak acceptance remain pending. See [TODO](TODO.md).
+> Windows and long-run soak acceptance remain pending. See [TODO](todo.md).
 
 ## Nightly builds and one-command installation
 
@@ -79,7 +79,7 @@ Not in scope for v1: public relay networks, P2P/NAT hole punching, L2 bridging, 
 - [Architecture and TODO review](docs/analysis/architecture-review-2026-10-17.md) — verified implementation gaps and proposed priorities (Chinese)
 - [Personal networking comparison](docs/analysis/personal-networking-comparison.md) — 61 capabilities compared with ZeroTier and Tailscale, with sources and feasibility (Chinese)
 - [External review archive (2026-10-13)](https://cuihairu.github.io/meshlet/review/chatgpt-2026-10-13.html) — verbatim archive of the external conversation; opinions only, verify against code before acting on anything
-- [TODO](TODO.md) — tracked items with phase and acceptance criteria
+- [TODO](todo.md) — tracked items with phase and acceptance criteria
 - [Logo color options](https://cuihairu.github.io/meshlet/design/logo-preview.html)
 
 ## Status
@@ -96,7 +96,7 @@ The current implementation is not fully accepted for deployment. See the
 [P0 fixes and nightly implementation record](docs/implementation/fixes-and-nightly-2026-10-17.md)
 for local Linux evidence. ARM64 builds, the first nightly publication on the default branch,
 empty-VPS installation, Windows support and real-device walkthroughs remain pending.
-The current checklist at the top of [TODO](TODO.md) records these limits.
+The current checklist at the top of [TODO](todo.md) records these limits.
 
 ## License
 
