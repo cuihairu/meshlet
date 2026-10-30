@@ -7,7 +7,7 @@ import {
 } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as api from './api';
-import { PublishSection } from './App';
+import { PublishSection } from './pages/diagnostics/PublishSection';
 
 const device: api.Device = {
   id: 'dev-1',

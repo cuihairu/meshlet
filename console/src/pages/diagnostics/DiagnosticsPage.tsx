@@ -1,6 +1,7 @@
-import { DiagnosticsSection, PublishSection } from '../../App';
 import { NoNetworkSelected } from '../../components/NoNetworkSelected';
 import { useNetwork } from '../../network-context';
+import { DiagnosticsSection } from './DiagnosticsSection';
+import { PublishSection } from './PublishSection';
 
 /** /diagnostics — health checks and service publishing. */
 export function DiagnosticsPage() {
