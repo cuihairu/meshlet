@@ -117,14 +117,27 @@ async fn segment_default_migration_repairs_missing_rows_and_assignments() {
 #[tokio::test]
 async fn schema_stores_no_private_key_material() {
     // ADR-010 / §11.2：私钥不出客户端，schema 层不存在私钥列。
+    //
+    // 豁免：`users.totp_secret`（014_user_totp）。RFC 6238 要求服务端持有 TOTP
+    // 共享密钥才能校验验证码——这是**对称**共享密钥，与 ADR-010 针对的
+    // WireGuard **非对称私钥**不同类；私钥/seed 检查仍严格，`secret` 列改为
+    // 逐表逐列精确检查（仅放行 totp_secret，不因出现它就放行一切 secret 列）。
     let pool = db().await;
     let all = table_sql(&pool).await;
     assert!(
         !all.contains("private"),
         "schema must not contain private key columns: {all}"
     );
-    assert!(!all.contains("secret"));
     assert!(!all.contains("seed"));
+    const SECRET_EXEMPT: [&str; 1] = ["totp_secret"];
+    for table in tables(&pool).await {
+        for col in columns(&pool, &table).await {
+            assert!(
+                !col.contains("secret") || SECRET_EXEMPT.contains(&col.as_str()),
+                "unexpected secret column {table}.{col}"
+            );
+        }
+    }
 
     let device_cols = columns(&pool, "devices").await;
     assert!(device_cols.contains(&"public_key".to_string()));

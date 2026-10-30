@@ -952,8 +952,14 @@ pub fn router(state: SharedAppState) -> Router {
         .route("/api/v1/auth/login", post(auth::login_handler))
         .route("/api/v1/auth/logout", post(auth::logout_handler))
         .route("/api/v1/auth/me", get(auth::me_handler))
-        .route("/api/v1/auth/2fa/status", get(auth::two_factor_status_handler))
-        .route("/api/v1/auth/2fa/enroll", post(auth::two_factor_enroll_handler))
+        .route(
+            "/api/v1/auth/2fa/status",
+            get(auth::two_factor_status_handler),
+        )
+        .route(
+            "/api/v1/auth/2fa/enroll",
+            post(auth::two_factor_enroll_handler),
+        )
         .route(
             "/api/v1/auth/2fa/activate",
             post(auth::two_factor_activate_handler),

@@ -242,13 +242,15 @@ impl AuthStore {
             .bind(key)
             .fetch_optional(pool)
             .await?;
-        Ok(row.map(|(id, email, password_hash, totp_secret, totp_enabled)| UserRecord {
-            id: UserId(id),
-            email,
-            password_hash,
-            totp_secret,
-            totp_enabled: totp_enabled != 0,
-        }))
+        Ok(row.map(
+            |(id, email, password_hash, totp_secret, totp_enabled)| UserRecord {
+                id: UserId(id),
+                email,
+                password_hash,
+                totp_secret,
+                totp_enabled: totp_enabled != 0,
+            },
+        ))
     }
 
     /// 管理员重置密码（离线维护 CLI；登录恒重读库，运行中生效）。

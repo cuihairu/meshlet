@@ -530,7 +530,10 @@ async fn totp_enroll_activate_then_login_requires_code() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    let uri = body["otpauth_uri"].as_str().expect("otpauth_uri").to_string();
+    let uri = body["otpauth_uri"]
+        .as_str()
+        .expect("otpauth_uri")
+        .to_string();
     assert!(uri.starts_with("otpauth://totp/"), "{uri}");
     assert!(uri.contains("secret="), "{uri}");
     assert!(!uri.contains("P@ssw0rd"), "no plaintext password in uri");
