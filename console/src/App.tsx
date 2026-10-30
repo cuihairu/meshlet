@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  BrowserRouter,
+  HashRouter,
   Navigate,
   NavLink,
   Route,
@@ -45,7 +45,7 @@ function App() {
   };
 
   return (
-    <BrowserRouter>
+    <HashRouter>
       <div className="app">
         {auth.kind === 'signed-in' && (
           <NetworkProvider>
@@ -57,7 +57,7 @@ function App() {
           {auth.kind === 'signed-out' && <AuthGate onSignedIn={onSignedIn} />}
         </main>
       </div>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
 
