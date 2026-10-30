@@ -35,7 +35,12 @@ rpmarch=${3:-}
 case $debarch in amd64|arm64) ;; *) fail "unsupported deb arch: $debarch" ;; esac
 case $rpmarch in x86_64|aarch64) ;; *) fail "unsupported rpm arch: $rpmarch" ;; esac
 
+# Package-manager version: sorts below any real 0.0.0 release (prerelease).
 version=0.0.0~nightly
+# Asset filename version. GitHub replaces `~` with `.` in release asset names,
+# so the uploaded files must carry the dotted form for README URLs and the
+# SHA256SUMS lookups to resolve. The internal Version field keeps the `~`.
+asset_version=0.0.0.nightly
 release=1
 maintainer='cuihairu <chuihairu@gmail.com>'
 
@@ -191,7 +196,7 @@ build_deb() { # build_deb <pkg> <desc> <postinst-or-empty> <files...>
   fi
   # --root-owner-group forces root:root tar ownership even when built as a
   # non-root user (CI runners are non-root).
-  dpkg-deb --build --root-owner-group "$pkgdir" "$dist/${pkg}_${version}_${debarch}.deb" >/dev/null
+  dpkg-deb --build --root-owner-group "$pkgdir" "$dist/${pkg}_${asset_version}_${debarch}.deb" >/dev/null
 }
 
 # --- Build one .rpm via rpmbuild ---
@@ -230,7 +235,7 @@ build_rpm() { # build_rpm <pkg> <summary> <post-or-empty> <files...>
     --define 'debug_package %{nil}' \
     --define '_build_id_links none' --define '_missing_build_ids_terminate_build 0' \
     -bb "$spec" >/dev/null
-  mv "$topdir"/RPMS/"$rpmarch"/*.rpm "$dist/${pkg}-${version}-${release}.${rpmarch}.rpm"
+  mv "$topdir"/RPMS/"$rpmarch"/*.rpm "$dist/${pkg}-${asset_version}-${release}.${rpmarch}.rpm"
 }
 
 user_server="$work/user-server.sh"

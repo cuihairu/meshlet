@@ -62,13 +62,13 @@ nightly 同时按组件发布两种架构的包——`meshlet-server`（服务�
 
 ```bash
 # Debian / Ubuntu（ARM 平台把 amd64 换成 arm64）
-curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0~nightly_amd64.deb
-curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0~nightly_amd64.deb
-sudo apt install ./meshlet-server_0.0.0~nightly_amd64.deb ./meshlet-agent_0.0.0~nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0.nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0.nightly_amd64.deb
+sudo apt install ./meshlet-server_0.0.0.nightly_amd64.deb ./meshlet-agent_0.0.0.nightly_amd64.deb
 
 # Fedora / RHEL（ARM 平台把 x86_64 换成 aarch64）
-sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0~nightly-1.x86_64.rpm
-sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0~nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0.nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0.nightly-1.x86_64.rpm
 ```
 
 包会创建服务账户与状态目录，但刻意不生成活动配置（配置因机而异，含密钥与 token）：复制 `/etc/meshlet/*.toml.example` 填好，生成密钥（服务端 `wg genkey > /etc/meshlet/hub.key`），再 `sudo systemctl enable --now meshlet-server`（或 `meshlet-agent`）。想要引导式首次安装请用上面的 `install.sh`。
