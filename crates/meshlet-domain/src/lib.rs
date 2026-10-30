@@ -14,6 +14,7 @@ pub mod conflict;
 pub mod entities;
 pub mod invites;
 pub mod ipam;
+pub mod p2p;
 pub mod peer_routes;
 pub mod presence;
 pub mod qr;
@@ -36,6 +37,13 @@ pub use entities::{
 };
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};
+pub use p2p::{
+    classify_probe, decide_direct_path, direct_peer_allowed_ips, endpoint_candidates,
+    is_lan_reachable, is_private_ip, on_probe, peer_endpoints_for, DeviceDirectState,
+    DirectDecision, DirectEndpointReport, DirectPeerError, EndpointCandidate, EndpointKind,
+    PeerEndpoints, PeerLinkAction, PeerLinkState, ProbeResult, DIRECT_HEALTH_WINDOW_SECS,
+    DIRECT_PERSISTENT_KEEPALIVE_SECS, DIRECT_PROBE_INTERVAL_SECS, MAX_PROMOTE_ATTEMPTS,
+};
 pub use peer_routes::{
     all_published_routes, client_hub_peer_allowed_ips, hub_device_peers, hub_peer_allowed_ips,
     DevicePeer, PeerRouteError,

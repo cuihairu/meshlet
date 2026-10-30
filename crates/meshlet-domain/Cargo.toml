@@ -20,3 +20,4 @@ serde = { workspace = true }
 
 [dev-dependencies]
 rqrr = { version = "0.11", default-features = false }
+serde_json = { workspace = true }
