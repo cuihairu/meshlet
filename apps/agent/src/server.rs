@@ -105,6 +105,7 @@ pub fn heartbeat(
     token: &str,
     last_handshake_at: Option<String>,
     dataplane: Option<DataplaneEvidence>,
+    direct: Option<meshlet_domain::DirectEndpointReport>,
 ) -> Result<String, String> {
     let url = format!(
         "{}/api/v1/agent/heartbeat",
@@ -113,6 +114,7 @@ pub fn heartbeat(
     let payload = serde_json::json!({
         "last_handshake_at": last_handshake_at,
         "dataplane": dataplane,
+        "direct": direct,
     })
     .to_string();
     let req = ureq::post(&url)

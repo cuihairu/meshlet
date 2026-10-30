@@ -8,15 +8,19 @@
 //! - 心跳携带 agent 本地读到的 `wg show` 握手时间（`last_handshake_at`），
 //!   服务端据此 + 上报时间做在线判定（[presence] 域层）。
 
-use axum::extract::{FromRequestParts, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Path, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use meshlet_api_types::{ErrorCode, ErrorResponse};
-use meshlet_domain::{generate_token, token_hash, DataplaneEvidence, DeviceId, Timestamp};
+use meshlet_domain::{
+    generate_token, token_hash, DataplaneEvidence, DeviceId, DirectEndpointReport, PeerEndpoints,
+    Timestamp,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use std::net::SocketAddr;
 
 use crate::auth::SharedAppState;
 use crate::service;
@@ -105,6 +109,15 @@ pub fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
     Some(value.to_string())
 }
 
+/// §12 P2P：观测源地址 → 公网候选 IP。连接来自 IPv6（无 IPv4 地址）或
+/// 无地址时返回 `None`——meshlet 是 IPv4 overlay，v6 观测不构成 IPv4 公网候选。
+fn direct_observed_ip(addr: &SocketAddr) -> Option<std::net::Ipv4Addr> {
+    match addr.ip() {
+        std::net::IpAddr::V4(ip) => Some(ip),
+        std::net::IpAddr::V6(_) => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 错误
 // ---------------------------------------------------------------------------
@@ -183,6 +196,9 @@ pub struct HeartbeatRequest {
     /// 设备侧数据面实测证据（内核读数 + 大包探测，§7.5）；缺省表示未上报。
     #[serde(default)]
     pub dataplane: Option<DataplaneEvidence>,
+    /// §12 P2P 直连候选端点（监听端口 + LAN 地址）；缺省表示未上报/已关闭直连。
+    #[serde(default)]
+    pub direct: Option<DirectEndpointReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -192,11 +208,16 @@ pub struct HeartbeatResponse {
     pub last_seen_at: Option<String>,
 }
 
-/// `POST /api/v1/agent/heartbeat`：记录一次 agent 上报（+ 可选握手时间），
-/// 返回当前在线判定（状态 + 数据来源 + 最后证据时间）。
+/// `POST /api/v1/agent/heartbeat`：记录一次 agent 上报（+ 可选握手时间 +
+/// §12 P2P 直连候选端点），返回当前在线判定（状态 + 数据来源 + 最后证据时间）。
+///
+/// 观测源地址（公网候选）来自连接 socket（[ConnectInfo]，serve 侧装配；
+/// 测试经 `request.extensions_mut().insert(ConnectInfo(..))` 注入）；请求里
+/// 上报的 LAN 地址是 agent 自己枚举的。候选是临时性咨询数据，仅存内存。
 pub async fn heartbeat_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(req): Json<HeartbeatRequest>,
 ) -> Result<Json<HeartbeatResponse>, AgentApiError> {
     if let Some(ts) = &req.last_handshake_at {
@@ -227,6 +248,13 @@ pub async fn heartbeat_handler(
                     .expect("report just recorded")
                     .clone();
                 let network_id = device.network_id.to_string();
+                // §12：直连候选只对已注册设备记录（Pending 无隧道、不参与数据面）。
+                service::record_direct_state(
+                    &mut guard,
+                    &device_id,
+                    direct_observed_ip(&addr),
+                    req.direct.clone(),
+                );
                 (Some(presence), network_id, Some(device))
             }
             Err(service::ServiceError::DeviceNotFound(_)) => {
@@ -381,4 +409,54 @@ pub async fn desired_device_plan_handler(
         crate::telemetry::RESULT_OK
     );
     Ok(Json(plan))
+}
+
+/// `GET /api/v1/networks/{network_id}/peers/endpoints`：本设备可直连的 peer
+/// 候选端点列表（§12 P2P）。
+///
+/// - 凭证：agent 设备 Bearer（与心跳/计划同一认证边界）；
+/// - 返回 [`meshlet_domain::peer_endpoints_for`] 结果：排除自身/非 Active/
+///   未上报候选/超出本设备可路由网段，按 device_id 确定性排序；
+/// - 与 peer AllowedIPs 同一段口径：分段网络取所属段前缀，单段网络取整个
+///   overlay（`device_plan::segment_for` 复用）。
+pub async fn peers_endpoints_handler(
+    State(state): State<SharedAppState>,
+    AuthorizedAgent(device_id): AuthorizedAgent,
+    Path(network_id): Path<String>,
+) -> Result<Json<Vec<PeerEndpoints>>, AgentApiError> {
+    let _persist = state.persist.lock().await;
+    let guard = state.mesh.lock().unwrap();
+    let Some(device) = guard.registry.find_by_id(&device_id) else {
+        // 待审批注册申请：批准前无端点（无隧道、不参与数据面）。
+        if guard.registry.find_registration(&device_id).is_some() {
+            return Err(AgentApiError::NotFound(format!(
+                "device {device_id} is pending approval: no endpoints until approved"
+            )));
+        }
+        return Err(AgentApiError::NotFound(format!(
+            "device {device_id} not found"
+        )));
+    };
+    if device.network_id.to_string() != network_id {
+        return Err(AgentApiError::NotFound(format!(
+            "network {network_id} does not own device {device_id}"
+        )));
+    }
+    if !device.is_active() {
+        return Err(AgentApiError::NotFound(format!(
+            "device {device_id} is not active"
+        )));
+    }
+    let Some(source_segment) = crate::device_plan::segment_for(&guard, &network_id, device) else {
+        return Err(AgentApiError::Internal(format!(
+            "device {device_id} has no segment assignment"
+        )));
+    };
+    let peers = meshlet_domain::peer_endpoints_for(
+        source_segment.cidr,
+        &device_id,
+        guard.registry.devices(),
+        &guard.direct_states,
+    );
+    Ok(Json(peers))
 }

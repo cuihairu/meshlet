@@ -89,6 +89,38 @@ fn parse_link_mtu(link_show: &str) -> Option<u32> {
     None
 }
 
+/// 从 `ip -4 -o addr show` 输出解析 `(接口, IPv4 地址)` 对（仅 `inet` 行）。
+/// 形如 `2: eth0    inet 192.168.1.50/24 ...`（`-o` 单行每地址一行）。
+fn parse_ip_octet_addrs(output: &str) -> Vec<(String, Ipv4Addr)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 4 || fields[2] != "inet" {
+                return None;
+            }
+            let ifname = fields[1].to_string();
+            let addr: Ipv4Addr = fields[3].split('/').next()?.parse().ok()?;
+            Some((ifname, addr))
+        })
+        .collect()
+}
+
+/// 候选 LAN 接口：排除回环、受管隧道，以及容器/虚拟化/vpn 等不会承载
+/// 对端直连的虚拟接口（`docker*`/`br-*`/`veth*`/`virbr*`/`vmbr*`/
+/// `tailscale*`/`wg*`）。
+fn is_lan_interface(ifname: &str, wg_interface: &str) -> bool {
+    if ifname == "lo" || ifname == wg_interface {
+        return false;
+    }
+    for prefix in ["docker", "br-", "veth", "virbr", "vmbr", "tailscale", "wg"] {
+        if ifname.starts_with(prefix) {
+            return false;
+        }
+    }
+    true
+}
+
 /// The MTU the agent enforces. An unset plan value means the WireGuard default
 /// ([`DEFAULT_TUNNEL_MTU`]), not "leave the interface alone" — see
 /// [`mtu_matches_planned`].
@@ -479,6 +511,22 @@ impl LinuxNetworkBackend {
             nat_rules,
             tunnel_mtu,
         })
+    }
+
+    /// 枚举本机 RFC1918 局域网地址（§12 P2P 直连候选上报）：`ip -4 -o addr
+    /// show` 里过滤回环、受管隧道与容器/虚拟接口。命令失败返回错误，由调用方
+    /// 决定是否仍上报（候选为空）。
+    pub fn lan_addresses_sync(&self) -> Result<Vec<Ipv4Addr>, NetworkError> {
+        let out = self.run(&["ip", "-4", "-o", "addr", "show"])?;
+        let mut addrs: Vec<Ipv4Addr> = parse_ip_octet_addrs(&String::from_utf8_lossy(&out.stdout))
+            .into_iter()
+            .filter(|(ifname, _)| is_lan_interface(ifname, &self.interface))
+            .map(|(_, addr)| addr)
+            .filter(|addr| meshlet_domain::is_private_ip(*addr))
+            .collect();
+        addrs.sort_unstable();
+        addrs.dedup();
+        Ok(addrs)
     }
 
     /// Remove only this hub interface and its isolation rules; gateways own NAT.
@@ -1396,6 +1444,37 @@ mod tests {
         ] {
             assert_eq!(route_source(output, "wg0"), None, "{output}");
         }
+    }
+
+    #[test]
+    fn parses_ip_octet_addr_output_and_filters_non_lan() {
+        let out = "\
+1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever
+2: eth0    inet 192.168.1.50/24 brd 192.168.1.255 scope global eth0\\       valid_lft forever preferred_lft forever
+2: eth0    inet 10.0.0.5/16 scope global eth0\\       valid_lft forever preferred_lft forever
+3: wg0    inet 10.240.0.2/32 scope global wg0\\       valid_lft forever preferred_lft forever
+4: docker0    inet 172.17.0.1/16 scope global docker0\\       valid_lft forever preferred_lft forever
+5: br-1234    inet 172.18.0.1/16 scope global br-1234\\       valid_lft forever preferred_lft forever
+";
+        let parsed = parse_ip_octet_addrs(out);
+        let addrs: Vec<Ipv4Addr> = parsed
+            .iter()
+            .filter(|(ifname, _)| is_lan_interface(ifname, "wg0"))
+            .map(|(_, addr)| *addr)
+            .collect();
+        // eth0 两条 RFC1918 保留；lo/wg0/docker0/br-* 全部排除。
+        assert_eq!(
+            addrs,
+            vec![
+                "192.168.1.50".parse::<Ipv4Addr>().unwrap(),
+                "10.0.0.5".parse().unwrap()
+            ]
+        );
+        assert!(!is_lan_interface("lo", "wg0"));
+        assert!(!is_lan_interface("wg0", "wg0"));
+        assert!(!is_lan_interface("wg9", "wg0")); // 其它 wg 接口同样排除
+        assert!(is_lan_interface("eth0", "wg0"));
+        assert!(is_lan_interface("enp2s0", "wg0"));
     }
 
     #[test]

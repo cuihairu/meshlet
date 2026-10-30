@@ -478,30 +478,28 @@ async fn presence_is_conservative_after_restart() {
         let agent_token = agent_dev["agent_token"].as_str().unwrap().to_string();
 
         // 心跳（带握手证据 + 数据面实测证据，§7.5）→ online。
-        let res = c
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/agent/heartbeat")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {agent_token}"))
-                    .body(Body::from(
-                        json!({
-                            "last_handshake_at": meshlet_server::service::now(),
-                            "dataplane": {
-                                "tunnel_mtu": 1380,
-                                "nat_rules_present": false,
-                                "mtu_probe_payload": 1352,
-                            },
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/agent/heartbeat")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {agent_token}"))
+            .body(Body::from(
+                json!({
+                    "last_handshake_at": meshlet_server::service::now(),
+                    "dataplane": {
+                        "tunnel_mtu": 1380,
+                        "nat_rules_present": false,
+                        "mtu_probe_payload": 1352,
+                    },
+                })
+                .to_string(),
+            ))
             .unwrap();
+        // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        let res = c.app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         let hb: Value = serde_json::from_slice(&bytes).unwrap();
@@ -568,10 +566,14 @@ async fn agent_call(
     let mut builder = Request::builder().method(method).uri(uri);
     builder = builder.header("authorization", format!("Bearer {agent_token}"));
     let body = body.map(|v| Body::from(v.to_string())).unwrap_or_default();
-    let req = builder
+    let mut req = builder
         .header("content-type", "application/json")
         .body(body)
         .unwrap();
+    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+    ));
     let res = app.clone().oneshot(req).await.unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();

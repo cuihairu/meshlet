@@ -235,26 +235,24 @@ async fn heartbeat_with_evidence(
     handshake_at: &str,
     evidence: Value,
 ) -> Value {
-    let res = c
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/agent/heartbeat")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {agent_token}"))
-                .body(Body::from(
-                    json!({
-                        "last_handshake_at": handshake_at,
-                        "dataplane": evidence,
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/agent/heartbeat")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {agent_token}"))
+        .body(Body::from(
+            json!({
+                "last_handshake_at": handshake_at,
+                "dataplane": evidence,
+            })
+            .to_string(),
+        ))
         .unwrap();
+    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let res = c.app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()

@@ -26,7 +26,9 @@ use crate::entities::{Device, DeviceId};
 // ---------------------------------------------------------------------------
 
 /// 候选 endpoint 分类（任务书：公网 ip:port 与局域网 ip:port 两类）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointKind {
     /// RFC1918 内网地址（同网段直连用）。
@@ -46,7 +48,9 @@ impl EndpointKind {
 }
 
 /// 一个候选直连 endpoint（ip:port + 分类）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct EndpointCandidate {
     pub ip: Ipv4Addr,
     pub port: u16,
@@ -89,8 +93,7 @@ pub fn is_private_ip(ip: Ipv4Addr) -> bool {
 
 /// 对端候选是否落在本机任一局域网子网内（同网段判定）。
 pub fn is_lan_reachable(my_lan_subnets: &[Ipv4Cidr], candidate: &EndpointCandidate) -> bool {
-    candidate.kind == EndpointKind::Lan
-        && my_lan_subnets.iter().any(|c| c.contains(candidate.ip))
+    candidate.kind == EndpointKind::Lan && my_lan_subnets.iter().any(|c| c.contains(candidate.ip))
 }
 
 /// 直连路径决策结果。
@@ -455,7 +458,10 @@ mod tests {
 
     #[test]
     fn no_candidates_means_relay() {
-        assert_eq!(decide_direct_path(&[cidr(HOME)], &[]), DirectDecision::Relay);
+        assert_eq!(
+            decide_direct_path(&[cidr(HOME)], &[]),
+            DirectDecision::Relay
+        );
     }
 
     #[test]
@@ -628,10 +634,7 @@ mod tests {
 
         // 完全无上报 → 不进列表。
         let mut direct = BTreeMap::new();
-        direct.insert(
-            DeviceId("dev-a".into()),
-            DeviceDirectState::default(),
-        );
+        direct.insert(DeviceId("dev-a".into()), DeviceDirectState::default());
         let list = peer_endpoints_for(cidr(OVERLAY), &DeviceId("dev-b".into()), &devices, &direct);
         assert!(list.is_empty());
     }
@@ -681,10 +684,7 @@ mod tests {
             ProbeResult::Unknown, // Relay 无直连可探测，probe 无意义
             MAX_PROMOTE_ATTEMPTS,
         );
-        assert_eq!(
-            next,
-            PeerLinkState::DirectPending { attempts: 1 }
-        );
+        assert_eq!(next, PeerLinkState::DirectPending { attempts: 1 });
         assert_eq!(
             action,
             PeerLinkAction::Promote(DirectDecision::SameLan(lan("192.168.1.50", 51820)))
@@ -834,10 +834,7 @@ mod tests {
             device_id: DeviceId("dev-a".into()),
             public_key: "pub-a".into(),
             virtual_ipv4: "10.240.0.2".parse().unwrap(),
-            endpoints: vec![
-                lan("192.168.1.2", 51821),
-                public("203.0.113.1", 51821),
-            ],
+            endpoints: vec![lan("192.168.1.2", 51821), public("203.0.113.1", 51821)],
         }];
         let json = serde_json::to_string(&list).unwrap();
         assert_eq!(

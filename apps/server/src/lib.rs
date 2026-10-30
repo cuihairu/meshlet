@@ -1037,6 +1037,10 @@ pub fn router(state: SharedAppState) -> Router {
             "/api/v1/agent/device/desired",
             get(agent::desired_device_plan_handler),
         )
+        .route(
+            "/api/v1/networks/{network_id}/peers/endpoints",
+            get(agent::peers_endpoints_handler),
+        )
         // 访问日志（§17.1）+ HTTP 指标计数（§17.2）：路由模板级，不跨静态回落。
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

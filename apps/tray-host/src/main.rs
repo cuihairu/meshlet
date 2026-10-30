@@ -62,7 +62,10 @@ fn main() {
             class_name.as_ptr(),
             std::ptr::null(),
             0,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
             HWND_MESSAGE,
             std::ptr::null_mut(),
             GetModuleHandleW(std::ptr::null()),
@@ -186,7 +189,9 @@ fn update_tray(status_path: &std::path::Path, nid: &mut NOTIFYICONDATAW) {
             nid.szTip[i] = tip_wide.get(i).copied().unwrap_or(0);
         }
         nid.uFlags |= NIF_TIP;
-        unsafe { Shell_NotifyIconW(NIM_MODIFY, nid); }
+        unsafe {
+            Shell_NotifyIconW(NIM_MODIFY, nid);
+        }
     }
 }
 

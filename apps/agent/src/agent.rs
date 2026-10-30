@@ -10,8 +10,8 @@ use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
-use meshlet_config::{AgentConfig, DataplaneConfig};
-use meshlet_domain::DataplaneEvidence;
+use meshlet_config::{AgentConfig, DataplaneConfig, DirectConnectConfig};
+use meshlet_domain::{DataplaneEvidence, DirectEndpointReport};
 use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 use meshlet_publish::{ProbeReport, PublishPlan, Publisher};
 
@@ -536,17 +536,29 @@ impl Agent {
     }
 
     /// 心跳上报（§12.4/§14.1）：带本地读到的最近握手时间 + 数据面实测证据
-    /// （§7.5：内核读数 + 计划 MTU 大包探测）。
+    /// （§7.5：内核读数 + 计划 MTU 大包探测）+ P2P 直连候选端点（§12）。
     pub fn heartbeat(&self, plan: Option<&DevicePlan>) -> Result<(), String> {
         let evidence = self.collect_evidence(plan);
+        let direct = self.direct_report();
         server::heartbeat(
             &self.server_url,
             &self.token,
             self.last_handshake(),
             Some(evidence),
+            direct,
         )
         .map(|_| ())
         .map_err(|e| format!("heartbeat failed: {e}"))
+    }
+
+    /// §12 P2P：本机直连候选端点（WireGuard 监听端口 + RFC1918 局域网地址）。
+    /// 未开启直连时返回 `None`（上报省略，服务端按未上报处理）；LAN 枚举
+    /// 失败只记空候选，不吞掉心跳本身。
+    pub fn direct_report(&self) -> Option<DirectEndpointReport> {
+        direct_report_from(
+            &self.dataplane.direct_connect,
+            self.backend.lan_addresses_sync().unwrap_or_default(),
+        )
     }
 
     /// 数据面实测证据（§7.5）：内核读数 + 大包探测。读数失败按 `None` 上报
@@ -622,6 +634,22 @@ fn probe_decision(plan: &DevicePlan) -> Option<(Ipv4Addr, u32)> {
         .unwrap_or(DEFAULT_TUNNEL_MTU)
         .saturating_sub(28);
     (payload > 0).then_some((hub, payload))
+}
+
+/// §12 P2P 直连候选（纯逻辑）：未开启直连 → `None`（上报省略）；开启则携带
+/// WireGuard 监听端口与枚举到的 RFC1918 局域网地址（可为空，空候选仍合法——
+/// 对端仍可尝试公网观测地址）。
+fn direct_report_from(
+    direct_connect: &DirectConnectConfig,
+    lan_addrs: Vec<Ipv4Addr>,
+) -> Option<DirectEndpointReport> {
+    if !direct_connect.enabled {
+        return None;
+    }
+    Some(DirectEndpointReport {
+        listen_port: direct_connect.listen_port,
+        lan_addrs,
+    })
 }
 
 /// hub 入口地址兜底（纯逻辑，§16.4）：服务端不知道 agent 的网络位置，计划里
@@ -803,6 +831,32 @@ mod tests {
         assert_eq!(probe_decision(&p), None);
         let p = probe_plan(Some(28), Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(probe_decision(&p), None);
+    }
+
+    #[test]
+    fn direct_report_gates_on_enabled_and_carries_port() {
+        let on = DirectConnectConfig {
+            enabled: true,
+            listen_port: 51820,
+        };
+        let report =
+            direct_report_from(&on, vec!["192.168.1.50".parse().unwrap()]).expect("enabled");
+        assert_eq!(report.listen_port, 51820);
+        assert_eq!(
+            report.lan_addrs,
+            vec!["192.168.1.50".parse::<Ipv4Addr>().unwrap()]
+        );
+
+        // 空候选仍合法（对端可尝试公网观测地址）。
+        let report = direct_report_from(&on, vec![]).expect("empty candidates");
+        assert!(report.lan_addrs.is_empty());
+
+        // 未开启直连：上报省略（None），不伪造端点。
+        let off = DirectConnectConfig {
+            enabled: false,
+            listen_port: 51820,
+        };
+        assert_eq!(direct_report_from(&off, vec![]), None);
     }
 
     #[test]

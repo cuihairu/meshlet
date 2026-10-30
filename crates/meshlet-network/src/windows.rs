@@ -17,9 +17,9 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
 use crate::nat::NatRule;
-use crate::windows_tunnel::{render_wireguard_conf, wireguard_exe, WireGuardCommand};
-use crate::windows_tunnel::exec::{run_wireguard_command, write_tunnel_conf};
 use crate::windows_routes::exec::run_route_command;
+use crate::windows_tunnel::exec::{run_wireguard_command, write_tunnel_conf};
+use crate::windows_tunnel::{render_wireguard_conf, wireguard_exe, WireGuardCommand};
 use crate::{
     ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
     PeerObserved, RouteConfig, TunnelConfig,
@@ -150,11 +150,23 @@ impl WindowsNetworkBackend {
         })?;
         let tunnel_exists = self.tunnel_service_exists(&self.interface);
         let forwarding_enabled = self.forwarding_enabled();
-        let peers = if tunnel_exists { self.read_tunnel_peers(&self.interface) } else { Vec::new() };
-        let installed_routes = if tunnel_exists { self.routes_on_interface() } else { Vec::new() };
+        let peers = if tunnel_exists {
+            self.read_tunnel_peers(&self.interface)
+        } else {
+            Vec::new()
+        };
+        let installed_routes = if tunnel_exists {
+            self.routes_on_interface()
+        } else {
+            Vec::new()
+        };
         Ok(NetworkSnapshot {
-            tunnel_exists, forwarding_enabled, peers, installed_routes,
-            nat_rules: Vec::new(), tunnel_mtu: None,
+            tunnel_exists,
+            forwarding_enabled,
+            peers,
+            installed_routes,
+            nat_rules: Vec::new(),
+            tunnel_mtu: None,
         })
     }
 
@@ -166,11 +178,22 @@ impl WindowsNetworkBackend {
         Ok(Vec::new())
     }
 
-    pub fn remove_nat_sync(&self, _owner: &str) -> Result<ApplyResult, NetworkError> {
-        Err(NetworkError::Unsupported("NAT rule removal on Windows is not yet implemented".to_string()))
+    pub fn lan_addresses_sync(&self) -> Result<Vec<Ipv4Addr>, NetworkError> {
+        Err(NetworkError::Unsupported(
+            "LAN address enumeration on Windows is not yet implemented".to_string(),
+        ))
     }
 
-    pub fn remove_stale_meshlet_routes_sync(&self, _routes: &[RouteConfig]) -> Result<ApplyResult, NetworkError> {
+    pub fn remove_nat_sync(&self, _owner: &str) -> Result<ApplyResult, NetworkError> {
+        Err(NetworkError::Unsupported(
+            "NAT rule removal on Windows is not yet implemented".to_string(),
+        ))
+    }
+
+    pub fn remove_stale_meshlet_routes_sync(
+        &self,
+        _routes: &[RouteConfig],
+    ) -> Result<ApplyResult, NetworkError> {
         Ok(ApplyResult::ok())
     }
 
@@ -188,13 +211,18 @@ impl WindowsNetworkBackend {
             address: plan.tunnel.address,
             address_prefix: plan.tunnel.address_prefix,
             listen_port: plan.tunnel.listen_port,
-            peers: plan.tunnel.peers.iter().map(|p| {
-                let mut peer = p.clone();
-                if peer.endpoint.is_none() {
-                    peer.endpoint = self.hub_endpoint.clone();
-                }
-                peer
-            }).collect(),
+            peers: plan
+                .tunnel
+                .peers
+                .iter()
+                .map(|p| {
+                    let mut peer = p.clone();
+                    if peer.endpoint.is_none() {
+                        peer.endpoint = self.hub_endpoint.clone();
+                    }
+                    peer
+                })
+                .collect(),
             mtu: plan.tunnel.mtu,
             private_key,
         };
@@ -208,7 +236,9 @@ impl WindowsNetworkBackend {
         };
         run_wireguard_command(&command, Some(&exe))?;
         for route in &plan.routes {
-            let netsh_cmd = crate::windows_routes::NetshRouteCommand::Add { route: route.clone() };
+            let netsh_cmd = crate::windows_routes::NetshRouteCommand::Add {
+                route: route.clone(),
+            };
             run_route_command(&netsh_cmd)?;
         }
         Ok(())
@@ -216,7 +246,14 @@ impl WindowsNetworkBackend {
 
     pub fn mtu_probe_sync(&self, target: std::net::Ipv4Addr, payload: u32) -> bool {
         std::process::Command::new("ping")
-            .args(["-n", "1", "-f", "-l", &payload.to_string(), &target.to_string()])
+            .args([
+                "-n",
+                "1",
+                "-f",
+                "-l",
+                &payload.to_string(),
+                &target.to_string(),
+            ])
             .output()
             .map(|out| out.status.success())
             .unwrap_or(false)
@@ -257,7 +294,9 @@ impl NetworkBackend for WindowsNetworkBackend {
     ) -> Result<ApplyResult, NetworkError> {
         let mut errors = Vec::new();
         for route in routes {
-            let netsh_cmd = crate::windows_routes::NetshRouteCommand::Add { route: route.clone() };
+            let netsh_cmd = crate::windows_routes::NetshRouteCommand::Add {
+                route: route.clone(),
+            };
             match run_route_command(&netsh_cmd) {
                 Ok(result) => {
                     if let Some(err) = result.error {
@@ -304,10 +343,7 @@ impl NetworkBackend for WindowsNetworkBackend {
 }
 
 fn mask_to_prefix(mask: &str) -> u8 {
-    let octets: Vec<u8> = mask
-        .split('.')
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let octets: Vec<u8> = mask.split('.').filter_map(|s| s.parse().ok()).collect();
     if octets.len() != 4 {
         return 0;
     }

@@ -158,19 +158,18 @@ async fn heartbeat(
     agent_token: &str,
     body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {
-    let res = ctx
-        .app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/agent/heartbeat")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {agent_token}"))
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/agent/heartbeat")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {agent_token}"))
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
+    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let res = ctx.app.oneshot(req).await.unwrap();
     (res.status(), res_body(res).await)
 }
 

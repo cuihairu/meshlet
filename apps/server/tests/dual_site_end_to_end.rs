@@ -632,11 +632,16 @@ fn start_stoppable_server(
                 .with_apply_backend(factory),
             );
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-            let result = axum::serve(listener, meshlet_server::router(state))
-                .with_graceful_shutdown(async {
-                    let _ = shutdown_rx.await;
-                })
-                .await;
+            // §12：heartbeat 观测直连源地址（与 main.rs 的 serve 装配一致）。
+            let result = axum::serve(
+                listener,
+                meshlet_server::router(state)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
             if let Err(error) = result {
                 eprintln!("test server stopped: {error}");
             }

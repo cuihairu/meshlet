@@ -151,7 +151,13 @@ async fn main() {
         }
         None => meshlet_server::router(state),
     };
-    axum::serve(listener, app).await.expect("server error");
+    // ConnectInfo<SocketAddr>：agent 心跳据此观测直连候选的源地址（§12）。
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }
 
 fn load_config(path: Option<String>) -> ServerConfig {

@@ -21,7 +21,7 @@ use meshlet_network::{DevicePlan, PeerConfig, RouteConfig, SystemBackend, Tunnel
 
 use crate::service::MeshState;
 
-fn segment_for<'a>(
+pub(crate) fn segment_for<'a>(
     mesh: &'a MeshState,
     network_id: &str,
     device: &meshlet_domain::Device,

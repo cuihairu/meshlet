@@ -229,6 +229,14 @@ struct RawDataplaneConfig {
     private_key_file: Option<String>,
     hub_endpoint: Option<String>,
     poll_interval_secs: Option<u64>,
+    direct_connect: Option<RawDirectConnectConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawDirectConnectConfig {
+    enabled: Option<bool>,
+    listen_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -324,6 +332,26 @@ pub struct DataplaneConfig {
     pub hub_endpoint: Option<String>,
     /// 轮询间隔（秒）：到期向 server 拉取期望配置，有变更才重放（§10.1）。
     pub poll_interval_secs: u64,
+    /// P2P 直连（§12 P2P）：agent 每轮心跳上报候选端点，数据面尝试绕过 hub
+    /// 直连对端；不可达时自动回退 hub 中继。**默认开启**（数据面开启时生效）。
+    pub direct_connect: DirectConnectConfig,
+}
+
+/// P2P 直连开关与 WireGuard 监听端口。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectConnectConfig {
+    pub enabled: bool,
+    /// 数据面 WireGuard 监听端口（直连候选端点用）：防火墙需放行该 UDP 端口。
+    pub listen_port: u16,
+}
+
+impl Default for DirectConnectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            listen_port: 51820,
+        }
+    }
 }
 
 impl Default for DataplaneConfig {
@@ -334,6 +362,7 @@ impl Default for DataplaneConfig {
             private_key_file: None,
             hub_endpoint: None,
             poll_interval_secs: 30,
+            direct_connect: DirectConnectConfig::default(),
         }
     }
 }
@@ -402,6 +431,20 @@ impl AgentConfig {
                 "dataplane.poll_interval_secs must be at least 1".into(),
             ));
         }
+        let raw_dc = dataplane.direct_connect.unwrap_or_default();
+        let direct_connect = DirectConnectConfig {
+            enabled: raw_dc
+                .enabled
+                .unwrap_or(default.dataplane.direct_connect.enabled),
+            listen_port: raw_dc
+                .listen_port
+                .unwrap_or(default.dataplane.direct_connect.listen_port),
+        };
+        if direct_connect.listen_port == 0 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.direct_connect.listen_port must be 1..=65535".into(),
+            ));
+        }
         Ok(Self {
             server_url,
             state_dir: raw.state_dir.unwrap_or(default.state_dir),
@@ -428,6 +471,7 @@ impl AgentConfig {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty()),
                 poll_interval_secs,
+                direct_connect,
             },
         })
     }
@@ -715,5 +759,42 @@ interface = "  "
 
         let err = AgentConfig::from_toml("[upgrade]\ncheck_interval_secs = 0").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidUpgrade(_)));
+    }
+
+    #[test]
+    fn agent_direct_connect_defaults_on_and_parses_section() {
+        // §12 P2P：直连是数据面的设计核心，默认开启；监听端口 51820（WireGuard 默认）。
+        let d = AgentConfig::default().dataplane.direct_connect;
+        assert!(d.enabled);
+        assert_eq!(d.listen_port, 51820);
+        // 缺 [dataplane] 段同样默认开启。
+        assert!(
+            AgentConfig::from_toml("")
+                .unwrap()
+                .dataplane
+                .direct_connect
+                .enabled
+        );
+
+        let c = AgentConfig::from_toml(
+            r#"
+[dataplane.direct_connect]
+enabled = false
+listen_port = 20000
+"#,
+        )
+        .unwrap();
+        assert!(!c.dataplane.direct_connect.enabled);
+        assert_eq!(c.dataplane.direct_connect.listen_port, 20000);
+    }
+
+    #[test]
+    fn agent_direct_connect_rejects_zero_port_and_unknown_key() {
+        let err =
+            AgentConfig::from_toml("[dataplane.direct_connect]\nlisten_port = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err = AgentConfig::from_toml("[dataplane.direct_connect]\nbogus = 1").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
     }
 }

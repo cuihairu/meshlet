@@ -103,6 +103,10 @@ impl UnsupportedBackend {
         Err(self.refuse("enumerate meshlet nat owners"))
     }
 
+    pub fn lan_addresses_sync(&self) -> Result<Vec<Ipv4Addr>, NetworkError> {
+        Err(self.refuse("enumerate lan addresses"))
+    }
+
     pub fn remove_stale_meshlet_routes_sync(
         &self,
         _routes: &[RouteConfig],

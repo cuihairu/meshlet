@@ -191,13 +191,18 @@ async fn revoked_device_agent_token_is_rejected_immediately() {
     let c = ctx().await;
     let (network_id, device_id, agent_token) = net_with_device(&c, "home").await;
     let hb = |_c: &Ctx| {
-        Request::builder()
+        let mut req = Request::builder()
             .method("POST")
             .uri("/api/v1/agent/heartbeat")
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {agent_token}"))
             .body(Body::from(json!({}).to_string()))
-            .unwrap()
+            .unwrap();
+        // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        req
     };
     // 撤销前心跳正常。
     let res = c.app.clone().oneshot(hb(&c)).await.unwrap();

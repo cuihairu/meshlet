@@ -9,13 +9,13 @@
 use meshlet_api_types::ErrorResponse;
 use meshlet_domain::{
     generate_token, token_hash, AliasError, AliasMapping, AliasMappingId, BootstrapToken,
-    DataplaneEvidence, DesiredStateStatus, Device, DeviceId, DeviceRegistration, DeviceRegistry,
-    Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network, Platform, RegistryError, ReturnPathMode,
-    RouteMode, Segment, SegmentGrant, SegmentGrantBuilder, SegmentGrantId, SegmentGrantStatus,
-    SegmentId, SegmentStatus, Timestamp, TranslationMode,
+    DataplaneEvidence, DesiredStateStatus, Device, DeviceDirectState, DeviceId, DeviceRegistration,
+    DeviceRegistry, DirectEndpointReport, Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network,
+    Platform, RegistryError, ReturnPathMode, RouteMode, Segment, SegmentGrant, SegmentGrantBuilder,
+    SegmentGrantId, SegmentGrantStatus, SegmentId, SegmentStatus, Timestamp, TranslationMode,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
@@ -493,6 +493,11 @@ pub struct MeshState {
     /// 前缀与 `bt-` 不冲突，故二者各自单调即可——不用共享计数器。
     /// 待审批申请本体在 `registry` 内（[DeviceRegistry]）。
     registration_seq: u64,
+    /// §12 P2P 直连候选（**内存态**，临时性咨询数据）：每轮心跳重报，故不落
+    /// 库——持久化只添陈旧风险（掉线后旧候选仍被对端当成有效）。观测源地址
+    /// 由连接 socket 取（公网候选），LAN 地址由 agent 心跳上报。用 `BTreeMap`
+    /// 与域层 `peer_endpoints_for` 一致（确定性排序）。
+    pub(crate) direct_states: BTreeMap<DeviceId, DeviceDirectState>,
 }
 
 impl MeshState {
@@ -515,6 +520,7 @@ impl MeshState {
             bootstrap_tokens: HashMap::new(),
             bootstrap_seq: 0,
             registration_seq: 0,
+            direct_states: BTreeMap::new(),
         }
     }
 
@@ -1512,6 +1518,31 @@ pub fn record_pending_agent_report(
     }
     registration.last_report_at = Some(now);
     Ok(())
+}
+
+/// §12 P2P：记录一次直连候选上报（观测源地址 + agent 上报的 LAN 地址/端口）。
+/// 上报省略（`None`）即移除候选——候选是临时性咨询数据，掉线/关闭后不得
+/// 残留（对端据此决策直连路径，陈旧候选会误导）。
+pub fn record_direct_state(
+    state: &mut MeshState,
+    device_id: &DeviceId,
+    observed_ip: Option<Ipv4Addr>,
+    report: Option<DirectEndpointReport>,
+) {
+    match report {
+        Some(report) => {
+            state.direct_states.insert(
+                device_id.clone(),
+                DeviceDirectState {
+                    observed_ip,
+                    report: Some(report),
+                },
+            );
+        }
+        None => {
+            state.direct_states.remove(device_id);
+        }
+    }
 }
 
 /// 把一次上报写到设备记录（内部共享）。证据与握手时间同一纪律：请求未携带

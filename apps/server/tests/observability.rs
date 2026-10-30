@@ -326,20 +326,18 @@ async fn data_plane_gauges_are_computed_from_state() {
 
     // 心跳携带当前握手读数：隧道证据 + agent 证据同时新鲜。
     let now = meshlet_server::service::now();
-    let res = c
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/agent/heartbeat")
-                .header("authorization", format!("Bearer {agent_token}"))
-                .header("content-type", "application/json")
-                .body(Body::from(json!({ "last_handshake_at": now }).to_string()))
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/agent/heartbeat")
+        .header("authorization", format!("Bearer {agent_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "last_handshake_at": now }).to_string()))
         .unwrap();
+    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let res = c.app.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
     let text = metrics(&c).await;
