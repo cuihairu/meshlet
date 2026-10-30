@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Button, Form, Input, Select, Table, Tag } from 'antd';
+import type { TableProps } from 'antd';
 import { api, ApiError } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
 import { natReading } from '../../lib/nat';
+import { tagColor } from '../../lib/status-tag';
 
 export function HostForwardsSection({
   networkId,
@@ -11,7 +15,7 @@ export function HostForwardsSection({
 }) {
   const [forwards, setForwards] = useState<import('../../api').HostForward[] | null>(null);
   const [devices, setDevices] = useState<import('../../api').Device[]>([]);
-  const [gateway, setGateway] = useState('');
+  const [gateway, setGateway] = useState<string | undefined>(undefined);
   const [target, setTarget] = useState('');
   const [aliasIp, setAliasIp] = useState('');
   const [mode, setMode] = useState('dnat_snat');
@@ -19,6 +23,7 @@ export function HostForwardsSection({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const { t } = useLanguage();
 
   const load = useCallback(() => {
     api.listHostForwards(networkId).then(setForwards).catch(() => setForwards([]));
@@ -32,8 +37,8 @@ export function HostForwardsSection({
     load();
   }, [load]);
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submit = async () => {
+    if (!gateway) return;
     setBusy(true);
     setError(null);
     setConflict(null);
@@ -64,141 +69,149 @@ export function HostForwardsSection({
     }
   };
 
+  const columns: TableProps<import('../../api').HostForward>['columns'] = [
+    {
+      title: t('forwards.colVirtualHost'),
+      key: 'alias_ipv4',
+      render: (_, f) => <code>{f.alias_ipv4}</code>,
+    },
+    {
+      title: t('forwards.colRealHost'),
+      key: 'target_ipv4',
+      render: (_, f) => <code>{f.target_ipv4}</code>,
+    },
+    {
+      title: t('forwards.colGateway'),
+      key: 'gateway',
+      render: (_, f) =>
+        devices.find((d) => d.id === f.gateway_device_id)?.name ?? f.gateway_device_id,
+    },
+    {
+      title: t('forwards.colNatMode'),
+      key: 'translation_mode',
+      render: (_, f) => f.translation_mode,
+    },
+    {
+      title: t('forwards.colGatewayKernel'),
+      key: 'gateway_kernel',
+      render: (_, f) => (
+        <span className="muted">
+          {natReading(
+            devices.find((d) => d.id === f.gateway_device_id)
+              ?.dataplane_evidence ?? null,
+            t,
+          )}
+        </span>
+      ),
+    },
+    {
+      title: t('forwards.colStatus'),
+      key: 'status',
+      render: (_, f) => <Tag color={tagColor(f.status)}>{f.status}</Tag>,
+    },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, f) =>
+        confirming === f.id ? (
+          <>
+            <Button size="small" danger loading={busy} onClick={() => remove(f.id)}>
+              {t('forwards.confirmDelete')}
+            </Button>{' '}
+            <Button size="small" type="link" onClick={() => setConfirming(null)}>
+              {t('forwards.cancel')}
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="small"
+            type="link"
+            onClick={() => {
+              setConfirming(f.id);
+              setConflict(null);
+              setError(null);
+            }}
+          >
+            {t('forwards.delete')}
+          </Button>
+        ),
+    },
+  ];
+
   return (
     <div>
-      <h3>Host forwarding</h3>
+      <h3>{t('forwards.title')}</h3>
       <p className="muted">
-        Forward every protocol and port for one LAN host. The server creates a{' '}
-        <code>/32</code> alias unit in one revision; clients use the virtual
-        host address, and the selected gateway translates it to the real host.
-        Deleting removes both sides atomically.
+        {t('forwards.intro1')}
+        <code>/32</code>
+        {t('forwards.intro2')}
       </p>
       {forwards === null ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : forwards.length === 0 ? (
-        <p className="muted">No host forwards.</p>
+        <p className="muted">{t('forwards.none')}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Virtual host</th>
-              <th>Real host</th>
-              <th>Gateway</th>
-              <th>NAT mode</th>
-              <th>Gateway kernel</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {forwards.map((forward) => (
-              <tr key={forward.id}>
-                <td>
-                  <code>{forward.alias_ipv4}</code>
-                </td>
-                <td>
-                  <code>{forward.target_ipv4}</code>
-                </td>
-                <td>
-                  {devices.find((d) => d.id === forward.gateway_device_id)?.name ??
-                    forward.gateway_device_id}
-                </td>
-                <td>{forward.translation_mode}</td>
-                <td className="muted">
-                  {natReading(
-                    devices.find((d) => d.id === forward.gateway_device_id)
-                      ?.dataplane_evidence ?? null,
-                  )}
-                </td>
-                <td>{forward.status}</td>
-                <td>
-                  {confirming === forward.id ? (
-                    <>
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={busy}
-                        onClick={() => remove(forward.id)}
-                      >
-                        Confirm delete
-                      </button>{' '}
-                      <button
-                        type="button"
-                        className="link"
-                        onClick={() => setConfirming(null)}
-                      >
-                        Cancel
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      className="link"
-                      onClick={() => {
-                        setConfirming(forward.id);
-                        setConflict(null);
-                        setError(null);
-                      }}
-                    >
-                      Delete
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table<import('../../api').HostForward>
+          rowKey="id"
+          columns={columns}
+          dataSource={forwards}
+          size="middle"
+          pagination={false}
+        />
       )}
       {conflict && (
         <div className="conflict" role="alert">
           <p>
-            <strong>Host forwarding conflict — nothing was published.</strong>
+            <strong>{t('forwards.conflictTitle')}</strong>
           </p>
           <p>{conflict}</p>
         </div>
       )}
-      <form className="inline" onSubmit={submit}>
-        <select
-          required
-          value={gateway}
-          onChange={(e) => setGateway(e.target.value)}
-          aria-label="host forwarding gateway"
-        >
-          <option value="" disabled>
-            gateway device
-          </option>
-          {devices.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-        <input
-          placeholder="real host IPv4"
-          required
-          value={target}
-          onChange={(e) => setTarget(e.target.value)}
-        />
-        <input
-          placeholder="virtual host IPv4"
-          required
-          value={aliasIp}
-          onChange={(e) => setAliasIp(e.target.value)}
-        />
-        <select
-          value={mode}
-          onChange={(e) => setMode(e.target.value)}
-          aria-label="host forwarding NAT mode"
-        >
-          <option value="dnat_snat">dnat_snat</option>
-          <option value="dnat_only">dnat_only</option>
-        </select>
-        <button type="submit" disabled={busy || devices.length === 0}>
-          Forward host
-        </button>
-      </form>
+      <Form layout="inline" onFinish={submit} className="create-form">
+        <Form.Item label={t('forwards.gatewayLabel')}>
+          <Select
+            value={gateway}
+            onChange={setGateway}
+            placeholder={t('forwards.gatewayPlaceholder')}
+            options={devices.map((d) => ({ value: d.id, label: d.name }))}
+            style={{ minWidth: 180 }}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Input
+            placeholder={t('forwards.targetPlaceholder')}
+            required
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Input
+            placeholder={t('forwards.aliasPlaceholder')}
+            required
+            value={aliasIp}
+            onChange={(e) => setAliasIp(e.target.value)}
+          />
+        </Form.Item>
+        <Form.Item label={t('forwards.modeLabel')}>
+          <Select
+            value={mode}
+            onChange={setMode}
+            options={[
+              { value: 'dnat_snat', label: 'dnat_snat' },
+              { value: 'dnat_only', label: 'dnat_only' },
+            ]}
+            style={{ minWidth: 140 }}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" disabled={busy || devices.length === 0 || !gateway}>
+            {t('forwards.create')}
+          </Button>
+        </Form.Item>
+      </Form>
       {devices.length === 0 && (
-        <p className="muted">Enroll an active device first — it becomes the gateway.</p>
+        <p className="muted">{t('routes.enrollFirst')}</p>
       )}
       {error && <p className="error">{error}</p>}
     </div>

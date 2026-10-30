@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Button, Form, Input, Select, Table, Tag } from 'antd';
+import type { TableProps } from 'antd';
 import { api, ApiError, type DataplaneEvidence } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
 import { natReading } from '../../lib/nat';
+import { tagColor } from '../../lib/status-tag';
 
 /**
  * Alias mappings (ADR-006/§12.6). Creating one publishes an alias-mode route
@@ -18,7 +22,7 @@ export function AliasesSection({
   const [aliases, setAliases] = useState<import('../../api').AliasMapping[] | null>(null);
   const [devices, setDevices] = useState<import('../../api').Device[]>([]);
   const [routes, setRoutes] = useState<import('../../api').LanRoute[]>([]);
-  const [gateway, setGateway] = useState('');
+  const [gateway, setGateway] = useState<string | undefined>(undefined);
   const [target, setTarget] = useState('');
   const [aliasCidr, setAliasCidr] = useState('');
   const [mode, setMode] = useState('dnat_snat');
@@ -26,6 +30,7 @@ export function AliasesSection({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const { t } = useLanguage();
 
   const load = useCallback(() => {
     api.listAliases(networkId).then(setAliases).catch(() => setAliases([]));
@@ -48,8 +53,8 @@ export function AliasesSection({
     load();
   }, [load]);
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submit = async () => {
+    if (!gateway) return;
     setBusy(true);
     setError(null);
     setConflict(null);
@@ -102,145 +107,143 @@ export function AliasesSection({
     }
   };
 
+  const columns: TableProps<import('../../api').AliasMapping>['columns'] = [
+    {
+      title: t('aliases.colAlias'),
+      key: 'alias_cidr',
+      render: (_, a) => <code>{a.alias_cidr}</code>,
+    },
+    {
+      title: t('aliases.colTarget'),
+      key: 'target_cidr',
+      render: (_, a) => <code>{a.target_cidr}</code>,
+    },
+    {
+      title: t('aliases.colNatMode'),
+      key: 'translation_mode',
+      render: (_, a) => a.translation_mode,
+    },
+    {
+      title: t('aliases.colGatewayKernel'),
+      key: 'gateway_kernel',
+      render: (_, a) => (
+        <span className="muted">{natReading(gatewayEvidenceOf(a), t)}</span>
+      ),
+    },
+    {
+      title: t('aliases.colStatus'),
+      key: 'status',
+      render: (_, a) => <Tag color={tagColor(a.status)}>{a.status}</Tag>,
+    },
+    {
+      title: t('aliases.colRoute'),
+      key: 'lan_route_id',
+      render: (_, a) => <code>{a.lan_route_id}</code>,
+    },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, a) =>
+        confirming === a.id ? (
+          <>
+            <Button size="small" danger loading={busy} onClick={() => remove(a.id)}>
+              {t('aliases.confirmDelete')}
+            </Button>{' '}
+            <Button size="small" type="link" onClick={() => setConfirming(null)}>
+              {t('aliases.cancel')}
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="small"
+            type="link"
+            onClick={() => {
+              setConfirming(a.id);
+              setConflict(null);
+              setError(null);
+            }}
+          >
+            {t('aliases.delete')}
+          </Button>
+        ),
+    },
+  ];
+
   return (
     <div>
-      <h3>Alias mappings</h3>
+      <h3>{t('aliases.title')}</h3>
       <p className="muted">
-        An alias rewrites an equal-length prefix at the gateway, so two sites
-        with overlapping LAN space can still reach each other (ADR-006). Each
-        mapping owns its route: deleting one removes both in a single revision.
-        The virtual prefix must stay disjoint from the overlay and every other
-        LAN prefix; broadcasts and L2 discovery do not cross an alias (§9.6).{' '}
-        <strong>Gateway kernel</strong> is that gateway's own reading (§7.5):
-        the kernel scan is per device, so one reading covers every alias it
-        serves — mixed modes on one gateway show the same reading on both rows.
+        {t('aliases.intro1')}
+        <strong>{t('aliases.gatewayKernel')}</strong>
+        {t('aliases.intro2')}
       </p>
       {aliases === null ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : aliases.length === 0 ? (
-        <p className="muted">No alias mappings.</p>
+        <p className="muted">{t('aliases.none')}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Alias</th>
-              <th>Real target</th>
-              <th>NAT mode</th>
-              <th>Gateway kernel</th>
-              <th>Status</th>
-              <th>Route</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {aliases.map((a) => (
-              <tr key={a.id}>
-                <td>
-                  <code>{a.alias_cidr}</code>
-                </td>
-                <td>
-                  <code>{a.target_cidr}</code>
-                </td>
-                <td>{a.translation_mode}</td>
-                <td className="muted">{natReading(gatewayEvidenceOf(a))}</td>
-                <td>{a.status}</td>
-                <td>
-                  <code>{a.lan_route_id}</code>
-                </td>
-                <td>
-                  {confirming === a.id ? (
-                    <>
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={busy}
-                        onClick={() => remove(a.id)}
-                      >
-                        Confirm delete
-                      </button>{' '}
-                      <button
-                        type="button"
-                        className="link"
-                        onClick={() => setConfirming(null)}
-                      >
-                        Cancel
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      className="link"
-                      onClick={() => {
-                        setConfirming(a.id);
-                        setConflict(null);
-                        setError(null);
-                      }}
-                    >
-                      Delete
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table<import('../../api').AliasMapping>
+          rowKey="id"
+          columns={columns}
+          dataSource={aliases}
+          size="middle"
+          pagination={false}
+        />
       )}
-      {confirming && (
-        <p className="muted">
-          Deleting an alias also removes its bound route — both sides lose the
-          translation (§12.6).
-        </p>
-      )}
+      {confirming && <p className="muted">{t('aliases.deleteHint')}</p>}
       {conflict && (
         <div className="conflict" role="alert">
           <p>
-            <strong>Alias conflict — nothing was published.</strong>
+            <strong>{t('aliases.conflictTitle')}</strong>
           </p>
           <p>{conflict}</p>
         </div>
       )}
-      <form className="inline" onSubmit={submit}>
-        <select
-          required
-          value={gateway}
-          onChange={(e) => setGateway(e.target.value)}
-          aria-label="gateway device"
-        >
-          <option value="" disabled>
-            gateway device
-          </option>
-          {devices.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-        <input
-          placeholder="real LAN CIDR (target)"
-          required
-          value={target}
-          onChange={(e) => setTarget(e.target.value)}
-        />
-        <input
-          placeholder="alias CIDR (same prefix length)"
-          required
-          value={aliasCidr}
-          onChange={(e) => setAliasCidr(e.target.value)}
-        />
-        <select
-          value={mode}
-          onChange={(e) => setMode(e.target.value)}
-          aria-label="translation mode"
-        >
-          <option value="dnat_snat">dnat_snat</option>
-          <option value="dnat_only">dnat_only</option>
-        </select>
-        <button type="submit" disabled={busy || devices.length === 0}>
-          Create alias
-        </button>
-      </form>
+      <Form layout="inline" onFinish={submit} className="create-form">
+        <Form.Item label={t('aliases.gatewayLabel')}>
+          <Select
+            value={gateway}
+            onChange={setGateway}
+            placeholder={t('aliases.gatewayLabel')}
+            options={devices.map((d) => ({ value: d.id, label: d.name }))}
+            style={{ minWidth: 180 }}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Input
+            placeholder={t('aliases.targetPlaceholder')}
+            required
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Input
+            placeholder={t('aliases.aliasPlaceholder')}
+            required
+            value={aliasCidr}
+            onChange={(e) => setAliasCidr(e.target.value)}
+          />
+        </Form.Item>
+        <Form.Item label={t('aliases.modeLabel')}>
+          <Select
+            value={mode}
+            onChange={setMode}
+            options={[
+              { value: 'dnat_snat', label: 'dnat_snat' },
+              { value: 'dnat_only', label: 'dnat_only' },
+            ]}
+            style={{ minWidth: 140 }}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" disabled={busy || devices.length === 0 || !gateway}>
+            {t('aliases.create')}
+          </Button>
+        </Form.Item>
+      </Form>
       {devices.length === 0 && (
-        <p className="muted">Enroll an active device first — it becomes the gateway.</p>
+        <p className="muted">{t('routes.enrollFirst')}</p>
       )}
       {error && <p className="error">{error}</p>}
     </div>
