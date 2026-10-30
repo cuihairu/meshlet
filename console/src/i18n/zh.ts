@@ -23,6 +23,8 @@ export const zh: Dict = {
   'auth.createAdmin': '创建管理员',
   'auth.firstRun': '首次运行？创建首个管理员',
   'auth.backToSignIn': '返回登录',
+  'auth.required': '此项必填。',
+  'auth.passwordMin': '密码至少 12 个字符。',
 
   'networks.title': '网络',
   'networks.none': '暂无网络。',

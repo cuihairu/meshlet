@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ConfigProvider } from 'antd';
+import { Button, ConfigProvider, Form, Input, Select } from 'antd';
 import enUS from 'antd/locale/en_US';
 import zhCN from 'antd/locale/zh_CN';
 import {
@@ -97,9 +97,9 @@ function ConsoleLayout({
           <LanguageSwitch />
           <ThemeSwitch />
           {user.email}
-          <button type="button" onClick={onLogout}>
+          <Button type="text" onClick={onLogout}>
             {t('shell.signOut')}
-          </button>
+          </Button>
         </span>
       </header>
       <main className="shell">
@@ -128,42 +128,38 @@ function NetworkSelector() {
   const { networks, loading, selectedId, select } = useNetwork();
   const { t } = useLanguage();
   return (
-    <select
+    <Select
       className="network-picker"
       aria-label="network"
-      value={selectedId ?? ''}
-      onChange={(e) => select(e.target.value || null)}
-      disabled={loading || networks.length === 0}
-    >
-      <option value="" disabled>
-        {loading ? t('shell.networkLoading') : t('shell.networkPlaceholder')}
-      </option>
-      {networks.map((n) => (
-        <option key={n.id} value={n.id}>
-          {n.name} ({n.overlay_cidr})
-        </option>
-      ))}
-    </select>
+      value={selectedId ?? undefined}
+      onChange={(value) => select(value ?? null)}
+      loading={loading}
+      disabled={!loading && networks.length === 0}
+      placeholder={
+        loading ? t('shell.networkLoading') : t('shell.networkPlaceholder')
+      }
+      options={networks.map((n) => ({
+        value: n.id,
+        label: `${n.name} (${n.overlay_cidr})`,
+      }))}
+    />
   );
 }
 
 function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
   const [mode, setMode] = useState<'login' | 'bootstrap'>('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { t } = useLanguage();
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submit = async (values: { email: string; password: string }) => {
     setBusy(true);
     setError(null);
     try {
       const user =
         mode === 'login'
-          ? await api.login(email, password)
-          : await api.bootstrap(email, password);
+          ? await api.login(values.email, values.password)
+          : await api.bootstrap(values.email, values.password);
       onSignedIn(user);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -179,47 +175,47 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
   };
 
   return (
-    <form className="auth" onSubmit={submit}>
+    <Form className="auth" layout="vertical" onFinish={submit}>
       <h1>{mode === 'login' ? t('auth.signIn') : t('auth.createFirstAdmin')}</h1>
       {mode === 'bootstrap' && (
         <p className="muted">{t('auth.noAdminHint')}</p>
       )}
-      <label>
-        {t('auth.email')}
-        <input
-          type="email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          autoComplete="username"
-        />
-      </label>
-      <label>
-        {t('auth.password')}
-        <input
-          type="password"
-          required
-          minLength={mode === 'bootstrap' ? 12 : 0}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
+      <Form.Item
+        label={t('auth.email')}
+        name="email"
+        rules={[{ required: true, message: t('auth.required') }]}
+      >
+        <Input type="email" autoComplete="username" />
+      </Form.Item>
+      <Form.Item
+        label={t('auth.password')}
+        name="password"
+        rules={[
+          { required: true, message: t('auth.required') },
+          ...(mode === 'bootstrap'
+            ? [{ min: 12, message: t('auth.passwordMin') }]
+            : []),
+        ]}
+      >
+        <Input.Password
           autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
         />
-      </label>
+      </Form.Item>
       {error && <p className="error">{error}</p>}
-      <button type="submit" disabled={busy}>
+      <Button type="primary" htmlType="submit" loading={busy} block>
         {mode === 'login' ? t('auth.signIn') : t('auth.createAdmin')}
-      </button>
-      <button
-        type="button"
-        className="link"
+      </Button>
+      <Button
+        type="link"
+        block
         onClick={() => {
           setMode(mode === 'login' ? 'bootstrap' : 'login');
           setError(null);
         }}
       >
         {mode === 'login' ? t('auth.firstRun') : t('auth.backToSignIn')}
-      </button>
-    </form>
+      </Button>
+    </Form>
   );
 }
 

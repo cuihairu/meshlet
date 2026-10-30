@@ -5,6 +5,8 @@
    (#22c55e); status-pill styles are load-bearing and never renamed.
    ========================================================================== */
 
+@import url('https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
+
 :root {
   color-scheme: dark;
 
@@ -31,9 +33,10 @@
   --danger-strong: #ef4444;
 
   /* type */
-  --font: Inter, 'Helvetica Neue', 'Segoe UI', system-ui, -apple-system,
-    'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  --font: 'Fira Sans', Inter, 'Helvetica Neue', 'Segoe UI', system-ui,
+    -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --mono: 'Fira Code', ui-monospace, 'Cascadia Code', 'JetBrains Mono',
+    Consolas, monospace;
 
   /* density: dashboard scale (8–32px) */
   --space-1: 0.25rem;

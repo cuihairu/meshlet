@@ -22,6 +22,8 @@ export const en = {
   'auth.createAdmin': 'Create admin',
   'auth.firstRun': 'First run? Create the first admin',
   'auth.backToSignIn': 'Back to sign in',
+  'auth.required': 'This field is required.',
+  'auth.passwordMin': 'Password must be at least 12 characters.',
 
   'networks.title': 'Networks',
   'networks.none': 'No networks yet.',
