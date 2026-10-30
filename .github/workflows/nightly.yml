@@ -156,9 +156,9 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: |
-            nightly-binary-*
-            nightly-windows
+          # A single glob: download-artifact does not split a multi-line
+          # pattern, so match every nightly artifact prefix with one pattern.
+          pattern: nightly-*
           merge-multiple: true
           path: dist/
       - name: Publish rolling nightly release (single release)
