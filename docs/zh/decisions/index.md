@@ -18,3 +18,5 @@
 | [ADR-012 网段即信任组](./adr-012-network-segment-trust) | Network 内 Segment、默认隔离与跨段单向授权 |
 
 约定：新增决策顺延编号；推翻旧决策不改写原文，新增 supersede 记录并互链。
+
+非 ADR 决策记录：[阻塞项代决记录（2026-10-30）](/decisions/2026-10-30-decisions) — todo.md 阻塞项的 10 项代决落档（D1–D10），含逐项「需用户输入，暂缓」状态与 codex 分析原文。

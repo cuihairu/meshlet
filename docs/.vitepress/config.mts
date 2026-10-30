@@ -81,6 +81,7 @@ export default defineConfig({
             { text: 'ADR-012 Segment Trust Groups', link: '/decisions/adr-012-network-segment-trust' },
             { text: 'ADR-013 Cockpit Agent as Host-Info Source', link: '/decisions/adr-013-cockpit-agent-host-info' },
             { text: 'ADR-014 Coexistence with Mesh Networks', link: '/decisions/adr-014-coexistence-personal-positioning' },
+            { text: 'Blocked-item Decisions (2026-10-30)', link: '/decisions/2026-10-30-decisions' },
           ] }],
           '/design/': [{ text: 'Design', items: [
             { text: 'Network Segment Trust', link: '/design/network-segment-trust' },
@@ -171,6 +172,7 @@ export default defineConfig({
             { text: 'ADR-012 网段即信任组', link: '/zh/decisions/adr-012-network-segment-trust' },
             { text: 'ADR-013 Cockpit Agent 作为本机基础信息源', link: '/zh/decisions/adr-013-cockpit-agent-host-info' },
             { text: 'ADR-014 与 ZeroTier 类组网互为备份', link: '/zh/decisions/adr-014-coexistence-personal-positioning' },
+            { text: '阻塞项代决记录（2026-10-30）', link: '/decisions/2026-10-30-decisions' },
           ] }],
           '/zh/design/': [{ text: '设计', items: [
             { text: '网段信任组', link: '/zh/design/network-segment-trust' },
