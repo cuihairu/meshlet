@@ -44,7 +44,10 @@ pub mod windows_tunnel;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+pub mod windows;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub mod unsupported;
 
 /// 平台默认后端：Linux 为真实内核后端（[linux] 模块，ADR-007）；非 Linux
@@ -56,7 +59,10 @@ pub mod unsupported;
 pub type SystemBackend = linux::LinuxNetworkBackend;
 
 /// 平台默认后端（非 Linux）：见上方 Linux 版别的文档。
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+pub type SystemBackend = windows::WindowsNetworkBackend;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub type SystemBackend = unsupported::UnsupportedBackend;
 
 use meshlet_domain::Ipv4Cidr;
