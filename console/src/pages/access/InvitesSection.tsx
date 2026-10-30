@@ -1,5 +1,7 @@
 import { useState } from 'react';
+import { Button, Form, InputNumber } from 'antd';
 import { api, ApiError } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
 
 export function InvitesSection({ networkId }: { networkId: string }) {
   const [maxUses, setMaxUses] = useState(1);
@@ -7,6 +9,7 @@ export function InvitesSection({ networkId }: { networkId: string }) {
   const [revoked, setRevoked] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { t } = useLanguage();
 
   const create = async () => {
     setBusy(true);
@@ -34,36 +37,36 @@ export function InvitesSection({ networkId }: { networkId: string }) {
 
   return (
     <div>
-      <h3>Invites</h3>
-      <p className="muted">
-        The raw token is shown once at creation; the server stores only its SHA-256 digest.
-      </p>
+      <h3>{t('invites.title')}</h3>
+      <p className="muted">{t('invites.intro')}</p>
       {created && (
         <div className="token-box">
-          <p>Invite token (copy now, shown once):</p>
+          <p>{t('invites.reveal')}</p>
           <code>{created.token}</code>
           {created.invite_id && (
-            <button type="button" onClick={() => revoke(created.invite_id)}>
-              Revoke this invite
-            </button>
+            <div>
+              <Button size="small" onClick={() => revoke(created.invite_id!)}>
+                {t('invites.revokeThis')}
+              </Button>
+            </div>
           )}
         </div>
       )}
-      {revoked && <p className="muted">Invite {revoked} revoked.</p>}
-      <div className="inline">
-        <label>
-          Max uses
-          <input
-            type="number"
+      {revoked && <p className="muted">{t('invites.revoked', { id: revoked })}</p>}
+      <Form layout="inline" onFinish={create} className="create-form">
+        <Form.Item label={t('invites.maxUsesLabel')}>
+          <InputNumber
             min={1}
             value={maxUses}
-            onChange={(e) => setMaxUses(Number(e.target.value))}
+            onChange={(v) => setMaxUses(v ?? 1)}
           />
-        </label>
-        <button type="button" onClick={create} disabled={busy}>
-          Create invite
-        </button>
-      </div>
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" loading={busy}>
+            {t('invites.create')}
+          </Button>
+        </Form.Item>
+      </Form>
       {error && <p className="error">{error}</p>}
     </div>
   );

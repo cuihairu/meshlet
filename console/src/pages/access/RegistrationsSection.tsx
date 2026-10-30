@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Button, Table } from 'antd';
+import type { TableProps } from 'antd';
 import { api, ApiError } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
 import { formatTime } from '../../lib/format';
 
 /**
@@ -25,6 +28,7 @@ export function RegistrationsSection({
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { t } = useLanguage();
 
   const load = useCallback(() => {
     api
@@ -47,10 +51,16 @@ export function RegistrationsSection({
     try {
       if (action === 'approve') {
         const res = await api.approveRegistration(networkId, deviceId);
-        setNotice(`已批准 ${name}：虚拟地址 ${res.virtual_ipv4} · 修订 #${res.revision_id}`);
+        setNotice(
+          t('registrations.approvedNotice', {
+            name,
+            virtual_ipv4: res.virtual_ipv4,
+            revision_id: String(res.revision_id),
+          }),
+        );
       } else {
         await api.denyRegistration(networkId, deviceId);
-        setNotice(`已拒绝 ${name} 的注册申请。`);
+        setNotice(t('registrations.deniedNotice', { name }));
       }
       setConfirming(null);
       load();
@@ -62,100 +72,98 @@ export function RegistrationsSection({
     }
   };
 
+  const columns: TableProps<import('../../api').DeviceRegistration>['columns'] = [
+    { title: t('registrations.colName'), key: 'name', render: (_, r) => r.name },
+    { title: t('registrations.colPlatform'), key: 'platform', render: (_, r) => r.platform },
+    {
+      title: t('registrations.colId'),
+      key: 'id',
+      render: (_, r) => <code>{r.id}</code>,
+    },
+    {
+      title: t('registrations.colRequested'),
+      key: 'requested_at',
+      render: (_, r) => formatTime(r.requested_at),
+    },
+    {
+      title: t('registrations.colLastReport'),
+      key: 'last_report_at',
+      render: (_, r) =>
+        r.last_report_at ? (
+          formatTime(r.last_report_at)
+        ) : (
+          <span className="muted">{t('registrations.notReported')}</span>
+        ),
+    },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, r) => {
+        const confirmingRow =
+          confirming && confirming.id === r.id ? confirming : null;
+        return confirmingRow ? (
+          <>
+            <Button
+              size="small"
+              danger={confirmingRow.action === 'deny'}
+              loading={busy}
+              onClick={() => act(r.id, r.name, confirmingRow.action)}
+            >
+              {confirmingRow.action === 'approve'
+                ? t('registrations.confirmApprove')
+                : t('registrations.confirmDeny')}
+            </Button>{' '}
+            <Button size="small" type="link" onClick={() => setConfirming(null)}>
+              {t('registrations.cancel')}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button
+              size="small"
+              type="link"
+              onClick={() => {
+                setConfirming({ id: r.id, action: 'approve' });
+                setNotice(null);
+                setError(null);
+              }}
+            >
+              {t('registrations.approve')}
+            </Button>{' '}
+            <Button
+              size="small"
+              type="link"
+              onClick={() => {
+                setConfirming({ id: r.id, action: 'deny' });
+                setNotice(null);
+                setError(null);
+              }}
+            >
+              {t('registrations.deny')}
+            </Button>
+          </>
+        );
+      },
+    },
+  ];
+
   return (
     <div>
-      <h3>待审批设备</h3>
-      <p className="muted">
-        设备用自举码自助注册后在此排队，批准前不参与数据面。批准即分配
-        overlay 地址并记入新修订；拒绝则丢弃申请（设备可重新注册）。设备
-        继续沿用注册时领取的凭证。
-      </p>
+      <h3>{t('registrations.title')}</h3>
+      <p className="muted">{t('registrations.intro')}</p>
       {registrations === null ? (
-        <p className="muted">加载中…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : registrations.length === 0 ? (
-        <p className="muted">无待审批申请</p>
+        <p className="muted">{t('registrations.none')}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>平台</th>
-              <th>ID</th>
-              <th>申请时间</th>
-              <th>最后上报</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {registrations.map((r) => {
-              const confirmingRow =
-                confirming && confirming.id === r.id ? confirming : null;
-              return (
-                <tr key={r.id} title={r.public_key}>
-                  <td>{r.name}</td>
-                  <td>{r.platform}</td>
-                  <td>
-                    <code>{r.id}</code>
-                  </td>
-                  <td>{formatTime(r.requested_at)}</td>
-                  <td>
-                    {r.last_report_at ? (
-                      formatTime(r.last_report_at)
-                    ) : (
-                      <span className="muted">未上报</span>
-                    )}
-                  </td>
-                  <td>
-                    {confirmingRow ? (
-                      <>
-                        <button
-                          type="button"
-                          className={confirmingRow.action === 'deny' ? 'danger' : undefined}
-                          disabled={busy}
-                          onClick={() => act(r.id, r.name, confirmingRow.action)}
-                        >
-                          {confirmingRow.action === 'approve' ? '确认批准' : '确认拒绝'}
-                        </button>{' '}
-                        <button
-                          type="button"
-                          className="link"
-                          onClick={() => setConfirming(null)}
-                        >
-                          取消
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          className="link"
-                          onClick={() => {
-                            setConfirming({ id: r.id, action: 'approve' });
-                            setNotice(null);
-                            setError(null);
-                          }}
-                        >
-                          批准
-                        </button>{' '}
-                        <button
-                          type="button"
-                          className="link"
-                          onClick={() => {
-                            setConfirming({ id: r.id, action: 'deny' });
-                            setNotice(null);
-                            setError(null);
-                          }}
-                        >
-                          拒绝
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <Table<import('../../api').DeviceRegistration>
+          rowKey="id"
+          columns={columns}
+          dataSource={registrations}
+          size="middle"
+          pagination={false}
+          rowClassName={(r) => (r.id === confirming?.id ? 'row-confirming' : '')}
+        />
       )}
       {notice && <p className="muted">{notice}</p>}
       {error && <p className="error">{error}</p>}

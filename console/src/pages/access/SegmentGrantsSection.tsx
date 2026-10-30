@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Button, Form, Input, Select, Table, Tag } from 'antd';
+import type { TableProps } from 'antd';
 import { api, ApiError } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
+import { tagColor } from '../../lib/status-tag';
 
 /**
  * Segment grants (ADR-012). A grant starts Pending and does not change plans
@@ -16,10 +20,11 @@ export function SegmentGrantsSection({
   const [grants, setGrants] = useState<import('../../api').SegmentGrant[] | null>(null);
   const [name, setName] = useState('');
   const [cidr, setCidr] = useState('');
-  const [source, setSource] = useState('');
-  const [destination, setDestination] = useState('');
+  const [source, setSource] = useState<string | undefined>(undefined);
+  const [destination, setDestination] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { t } = useLanguage();
 
   const load = useCallback(() => {
     api.listSegments(networkId).then(setSegments).catch(() => setSegments([]));
@@ -33,8 +38,7 @@ export function SegmentGrantsSection({
   const report = (e: unknown) =>
     setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
 
-  const createSegment = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const createSegment = async () => {
     setBusy(true);
     setError(null);
     try {
@@ -50,14 +54,14 @@ export function SegmentGrantsSection({
     }
   };
 
-  const createGrant = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const createGrant = async () => {
+    if (!source || !destination) return;
     setBusy(true);
     setError(null);
     try {
       await api.createSegmentGrant(networkId, source, destination);
-      setSource('');
-      setDestination('');
+      setSource(undefined);
+      setDestination(undefined);
       load();
       onChanged?.();
     } catch (e) {
@@ -88,99 +92,149 @@ export function SegmentGrantsSection({
     }
   };
 
+  const segmentColumns: TableProps<import('../../api').Segment>['columns'] = [
+    { title: t('segments.colName'), key: 'name', render: (_, s) => s.name },
+    {
+      title: t('segments.colCidr'),
+      key: 'cidr',
+      render: (_, s) => <code>{s.cidr}</code>,
+    },
+    {
+      title: t('segments.colStatus'),
+      key: 'status',
+      render: (_, s) => <Tag color={tagColor(s.status)}>{s.status}</Tag>,
+    },
+  ];
+
+  const grantColumns: TableProps<import('../../api').SegmentGrant>['columns'] = [
+    {
+      title: t('segments.colGrant'),
+      key: 'id',
+      render: (_, g) => <code>{g.id}</code>,
+    },
+    {
+      title: t('segments.colDirection'),
+      key: 'direction',
+      render: (_, g) => (
+        <code>
+          {g.source_segment_id} → {g.destination_segment_id}
+        </code>
+      ),
+    },
+    {
+      title: t('segments.colStatus'),
+      key: 'status',
+      render: (_, g) => <Tag color={tagColor(g.status)}>{g.status}</Tag>,
+    },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, g) => (
+        <>
+          {g.status === 'pending' && (
+            <Button
+              size="small"
+              type="link"
+              disabled={busy}
+              onClick={() => transition('apply', g.id)}
+            >
+              {t('segments.apply')}
+            </Button>
+          )}
+          {g.status !== 'revoked' && (
+            <Button
+              size="small"
+              type="link"
+              danger
+              disabled={busy}
+              onClick={() => transition('revoke', g.id)}
+            >
+              {t('segments.revoke')}
+            </Button>
+          )}
+        </>
+      ),
+    },
+  ];
+
   return (
     <div>
-      <h3>Segments and grants</h3>
-      <p className="muted">
-        A segment is a strict overlay subnet. Same-segment traffic is trusted;
-        cross-segment traffic is blocked until the source-to-destination grant
-        is applied (ADR-012).
-      </p>
+      <h3>{t('segments.title')}</h3>
+      <p className="muted">{t('segments.intro')}</p>
       {segments === null || grants === null ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : (
         <>
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>CIDR</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {segments.map((segment) => (
-                <tr key={segment.id}>
-                  <td>{segment.name}</td>
-                  <td><code>{segment.cidr}</code></td>
-                  <td>{segment.status}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <Table<import('../../api').Segment>
+            rowKey="id"
+            columns={segmentColumns}
+            dataSource={segments}
+            size="middle"
+            pagination={false}
+          />
           {grants.length === 0 ? (
-            <p className="muted">No segment grants.</p>
+            <p className="muted">{t('segments.none')}</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Grant</th>
-                  <th>Direction</th>
-                  <th>Status</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {grants.map((grant) => (
-                  <tr key={grant.id}>
-                    <td><code>{grant.id}</code></td>
-                    <td>
-                      <code>
-                        {grant.source_segment_id} → {grant.destination_segment_id}
-                      </code>
-                    </td>
-                    <td>{grant.status}</td>
-                    <td>
-                      {grant.status === 'pending' && (
-                        <button type="button" className="link" disabled={busy}
-                          onClick={() => transition('apply', grant.id)}>
-                          Apply
-                        </button>
-                      )}
-                      {grant.status !== 'revoked' && (
-                        <button type="button" className="link danger" disabled={busy}
-                          onClick={() => transition('revoke', grant.id)}>
-                          Revoke
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <Table<import('../../api').SegmentGrant>
+              rowKey="id"
+              columns={grantColumns}
+              dataSource={grants}
+              size="middle"
+              pagination={false}
+            />
           )}
-          <form className="inline" onSubmit={createSegment}>
-            <input placeholder="segment name" required value={name}
-              onChange={(e) => setName(e.target.value)} />
-            <input placeholder="strict overlay subnet CIDR" required value={cidr}
-              onChange={(e) => setCidr(e.target.value)} />
-            <button type="submit" disabled={busy}>Create segment</button>
-          </form>
-          <form className="inline" onSubmit={createGrant}>
-            <select aria-label="source segment" required value={source}
-              onChange={(e) => setSource(e.target.value)}>
-              <option value="" disabled>source segment</option>
-              {segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-            <select aria-label="destination segment" required value={destination}
-              onChange={(e) => setDestination(e.target.value)}>
-              <option value="" disabled>destination segment</option>
-              {segments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-            <button type="submit" disabled={busy || segments.length < 2}>
-              Create grant
-            </button>
-          </form>
+          <Form layout="inline" onFinish={createSegment} className="create-form">
+            <Form.Item>
+              <Input
+                placeholder={t('segments.namePlaceholder')}
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </Form.Item>
+            <Form.Item>
+              <Input
+                placeholder={t('segments.cidrPlaceholder')}
+                required
+                value={cidr}
+                onChange={(e) => setCidr(e.target.value)}
+              />
+            </Form.Item>
+            <Form.Item>
+              <Button type="primary" htmlType="submit" disabled={busy}>
+                {t('segments.createSegment')}
+              </Button>
+            </Form.Item>
+          </Form>
+          <Form layout="inline" onFinish={createGrant} className="create-form">
+            <Form.Item label={t('segments.sourceLabel')}>
+              <Select
+                value={source}
+                onChange={setSource}
+                placeholder={t('segments.sourceLabel')}
+                options={segments.map((s) => ({ value: s.id, label: s.name }))}
+                style={{ minWidth: 160 }}
+              />
+            </Form.Item>
+            <Form.Item label={t('segments.destinationLabel')}>
+              <Select
+                value={destination}
+                onChange={setDestination}
+                placeholder={t('segments.destinationLabel')}
+                options={segments.map((s) => ({ value: s.id, label: s.name }))}
+                style={{ minWidth: 160 }}
+              />
+            </Form.Item>
+            <Form.Item>
+              <Button
+                type="primary"
+                htmlType="submit"
+                disabled={busy || !source || !destination || segments.length < 2}
+              >
+                {t('segments.createGrant')}
+              </Button>
+            </Form.Item>
+          </Form>
         </>
       )}
       {error && <p className="error">{error}</p>}
