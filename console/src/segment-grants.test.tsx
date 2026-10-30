@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as api from './api';
-import { SegmentGrantsSection } from './App';
+import { SegmentGrantsSection } from './pages/access/SegmentGrantsSection';
 
 const segments: api.Segment[] = [
   {

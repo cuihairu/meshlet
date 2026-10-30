@@ -1,11 +1,9 @@
-import {
-  BootstrapTokensSection,
-  InvitesSection,
-  RegistrationsSection,
-  SegmentGrantsSection,
-} from '../../App';
 import { NoNetworkSelected } from '../../components/NoNetworkSelected';
 import { useNetwork } from '../../network-context';
+import { BootstrapTokensSection } from './BootstrapTokensSection';
+import { InvitesSection } from './InvitesSection';
+import { RegistrationsSection } from './RegistrationsSection';
+import { SegmentGrantsSection } from './SegmentGrantsSection';
 
 /** /access — pending registrations, invites, bootstrap tokens, segment grants. */
 export function AccessPage() {
