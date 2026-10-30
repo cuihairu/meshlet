@@ -208,3 +208,5 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
 - [ ] AGENT-FW-1 [P1] Windows 数据面应用时自动:把 wg 接口 NetworkCategory 设为 Private(勿留 Public);创建入站 ICMPv4 放行规则(限定 wg 接口);幂等可重跑。验收:新装机跑完 agent apply 后,远端 ping 该机 wg 地址直接通,无需手工建规则。证据:2026-10-30 实战 dev→win 不通,手工建 Meshlet-ICMPv4-In 才通。
 - [ ] AGENT-FW-2 [P2] Linux 同理:检测 ufw/firewalld 活跃时自动放行 wg 接口流量,幂等。验收:启用 ufw 的干净机跑 agent 后 mesh 内 ping 通。
 - [ ] AGENT-FW-3 [P2] walkthrough.md 补「安装即配防火墙」验收步骤与回归用例。
+- [ ] AGENT-WIN-1 [P1] Windows 托盘宿主：用 tray-icon（或 Win32 Shell_NotifyIcon 薄封装）消费 TraySink 的四态 PNG，常驻托盘+菜单（打开面板/退出）。验收：真机托盘图标随状态换图。背景：2026-10-30 openclaw 真机确认 tray.rs 仅 TraySink 写 PNG 状态图（注释明说不引入 tray-icon/tao/winit 等 GUI crate），托盘宿主由桌面壳接入——Linux 面板有宿主，Windows 无任何宿主实现，故 Windows 上永无托盘图标。
+- [ ] AGENT-WIN-2 [P1] Windows agent 安装包：MSI/zip 二选一（zip 先行），含 agent.exe+启动注册。验收：openclaw 真机安装后 tray 出现。背景：2026-10-30 openclaw 真机确认未装 meshlet agent（Program Files/ProgramData/LocalAppData 全无、无进程），仅存 WireGuardTunnel$wg-meshlet 隧道服务——「部署了」只是隧道不是 agent；nightly 只产 Linux 二进制，无 Windows 安装包。

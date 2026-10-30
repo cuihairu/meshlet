@@ -19,7 +19,9 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > audit, backup and device approval are implemented. This revision adds single-instance network
 > isolation, device apply receipts, hub recovery, last-good-plan rollback, Direct LAN SNAT and
 > service permissions, with local Linux kernel and unprivileged service regression evidence.
-> Windows and long-run soak acceptance remain pending. See [TODO](todo.md).
+> Windows backend modules are implemented and real-machine verified for routes, firewall, service
+> control and uninstall cleanup; the agent's live data-plane wiring, installer package and tray host
+> remain pending (R-05). Long-run soak acceptance also remains pending. See [TODO](todo.md).
 
 ## Nightly builds and one-command installation
 
@@ -60,7 +62,77 @@ journalctl -u meshlet-server -n 100 --no-pager
 cat /usr/local/share/meshlet/server-build-info
 ```
 
-The workflow must be merged into the default branch and run successfully once before download assets exist. This installer requires Linux with systemd; the Windows dataplane remains pending. See the [installation guide](docs/guide/install.md) for configuration details.
+The workflow must be merged into the default branch and run successfully once before download assets exist. This installer requires Linux with systemd; the [Windows support](#windows-support) section below covers the Windows story. See the [installation guide](docs/guide/install.md) for configuration details.
+
+## Windows support
+
+Windows is a data-plane target gated behind real-machine acceptance
+([R-05](docs/implementation/r05-windows-acceptance.md), ADR-008). What the repository ships today:
+
+- **Backend modules, real-machine verified** (Chinese Windows Server 2022, 2026-10-25/26): route
+  management (`netsh interface ipv4`), firewall rules (`netsh advfirewall firewall`), service
+  control (`sc`) and uninstall cleanup — add / read-back / delete / idempotent re-delete verified
+  on real hardware, including zh-CN output (GBK/CP936) decoded by `windows_console`.
+- **WireGuardNT tunnel plan layer + CI**: `windows_tunnel` renders the `WireGuardTunnel$<name>`
+  service config and builds `wireguard.exe` argv; its file-level test runs on `windows-latest`
+  CI. The real-machine tunnel lifecycle is still pending.
+- **Cross-platform evidence**: full-workspace `cargo test` and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass on
+  `stable-x86_64-pc-windows-gnu`; CI runs `cargo test --workspace` natively on `windows-latest`.
+
+**Still not available on Windows:**
+
+- **The agent's live data-plane backend is not wired.** `SystemBackend` on Windows is the explicit
+  `unsupported` placeholder until the tunnel lifecycle, elevation exec and boot-recovery items pass
+  real-machine acceptance. A Windows agent registers and reports status, but applying a
+  tunnel/routes/NAT plan is rejected with an explicit error — nothing pretends to succeed.
+- **No installer package.** Nightly publishes Linux x86_64 / ARM64 binaries only; there is no MSI
+  or zip for Windows yet, and no workflow produces `meshlet-agent.exe`.
+- **No tray icon.** The agent writes four-state status PNGs (`TraySink`); a desktop shell must
+  host them. Linux panels have hosts; Windows has none yet.
+
+### Build and run the agent on Windows (from source)
+
+There is no Windows download yet — build from source on the Windows machine itself. Cross-building
+from Linux to `x86_64-pc-windows-msvc` is check/clippy level only; native builds on Windows (MSVC,
+the CI toolchain) are the supported path. Requires Rust (stable) and Git:
+
+```powershell
+git clone https://github.com/cuihairu/meshlet.git
+cd meshlet
+cargo build --release --bin meshlet-agent
+```
+
+Create `C:\ProgramData\meshlet\agent.toml` (keys mirror the Linux example in the
+[installation guide](docs/guide/install.md); `interface` is the WireGuardNT tunnel name):
+
+```toml
+server_url = "https://meshlet.example.com"
+state_dir = "C:\\ProgramData\\meshlet-agent"
+# device_token = "…agent_token from enroll…"   # or the bootstrap pair below
+# bootstrap_token = "…bootstrap token from the console…"
+# device_name = "edge-win-1"
+
+[dataplane]
+enabled = true
+interface = "wg-meshlet"                  # service shows as WireGuardTunnel$wg-meshlet
+private_key_file = "C:\\ProgramData\\meshlet\\agent.key"
+hub_endpoint = "203.0.113.10:51820"
+poll_interval_secs = 30
+```
+
+Run it from an elevated terminal:
+
+```powershell
+meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
+```
+
+Approve the device in the console, then apply the network's current revision. **Data-plane apply on
+Windows is currently rejected** (backend placeholder) until R-05 acceptance; the control plane
+(registration, heartbeats, status) works. A machine that only has the
+`WireGuardTunnel$…` service (e.g. set up by hand) does **not** have the agent running — check for
+`meshlet-agent.exe` in the process list. The installer package and tray host are tracked as pending
+work — see [TODO](todo.md).
 
 ## What it is
 
@@ -95,7 +167,9 @@ pending → approve/deny) are in place.
 The current implementation is not fully accepted for deployment. See the
 [P0 fixes and nightly implementation record](docs/implementation/fixes-and-nightly-2026-10-17.md)
 for local Linux evidence. ARM64 builds, the first nightly publication on the default branch,
-empty-VPS installation, Windows support and real-device walkthroughs remain pending.
+empty-VPS installation and real-device walkthroughs remain pending; on Windows the data-plane
+wiring (R-05), the installer package and the tray host remain pending — see
+[Windows support](#windows-support).
 The current checklist at the top of [TODO](todo.md) records these limits.
 
 ## License
