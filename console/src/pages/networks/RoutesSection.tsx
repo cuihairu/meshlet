@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError } from '../../api';
+import { Button, Form, Input, Select, Table, Tag } from 'antd';
+import type { TableProps } from 'antd';
+import { api, ApiError, type Device, type LanRoute } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
 import { natReading } from '../../lib/nat';
+import { tagColor } from '../../lib/status-tag';
 
 /**
  * LAN routes (ADR-005). A rejected create is never silent: the server answers
@@ -16,14 +20,15 @@ export function RoutesSection({
   overlayCidr: string;
   onChanged?: () => void;
 }) {
-  const [routes, setRoutes] = useState<import('../../api').LanRoute[] | null>(null);
-  const [devices, setDevices] = useState<import('../../api').Device[]>([]);
+  const [routes, setRoutes] = useState<LanRoute[] | null>(null);
+  const [devices, setDevices] = useState<Device[]>([]);
   const [gateway, setGateway] = useState('');
   const [destination, setDestination] = useState('');
   const [returnPath, setReturnPath] = useState('dual_route');
   const [conflict, setConflict] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { t } = useLanguage();
 
   const load = useCallback(() => {
     api.listRoutes(networkId).then(setRoutes).catch(() => setRoutes([]));
@@ -37,8 +42,8 @@ export function RoutesSection({
     load();
   }, [load]);
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submit = async () => {
+    if (!gateway || !destination) return;
     setBusy(true);
     setError(null);
     setConflict(null);
@@ -71,121 +76,134 @@ export function RoutesSection({
     }
   };
 
+  const columns: TableProps<LanRoute>['columns'] = [
+    {
+      title: t('routes.colRoute'),
+      key: 'id',
+      render: (_, r) => <code>{r.id}</code>,
+    },
+    {
+      title: t('routes.colGateway'),
+      key: 'gateway',
+      render: (_, r) =>
+        devices.find((d) => d.id === r.gateway_device_id)?.name ??
+        r.gateway_device_id,
+    },
+    {
+      title: t('routes.colDestination'),
+      key: 'destination',
+      render: (_, r) => <code>{r.destination_cidr}</code>,
+    },
+    {
+      title: t('routes.colReturnPath'),
+      key: 'return_path',
+      render: (_, r) => r.return_path_mode,
+    },
+    {
+      title: t('routes.colKernel'),
+      key: 'kernel',
+      render: (_, r) => (
+        <span className="muted">
+          {natReading(
+            devices.find((d) => d.id === r.gateway_device_id)
+              ?.dataplane_evidence ?? null,
+            t,
+          )}
+        </span>
+      ),
+    },
+    {
+      title: t('routes.colStatus'),
+      key: 'status',
+      render: (_, r) => <Tag color={tagColor(r.status)}>{r.status}</Tag>,
+    },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, r) => (
+        <Button size="small" type="link" disabled={busy} onClick={() => remove(r.id)}>
+          {t('routes.remove')}
+        </Button>
+      ),
+    },
+  ];
+
   return (
     <div>
-      <h3>LAN routes</h3>
+      <h3>{t('routes.title')}</h3>
       <p className="muted">
-        Desired state only: a published route waits for the config apply
-        (ADR-005/ADR-009). Destinations inside the overlay{' '}
-        <code>{overlayCidr}</code> are refused — overlay traffic never goes
-        through a LAN route. <strong>Gateway kernel</strong> is the gateway
-        device's own reading from its agent (§7.5): the kernel scan is per
-        device, so one reading covers every route and alias that gateway
-        serves — it points at the gateway, it does not certify this row.
+        {t('routes.intro1')}
+        <code>{overlayCidr}</code>
+        {t('routes.intro2')}
+        <strong>{t('routes.gatewayKernel')}</strong>
+        {t('routes.intro3')}
       </p>
       {routes === null ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : routes.length === 0 ? (
-        <p className="muted">No LAN routes published.</p>
+        <p className="muted">{t('routes.none')}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Route</th>
-              <th>Gateway</th>
-              <th>Destination</th>
-              <th>Return path</th>
-              <th>Gateway kernel</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {routes.map((r) => (
-              <tr key={r.id}>
-                <td>
-                  <code>{r.id}</code>
-                </td>
-                <td>
-                  {devices.find((d) => d.id === r.gateway_device_id)?.name ??
-                    r.gateway_device_id}
-                </td>
-                <td>
-                  <code>{r.destination_cidr}</code>
-                </td>
-                <td>{r.return_path_mode}</td>
-                <td className="muted">
-                  {natReading(
-                    devices.find((d) => d.id === r.gateway_device_id)
-                      ?.dataplane_evidence ?? null,
-                  )}
-                </td>
-                <td>{r.status}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="link"
-                    disabled={busy}
-                    onClick={() => remove(r.id)}
-                  >
-                    Remove
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table<LanRoute>
+          rowKey="id"
+          columns={columns}
+          dataSource={routes}
+          size="middle"
+          pagination={false}
+          scroll={{ x: true }}
+        />
       )}
       {conflict && (
         <div className="conflict" role="alert">
           <p>
-            <strong>Route conflict — nothing was published.</strong>
+            <strong>{t('routes.conflictTitle')}</strong>
           </p>
           <p>{conflict}</p>
-          <p className="muted">
-            Same-subnet conflict? Publish the remote LAN as an equal-prefix
-            Alias mapping instead of a plain route: the alias prefix is
-            translated at the gateway, so both sides keep their own address
-            space (archive §8.3/§9).
-          </p>
+          <p className="muted">{t('routes.conflictHint')}</p>
         </div>
       )}
-      <form className="inline" onSubmit={submit}>
-        <select
-          required
-          value={gateway}
-          onChange={(e) => setGateway(e.target.value)}
-          aria-label="gateway device"
-        >
-          <option value="" disabled>
-            gateway device
-          </option>
-          {devices.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-        <input
-          placeholder="destination CIDR"
-          required
-          value={destination}
-          onChange={(e) => setDestination(e.target.value)}
-        />
-        <select
-          value={returnPath}
-          onChange={(e) => setReturnPath(e.target.value)}
-          aria-label="return path mode"
-        >
-          <option value="dual_route">dual_route</option>
-          <option value="controlled_snat">controlled_snat</option>
-        </select>
-        <button type="submit" disabled={busy || devices.length === 0}>
-          Publish route
-        </button>
-      </form>
+      <Form layout="inline" onFinish={submit} className="create-form">
+        <Form.Item>
+          <Select
+            aria-label={t('routes.gatewayLabel')}
+            placeholder={t('routes.gatewayLabel')}
+            value={gateway || undefined}
+            onChange={(v) => setGateway(v)}
+            options={devices.map((d) => ({ value: d.id, label: d.name }))}
+            style={{ minWidth: 180 }}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Input
+            placeholder={t('routes.destPlaceholder')}
+            value={destination}
+            onChange={(e) => setDestination(e.target.value)}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Select
+            aria-label={t('routes.returnPathLabel')}
+            value={returnPath}
+            onChange={(v) => setReturnPath(v)}
+            options={[
+              { value: 'dual_route', label: 'dual_route' },
+              { value: 'controlled_snat', label: 'controlled_snat' },
+            ]}
+            style={{ minWidth: 150 }}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={busy}
+            disabled={devices.length === 0}
+          >
+            {t('routes.publish')}
+          </Button>
+        </Form.Item>
+      </Form>
       {devices.length === 0 && (
-        <p className="muted">Enroll an active device first — it becomes the gateway.</p>
+        <p className="muted">{t('routes.enrollFirst')}</p>
       )}
       {error && <p className="error">{error}</p>}
     </div>

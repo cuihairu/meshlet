@@ -1,4 +1,7 @@
+import { Button, Tag } from 'antd';
 import type { Network } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
+import { tagColor } from '../../lib/status-tag';
 import { RevisionsSection } from './RevisionsSection';
 import { RoutesSection } from './RoutesSection';
 
@@ -11,19 +14,23 @@ export function NetworkDetail({
   onClose: () => void;
   onChanged?: () => void;
 }) {
+  const { t } = useLanguage();
   return (
     <section className="detail">
       <h2>
         {network.name} <code>{network.overlay_cidr}</code>
-        <button type="button" className="link" onClick={onClose}>
-          Close
-        </button>
+        <Button type="link" onClick={onClose}>
+          {t('networks.close')}
+        </Button>
       </h2>
       <p className="muted">
-        Current config revision {network.revision_id} ·{' '}
-        <span className={`status status-${network.apply_status}`}>
-          Hub: {network.apply_status}
-        </span>
+        {t('networks.currentRevision', {
+          revision_id: String(network.revision_id),
+        })}{' '}
+        ·{' '}
+        <Tag color={tagColor(network.apply_status)}>
+          {t('revisions.hubStatus', { status: network.apply_status })}
+        </Tag>
       </p>
       <RoutesSection
         networkId={network.id}

@@ -114,13 +114,23 @@ describe('RevisionsSection', () => {
     const clearInterval = window.clearInterval;
     let intervalCallback: (() => void) | null = null;
     let intervalCleared = false;
-    vi.spyOn(window, 'setInterval').mockImplementation(((callback: () => void) => {
-      intervalCallback = callback;
-      return 1 as unknown as ReturnType<typeof setInterval>;
+    // antd also schedules timers; target only the 5s polling timer the section
+    // arms while receipts are pending (the only 5000ms interval in the tree).
+    let handleCounter = 0;
+    let lastHandle = 0;
+    vi.spyOn(window, 'setInterval').mockImplementation(((callback: () => void, timeout?: number) => {
+      const handle = ++handleCounter;
+      if (timeout === 5000) {
+        intervalCallback = callback;
+        lastHandle = handle;
+      }
+      return handle as unknown as ReturnType<typeof setInterval>;
     }) as typeof setInterval);
     vi.spyOn(window, 'clearInterval').mockImplementation(((handle: number) => {
-      if (handle === 1) intervalCleared = true;
-      intervalCallback = null;
+      if (handle === lastHandle) {
+        intervalCleared = true;
+        intervalCallback = null;
+      }
       clearInterval(handle);
     }) as typeof clearInterval);
 
@@ -140,7 +150,8 @@ describe('RevisionsSection', () => {
     await screen.findByText(
       (_, element) => element?.textContent === 'Devices: Waiting for receipts',
     );
-    expect(intervalCallback).not.toBeNull();
+    // antd's heavier render defers the passive effect that arms the poll timer.
+    await waitFor(() => expect(intervalCallback).not.toBeNull());
 
     expect(listRevisions.mock.calls.length).toBe(1);
 
