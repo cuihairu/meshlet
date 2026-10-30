@@ -12,6 +12,7 @@ members = [
     "apps/server",
     "apps/agent",
     "apps/cli",
+    "apps/tray-host",
 ]
 
 [workspace.package]
