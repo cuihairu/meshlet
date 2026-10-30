@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  BrowserRouter,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+} from 'react-router-dom';
+import {
   api,
   ApiError,
   type ConfigRevision,
@@ -12,6 +19,11 @@ import {
   type PublishProbe,
   type SessionUser,
 } from './api';
+import { NetworkProvider, useNetwork } from './network-context';
+import { AccessPage } from './pages/access/AccessPage';
+import { DevicesPage } from './pages/devices/DevicesPage';
+import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
+import { NetworksPage } from './pages/networks/NetworksPage';
 import './App.css';
 
 type AuthState =
@@ -21,29 +33,16 @@ type AuthState =
 
 function App() {
   const [auth, setAuth] = useState<AuthState>({ kind: 'checking' });
-  const [networks, setNetworks] = useState<Network[] | null>(null);
-
-  const refreshNetworks = useCallback(() => {
-    api
-      .listNetworks()
-      .then(setNetworks)
-      .catch(() => setNetworks([]));
-  }, []);
 
   useEffect(() => {
     api
       .me()
-      .then((user) => {
-        setAuth({ kind: 'signed-in', user });
-        refreshNetworks();
-      })
+      .then((user) => setAuth({ kind: 'signed-in', user }))
       .catch(() => setAuth({ kind: 'signed-out' }));
-  }, [refreshNetworks]);
+  }, []);
 
   const onSignedIn = (user: SessionUser) => {
     setAuth({ kind: 'signed-in', user });
-    setNetworks(null);
-    refreshNetworks();
   };
 
   const onLogout = async () => {
@@ -53,30 +52,89 @@ function App() {
       // Even a failed logout drops the session locally.
     }
     setAuth({ kind: 'signed-out' });
-    setNetworks(null);
   };
 
   return (
-    <div className="app">
+    <BrowserRouter>
+      <div className="app">
+        {auth.kind === 'signed-in' && (
+          <NetworkProvider>
+            <ConsoleLayout user={auth.user} onLogout={onLogout} />
+          </NetworkProvider>
+        )}
+        <main>
+          {auth.kind === 'checking' && <p className="muted">Loading…</p>}
+          {auth.kind === 'signed-out' && <AuthGate onSignedIn={onSignedIn} />}
+        </main>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+/**
+ * Signed-in shell: top bar (brand, network picker, user) + left nav for the
+ * four functional domains, with each domain on its own route.
+ */
+function ConsoleLayout({
+  user,
+  onLogout,
+}: {
+  user: SessionUser;
+  onLogout: () => void;
+}) {
+  return (
+    <>
       <header className="topbar">
         <span className="brand">meshlet</span>
-        {auth.kind === 'signed-in' && (
-          <span className="user">
-            {auth.user.email}
-            <button type="button" onClick={onLogout}>
-              Sign out
-            </button>
-          </span>
-        )}
+        <NetworkSelector />
+        <span className="user">
+          {user.email}
+          <button type="button" onClick={onLogout}>
+            Sign out
+          </button>
+        </span>
       </header>
-      <main>
-        {auth.kind === 'checking' && <p className="muted">Loading…</p>}
-        {auth.kind === 'signed-out' && <AuthGate onSignedIn={onSignedIn} />}
-        {auth.kind === 'signed-in' && (
-          <NetworksPanel networks={networks} onChanged={refreshNetworks} />
-        )}
+      <main className="shell">
+        <nav className="sidenav" aria-label="console domains">
+          <NavLink to="/networks">Networks</NavLink>
+          <NavLink to="/access">Access</NavLink>
+          <NavLink to="/devices">Devices</NavLink>
+          <NavLink to="/diagnostics">Diagnostics</NavLink>
+        </nav>
+        <div className="page">
+          <Routes>
+            <Route path="/" element={<Navigate to="/networks" replace />} />
+            <Route path="/networks" element={<NetworksPage />} />
+            <Route path="/access" element={<AccessPage />} />
+            <Route path="/devices" element={<DevicesPage />} />
+            <Route path="/diagnostics" element={<DiagnosticsPage />} />
+          </Routes>
+        </div>
       </main>
-    </div>
+    </>
+  );
+}
+
+/** Top-bar network picker — the selection is shared by every domain page. */
+function NetworkSelector() {
+  const { networks, loading, selectedId, select } = useNetwork();
+  return (
+    <select
+      className="network-picker"
+      aria-label="network"
+      value={selectedId ?? ''}
+      onChange={(e) => select(e.target.value || null)}
+      disabled={loading || networks.length === 0}
+    >
+      <option value="" disabled>
+        {loading ? 'loading…' : 'select network'}
+      </option>
+      {networks.map((n) => (
+        <option key={n.id} value={n.id}>
+          {n.name} ({n.overlay_cidr})
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -155,41 +213,35 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
   );
 }
 
-function NetworksPanel({
-  networks,
-  onChanged,
-}: {
-  networks: Network[] | null;
-  onChanged: () => void;
-}) {
+export function NetworksPanel() {
+  const { networks, loading, error, selectedId, select, refresh } = useNetwork();
   const [name, setName] = useState('');
   const [cidr, setCidr] = useState('10.240.0.0/16');
-  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
 
   const create = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
-    setError(null);
+    setFormError(null);
     try {
       await api.createNetwork(name, cidr);
       setName('');
-      onChanged();
+      refresh();
     } catch (e) {
-      setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
+      setFormError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
     } finally {
       setBusy(false);
     }
   };
 
-  const current = networks?.find((n) => n.id === selected) ?? null;
+  const current = networks.find((n) => n.id === selectedId) ?? null;
 
   return (
     <div className="panel">
       <section>
         <h2>Networks</h2>
-        {networks === null ? (
+        {loading ? (
           <p className="muted">Loading…</p>
         ) : networks.length === 0 ? (
           <p className="muted">No networks yet.</p>
@@ -212,7 +264,7 @@ function NetworksPanel({
                   </td>
                   <td>{n.status}</td>
                   <td>
-                    <button type="button" onClick={() => setSelected(n.id)}>
+                    <button type="button" onClick={() => select(n.id)}>
                       Open
                     </button>
                   </td>
@@ -240,10 +292,15 @@ function NetworksPanel({
           </button>
         </form>
         {error && <p className="error">{error}</p>}
+        {formError && <p className="error">{formError}</p>}
       </section>
 
       {current && (
-        <NetworkDetail network={current} onClose={() => setSelected(null)} onChanged={onChanged} />
+        <NetworkDetail
+          network={current}
+          onClose={() => select(null)}
+          onChanged={refresh}
+        />
       )}
     </div>
   );
@@ -258,12 +315,6 @@ function NetworkDetail({
   onClose: () => void;
   onChanged?: () => void;
 }) {
-  // Approving or denying a registration promotes/drops a pending device — the
-  // devices list must reload alongside the registrations queue, so sibling
-  // sections bump this key instead of reaching into each other's state.
-  const [deviceListKey, setDeviceListKey] = useState(0);
-  const bumpDeviceList = useCallback(() => setDeviceListKey((v) => v + 1), []);
-
   return (
     <section className="detail">
       <h2>
@@ -278,30 +329,17 @@ function NetworkDetail({
           Hub: {network.apply_status}
         </span>
       </p>
-      <DevicesSection
+      <RoutesSection
         networkId={network.id}
+        overlayCidr={network.overlay_cidr}
         onChanged={onChanged}
-        refreshKey={deviceListKey}
       />
-      <RegistrationsSection
-        networkId={network.id}
-        onChanged={onChanged}
-        onDevicesChanged={bumpDeviceList}
-      />
-      <RoutesSection networkId={network.id} overlayCidr={network.overlay_cidr} onChanged={onChanged} />
-      <AliasesSection networkId={network.id} onChanged={onChanged} />
-      <SegmentGrantsSection networkId={network.id} onChanged={onChanged} />
-      <HostForwardsSection networkId={network.id} onChanged={onChanged} />
-      <PublishSection networkId={network.id} onChanged={onChanged} />
-      <DiagnosticsSection networkId={network.id} />
-      <InvitesSection networkId={network.id} />
-      <BootstrapTokensSection networkId={network.id} />
       <RevisionsSection key={network.id} networkId={network.id} />
     </section>
   );
 }
 
-function DevicesSection({
+export function DevicesSection({
   networkId,
   onChanged,
   refreshKey = 0,
@@ -463,7 +501,7 @@ const SOURCE_LABELS: Record<string, string> = {
  * the device may re-register. No credential is re-issued either way — the
  * device keeps the agent token it received at registration.
  */
-function RegistrationsSection({
+export function RegistrationsSection({
   networkId,
   onChanged,
   onDevicesChanged,
@@ -842,7 +880,7 @@ function natReading(evidence: DataplaneEvidence | null): string {
  * back. Deleting removes the mapping AND its route in one revision; the
  * confirm step says so explicitly.
  */
-function AliasesSection({
+export function AliasesSection({
   networkId,
   onChanged,
 }: {
@@ -1268,7 +1306,7 @@ export function SegmentGrantsSection({
   );
 }
 
-function InvitesSection({ networkId }: { networkId: string }) {
+export function InvitesSection({ networkId }: { networkId: string }) {
   const [maxUses, setMaxUses] = useState(1);
   const [created, setCreated] = useState<import('./api').InviteCreated | null>(null);
   const [revoked, setRevoked] = useState<string | null>(null);
@@ -1336,7 +1374,7 @@ function InvitesSection({ networkId }: { networkId: string }) {
   );
 }
 
-function HostForwardsSection({
+export function HostForwardsSection({
   networkId,
   onChanged,
 }: {
@@ -1546,7 +1584,7 @@ function HostForwardsSection({
  * only chance to copy it. Revocation is immediate — already-registered devices
  * keep their own agent credential.
  */
-function BootstrapTokensSection({ networkId }: { networkId: string }) {
+export function BootstrapTokensSection({ networkId }: { networkId: string }) {
   const [tokens, setTokens] = useState<import('./api').BootstrapToken[] | null>(null);
   // Unchecked limit = unlimited: max_uses is omitted from the body entirely.
   const [unlimited, setUnlimited] = useState(true);
@@ -2671,7 +2709,7 @@ export function PublishSection({
   );
 }
 
-function DiagnosticsSection({ networkId }: { networkId: string }) {
+export function DiagnosticsSection({ networkId }: { networkId: string }) {
   const [report, setReport] = useState<import('./api').DiagnosticsReport | null>(null);
   const [notRun, setNotRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
