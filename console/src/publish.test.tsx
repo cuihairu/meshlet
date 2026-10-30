@@ -68,6 +68,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** antd Select is a combobox: open it (mousedown) then click the option. */
+async function selectAntd(label: string, optionTitle: string) {
+  fireEvent.mouseDown(screen.getByLabelText(label));
+  const option = await screen.findByTitle(optionTitle);
+  fireEvent.click(option);
+}
+
 describe('PublishSection', () => {
   it('renders an empty publish section as four explicit empty states', async () => {
     mockLists();
@@ -93,9 +100,7 @@ describe('PublishSection', () => {
     render(<PublishSection networkId="net-1" />);
     await screen.findByText('No published ports.');
 
-    fireEvent.change(screen.getByLabelText('publish device'), {
-      target: { value: 'dev-1' },
-    });
+    await selectAntd('publish device', 'vps-agent');
     fireEvent.change(screen.getByLabelText('forward listener port'), {
       target: { value: '18080' },
     });
@@ -143,9 +148,7 @@ describe('PublishSection', () => {
     render(<PublishSection networkId="net-1" />);
     await screen.findByText('No published ports.');
 
-    fireEvent.change(screen.getByLabelText('publish device'), {
-      target: { value: 'dev-1' },
-    });
+    await selectAntd('publish device', 'vps-agent');
     fireEvent.change(screen.getByLabelText('forward listener port'), {
       target: { value: 'not-a-port' },
     });
@@ -154,8 +157,12 @@ describe('PublishSection', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Publish port' }));
 
+    // antd Form fires onFinish asynchronously (after field validation), so
+    // wait for the locally-rendered validation error instead of asserting sync.
     expect(
-      screen.getByText('Listener and backend must each be a host plus a port 1-65535.'),
+      await screen.findByText(
+        'Listener and backend must each be a host plus a port 1-65535.',
+      ),
     ).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
   });
@@ -169,9 +176,7 @@ describe('PublishSection', () => {
     render(<PublishSection networkId="net-1" />);
     await screen.findByText('No HTTP routes.');
 
-    fireEvent.change(screen.getByLabelText('http route device'), {
-      target: { value: 'dev-1' },
-    });
+    await selectAntd('http route device', 'vps-agent');
     fireEvent.change(screen.getByPlaceholderText('hostname'), {
       target: { value: 'app.mesh.internal' },
     });
@@ -213,12 +218,8 @@ describe('PublishSection', () => {
     render(<PublishSection networkId="net-1" />);
     await screen.findByText('No probes.');
 
-    fireEvent.change(screen.getByLabelText('probe device'), {
-      target: { value: 'dev-1' },
-    });
-    fireEvent.change(screen.getByLabelText('probe kind'), {
-      target: { value: 'http' },
-    });
+    await selectAntd('probe device', 'vps-agent');
+    await selectAntd('probe kind', 'http');
     fireEvent.change(screen.getByPlaceholderText('host:port'), {
       target: { value: '127.0.0.1:18082' },
     });
@@ -263,9 +264,7 @@ describe('PublishSection', () => {
     render(<PublishSection networkId="net-1" />);
     await screen.findByText('No probes.');
 
-    fireEvent.change(screen.getByLabelText('probe device'), {
-      target: { value: 'dev-1' },
-    });
+    await selectAntd('probe device', 'vps-agent');
     fireEvent.change(screen.getByPlaceholderText('host:port'), {
       target: { value: '127.0.0.1:18081' },
     });
@@ -305,9 +304,7 @@ describe('PublishSection', () => {
     render(<PublishSection networkId="net-1" />);
     await screen.findByText('No internal DNS records.');
 
-    fireEvent.change(screen.getByLabelText('dns device'), {
-      target: { value: 'dev-1' },
-    });
+    await selectAntd('dns device', 'vps-agent');
     fireEvent.change(screen.getByPlaceholderText('service name'), {
       target: { value: 'app' },
     });

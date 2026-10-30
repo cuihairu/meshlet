@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Button, Checkbox, Form, Input, Select, Table } from 'antd';
+import type { TableProps } from 'antd';
 import {
   api,
   ApiError,
@@ -8,8 +10,53 @@ import {
   type PublishHttpRoute,
   type PublishProbe,
 } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
 import { formatTime } from '../../lib/format';
 import { DeleteButton } from './DeleteButton';
+
+interface ForwardFormValues {
+  device?: string;
+  protocol?: string;
+  listenerHost?: string;
+  listenerPort?: string;
+  backendHost?: string;
+  backendPort?: string;
+  cidrs?: string;
+  bearer?: string;
+}
+
+interface RouteFormValues {
+  device?: string;
+  hostname?: string;
+  pathPrefix?: string;
+  backendHost?: string;
+  backendPort?: string;
+  listenerHost?: string;
+  listenerPort?: string;
+  cidrs?: string;
+  bearer?: string;
+  tlsPassthrough?: boolean;
+}
+
+interface ProbeFormValues {
+  device?: string;
+  kind?: string;
+  address?: string;
+  path?: string;
+  status?: string;
+  timeout?: string;
+  interval?: string;
+}
+
+interface DnsFormValues {
+  device?: string;
+  name?: string;
+  address?: string;
+  ttl?: string;
+  suffix?: string;
+  bindHost?: string;
+  bindPort?: string;
+}
 
 /**
  * R-06 service publishing: desired-state objects an agent reconciles on a
@@ -35,41 +82,12 @@ export function PublishSection({
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { t } = useLanguage();
 
-  // One shared device selector drives all four create forms.
-  const [device, setDevice] = useState('');
-  // L4 forward form (listener/backend split into host + port like Portainer).
-  const [protocol, setProtocol] = useState('tcp');
-  const [listenerHost, setListenerHost] = useState('0.0.0.0');
-  const [listenerPort, setListenerPort] = useState('');
-  const [backendHost, setBackendHost] = useState('127.0.0.1');
-  const [backendPort, setBackendPort] = useState('');
-  const [cidrs, setCidrs] = useState('0.0.0.0/0');
-  const [bearer, setBearer] = useState('');
-  // HTTP route form (own backend/CIDR/token fields — not shared with L4).
-  const [hostname, setHostname] = useState('');
-  const [pathPrefix, setPathPrefix] = useState('/');
-  const [routeBackendHost, setRouteBackendHost] = useState('127.0.0.1');
-  const [routeBackendPort, setRouteBackendPort] = useState('');
-  const [routeListenerHost, setRouteListenerHost] = useState('0.0.0.0');
-  const [routeListenerPort, setRouteListenerPort] = useState('');
-  const [routeCidrs, setRouteCidrs] = useState('0.0.0.0/0');
-  const [routeBearer, setRouteBearer] = useState('');
-  const [tlsPassthrough, setTlsPassthrough] = useState(false);
-  // Probe form.
-  const [probeKind, setProbeKind] = useState('tcp');
-  const [probeAddress, setProbeAddress] = useState('');
-  const [probePath, setProbePath] = useState('/');
-  const [probeStatus, setProbeStatus] = useState('200');
-  const [probeTimeout, setProbeTimeout] = useState('3');
-  const [probeInterval, setProbeInterval] = useState('30');
-  // DNS record form.
-  const [dnsName, setDnsName] = useState('');
-  const [dnsAddress, setDnsAddress] = useState('');
-  const [dnsTtl, setDnsTtl] = useState('300');
-  const [dnsSuffix, setDnsSuffix] = useState('mesh.internal');
-  const [dnsBindHost, setDnsBindHost] = useState('0.0.0.0');
-  const [dnsBindPort, setDnsBindPort] = useState('');
+  const [forwardForm] = Form.useForm();
+  const [routeForm] = Form.useForm();
+  const [probeForm] = Form.useForm();
+  const [dnsForm] = Form.useForm();
 
   const load = useCallback(() => {
     api
@@ -111,30 +129,32 @@ export function PublishSection({
     else setError(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e));
   };
 
-  const createForward = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const createForward = async (values: ForwardFormValues) => {
     setError(null);
     setConflict(null);
-    const listener = socket(listenerHost, listenerPort);
-    const backend = socket(backendHost, backendPort);
+    const listener = socket(values.listenerHost ?? '', values.listenerPort ?? '');
+    const backend = socket(values.backendHost ?? '', values.backendPort ?? '');
     if (!listener || !backend) {
-      setError('Listener and backend must each be a host plus a port 1-65535.');
+      setError(t('publish.invalidSocket'));
       return;
     }
     setBusy(true);
     try {
       await api.createPublishForward(networkId, {
-        device_id: device,
-        protocol,
+        device_id: values.device ?? '',
+        protocol: values.protocol ?? 'tcp',
         listener_address: listener,
         backend_address: backend,
-        allowed_source_cidrs: splitList(cidrs),
-        allowed_bearer_tokens: bearer.trim() === '' ? [] : [bearer.trim()],
+        allowed_source_cidrs: splitList(values.cidrs ?? ''),
+        allowed_bearer_tokens:
+          (values.bearer ?? '').trim() === '' ? [] : [(values.bearer ?? '').trim()],
         enabled: true,
       });
-      setListenerPort('');
-      setBackendPort('');
-      setBearer('');
+      forwardForm.setFieldsValue({
+        listenerPort: '',
+        backendPort: '',
+        bearer: '',
+      });
       load();
       onChanged?.();
     } catch (e) {
@@ -144,33 +164,34 @@ export function PublishSection({
     }
   };
 
-  const createRoute = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const createRoute = async (values: RouteFormValues) => {
     setError(null);
     setConflict(null);
-    const backend = socket(routeBackendHost, routeBackendPort);
-    const listener = socket(routeListenerHost, routeListenerPort);
+    const backend = socket(values.backendHost ?? '', values.backendPort ?? '');
+    const listener = socket(values.listenerHost ?? '', values.listenerPort ?? '');
     if (!backend || !listener) {
-      setError('Backend and listener must each be a host plus a port 1-65535.');
+      setError(t('publish.invalidRouteSocket'));
       return;
     }
     setBusy(true);
     try {
       await api.createPublishHttpRoute(networkId, {
-        device_id: device,
-        hostname: hostname.trim(),
-        path_prefix: pathPrefix.trim() === '' ? '/' : pathPrefix.trim(),
+        device_id: values.device ?? '',
+        hostname: (values.hostname ?? '').trim(),
+        path_prefix: (values.pathPrefix ?? '').trim() === '' ? '/' : values.pathPrefix!.trim(),
         backend_address: backend,
         listener_address: listener,
-        allowed_source_cidrs: splitList(routeCidrs),
+        allowed_source_cidrs: splitList(values.cidrs ?? ''),
         allowed_bearer_tokens:
-          routeBearer.trim() === '' ? [] : [routeBearer.trim()],
-        tls_passthrough: tlsPassthrough,
+          (values.bearer ?? '').trim() === '' ? [] : [(values.bearer ?? '').trim()],
+        tls_passthrough: values.tlsPassthrough ?? false,
       });
-      setHostname('');
-      setRouteBackendPort('');
-      setRouteListenerPort('');
-      setRouteBearer('');
+      routeForm.setFieldsValue({
+        hostname: '',
+        backendPort: '',
+        listenerPort: '',
+        bearer: '',
+      });
       load();
       onChanged?.();
     } catch (e) {
@@ -180,34 +201,33 @@ export function PublishSection({
     }
   };
 
-  const createProbe = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const createProbe = async (values: ProbeFormValues) => {
     setError(null);
     setConflict(null);
-    const timeout = Number(probeTimeout);
-    const interval = positiveInt(probeInterval);
+    const timeout = Number(values.timeout ?? '');
+    const interval = positiveInt(values.interval ?? '');
     if (!(timeout > 0) || interval === null) {
-      setError('Probe timeout and interval must be positive seconds.');
+      setError(t('publish.invalidProbe'));
       return;
     }
-    if (probeKind === 'http' && positiveInt(probeStatus) === null) {
-      setError('HTTP probes need a numeric expected status (e.g. 200).');
+    const kind = values.kind ?? 'tcp';
+    if (kind === 'http' && positiveInt(values.status ?? '') === null) {
+      setError(t('publish.invalidProbeStatus'));
       return;
     }
     setBusy(true);
     try {
       await api.createPublishProbe(networkId, {
-        device_id: device,
-        target_kind: probeKind,
-        address: probeAddress.trim(),
-        path: probeKind === 'http' ? probePath.trim() : null,
-        expected_status:
-          probeKind === 'http' ? (positiveInt(probeStatus) as number) : null,
+        device_id: values.device ?? '',
+        target_kind: kind,
+        address: (values.address ?? '').trim(),
+        path: kind === 'http' ? (values.path ?? '').trim() : null,
+        expected_status: kind === 'http' ? (positiveInt(values.status ?? '') as number) : null,
         timeout_secs: timeout,
         interval_secs: interval,
         enabled: true,
       });
-      setProbeAddress('');
+      probeForm.setFieldsValue({ address: '' });
       load();
       onChanged?.();
     } catch (e) {
@@ -217,28 +237,27 @@ export function PublishSection({
     }
   };
 
-  const createDnsRecord = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const createDnsRecord = async (values: DnsFormValues) => {
     setError(null);
     setConflict(null);
-    const ttl = positiveInt(dnsTtl);
-    const bind = socket(dnsBindHost, dnsBindPort);
+    const ttl = positiveInt(values.ttl ?? '');
+    const bind = socket(values.bindHost ?? '', values.bindPort ?? '');
     if (ttl === null || !bind) {
-      setError('DNS TTL must be positive and the bind must be host plus port 1-65535.');
+      setError(t('publish.invalidDns'));
       return;
     }
     setBusy(true);
     try {
       await api.createPublishDnsRecord(networkId, {
-        device_id: device,
-        name: dnsName.trim(),
-        address: dnsAddress.trim(),
+        device_id: values.device ?? '',
+        name: (values.name ?? '').trim(),
+        address: (values.address ?? '').trim(),
         ttl,
         priority: 1,
         bind_address: bind,
-        internal_suffix: dnsSuffix.trim(),
+        internal_suffix: (values.suffix ?? '').trim(),
       });
-      setDnsName('');
+      dnsForm.setFieldsValue({ name: '' });
       load();
       onChanged?.();
     } catch (e) {
@@ -266,483 +285,408 @@ export function PublishSection({
     }
   };
 
+  const deviceOptions = devices.map((d) => ({ value: d.id, label: d.name }));
+
+  const forwardColumns: TableProps<PublishForward>['columns'] = [
+    { title: t('publish.colProtocol'), key: 'protocol', render: (_, f) => f.protocol },
+    {
+      title: t('publish.colPublishedOn'),
+      key: 'listener_address',
+      render: (_, f) => <code>{f.listener_address}</code>,
+    },
+    {
+      title: t('publish.colForwardsTo'),
+      key: 'backend_address',
+      render: (_, f) => <code>{f.backend_address}</code>,
+    },
+    {
+      title: t('publish.colAllowedFrom'),
+      key: 'allowed_source_cidrs',
+      render: (_, f) => (
+        <span className="muted">{f.allowed_source_cidrs.join(', ') || '—'}</span>
+      ),
+    },
+    {
+      title: t('publish.colTokens'),
+      key: 'allowed_bearer_token_count',
+      render: (_, f) => f.allowed_bearer_token_count,
+    },
+    {
+      title: t('publish.colDevice'),
+      key: 'device',
+      render: (_, f) => deviceName(f.device_id),
+    },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, f) => (
+        <DeleteButton busy={busy} onDelete={() => remove('forward', f.id)} />
+      ),
+    },
+  ];
+
+  const routeColumns: TableProps<PublishHttpRoute>['columns'] = [
+    { title: t('publish.colHost'), key: 'hostname', render: (_, r) => <code>{r.hostname}</code> },
+    { title: t('publish.colPath'), key: 'path_prefix', render: (_, r) => <code>{r.path_prefix}</code> },
+    { title: t('publish.colForwardsTo'), key: 'backend_address', render: (_, r) => <code>{r.backend_address}</code> },
+    { title: t('publish.colListener'), key: 'listener_address', render: (_, r) => <code>{r.listener_address}</code> },
+    {
+      title: t('publish.colTls'),
+      key: 'tls',
+      render: (_, r) => (r.tls_passthrough ? t('publish.sniPassthrough') : t('publish.plain')),
+    },
+    {
+      title: t('publish.colAllowedFrom'),
+      key: 'allowed_source_cidrs',
+      render: (_, r) => (
+        <span className="muted">{r.allowed_source_cidrs.join(', ') || '—'}</span>
+      ),
+    },
+    { title: t('publish.colDevice'), key: 'device', render: (_, r) => deviceName(r.device_id) },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, r) => (
+        <DeleteButton busy={busy} onDelete={() => remove('route', r.id)} />
+      ),
+    },
+  ];
+
+  const probeColumns: TableProps<PublishProbe>['columns'] = [
+    { title: t('publish.colKind'), key: 'target_kind', render: (_, p) => p.target_kind },
+    {
+      title: t('publish.colTarget'),
+      key: 'address',
+      render: (_, p) => (
+        <code>
+          {p.address}
+          {p.path ?? ''}
+        </code>
+      ),
+    },
+    {
+      title: t('publish.colEvery'),
+      key: 'interval_secs',
+      render: (_, p) => <span className="muted">{p.interval_secs}s</span>,
+    },
+    {
+      title: t('publish.colLastState'),
+      key: 'last_state',
+      render: (_, p) => p.last_state ?? t('publish.pending'),
+    },
+    {
+      title: t('publish.colLastChecked'),
+      key: 'last_checked_at',
+      render: (_, p) => <span className="muted">{formatTime(p.last_checked_at)}</span>,
+    },
+    {
+      title: t('publish.colDetail'),
+      key: 'last_detail',
+      render: (_, p) => <span className="muted">{p.last_detail ?? ''}</span>,
+    },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, p) => (
+        <DeleteButton busy={busy} onDelete={() => remove('probe', p.id)} />
+      ),
+    },
+  ];
+
+  const dnsColumns: TableProps<PublishDnsRecord>['columns'] = [
+    { title: t('publish.colName'), key: 'name', render: (_, r) => <code>{r.name}</code> },
+    { title: t('publish.colAddress'), key: 'address', render: (_, r) => <code>{r.address}</code> },
+    { title: t('publish.colTtl'), key: 'ttl', render: (_, r) => <span className="muted">{r.ttl}</span> },
+    { title: t('publish.colSuffix'), key: 'internal_suffix', render: (_, r) => r.internal_suffix },
+    { title: t('publish.colListener'), key: 'bind_address', render: (_, r) => <code>{r.bind_address}</code> },
+    { title: t('publish.colDevice'), key: 'device', render: (_, r) => deviceName(r.device_id) },
+    {
+      title: '',
+      key: 'actions',
+      render: (_, r) => (
+        <DeleteButton busy={busy} onDelete={() => remove('dns', r.id)} />
+      ),
+    },
+  ];
+
   return (
     <div>
-      <h3>Service publishing</h3>
-      <p className="muted">
-        Publish services running on a device: L4 port forwards, HTTP(S) routes,
-        health probes and internal DNS answers. Objects are desired state — the
-        agent binds and re-binds the sockets on its next reconciliation.
-      </p>
+      <h3>{t('publish.title')}</h3>
+      <p className="muted">{t('publish.intro')}</p>
 
-      <h4>Port forwards</h4>
+      <h4>{t('publish.forwardTitle')}</h4>
       {forwards === null ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : forwards.length === 0 ? (
-        <p className="muted">No published ports.</p>
+        <p className="muted">{t('publish.noneForwards')}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Protocol</th>
-              <th>Published on</th>
-              <th>Forwards to</th>
-              <th>Allowed from</th>
-              <th>Tokens</th>
-              <th>Device</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {forwards.map((forward) => (
-              <tr key={forward.id}>
-                <td>{forward.protocol}</td>
-                <td>
-                  <code>{forward.listener_address}</code>
-                </td>
-                <td>
-                  <code>{forward.backend_address}</code>
-                </td>
-                <td className="muted">
-                  {forward.allowed_source_cidrs.join(', ') || '—'}
-                </td>
-                <td>{forward.allowed_bearer_token_count}</td>
-                <td>{deviceName(forward.device_id)}</td>
-                <td>
-                  <DeleteButton
-                    busy={busy}
-                    onDelete={() => remove('forward', forward.id)}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table<PublishForward>
+          rowKey="id"
+          columns={forwardColumns}
+          dataSource={forwards}
+          size="middle"
+          pagination={false}
+        />
       )}
-      <form className="inline" onSubmit={createForward}>
-        <select
-          required
-          value={device}
-          onChange={(e) => setDevice(e.target.value)}
-          aria-label="publish device"
-        >
-          <option value="" disabled>
-            device
-          </option>
-          {devices.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-        <select
-          value={protocol}
-          onChange={(e) => setProtocol(e.target.value)}
-          aria-label="forward protocol"
-        >
-          <option value="tcp">tcp</option>
-          <option value="udp">udp</option>
-        </select>
-        <input
-          placeholder="listener host"
-          required
-          value={listenerHost}
-          onChange={(e) => setListenerHost(e.target.value)}
-          aria-label="forward listener host"
-        />
-        <input
-          placeholder="listener port"
-          required
-          inputMode="numeric"
-          value={listenerPort}
-          onChange={(e) => setListenerPort(e.target.value)}
-          aria-label="forward listener port"
-        />
-        <input
-          placeholder="backend host"
-          required
-          value={backendHost}
-          onChange={(e) => setBackendHost(e.target.value)}
-          aria-label="forward backend host"
-        />
-        <input
-          placeholder="backend port"
-          required
-          inputMode="numeric"
-          value={backendPort}
-          onChange={(e) => setBackendPort(e.target.value)}
-          aria-label="forward backend port"
-        />
-        <input
-          placeholder="allowed source CIDRs"
-          value={cidrs}
-          onChange={(e) => setCidrs(e.target.value)}
-          aria-label="forward allowed source CIDRs"
-        />
-        <input
-          placeholder="bearer token (optional)"
-          value={bearer}
-          aria-label="forward bearer token"
-          onChange={(e) => setBearer(e.target.value)}
-        />
-        <button type="submit" disabled={busy || devices.length === 0}>
-          Publish port
-        </button>
-      </form>
+      <Form
+        form={forwardForm}
+        name="publishForward"
+        layout="inline"
+        onFinish={createForward}
+        className="create-form"
+        initialValues={{
+          protocol: 'tcp',
+          listenerHost: '0.0.0.0',
+          backendHost: '127.0.0.1',
+          cidrs: '0.0.0.0/0',
+          bearer: '',
+        }}
+      >
+        <Form.Item name="device" label={t('publish.deviceLabel')}>
+          <Select
+            placeholder={t('publish.devicePlaceholder')}
+            options={deviceOptions}
+            style={{ minWidth: 160 }}
+          />
+        </Form.Item>
+        <Form.Item name="protocol" label={t('publish.protocolLabel')}>
+          <Select
+            options={[
+              { value: 'tcp', label: 'tcp' },
+              { value: 'udp', label: 'udp' },
+            ]}
+            style={{ minWidth: 90 }}
+          />
+        </Form.Item>
+        <Form.Item name="listenerHost" label={t('publish.listenerHostLabel')}>
+          <Input placeholder={t('publish.listenerHostPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="listenerPort" label={t('publish.listenerPortLabel')}>
+          <Input placeholder={t('publish.listenerPortPlaceholder')} inputMode="numeric" />
+        </Form.Item>
+        <Form.Item name="backendHost" label={t('publish.backendHostLabel')}>
+          <Input placeholder={t('publish.backendHostPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="backendPort" label={t('publish.backendPortLabel')}>
+          <Input placeholder={t('publish.backendPortPlaceholder')} inputMode="numeric" />
+        </Form.Item>
+        <Form.Item name="cidrs" label={t('publish.cidrsLabel')}>
+          <Input placeholder={t('publish.cidrsPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="bearer" label={t('publish.bearerLabel')}>
+          <Input placeholder={t('publish.bearerPlaceholder')} />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" disabled={busy || devices.length === 0}>
+            {t('publish.publishPort')}
+          </Button>
+        </Form.Item>
+      </Form>
 
-      <h4>HTTP routes</h4>
+      <h4>{t('publish.routeTitle')}</h4>
       {routes === null ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : routes.length === 0 ? (
-        <p className="muted">No HTTP routes.</p>
+        <p className="muted">{t('publish.noneRoutes')}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Host</th>
-              <th>Path</th>
-              <th>Forwards to</th>
-              <th>Listener</th>
-              <th>TLS</th>
-              <th>Allowed from</th>
-              <th>Device</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {routes.map((route) => (
-              <tr key={route.id}>
-                <td>
-                  <code>{route.hostname}</code>
-                </td>
-                <td>
-                  <code>{route.path_prefix}</code>
-                </td>
-                <td>
-                  <code>{route.backend_address}</code>
-                </td>
-                <td>
-                  <code>{route.listener_address}</code>
-                </td>
-                <td>{route.tls_passthrough ? 'SNI pass-through' : 'plain'}</td>
-                <td className="muted">
-                  {route.allowed_source_cidrs.join(', ') || '—'}
-                </td>
-                <td>{deviceName(route.device_id)}</td>
-                <td>
-                  <DeleteButton
-                    busy={busy}
-                    onDelete={() => remove('route', route.id)}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table<PublishHttpRoute>
+          rowKey="id"
+          columns={routeColumns}
+          dataSource={routes}
+          size="middle"
+          pagination={false}
+        />
       )}
-      <form className="inline" onSubmit={createRoute}>
-        <select
-          required
-          value={device}
-          onChange={(e) => setDevice(e.target.value)}
-          aria-label="http route device"
-        >
-          <option value="" disabled>
-            device
-          </option>
-          {devices.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-        <input
-          placeholder="hostname"
-          required
-          value={hostname}
-          onChange={(e) => setHostname(e.target.value)}
-        />
-        <input
-          placeholder="path prefix"
-          value={pathPrefix}
-          onChange={(e) => setPathPrefix(e.target.value)}
-          aria-label="path prefix"
-        />
-        <input
-          placeholder="route backend host"
-          required
-          value={routeBackendHost}
-          onChange={(e) => setRouteBackendHost(e.target.value)}
-          aria-label="route backend host"
-        />
-        <input
-          placeholder="route backend port"
-          required
-          inputMode="numeric"
-          value={routeBackendPort}
-          onChange={(e) => setRouteBackendPort(e.target.value)}
-          aria-label="route backend port"
-        />
-        <input
-          placeholder="route listener host"
-          required
-          value={routeListenerHost}
-          onChange={(e) => setRouteListenerHost(e.target.value)}
-          aria-label="route listener host"
-        />
-        <input
-          placeholder="route listener port"
-          required
-          inputMode="numeric"
-          value={routeListenerPort}
-          onChange={(e) => setRouteListenerPort(e.target.value)}
-          aria-label="route listener port"
-        />
-        <input
-          placeholder="allowed source CIDRs"
-          value={routeCidrs}
-          onChange={(e) => setRouteCidrs(e.target.value)}
-          aria-label="route allowed source CIDRs"
-        />
-        <input
-          placeholder="bearer token (optional)"
-          value={routeBearer}
-          onChange={(e) => setRouteBearer(e.target.value)}
-          aria-label="route bearer token"
-        />
-        <label>
-          <input
-            type="checkbox"
-            checked={tlsPassthrough}
-            onChange={(e) => setTlsPassthrough(e.target.checked)}
-          />{' '}
-          TLS pass-through
-        </label>
-        <button type="submit" disabled={busy || devices.length === 0}>
-          Publish route
-        </button>
-      </form>
+      <Form
+        form={routeForm}
+        name="publishRoute"
+        layout="inline"
+        onFinish={createRoute}
+        className="create-form"
+        initialValues={{
+          pathPrefix: '/',
+          backendHost: '127.0.0.1',
+          listenerHost: '0.0.0.0',
+          cidrs: '0.0.0.0/0',
+          bearer: '',
+          tlsPassthrough: false,
+        }}
+      >
+        <Form.Item name="device" label={t('publish.routeDeviceLabel')}>
+          <Select
+            placeholder={t('publish.devicePlaceholder')}
+            options={deviceOptions}
+            style={{ minWidth: 160 }}
+          />
+        </Form.Item>
+        <Form.Item name="hostname" label={t('publish.hostnameLabel')}>
+          <Input placeholder={t('publish.hostnamePlaceholder')} />
+        </Form.Item>
+        <Form.Item name="pathPrefix" label={t('publish.pathPrefixLabel')}>
+          <Input placeholder={t('publish.pathPrefixPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="backendHost" label={t('publish.routeBackendHostLabel')}>
+          <Input placeholder={t('publish.routeBackendHostPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="backendPort" label={t('publish.routeBackendPortLabel')}>
+          <Input placeholder={t('publish.routeBackendPortPlaceholder')} inputMode="numeric" />
+        </Form.Item>
+        <Form.Item name="listenerHost" label={t('publish.routeListenerHostLabel')}>
+          <Input placeholder={t('publish.routeListenerHostPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="listenerPort" label={t('publish.routeListenerPortLabel')}>
+          <Input placeholder={t('publish.routeListenerPortPlaceholder')} inputMode="numeric" />
+        </Form.Item>
+        <Form.Item name="cidrs" label={t('publish.routeCidrsLabel')}>
+          <Input placeholder={t('publish.cidrsPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="bearer" label={t('publish.routeBearerLabel')}>
+          <Input placeholder={t('publish.bearerPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="tlsPassthrough" label={t('publish.tlsPassthroughLabel')} valuePropName="checked">
+          <Checkbox />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" disabled={busy || devices.length === 0}>
+            {t('publish.publishRoute')}
+          </Button>
+        </Form.Item>
+      </Form>
 
-      <h4>Health probes</h4>
+      <h4>{t('publish.probeTitle')}</h4>
       {probes === null ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : probes.length === 0 ? (
-        <p className="muted">No probes.</p>
+        <p className="muted">{t('publish.noneProbes')}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Target</th>
-              <th>Every</th>
-              <th>Last state</th>
-              <th>Last checked</th>
-              <th>Detail</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {probes.map((probe) => (
-              <tr key={probe.id}>
-                <td>{probe.target_kind}</td>
-                <td>
-                  <code>
-                    {probe.address}
-                    {probe.path ?? ''}
-                  </code>
-                </td>
-                <td className="muted">{probe.interval_secs}s</td>
-                <td>{probe.last_state ?? 'pending'}</td>
-                <td className="muted">{formatTime(probe.last_checked_at)}</td>
-                <td className="muted">{probe.last_detail ?? ''}</td>
-                <td>
-                  <DeleteButton
-                    busy={busy}
-                    onDelete={() => remove('probe', probe.id)}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table<PublishProbe>
+          rowKey="id"
+          columns={probeColumns}
+          dataSource={probes}
+          size="middle"
+          pagination={false}
+        />
       )}
-      <form className="inline" onSubmit={createProbe}>
-        <select
-          required
-          value={device}
-          onChange={(e) => setDevice(e.target.value)}
-          aria-label="probe device"
-        >
-          <option value="" disabled>
-            device
-          </option>
-          {devices.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-        <select
-          value={probeKind}
-          onChange={(e) => setProbeKind(e.target.value)}
-          aria-label="probe kind"
-        >
-          <option value="tcp">tcp</option>
-          <option value="http">http</option>
-        </select>
-        <input
-          placeholder="host:port"
-          required
-          value={probeAddress}
-          onChange={(e) => setProbeAddress(e.target.value)}
-        />
-        <input
-          placeholder="path"
-          value={probePath}
-          onChange={(e) => setProbePath(e.target.value)}
-          aria-label="http probe path"
-        />
-        <input
-          placeholder="status"
-          inputMode="numeric"
-          value={probeStatus}
-          onChange={(e) => setProbeStatus(e.target.value)}
-          aria-label="expected status"
-        />
-        <input
-          placeholder="timeout s"
-          inputMode="decimal"
-          value={probeTimeout}
-          onChange={(e) => setProbeTimeout(e.target.value)}
-          aria-label="probe timeout seconds"
-        />
-        <input
-          placeholder="interval s"
-          inputMode="numeric"
-          value={probeInterval}
-          onChange={(e) => setProbeInterval(e.target.value)}
-          aria-label="probe interval seconds"
-        />
-        <button type="submit" disabled={busy || devices.length === 0}>
-          Add probe
-        </button>
-      </form>
+      <Form
+        form={probeForm}
+        name="publishProbe"
+        layout="inline"
+        onFinish={createProbe}
+        className="create-form"
+        initialValues={{
+          kind: 'tcp',
+          path: '/',
+          status: '200',
+          timeout: '3',
+          interval: '30',
+        }}
+      >
+        <Form.Item name="device" label={t('publish.probeDeviceLabel')}>
+          <Select
+            placeholder={t('publish.devicePlaceholder')}
+            options={deviceOptions}
+            style={{ minWidth: 160 }}
+          />
+        </Form.Item>
+        <Form.Item name="kind" label={t('publish.probeKindLabel')}>
+          <Select
+            options={[
+              { value: 'tcp', label: 'tcp' },
+              { value: 'http', label: 'http' },
+            ]}
+            style={{ minWidth: 90 }}
+          />
+        </Form.Item>
+        <Form.Item name="address" label={t('publish.probeAddressLabel')}>
+          <Input placeholder={t('publish.probeAddressPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="path" label={t('publish.probePathLabel')}>
+          <Input placeholder={t('publish.probePathPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="status" label={t('publish.probeStatusLabel')}>
+          <Input placeholder={t('publish.probeStatusPlaceholder')} inputMode="numeric" />
+        </Form.Item>
+        <Form.Item name="timeout" label={t('publish.probeTimeoutLabel')}>
+          <Input placeholder={t('publish.probeTimeoutPlaceholder')} inputMode="decimal" />
+        </Form.Item>
+        <Form.Item name="interval" label={t('publish.probeIntervalLabel')}>
+          <Input placeholder={t('publish.probeIntervalPlaceholder')} inputMode="numeric" />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" disabled={busy || devices.length === 0}>
+            {t('publish.addProbe')}
+          </Button>
+        </Form.Item>
+      </Form>
 
-      <h4>Internal DNS</h4>
+      <h4>{t('publish.dnsTitle')}</h4>
       {dns === null ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">{t('app.loading')}</p>
       ) : dns.length === 0 ? (
-        <p className="muted">No internal DNS records.</p>
+        <p className="muted">{t('publish.noneDns')}</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Address</th>
-              <th>TTL</th>
-              <th>Suffix</th>
-              <th>Listener</th>
-              <th>Device</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {dns.map((record) => (
-              <tr key={record.id}>
-                <td>
-                  <code>{record.name}</code>
-                </td>
-                <td>
-                  <code>{record.address}</code>
-                </td>
-                <td className="muted">{record.ttl}</td>
-                <td>{record.internal_suffix}</td>
-                <td>
-                  <code>{record.bind_address}</code>
-                </td>
-                <td>{deviceName(record.device_id)}</td>
-                <td>
-                  <DeleteButton
-                    busy={busy}
-                    onDelete={() => remove('dns', record.id)}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Table<PublishDnsRecord>
+          rowKey="id"
+          columns={dnsColumns}
+          dataSource={dns}
+          size="middle"
+          pagination={false}
+        />
       )}
-      <form className="inline" onSubmit={createDnsRecord}>
-        <select
-          required
-          value={device}
-          onChange={(e) => setDevice(e.target.value)}
-          aria-label="dns device"
-        >
-          <option value="" disabled>
-            device
-          </option>
-          {devices.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-        <input
-          placeholder="service name"
-          required
-          value={dnsName}
-          onChange={(e) => setDnsName(e.target.value)}
-        />
-        <input
-          placeholder="IPv4 address"
-          required
-          value={dnsAddress}
-          onChange={(e) => setDnsAddress(e.target.value)}
-        />
-        <input
-          placeholder="ttl"
-          inputMode="numeric"
-          value={dnsTtl}
-          onChange={(e) => setDnsTtl(e.target.value)}
-          aria-label="dns ttl"
-        />
-        <input
-          placeholder="internal suffix"
-          required
-          value={dnsSuffix}
-          onChange={(e) => setDnsSuffix(e.target.value)}
-          aria-label="internal dns suffix"
-        />
-        <input
-          placeholder="bind host"
-          required
-          value={dnsBindHost}
-          onChange={(e) => setDnsBindHost(e.target.value)}
-        />
-        <input
-          placeholder="bind port"
-          required
-          inputMode="numeric"
-          value={dnsBindPort}
-          onChange={(e) => setDnsBindPort(e.target.value)}
-          aria-label="dns bind port"
-        />
-        <button type="submit" disabled={busy || devices.length === 0}>
-          Add record
-        </button>
-      </form>
+      <Form
+        form={dnsForm}
+        name="publishDns"
+        layout="inline"
+        onFinish={createDnsRecord}
+        className="create-form"
+        initialValues={{
+          ttl: '300',
+          suffix: 'mesh.internal',
+          bindHost: '0.0.0.0',
+        }}
+      >
+        <Form.Item name="device" label={t('publish.dnsDeviceLabel')}>
+          <Select
+            placeholder={t('publish.devicePlaceholder')}
+            options={deviceOptions}
+            style={{ minWidth: 160 }}
+          />
+        </Form.Item>
+        <Form.Item name="name" label={t('publish.dnsNameLabel')}>
+          <Input placeholder={t('publish.dnsNamePlaceholder')} />
+        </Form.Item>
+        <Form.Item name="address" label={t('publish.dnsAddressLabel')}>
+          <Input placeholder={t('publish.dnsAddressPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="ttl" label={t('publish.dnsTtlLabel')}>
+          <Input placeholder={t('publish.dnsTtlPlaceholder')} inputMode="numeric" />
+        </Form.Item>
+        <Form.Item name="suffix" label={t('publish.dnsSuffixLabel')}>
+          <Input placeholder={t('publish.dnsSuffixPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="bindHost" label={t('publish.dnsBindHostLabel')}>
+          <Input placeholder={t('publish.dnsBindHostPlaceholder')} />
+        </Form.Item>
+        <Form.Item name="bindPort" label={t('publish.dnsBindPortLabel')}>
+          <Input placeholder={t('publish.dnsBindPortPlaceholder')} inputMode="numeric" />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" disabled={busy || devices.length === 0}>
+            {t('publish.addRecord')}
+          </Button>
+        </Form.Item>
+      </Form>
 
       {conflict && (
         <div className="conflict" role="alert">
           <p>
-            <strong>Publishing conflict — nothing was published.</strong>
+            <strong>{t('publish.conflictTitle')}</strong>
           </p>
           <p>{conflict}</p>
         </div>
       )}
       {devices.length === 0 && (
-        <p className="muted">Enroll an active device first — it publishes.</p>
+        <p className="muted">{t('publish.enrollFirst')}</p>
       )}
       {error && <p className="error">{error}</p>}
     </div>

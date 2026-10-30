@@ -1,23 +1,27 @@
 import { useEffect, useState } from 'react';
+import { Button, Tag } from 'antd';
 import { api, ApiError } from '../../api';
+import { useLanguage } from '../../i18n/language-context';
+import type { MessageKey } from '../../i18n/en';
 import { formatTime } from '../../lib/format';
+import { tagColor } from '../../lib/status-tag';
 
 // §12.7 diagnostics: fixed layer order for grouping; status vocabulary is the
 // API contract (pass / fail / warning / unavailable / not_applicable).
 const LAYER_ORDER = ['tunnel', 'routing', 'forwarding', 'alias', 'control_plane'];
-const LAYER_LABELS: Record<string, string> = {
-  tunnel: 'Tunnel',
-  routing: 'Routing',
-  forwarding: 'Forwarding',
-  alias: 'Alias',
-  control_plane: 'Control plane',
+const LAYER_KEY: Record<string, MessageKey> = {
+  tunnel: 'diagnostics.layerTunnel',
+  routing: 'diagnostics.layerRouting',
+  forwarding: 'diagnostics.layerForwarding',
+  alias: 'diagnostics.layerAlias',
+  control_plane: 'diagnostics.layerControlPlane',
 };
-const STATUS_LABELS: Record<string, string> = {
-  pass: 'pass',
-  fail: 'fail',
-  warning: 'warning',
-  unavailable: 'unavailable',
-  not_applicable: 'not applicable',
+const STATUS_KEY: Record<string, MessageKey> = {
+  pass: 'diagnostics.statusPass',
+  fail: 'diagnostics.statusFail',
+  warning: 'diagnostics.statusWarning',
+  unavailable: 'diagnostics.statusUnavailable',
+  not_applicable: 'diagnostics.statusNotApplicable',
 };
 const STATUS_COUNT_ORDER = ['pass', 'fail', 'warning', 'unavailable', 'not_applicable'];
 
@@ -26,6 +30,7 @@ export function DiagnosticsSection({ networkId }: { networkId: string }) {
   const [notRun, setNotRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { t } = useLanguage();
 
   useEffect(() => {
     api
@@ -59,26 +64,26 @@ export function DiagnosticsSection({ networkId }: { networkId: string }) {
   return (
     <div>
       <h3>
-        Diagnostics{' '}
-        <button type="button" onClick={run} disabled={busy}>
-          Run checks
-        </button>
+        {t('diagnostics.title')}{' '}
+        <Button onClick={run} loading={busy}>
+          {t('diagnostics.run')}
+        </Button>
       </h3>
       <p className="muted">
-        13 checks across fault layers. <strong>unavailable</strong> means the
-        control plane cannot observe a host-local fact — it is not a pass; run
-        the given command on the device itself.
+        {t('diagnostics.intro1')}
+        <strong>{t('diagnostics.unavailable')}</strong>
+        {t('diagnostics.intro2')}
       </p>
       {notRun && !report && (
-        <p className="muted">No diagnostics run yet — run the checks to take a snapshot.</p>
+        <p className="muted">{t('diagnostics.notRun')}</p>
       )}
       {error && <p className="error">{error}</p>}
       {report && (
         <>
           <p className="muted">
-            Checked {formatTime(report.checked_at)} ·{' '}
+            {t('diagnostics.checked', { time: formatTime(report.checked_at) })} ·{' '}
             {STATUS_COUNT_ORDER.filter((s) => counts[s])
-              .map((s) => `${counts[s]} ${STATUS_LABELS[s]}`)
+              .map((s) => `${counts[s]} ${STATUS_KEY[s] ? t(STATUS_KEY[s]) : s}`)
               .join(' · ')}
           </p>
           {LAYER_ORDER.map((layer) => {
@@ -86,13 +91,13 @@ export function DiagnosticsSection({ networkId }: { networkId: string }) {
             if (items.length === 0) return null;
             return (
               <div key={layer} className="diag-layer">
-                <h4>{LAYER_LABELS[layer] ?? layer}</h4>
+                <h4>{LAYER_KEY[layer] ? t(LAYER_KEY[layer]) : layer}</h4>
                 <ul className="diag-list">
                   {items.map((c) => (
                     <li key={c.id}>
-                      <span className={`diag diag-${c.status}`}>
-                        {STATUS_LABELS[c.status] ?? c.status}
-                      </span>{' '}
+                      <Tag color={tagColor(c.status)}>
+                        {STATUS_KEY[c.status] ? t(STATUS_KEY[c.status]) : c.status}
+                      </Tag>{' '}
                       <strong>{c.name}</strong>
                       <div className="muted">{c.detail}</div>
                       {c.suggestion && <div className="diag-suggestion">{c.suggestion}</div>}

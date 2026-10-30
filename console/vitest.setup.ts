@@ -16,3 +16,13 @@ Object.defineProperty(window, 'matchMedia', {
     dispatchEvent: vi.fn(),
   }),
 });
+
+// antd Select / Tooltip use @rc-component/resize-observer, which needs
+// ResizeObserver — jsdom does not implement it. Polyfill with a no-op.
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+globalThis.ResizeObserver =
+  globalThis.ResizeObserver ?? (ResizeObserverStub as unknown as typeof ResizeObserver);

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { Button, Popconfirm } from 'antd';
+import { useLanguage } from '../../i18n/language-context';
 
-/** Two-step inline delete confirm — shared by the publish tables. */
+/** Two-step delete confirm (antd Popconfirm) — shared by the publish tables. */
 export function DeleteButton({
   busy,
   onDelete,
@@ -8,29 +9,20 @@ export function DeleteButton({
   busy: boolean;
   onDelete: () => Promise<void>;
 }) {
-  const [confirming, setConfirming] = useState(false);
-  if (!confirming) {
-    return (
-      <button type="button" className="link" onClick={() => setConfirming(true)}>
-        Delete
-      </button>
-    );
-  }
+  const { t } = useLanguage();
   return (
-    <>
-      <button
-        type="button"
-        className="danger"
-        disabled={busy}
-        onClick={() => {
-          onDelete().then(() => setConfirming(false));
-        }}
-      >
-        Confirm delete
-      </button>{' '}
-      <button type="button" className="link" onClick={() => setConfirming(false)}>
-        Cancel
-      </button>
-    </>
+    <Popconfirm
+      title={t('delete.title')}
+      okText={t('delete.confirm')}
+      cancelText={t('delete.cancel')}
+      disabled={busy}
+      onConfirm={() => {
+        onDelete().catch(() => {});
+      }}
+    >
+      <Button size="small" type="link" danger>
+        {t('delete.label')}
+      </Button>
+    </Popconfirm>
   );
 }
