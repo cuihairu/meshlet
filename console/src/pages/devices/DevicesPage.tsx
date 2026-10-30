@@ -1,6 +1,8 @@
-import { AliasesSection, DevicesSection, HostForwardsSection } from '../../App';
 import { NoNetworkSelected } from '../../components/NoNetworkSelected';
 import { useNetwork } from '../../network-context';
+import { AliasesSection } from './AliasesSection';
+import { DevicesSection } from './DevicesSection';
+import { HostForwardsSection } from './HostForwardsSection';
 
 /** /devices — enrolled devices, alias mappings, host forwarding. */
 export function DevicesPage() {
