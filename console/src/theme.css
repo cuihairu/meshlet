@@ -49,3 +49,31 @@
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.35);
 }
+
+/* Light palette — same design direction, WCAG-compliant on light fills.
+   Applied via html[data-theme='light'] (set by ThemeProvider). */
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #ffffff;
+  --surface: #f8fafc;
+  --surface-2: #eef2f7;
+  --border: #cbd5e1;
+  --border-strong: #94a3b8;
+
+  --text: #1e293b;
+  --text-strong: #0f172a;
+  --muted-c: #475569;
+
+  --accent: #16a34a;
+  --accent-rgb: 22 163 74;
+  --accent-strong: #15803d;
+  --on-accent: #ffffff;
+  --info: #2563eb;
+  --warn: #b45309;
+  --danger: #dc2626;
+  --danger-strong: #dc2626;
+
+  --shadow-1: 0 1px 2px rgb(15 23 42 / 0.08);
+  --shadow-2: 0 8px 24px rgb(15 23 42 / 0.1);
+}

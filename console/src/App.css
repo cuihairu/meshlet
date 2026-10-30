@@ -22,7 +22,7 @@
 body {
   margin: 0;
   background:
-    radial-gradient(1200px 400px at 80% -10%, rgb(var(--accent-rgb) / 0.06), transparent 60%),
+    radial-gradient(1200px 400px at 80% -10%, rgb(var(--accent-rgb) / 0.04), transparent 60%),
     var(--bg);
   color: var(--text);
   font-family: var(--font);
@@ -86,7 +86,7 @@ a { color: var(--info); }
   height: 10px;
   border-radius: 3px;
   background: var(--accent);
-  box-shadow: 0 0 12px rgb(var(--accent-rgb) / 0.55);
+  box-shadow: 0 0 12px rgb(var(--accent-rgb) / 0.25);
 }
 
 .user {

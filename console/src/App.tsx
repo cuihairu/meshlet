@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react';
+import { ConfigProvider } from 'antd';
+import enUS from 'antd/locale/en_US';
+import zhCN from 'antd/locale/zh_CN';
 import {
   HashRouter,
   Navigate,
@@ -9,6 +12,11 @@ import {
 import { api, ApiError, type SessionUser } from './api';
 import { useNetwork } from './network-context';
 import { NetworkProvider } from './network-provider';
+import { useLanguage } from './i18n/language-context';
+import { LanguageSwitch } from './i18n/LanguageSwitch';
+import { useTheme } from './theme/theme-context';
+import { antdThemeConfig } from './theme/antd-theme';
+import { ThemeSwitch } from './theme/ThemeSwitch';
 import { AccessPage } from './pages/access/AccessPage';
 import { DevicesPage } from './pages/devices/DevicesPage';
 import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
@@ -23,6 +31,8 @@ type AuthState =
 
 function App() {
   const [auth, setAuth] = useState<AuthState>({ kind: 'checking' });
+  const { lang, t } = useLanguage();
+  const { theme } = useTheme();
 
   useEffect(() => {
     api
@@ -45,19 +55,24 @@ function App() {
   };
 
   return (
-    <HashRouter>
-      <div className="app">
-        {auth.kind === 'signed-in' && (
-          <NetworkProvider>
-            <ConsoleLayout user={auth.user} onLogout={onLogout} />
-          </NetworkProvider>
-        )}
-        <main>
-          {auth.kind === 'checking' && <p className="muted">Loading…</p>}
-          {auth.kind === 'signed-out' && <AuthGate onSignedIn={onSignedIn} />}
-        </main>
-      </div>
-    </HashRouter>
+    <ConfigProvider
+      locale={lang === 'zh' ? zhCN : enUS}
+      theme={antdThemeConfig(theme)}
+    >
+      <HashRouter>
+        <div className="app">
+          {auth.kind === 'signed-in' && (
+            <NetworkProvider>
+              <ConsoleLayout user={auth.user} onLogout={onLogout} />
+            </NetworkProvider>
+          )}
+          <main>
+            {auth.kind === 'checking' && <p className="muted">{t('app.loading')}</p>}
+            {auth.kind === 'signed-out' && <AuthGate onSignedIn={onSignedIn} />}
+          </main>
+        </div>
+      </HashRouter>
+    </ConfigProvider>
   );
 }
 
@@ -72,24 +87,27 @@ function ConsoleLayout({
   user: SessionUser;
   onLogout: () => void;
 }) {
+  const { t } = useLanguage();
   return (
     <>
       <header className="topbar">
         <span className="brand">meshlet</span>
         <NetworkSelector />
         <span className="user">
+          <LanguageSwitch />
+          <ThemeSwitch />
           {user.email}
           <button type="button" onClick={onLogout}>
-            Sign out
+            {t('shell.signOut')}
           </button>
         </span>
       </header>
       <main className="shell">
-        <nav className="sidenav" aria-label="console domains">
-          <NavLink to="/networks">Networks</NavLink>
-          <NavLink to="/access">Access</NavLink>
-          <NavLink to="/devices">Devices</NavLink>
-          <NavLink to="/diagnostics">Diagnostics</NavLink>
+        <nav className="sidenav" aria-label={t('shell.consoleDomains')}>
+          <NavLink to="/networks">{t('nav.networks')}</NavLink>
+          <NavLink to="/access">{t('nav.access')}</NavLink>
+          <NavLink to="/devices">{t('nav.devices')}</NavLink>
+          <NavLink to="/diagnostics">{t('nav.diagnostics')}</NavLink>
         </nav>
         <div className="page">
           <Routes>
@@ -108,6 +126,7 @@ function ConsoleLayout({
 /** Top-bar network picker — the selection is shared by every domain page. */
 function NetworkSelector() {
   const { networks, loading, selectedId, select } = useNetwork();
+  const { t } = useLanguage();
   return (
     <select
       className="network-picker"
@@ -117,7 +136,7 @@ function NetworkSelector() {
       disabled={loading || networks.length === 0}
     >
       <option value="" disabled>
-        {loading ? 'loading…' : 'select network'}
+        {loading ? t('shell.networkLoading') : t('shell.networkPlaceholder')}
       </option>
       {networks.map((n) => (
         <option key={n.id} value={n.id}>
@@ -134,6 +153,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { t } = useLanguage();
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -160,12 +180,12 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
 
   return (
     <form className="auth" onSubmit={submit}>
-      <h1>{mode === 'login' ? 'Sign in' : 'Create first admin'}</h1>
+      <h1>{mode === 'login' ? t('auth.signIn') : t('auth.createFirstAdmin')}</h1>
       {mode === 'bootstrap' && (
-        <p className="muted">No admin exists yet. This form is available only once.</p>
+        <p className="muted">{t('auth.noAdminHint')}</p>
       )}
       <label>
-        Email
+        {t('auth.email')}
         <input
           type="email"
           required
@@ -175,7 +195,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
         />
       </label>
       <label>
-        Password
+        {t('auth.password')}
         <input
           type="password"
           required
@@ -187,7 +207,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
       </label>
       {error && <p className="error">{error}</p>}
       <button type="submit" disabled={busy}>
-        {mode === 'login' ? 'Sign in' : 'Create admin'}
+        {mode === 'login' ? t('auth.signIn') : t('auth.createAdmin')}
       </button>
       <button
         type="button"
@@ -197,7 +217,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
           setError(null);
         }}
       >
-        {mode === 'login' ? 'First run? Create the first admin' : 'Back to sign in'}
+        {mode === 'login' ? t('auth.firstRun') : t('auth.backToSignIn')}
       </button>
     </form>
   );
