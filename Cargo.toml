@@ -33,6 +33,9 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs"] }
 http-body-util = "0.1"
 sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+data-encoding = "2"
 rand = "0.9"
 chrono = "0.4"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }

@@ -8,8 +8,15 @@ license.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 sha2 = { workspace = true }
+sha1 = { workspace = true }
+hmac = { workspace = true }
+data-encoding = { workspace = true }
 rand = { workspace = true }
+rand_core = { workspace = true }
 argon2 = { workspace = true }
 password-hash = { version = "0.5", features = ["getrandom"] }
 chrono = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+rqrr = { version = "0.11", default-features = false }

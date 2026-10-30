@@ -16,8 +16,10 @@ pub mod invites;
 pub mod ipam;
 pub mod peer_routes;
 pub mod presence;
+pub mod qr;
 pub mod segments;
 pub mod tokens;
+pub mod totp;
 
 pub use cidr::{CidrError, Ipv4Cidr};
 pub use config_state::{desired_config_hash, ConfigApplyBackend, ConfigLedger, LedgerError};
