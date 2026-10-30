@@ -31,6 +31,7 @@ pub struct WindowsNetworkBackend {
     interface: String,
     /// `wireguard.exe` 显式覆盖路径（`None` = 走环境变量/PATH 解析）。
     wireguard_exe_override: Option<PathBuf>,
+    hub_endpoint: Option<String>,
 }
 
 impl WindowsNetworkBackend {
@@ -38,6 +39,7 @@ impl WindowsNetworkBackend {
         Self {
             interface: "meshlet".to_string(),
             wireguard_exe_override: None,
+            hub_endpoint: None,
         }
     }
 
@@ -48,6 +50,11 @@ impl WindowsNetworkBackend {
 
     pub fn with_wireguard_exe(mut self, path: impl Into<PathBuf>) -> Self {
         self.wireguard_exe_override = Some(path.into());
+        self
+    }
+
+    pub fn with_hub_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.hub_endpoint = Some(endpoint.into());
         self
     }
 
@@ -181,7 +188,13 @@ impl WindowsNetworkBackend {
             address: plan.tunnel.address,
             address_prefix: plan.tunnel.address_prefix,
             listen_port: plan.tunnel.listen_port,
-            peers: plan.tunnel.peers.clone(),
+            peers: plan.tunnel.peers.iter().map(|p| {
+                let mut peer = p.clone();
+                if peer.endpoint.is_none() {
+                    peer.endpoint = self.hub_endpoint.clone();
+                }
+                peer
+            }).collect(),
             mtu: plan.tunnel.mtu,
             private_key,
         };

@@ -141,7 +141,7 @@ pub fn wireguard_exe(override_path: Option<&std::path::Path>) -> std::path::Path
 pub fn render_wireguard_conf(config: &TunnelConfig) -> String {
     let mut out = String::new();
     out.push_str("[Interface]\n");
-    out.push_str(&format!("Name = {}\n", config.name));
+    // WireGuard Windows derives tunnel name from the .conf filename.
     out.push_str(&format!(
         "Address = {}/{}\n",
         config.address, config.address_prefix
@@ -208,6 +208,14 @@ pub fn classify_wireguard_failure(
     if operation == "tunnel service uninstall" && absent {
         return Ok(());
     }
+    // 安装的幂等复乍成: 隧道已安裍且正在运行 = 期望状态，视为成功
+    if operation == "tunnel service install" {
+        let lowered = output.to_lowercase();
+        if lowered.contains("already installed") || lowered.contains("already running") {
+            return Ok(());
+        }
+    }
+
     // Stop 的目标状态是「已停止」：服务未运行（1062）＝目标已达成，同归
     // 幂等成功——卸载可从「建了服务但从未启动」的半状态重入。
     if operation == "tunnel service stop"
@@ -350,7 +358,7 @@ mod tests {
         assert_eq!(
             render_wireguard_conf(&tunnel()),
             "[Interface]\n\
-             Name = meshlet-overlay\n\
+             \
              Address = 10.240.0.7/32\n\
              ListenPort = 51820\n\
              MTU = 1420\n\
@@ -374,7 +382,7 @@ mod tests {
         assert!(!conf.contains("PrivateKey"));
         assert!(!conf.contains("CLIENT-PRIVATE-KEY-BASE64=="));
         // 其余字段不受影响。
-        assert!(conf.contains("Name = meshlet-overlay"));
+        // Name is derived from filename, not a conf key
         assert!(conf.contains("AllowedIPs = 10.240.0.1/32, 10.241.0.0/24"));
     }
 
@@ -414,7 +422,7 @@ mod tests {
         assert_eq!(
             render_wireguard_conf(&value),
             "[Interface]\n\
-             Name = meshlet-overlay\n\
+             \
              Address = 10.240.0.7/32\n\
              ListenPort = 51820\n\
              MTU = 1420\n\
