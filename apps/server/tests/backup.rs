@@ -365,7 +365,7 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
     // （路由 1 条、route_seq=1），不随活动库后续变更回写。
     let (tables, migrations, routes, seq) = inspect_backup(&backup_path).await;
     assert_eq!(tables, 25, "schema complete in backup");
-    assert_eq!(migrations, 13, "migrations 001-013 recorded in backup");
+    assert_eq!(migrations, 14, "migrations 001-014 recorded in backup");
     assert_eq!(routes, 1, "backup frozen at snapshot moment");
     assert_eq!(seq.as_deref(), Some("1"));
 
@@ -1052,6 +1052,16 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .execute(&pool)
         .await
         .unwrap();
+    // 014_user_totp：v8 快照没有这两列，恢复到 v8 必须回退到 v8 形状，
+    // 否则重跑 014 会撞「duplicate column」。
+    sqlx::query("ALTER TABLE users DROP COLUMN totp_enabled")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE users DROP COLUMN totp_secret")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 9")
         .execute(&pool)
         .await
@@ -1083,7 +1093,7 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
     let default_segments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments")
         .fetch_one(&pool)
         .await

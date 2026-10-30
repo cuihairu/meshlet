@@ -24,6 +24,11 @@ pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+/// 当前 Unix 时间戳（秒），供 TOTP 校验（RFC 6238 以 30s 步进计数器）。
+pub fn now_unix() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
 // ---------------------------------------------------------------------------
 // HTTP DTO
 // ---------------------------------------------------------------------------

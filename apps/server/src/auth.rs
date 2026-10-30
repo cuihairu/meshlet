@@ -24,6 +24,7 @@ use meshlet_domain::auth::{
     validate_email, validate_password, RateLimiter, Session, User, SESSION_COOKIE_NAME,
     SESSION_TTL_SECS,
 };
+use meshlet_domain::totp;
 use meshlet_domain::{generate_token, token_hash, Timestamp, UserId};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -172,6 +173,10 @@ pub struct UserRecord {
     pub id: UserId,
     pub email: String,
     pub password_hash: String,
+    /// TOTP base32 密钥；`None` = 未发起绑定。
+    pub totp_secret: Option<String>,
+    /// TOTP 已激活（登录需第二步校验）。
+    pub totp_enabled: bool,
 }
 
 impl AuthStore {
@@ -213,7 +218,7 @@ impl AuthStore {
     pub async fn find_user_by_email(&self, email: &str) -> Result<Option<UserRecord>, sqlx::Error> {
         Self::find_user_by(
             &self.pool,
-            "SELECT id, email, password_hash FROM users WHERE email = ?",
+            "SELECT id, email, password_hash, totp_secret, totp_enabled FROM users WHERE email = ?",
             email,
         )
         .await
@@ -222,7 +227,7 @@ impl AuthStore {
     pub async fn find_user_by_id(&self, id: &UserId) -> Result<Option<UserRecord>, sqlx::Error> {
         Self::find_user_by(
             &self.pool,
-            "SELECT id, email, password_hash FROM users WHERE id = ?",
+            "SELECT id, email, password_hash, totp_secret, totp_enabled FROM users WHERE id = ?",
             &id.0,
         )
         .await
@@ -233,15 +238,51 @@ impl AuthStore {
         sql: &'static str,
         key: &str,
     ) -> Result<Option<UserRecord>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String)>(sql)
+        let row = sqlx::query_as::<_, (String, String, String, Option<String>, i64)>(sql)
             .bind(key)
             .fetch_optional(pool)
             .await?;
-        Ok(row.map(|(id, email, password_hash)| UserRecord {
+        Ok(row.map(|(id, email, password_hash, totp_secret, totp_enabled)| UserRecord {
             id: UserId(id),
             email,
             password_hash,
+            totp_secret,
+            totp_enabled: totp_enabled != 0,
         }))
+    }
+
+    /// 管理员重置密码（离线维护 CLI；登录恒重读库，运行中生效）。
+    pub async fn set_password(&self, id: &UserId, new_hash: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+            .bind(new_hash)
+            .bind(&id.0)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 写入/清除 TOTP 密钥（`None` = 清除并关停）。
+    pub async fn set_totp_secret(
+        &self,
+        id: &UserId,
+        secret: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET totp_secret = ? WHERE id = ?")
+            .bind(secret)
+            .bind(&id.0)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 激活/关停 TOTP 登录第二步。
+    pub async fn set_totp_enabled(&self, id: &UserId, enabled: bool) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET totp_enabled = ? WHERE id = ?")
+            .bind(if enabled { 1i64 } else { 0i64 })
+            .bind(&id.0)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn insert_session(&self, session: &Session) -> Result<(), sqlx::Error> {
@@ -528,12 +569,43 @@ async fn record_audit(
 pub struct CredentialsRequest {
     pub email: String,
     pub password: String,
+    /// TOTP 验证码（第二步）。该用户已启用 2FA 时提供；未启用则忽略。
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SessionResponse {
     pub user_id: String,
     pub email: String,
+    /// 本次登录尚缺 TOTP 第二步（响应未种会话 Cookie；客户端应提示输入验证码）。
+    pub two_factor_required: bool,
+    /// 该用户已启用 TOTP（客户端据此决定是否显示绑定引导）。
+    pub two_factor_enabled: bool,
+}
+
+/// TOTP 绑定/激活/关停请求体。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TotpCodeRequest {
+    pub code: String,
+}
+
+/// `GET /api/v1/auth/2fa/status` 响应。
+#[derive(Debug, Serialize)]
+pub struct TotpStatusResponse {
+    /// 已激活（登录需第二步）。
+    pub enabled: bool,
+    /// 已生成密钥、待验证码激活（绑定引导进行中）。
+    pub pending: bool,
+}
+
+/// `POST /api/v1/auth/2fa/enroll` 响应。
+#[derive(Debug, Serialize)]
+pub struct TotpEnrollResponse {
+    /// 认证器扫码导入的 otpauth:// URI。仅此 URI 承载 base32 密钥——这是认证器
+    /// 导入的标准材料；响应不含密钥原文的其他表示形式。
+    pub otpauth_uri: String,
 }
 
 /// 建会话 + 种 Cookie。
@@ -610,6 +682,8 @@ pub async fn bootstrap_handler(
         Json(SessionResponse {
             user_id: user_id.0,
             email,
+            two_factor_required: false,
+            two_factor_enabled: false,
         }),
     )
         .into_response())
@@ -692,6 +766,51 @@ pub async fn login_handler(
         );
         return Err(AuthApiError::Unauthorized);
     }
+
+    // 第二步（TOTP）：已启用 2FA 时，缺码→提示补码（不种会话）；错码→401。
+    if record.totp_enabled {
+        let secret = record.totp_secret.clone().unwrap_or_default();
+        let provided = req.code.clone();
+        let now = service::now_unix() as u64;
+        let ok = provided
+            .as_deref()
+            .map(|c| totp::verify_code(&secret, c, now))
+            .unwrap_or(false);
+        if provided.is_none() {
+            // 客户端据此提示输入验证码；本响应不带 Set-Cookie。
+            return Ok((
+                StatusCode::OK,
+                Json(SessionResponse {
+                    user_id: user_id.0,
+                    email,
+                    two_factor_required: true,
+                    two_factor_enabled: true,
+                }),
+            )
+                .into_response());
+        }
+        if !ok {
+            record_audit(
+                &state,
+                None,
+                "user.login_failed",
+                None,
+                Some(serde_json::json!({ "email": email, "reason": "bad_totp_code" })),
+            )
+            .await?;
+            crate::op_log!(
+                warn,
+                "auth",
+                "login",
+                crate::telemetry::NOT_APPLICABLE,
+                crate::telemetry::NOT_APPLICABLE,
+                crate::telemetry::NOT_APPLICABLE,
+                crate::telemetry::ErrorCategory::Unauthorized.as_str(),
+                crate::telemetry::RESULT_ERROR
+            );
+            return Err(AuthApiError::Unauthorized);
+        }
+    }
     state.login_limiter.reset(&key);
 
     let headers = open_session(&state, &user_id).await?;
@@ -719,9 +838,146 @@ pub async fn login_handler(
         Json(SessionResponse {
             user_id: user_id.0,
             email,
+            two_factor_required: false,
+            two_factor_enabled: record.totp_enabled,
         }),
     )
         .into_response())
+}
+
+/// `GET /api/v1/auth/2fa/status`：当前用户的 TOTP 绑定状态。
+pub async fn two_factor_status_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+) -> Result<Json<TotpStatusResponse>, AuthApiError> {
+    let record = state
+        .auth
+        .find_user_by_id(&user_id)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?
+        .ok_or(AuthApiError::Unauthorized)?;
+    Ok(Json(TotpStatusResponse {
+        enabled: record.totp_enabled,
+        pending: record.totp_secret.is_some() && !record.totp_enabled,
+    }))
+}
+
+/// `POST /api/v1/auth/2fa/enroll`：生成新 TOTP 密钥（服务端持有，待激活），
+/// 返回扫码导入 URI。已激活则先关停旧绑定再重建（重新绑定）。
+pub async fn two_factor_enroll_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+) -> Result<Json<TotpEnrollResponse>, AuthApiError> {
+    let record = state
+        .auth
+        .find_user_by_id(&user_id)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?
+        .ok_or(AuthApiError::Unauthorized)?;
+    let secret = totp::generate_secret();
+    state
+        .auth
+        .set_totp_secret(&user_id, Some(&secret))
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?;
+    state
+        .auth
+        .set_totp_enabled(&user_id, false)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?;
+    let uri = totp::otpauth_uri(totp::OTPAUTH_ISSUER, &record.email, &secret);
+    record_audit(
+        &state,
+        Some(&user_id.0),
+        "user.totp_enroll",
+        Some(&user_id.0),
+        None,
+    )
+    .await?;
+    Ok(Json(TotpEnrollResponse { otpauth_uri: uri }))
+}
+
+/// `POST /api/v1/auth/2fa/activate`：以验证码确认并激活 TOTP（绑定引导收尾）。
+pub async fn two_factor_activate_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    Json(req): Json<TotpCodeRequest>,
+) -> Result<Json<TotpStatusResponse>, AuthApiError> {
+    let record = state
+        .auth
+        .find_user_by_id(&user_id)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?
+        .ok_or(AuthApiError::Unauthorized)?;
+    let secret = record
+        .totp_secret
+        .as_deref()
+        .ok_or_else(|| AuthApiError::InvalidInput("no pending totp secret; enroll first".into()))?;
+    let now = service::now_unix() as u64;
+    if !totp::verify_code(secret, &req.code, now) {
+        return Err(AuthApiError::InvalidInput("totp code mismatch".into()));
+    }
+    state
+        .auth
+        .set_totp_enabled(&user_id, true)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?;
+    record_audit(
+        &state,
+        Some(&user_id.0),
+        "user.totp_activate",
+        Some(&user_id.0),
+        None,
+    )
+    .await?;
+    Ok(Json(TotpStatusResponse {
+        enabled: true,
+        pending: false,
+    }))
+}
+
+/// `POST /api/v1/auth/2fa/disable`：以验证码确认后关停并清除 TOTP 绑定。
+pub async fn two_factor_disable_handler(
+    State(state): State<SharedAppState>,
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    Json(req): Json<TotpCodeRequest>,
+) -> Result<Json<TotpStatusResponse>, AuthApiError> {
+    let record = state
+        .auth
+        .find_user_by_id(&user_id)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?
+        .ok_or(AuthApiError::Unauthorized)?;
+    let secret = record
+        .totp_secret
+        .as_deref()
+        .ok_or_else(|| AuthApiError::InvalidInput("no totp binding to disable".into()))?;
+    let now = service::now_unix() as u64;
+    if !totp::verify_code(secret, &req.code, now) {
+        return Err(AuthApiError::InvalidInput("totp code mismatch".into()));
+    }
+    state
+        .auth
+        .set_totp_secret(&user_id, None)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?;
+    state
+        .auth
+        .set_totp_enabled(&user_id, false)
+        .await
+        .map_err(|e| AuthApiError::Internal(e.to_string()))?;
+    record_audit(
+        &state,
+        Some(&user_id.0),
+        "user.totp_disable",
+        Some(&user_id.0),
+        None,
+    )
+    .await?;
+    Ok(Json(TotpStatusResponse {
+        enabled: false,
+        pending: false,
+    }))
 }
 
 /// `POST /api/v1/auth/logout`：撤销会话并清 Cookie。
@@ -785,5 +1041,7 @@ pub async fn me_handler(
     Ok(Json(SessionResponse {
         user_id: record.id.0,
         email: record.email,
+        two_factor_required: false,
+        two_factor_enabled: record.totp_enabled,
     }))
 }

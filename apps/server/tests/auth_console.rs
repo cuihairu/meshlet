@@ -495,3 +495,153 @@ async fn concurrent_bootstrap_has_exactly_one_admin_session() {
         "bootstrap must issue only one administrator session"
     );
 }
+
+/// 从 otpauth:// URI 提取 base32 密钥（扫码导入材料的唯一承载；服务端
+/// 任何出站响应不含密钥原文的其他形式）。
+fn secret_from_uri(uri: &str) -> String {
+    let after = uri.split("secret=").nth(1).expect("secret param");
+    let secret = after.split('&').next().unwrap();
+    assert_eq!(secret.len(), 32, "base32 secret is 32 chars");
+    secret.to_string()
+}
+
+fn totp_now() -> u64 {
+    chrono::Utc::now().timestamp().max(0) as u64
+}
+
+#[tokio::test]
+async fn totp_enroll_activate_then_login_requires_code() {
+    let ctx = ctx().await;
+    let (_st, _body, cookie) = bootstrap(&ctx).await;
+
+    // 初始：未绑定。
+    let (st, status) = get_json(&ctx, "/api/v1/auth/2fa/status", Some(&cookie)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["pending"], false);
+
+    // enroll：生成密钥 + 返回 otpauth URI（无明文密钥原文）。
+    let (st, body, _c) = post_json(
+        &ctx,
+        "/api/v1/auth/2fa/enroll",
+        serde_json::json!({}),
+        Some(&cookie),
+        true,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let uri = body["otpauth_uri"].as_str().expect("otpauth_uri").to_string();
+    assert!(uri.starts_with("otpauth://totp/"), "{uri}");
+    assert!(uri.contains("secret="), "{uri}");
+    assert!(!uri.contains("P@ssw0rd"), "no plaintext password in uri");
+    let secret = secret_from_uri(&uri);
+
+    // 待激活状态。
+    let (st, status) = get_json(&ctx, "/api/v1/auth/2fa/status", Some(&cookie)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(status["enabled"], false);
+    assert_eq!(status["pending"], true);
+
+    // 激活：正确码。
+    let code = meshlet_domain::totp::code_at(&secret, totp_now()).expect("code");
+    let (st, body, _c) = post_json(
+        &ctx,
+        "/api/v1/auth/2fa/activate",
+        serde_json::json!({ "code": code }),
+        Some(&cookie),
+        true,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["enabled"], true);
+
+    // 错码激活被拒（重新 enroll 后再试错码）。
+    let (_st, _b, _c) = post_json(
+        &ctx,
+        "/api/v1/auth/2fa/enroll",
+        serde_json::json!({}),
+        Some(&cookie),
+        true,
+    )
+    .await;
+    let (st, _b, _c) = post_json(
+        &ctx,
+        "/api/v1/auth/2fa/activate",
+        serde_json::json!({ "code": "000000" }),
+        Some(&cookie),
+        true,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    // 重新激活（正确码）。
+    let secret2 = {
+        let (_st, b, _c) = post_json(
+            &ctx,
+            "/api/v1/auth/2fa/enroll",
+            serde_json::json!({}),
+            Some(&cookie),
+            true,
+        )
+        .await;
+        secret_from_uri(b["otpauth_uri"].as_str().unwrap())
+    };
+    let code2 = meshlet_domain::totp::code_at(&secret2, totp_now()).expect("code2");
+    let (st, _b, _c) = post_json(
+        &ctx,
+        "/api/v1/auth/2fa/activate",
+        serde_json::json!({ "code": code2 }),
+        Some(&cookie),
+        true,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    // 登出后：登录缺码 → 提示第二步，不种会话。
+    let (_st, _b, _c) = post_json(
+        &ctx,
+        "/api/v1/auth/logout",
+        serde_json::json!({}),
+        Some(&cookie),
+        true,
+    )
+    .await;
+    let (st, body, cookie2) = post_json(
+        &ctx,
+        "/api/v1/auth/login",
+        serde_json::json!({ "email": EMAIL, "password": PASSWORD }),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["two_factor_required"], true, "{body}");
+    assert_eq!(body["two_factor_enabled"], true, "{body}");
+    assert!(cookie2.is_none(), "no session cookie before 2fa step");
+
+    // 错码 → 401。
+    let (st, _b, _c) = post_json(
+        &ctx,
+        "/api/v1/auth/login",
+        serde_json::json!({ "email": EMAIL, "password": PASSWORD, "code": "000000" }),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    // 正确码 → 200 + 会话 Cookie。
+    let code3 = meshlet_domain::totp::code_at(&secret2, totp_now()).expect("code3");
+    let (st, body, cookie3) = post_json(
+        &ctx,
+        "/api/v1/auth/login",
+        serde_json::json!({ "email": EMAIL, "password": PASSWORD, "code": code3 }),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["email"], EMAIL);
+    assert_eq!(body["two_factor_required"], false, "{body}");
+    assert_eq!(body["two_factor_enabled"], true, "{body}");
+    assert!(cookie3.is_some(), "session issued after 2fa step");
+}

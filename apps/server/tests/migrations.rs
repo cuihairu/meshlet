@@ -355,6 +355,16 @@ async fn devices_carry_presence_evidence_timestamps() {
 }
 
 #[tokio::test]
+async fn users_carry_totp_columns() {
+    // 014_user_totp：`users.totp_secret`（base32，服务端唯一持有）与
+    // `users.totp_enabled`（0/1，激活后登录需第二步）。
+    let pool = db().await;
+    let cols = columns(&pool, "users").await;
+    assert!(cols.contains(&"totp_secret".to_string()), "{cols:?}");
+    assert!(cols.contains(&"totp_enabled".to_string()), "{cols:?}");
+}
+
+#[tokio::test]
 async fn migrations_are_idempotent_across_reopens() {
     // 迁移必须可重复应用（重启不破坏库）。
     let pool = db().await;

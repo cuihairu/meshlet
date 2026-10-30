@@ -1,6 +1,6 @@
 # migrations
 
-SQLx migrations 落库目录。当前版本：`013_publish_tls_passthrough.sql`。
+SQLx migrations 落库目录。当前版本：`014_user_totp.sql`。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -17,6 +17,7 @@ SQLx migrations 落库目录。当前版本：`013_publish_tls_passthrough.sql`�
 | 011_segment_defaults | 补齐缺失默认段并回填全部设备；默认段 ID 统一为 `seg-<network_id>` |
 | 012_publish | R-06 服务发布：`publish_forwards`、`publish_http_routes`、`publish_probes`、`publish_dns_records`（四类期望配置对象）+ `publish_probe_reports`（探针健康镜像，每探针一条） |
 | 013_publish_tls_passthrough | M1 更名：`publish_http_routes.tls_termination` → `tls_passthrough`（该列从来是 SNI 嗅探 + 字节直通，不做 TLS 终结；仅改列名，语义与取值不变） |
+| 014_user_totp | 控制台 TOTP 二次认证：`users` 增 `totp_secret`（base32，服务端唯一持有）与 `totp_enabled`（0/1，激活后登录需第二步） |
 
 ## 应用方式
 
