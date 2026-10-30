@@ -23,9 +23,26 @@ jobs:
       - run: cargo test --locked --workspace
       - name: Validate installer
         run: |
-          bash -n scripts/install.sh scripts/package-release.sh
+          bash -n scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh
           scripts/install.sh --help
-          shellcheck scripts/install.sh scripts/package-release.sh
+          shellcheck scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh
+          if command -v pwsh >/dev/null; then
+            # shellcheck disable=SC2016  # $f/$_ are PowerShell variables, not shell
+            pwsh -NoProfile -Command '
+              foreach ($f in "scripts/install.ps1", "scripts/package-windows-zip.ps1") {
+                $errors = $null
+                [void][System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $f), [ref]$null, [ref]$errors)
+                if ($errors) {
+                  $errors | ForEach-Object { Write-Error "$f : $($_.Message)" }
+                  exit 1
+                }
+              }
+              Write-Output "PowerShell scripts parse OK"
+            '
+          else
+            echo "pwsh not available on this runner; skipping PowerShell parse check"
+          fi
   dataplane:
     uses: ./.github/workflows/dataplane.yml
   console:
@@ -48,6 +65,29 @@ jobs:
         with:
           name: nightly-console
           path: console/dist/
+  windows:
+    needs: [checks, dataplane]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # Keep the channel in sync with rust-toolchain.toml (see the build job).
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          targets: x86_64-pc-windows-msvc
+          profile: minimal
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: nightly-windows-msvc
+      - name: Build Windows agent and cli
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin meshlet-agent --bin meshlet-cli
+      - name: Package Windows zip
+        shell: pwsh
+        run: scripts/package-windows-zip.ps1 -Target x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: nightly-windows
+          path: dist/meshlet-nightly-windows-x86_64.zip
   build:
     needs: [checks, dataplane, console]
     strategy:
@@ -57,9 +97,13 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             arch: x86_64
+            deb_arch: amd64
+            rpm_arch: x86_64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             arch: aarch64
+            deb_arch: arm64
+            rpm_arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -90,13 +134,19 @@ jobs:
         run: cargo build --locked --release --target '${{ matrix.target }}' --bin meshlet-server --bin meshlet-agent --bin meshlet-cli
       - name: Package binaries, console and systemd units
         run: scripts/package-release.sh '${{ matrix.target }}' '${{ matrix.arch }}'
+      # Component-split .deb/.rpm (meshlet-server / meshlet-agent / meshlet-cli)
+      # built with dpkg-deb and rpmbuild; the rpm package provides rpmbuild.
+      - name: Build deb and rpm packages
+        run: |
+          sudo apt-get update && sudo apt-get install -y rpm
+          scripts/package-deb-rpm.sh '${{ matrix.target }}' '${{ matrix.deb_arch }}' '${{ matrix.rpm_arch }}'
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: nightly-binary-${{ matrix.arch }}
-          path: dist/*.tar.gz
+          path: dist/*
   publish:
     if: github.ref == 'refs/heads/main'
-    needs: [build]
+    needs: [build, windows]
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     permissions:
       contents: write
@@ -106,7 +156,9 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: nightly-binary-*
+          pattern: |
+            nightly-binary-*
+            nightly-windows
           merge-multiple: true
           path: dist/
       - name: Publish rolling nightly release (single release)
@@ -114,19 +166,22 @@ jobs:
         run: |
           set -euo pipefail
           cp scripts/install.sh dist/install.sh
+          cp scripts/install.ps1 dist/install.ps1
           cd dist
-          sha256sum meshlet-linux-*.tar.gz install.sh > SHA256SUMS
+          sha256sum meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip install.sh install.ps1 > SHA256SUMS
                     cat > notes.md <<NOTES
           Automated prerelease from commit ${GITHUB_SHA}.
-          Linux x86_64 and ARM64 static binaries, web console and systemd units are included.
-          SHA256SUMS verifies the downloaded archive. BUILD_INFO inside each archive records the source commit.
+          Linux x86_64 and ARM64 static binaries, web console, systemd units, and per-component deb/rpm packages
+          (meshlet-server / meshlet-agent / meshlet-cli) are included, plus a Windows agent+CLI zip and
+          install.ps1 / install.sh one-command installers.
+          SHA256SUMS verifies the downloaded assets. BUILD_INFO inside each archive records the source commit.
           This build passed the workspace checks and required Linux kernel dataplane tests.
           The nightly tag tracks the most recent successful build.
           NOTES
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true
-            gh release upload nightly meshlet-linux-*.tar.gz install.sh SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit nightly --repo "$GITHUB_REPOSITORY" --prerelease --title 'Nightly' --notes-file notes.md
           else
-            gh release create nightly meshlet-linux-*.tar.gz install.sh SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
+            gh release create nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
           fi

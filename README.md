@@ -17,12 +17,13 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > isolation, device apply receipts, hub recovery, last-good-plan rollback, Direct LAN SNAT and
 > service permissions, with local Linux kernel and unprivileged service regression evidence.
 > Windows backend modules are implemented and real-machine verified for routes, firewall, service
-> control and uninstall cleanup; the agent's live data-plane wiring, installer package and tray host
+> control and uninstall cleanup; a Windows agent+CLI zip and `install.ps1` now ship in the nightly
+> release, while the agent's live data-plane wiring, tray host and real-machine installer acceptance
 > remain pending (R-05). Long-run soak acceptance also remains pending. See [TODO](todo.md).
 
 ## Nightly builds and one-command installation
 
-The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly) and an immutable dated release. Packages include the server, agent, CLI, web console and systemd units for Linux x86_64 and ARM64.
+The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly) and an immutable dated release. The release carries Linux x86_64 / ARM64 static tar archives, per-component `deb` and `rpm` packages (`meshlet-server` / `meshlet-agent` / `meshlet-cli`), a Windows agent+CLI zip, and the `install.sh` / `install.ps1` installers.
 **Install the server on your VPS:**
 
 ```bash
@@ -59,7 +60,24 @@ journalctl -u meshlet-server -n 100 --no-pager
 cat /usr/local/share/meshlet/server-build-info
 ```
 
-The workflow must be merged into the default branch and run successfully once before download assets exist. This installer requires Linux with systemd; the [Windows support](#windows-support) section below covers the Windows story. See the [installation guide](docs/guide/install.md) for configuration details.
+**Install from Linux packages (deb / rpm):**
+
+The nightly release also publishes component-split packages for both architectures — `meshlet-server` (server binary, systemd unit, web console, example config), `meshlet-agent` (agent binary, systemd unit, example config) and `meshlet-cli` (standalone CLI):
+
+```bash
+# Debian / Ubuntu (replace amd64 with arm64 on ARM)
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0~nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0~nightly_amd64.deb
+sudo apt install ./meshlet-server_0.0.0~nightly_amd64.deb ./meshlet-agent_0.0.0~nightly_amd64.deb
+
+# Fedora / RHEL (replace x86_64 with aarch64 on ARM)
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0~nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0~nightly-1.x86_64.rpm
+```
+
+Packages create the service account and state directory, but deliberately do not generate live configuration (it is machine-specific and contains keys and tokens): copy `/etc/meshlet/*.toml.example`, fill it in, generate the key (`wg genkey > /etc/meshlet/hub.key` for the server), then `sudo systemctl enable --now meshlet-server` (or `meshlet-agent`). For a guided first install use `install.sh` above.
+
+The workflow must be merged into the default branch and run successfully once before download assets exist. `install.sh` requires Linux with systemd; Windows agents install with `install.ps1` from the [Windows support](#windows-support) section below. See the [installation guide](docs/guide/install.md) for configuration details.
 
 ## Windows support
 
@@ -83,14 +101,35 @@ Windows is a data-plane target gated behind real-machine acceptance
   `unsupported` placeholder until the tunnel lifecycle, elevation exec and boot-recovery items pass
   real-machine acceptance. A Windows agent registers and reports status, but applying a
   tunnel/routes/NAT plan is rejected with an explicit error — nothing pretends to succeed.
-- **No installer package.** Nightly publishes Linux x86_64 / ARM64 binaries only; there is no MSI
-  or zip for Windows yet, and no workflow produces `meshlet-agent.exe`.
+- **No MSI, and real-machine install acceptance is pending.** The nightly release publishes a
+  Windows agent+CLI zip (`meshlet-nightly-windows-x86_64.zip`) and an `install.ps1` installer
+  ([install below](#install-the-agent-on-windows)); there is no MSI, and the installer has not yet
+  been accepted on a real machine (AGENT-WIN-2).
 - **No tray icon.** The agent writes four-state status PNGs (`TraySink`); a desktop shell must
   host them. Linux panels have hosts; Windows has none yet.
 
+### Install the agent on Windows
+
+The nightly release publishes a Windows agent+CLI zip and `install.ps1`. Install (PowerShell, no
+elevation needed — the agent runs in the user session, not as a machine service):
+
+```powershell
+Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/install.ps1 -OutFile install.ps1
+pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken 'TOKEN_FROM_THE_CONSOLE' -DeviceName 'home-windows'
+```
+
+The installer verifies the zip's SHA-256 against the release `SHA256SUMS`, installs
+`meshlet-agent.exe` / `meshlet-cli.exe` into `%LOCALAPPDATA%\meshlet`, adds that directory to the
+user PATH, generates an agent key and config once, and registers a hidden HKCU Run autostart entry.
+Re-run it to upgrade — the existing `agent.toml` and key are preserved, so device credentials
+survive. Offline/staged installs use `$env:MESHLET_INSTALL_ARCHIVE` and
+`$env:MESHLET_INSTALL_SHA256SUMS`. The current build is a **background agent without a tray icon**
+(tray host is pending work), and data-plane apply on Windows is still rejected until real-machine
+acceptance passes — see below.
+
 ### Build and run the agent on Windows (from source)
 
-There is no Windows download yet — build from source on the Windows machine itself. Cross-building
+Prefer the installer above; build from source only when you want a local build. Cross-building
 from Linux to `x86_64-pc-windows-msvc` is check/clippy level only; native builds on Windows (MSVC,
 the CI toolchain) are the supported path. Requires Rust (stable) and Git:
 
@@ -128,8 +167,8 @@ Approve the device in the console, then apply the network's current revision. **
 Windows is currently rejected** (backend placeholder) until R-05 acceptance; the control plane
 (registration, heartbeats, status) works. A machine that only has the
 `WireGuardTunnel$…` service (e.g. set up by hand) does **not** have the agent running — check for
-`meshlet-agent.exe` in the process list. The installer package and tray host are tracked as pending
-work — see [TODO](todo.md).
+`meshlet-agent.exe` in the process list. Real-machine installer acceptance and the tray host are
+tracked as pending work — see [TODO](todo.md).
 
 ## What it is
 
