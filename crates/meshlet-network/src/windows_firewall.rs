@@ -61,6 +61,12 @@ pub enum FirewallProtocol {
     Any,
     Tcp,
     Udp,
+    /// ICMPv4 回显（echo request，type 8 / any code）：mesh 邻居可达性探测
+    /// 依赖它——Windows 把 wg 接口判为 Public 档后默认挡 ICMP（2026-10-30
+    /// 实战 dev→win 不通，手工建 Meshlet-ICMPv4-In 才通）。netsh 用
+    /// `protocol=icmpv4:8,any` 表达；ICMP 无端口，[FirewallRule] 的端口词元
+    /// 对 [FirewallProtocol::IcmpV4] 省略。
+    IcmpV4,
 }
 
 impl FirewallProtocol {
@@ -69,6 +75,7 @@ impl FirewallProtocol {
             FirewallProtocol::Any => "any",
             FirewallProtocol::Tcp => "tcp",
             FirewallProtocol::Udp => "udp",
+            FirewallProtocol::IcmpV4 => "icmpv4:8,any",
         }
     }
 }
@@ -106,6 +113,10 @@ pub struct FirewallRule {
     pub profiles: Option<Vec<FirewallProfile>>,
     /// netsh `description=`；规则计划可空，省略该参数。
     pub description: Option<String>,
+    /// netsh `localip=`；mesh 可达性规则用它把放行**限定到 wg 接口地址**
+    /// （netsh 无按接口限定能力，`localip=<设备 overlay 地址>` 是等价且有
+    /// 安全边界的做法：只有发往该 mesh 地址的包才匹配）。`None` = 省略。
+    pub local_ip: Option<std::net::Ipv4Addr>,
 }
 
 /// 一条受控 netsh 防火墙命令（计划态；执行见 [exec]）。
@@ -127,12 +138,19 @@ impl FirewallRuleCommand {
                 args.push(format!("dir={}", rule.direction.as_str()));
                 args.push(format!("action={}", rule.action.as_str()));
                 args.push(format!("protocol={}", rule.protocol.as_str()));
-                args.push(named_value("localport", &rule.local_port));
-                args.push(named_value("remoteport", &rule.remote_port));
+                // ICMPv4 无端口概念：对 `icmpv4:8,any` 省略 localport/remoteport
+                // （netsh 不接受 ICMP 协议带端口词元）。
+                if !matches!(rule.protocol, FirewallProtocol::IcmpV4) {
+                    args.push(named_value("localport", &rule.local_port));
+                    args.push(named_value("remoteport", &rule.remote_port));
+                }
                 args.push(format!(
                     "profile={}",
                     render_profiles(rule.profiles.as_deref())
                 ));
+                if let Some(local_ip) = rule.local_ip {
+                    args.push(format!("localip={local_ip}"));
+                }
                 if let Some(description) = &rule.description {
                     args.push(named_value("description", description));
                 }
@@ -164,6 +182,134 @@ impl FirewallRuleCommand {
     pub fn is_delete(&self) -> bool {
         matches!(self, FirewallRuleCommand::Delete { .. })
     }
+}
+
+/// mesh 可达性保障命令（AGENT-FW-1）。
+///
+/// 背景（2026-10-30 实战）：Windows 把 wg 接口判为 **Public** 档，其默认
+/// 入站策略挡 ICMP——dev→win 的 wg 隧道握手正常但 ping 不通，手工建
+/// `Meshlet-ICMPv4-In` 规则才通。根因修复 = 把接口连接档位设为 **Private**
+/// （Private 档默认放行 ICMP）+ 显式入站 ICMPv4 放行规则作双保险。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeshFirewallCommand {
+    /// `Set-NetConnectionProfile -InterfaceAlias <if> -NetworkCategory Private`。
+    ///
+    /// 用 PowerShell 而非 netsh：NetworkCategory 是**连接档位**属性，netsh 无
+    /// 对应子命令；set 语义天然幂等（已是 Private 再设仍成功）。
+    SetNetworkCategoryPrivate { interface: String },
+    /// `netsh advfirewall firewall add rule`：`Meshlet-ICMPv4-In` 入站 ICMP 放行，
+    /// 限定设备 overlay 地址（见 [mesh_icmp_rule]）；幂等由调用方先探
+    /// [firewall_rule_present] 再决定是否下发。
+    AddIcmpRule { rule: FirewallRule },
+}
+
+impl MeshFirewallCommand {
+    /// 构造档位命令并校验接口名（拒绝引号/空白，防 `-Command` 注入）。
+    pub fn set_network_category_private(interface: &str) -> Result<Self, NetworkError> {
+        validate_tunnel_interface(interface)?;
+        Ok(Self::SetNetworkCategoryPrivate {
+            interface: interface.into(),
+        })
+    }
+
+    /// argv（不含程序名）：档位命令走 `powershell`，ICMP 规则走 `netsh`。
+    pub fn args(&self) -> Vec<String> {
+        match self {
+            Self::SetNetworkCategoryPrivate { interface } => vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                format!(
+                    "Set-NetConnectionProfile -InterfaceAlias '{interface}' \
+                     -NetworkCategory Private"
+                ),
+            ],
+            Self::AddIcmpRule { rule } => FirewallRuleCommand::Add { rule: rule.clone() }.args(),
+        }
+    }
+
+    pub fn operation(&self) -> &'static str {
+        match self {
+            Self::SetNetworkCategoryPrivate { .. } => "network category set private",
+            Self::AddIcmpRule { .. } => "firewall rule add",
+        }
+    }
+
+    /// 该命令是否走 netsh（否则走 PowerShell）。
+    pub fn uses_netsh(&self) -> bool {
+        matches!(self, Self::AddIcmpRule { .. })
+    }
+}
+
+/// 受管隧道接口名校验：Windows 隧道名（`wg-meshlet`）字符集，拒绝引号与
+/// 空白——接口名会进入 PowerShell 单引号字符串，防注入。
+fn validate_tunnel_interface(interface: &str) -> Result<(), NetworkError> {
+    if interface.is_empty()
+        || !interface
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_' || c == b'.')
+    {
+        return Err(NetworkError::ApplyRejected(
+            "invalid tunnel interface name".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// mesh 入站 ICMP 放行规则（`Meshlet-ICMPv4-In`）：inbound / allow /
+/// `icmpv4:8,any`，`localip` 限定到设备 overlay 地址——netsh 无按接口限定，
+/// `localip=<设备地址>` 等价且带安全边界（只匹配发往该 mesh 地址的包）。
+pub fn mesh_icmp_rule(device_addr: std::net::Ipv4Addr) -> FirewallRule {
+    FirewallRule {
+        name: "Meshlet-ICMPv4-In".into(),
+        direction: FirewallDirection::Inbound,
+        action: FirewallAction::Allow,
+        protocol: FirewallProtocol::IcmpV4,
+        local_port: "any".into(),
+        remote_port: "any".into(),
+        profiles: None, // any：Private 档为主修复，本规则作双保险，不绑档位
+        description: Some(
+            "meshlet mesh reachability: inbound ICMP echo to the wg interface".into(),
+        ),
+        local_ip: Some(device_addr),
+    }
+}
+
+/// 纯规划（AGENT-FW-1，跨平台单测）：给定档位与规则现状，产出保障命令。
+///
+/// 调用方先探测 `category_is_private` 与 `icmp_rule_present`，本函数只做
+/// 决定论映射——全幂等（现状已满足 → 空计划）。
+pub fn mesh_reachability_commands(
+    interface: &str,
+    device_addr: std::net::Ipv4Addr,
+    category_is_private: bool,
+    icmp_rule_present: bool,
+) -> Result<Vec<MeshFirewallCommand>, NetworkError> {
+    validate_tunnel_interface(interface)?;
+    let mut commands = Vec::new();
+    if !category_is_private {
+        commands.push(MeshFirewallCommand::set_network_category_private(
+            interface,
+        )?);
+    }
+    if !icmp_rule_present {
+        commands.push(MeshFirewallCommand::AddIcmpRule {
+            rule: mesh_icmp_rule(device_addr),
+        });
+    }
+    Ok(commands)
+}
+
+/// 判断 `netsh advfirewall firewall show rule name=<name>` 输出表示规则存在。
+/// 缺失时报「没有与指定标准相匹配的规则。」（zh-CN 真机取证）/ 英文等价
+/// 文案——复用 [firewall_rule_already_absent] 判定缺位。
+pub fn firewall_rule_present(output: &str) -> bool {
+    !output.trim().is_empty() && !firewall_rule_already_absent(output)
+}
+
+/// 判断 `Get-NetConnectionProfile` 输出表示连接档位已是 Private。
+pub fn net_category_is_private(output: &str) -> bool {
+    output.to_lowercase().contains("private")
 }
 
 /// `key=value` 形式的 netsh 命名参数，**整个键值对是单个 argv 词元**，不内嵌
@@ -298,6 +444,45 @@ pub mod exec {
         )?;
         Ok(ApplyResult::ok())
     }
+
+    /// 执行一条 mesh 可达性命令（AGENT-FW-1）：按变体走 netsh 或 PowerShell，
+    /// 成功/分类失败两态（档位 set 语义天然幂等，无需 absent 分支）。
+    ///
+    /// 真机验证随 #52 接线后的 apply 链路一并进行（R-05 门禁）；本函数只把
+    /// 计划命令交给系统、把输出交回计划层分类。
+    pub fn run_mesh_firewall_command(
+        command: &super::MeshFirewallCommand,
+    ) -> Result<ApplyResult, NetworkError> {
+        let (program, args) = if command.uses_netsh() {
+            ("netsh", command.args())
+        } else {
+            ("powershell", command.args())
+        };
+        let output = std::process::Command::new(program)
+            .args(&args)
+            .output()
+            .map_err(|error| NetworkError::Io(format!("spawn {program}: {error}")))?;
+        let text = format!(
+            "{}{}",
+            crate::windows_console::decode_output(&output.stdout),
+            crate::windows_console::decode_output(&output.stderr),
+        );
+        if output.status.success() {
+            return Ok(ApplyResult::ok());
+        }
+        classify_netsh_firewall_failure(
+            output.status.code().unwrap_or(-1),
+            &text,
+            command.operation(),
+            match command {
+                super::MeshFirewallCommand::SetNetworkCategoryPrivate { interface } => {
+                    interface.as_str()
+                }
+                super::MeshFirewallCommand::AddIcmpRule { rule } => rule.name.as_str(),
+            },
+        )?;
+        Ok(ApplyResult::ok())
+    }
 }
 
 #[cfg(test)]
@@ -372,6 +557,7 @@ mod tests {
                 FirewallProfile::Public,
             ]),
             description: Some("Meshlet managed inbound tunnel".into()),
+            local_ip: None,
         }
     }
 
@@ -512,5 +698,117 @@ mod tests {
         value.profiles = None;
         let args = FirewallRuleCommand::Add { rule: value }.args();
         assert_eq!(args[10], "profile=any");
+    }
+
+    const DEVICE_ADDR: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 240, 0, 5);
+
+    #[test]
+    fn icmp_rule_renders_protocol_and_localip_without_ports() {
+        // netsh 不接受 ICMP 协议带端口词元：localport/remoteport 必须省略；
+        // localip 把放行限定到设备 overlay 地址（=「限定 wg 接口」的 netsh 等价）。
+        let args = FirewallRuleCommand::Add {
+            rule: mesh_icmp_rule(DEVICE_ADDR),
+        }
+        .args();
+        assert_eq!(
+            args,
+            vec![
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                "name=Meshlet-ICMPv4-In",
+                "dir=in",
+                "action=allow",
+                "protocol=icmpv4:8,any",
+                "profile=any",
+                "localip=10.240.0.5",
+                "description=meshlet mesh reachability: inbound ICMP echo to the wg interface",
+            ]
+        );
+    }
+
+    #[test]
+    fn set_network_category_renders_powershell_command() {
+        let command = MeshFirewallCommand::set_network_category_private("wg-meshlet").unwrap();
+        assert_eq!(
+            command.args(),
+            vec![
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Set-NetConnectionProfile -InterfaceAlias 'wg-meshlet' -NetworkCategory Private",
+            ]
+        );
+        assert!(!command.uses_netsh());
+        assert_eq!(command.operation(), "network category set private");
+    }
+
+    #[test]
+    fn mesh_reachability_plan_covers_all_current_states() {
+        // 全幂等：档位已 Private 且规则已存在 → 空计划；任一缺 → 只补缺的那条。
+        let none = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, true).unwrap();
+        assert!(none.is_empty());
+
+        let only_category =
+            mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, false, true).unwrap();
+        assert_eq!(only_category.len(), 1);
+        assert!(matches!(
+            only_category[0],
+            MeshFirewallCommand::SetNetworkCategoryPrivate { .. }
+        ));
+
+        let only_rule = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, false).unwrap();
+        assert_eq!(only_rule.len(), 1);
+        assert_eq!(
+            only_rule[0],
+            MeshFirewallCommand::AddIcmpRule {
+                rule: mesh_icmp_rule(DEVICE_ADDR)
+            }
+        );
+
+        let both = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, false, false).unwrap();
+        assert_eq!(both.len(), 2);
+    }
+
+    #[test]
+    fn mesh_reachability_rejects_unsafe_interface_names() {
+        // 接口名进入 PowerShell 单引号字符串：引号/空白必须拒绝（防注入）。
+        for bad in ["", "wg meshlet", "wg'x", "wg\"x", "wg;x", "$(x)", "wg|x"] {
+            assert!(
+                mesh_reachability_commands(bad, DEVICE_ADDR, false, false).is_err(),
+                "interface {bad:?} must be rejected"
+            );
+            assert!(MeshFirewallCommand::set_network_category_private(bad).is_err());
+        }
+        // 合法隧道名（含 dot / 下划线）必须放行。
+        for good in ["wg-meshlet", "wg0", "Meshlet.Tunnel_1"] {
+            assert!(mesh_reachability_commands(good, DEVICE_ADDR, true, true).is_ok());
+        }
+    }
+
+    #[test]
+    fn firewall_rule_present_distinguishes_show_output() {
+        // en-US / zh-CN 真机报文（CP936 解码后）。
+        assert!(firewall_rule_present(
+            "Rule Name:        Meshlet-ICMPv4-In\r\nEnabled:          Yes"
+        ));
+        assert!(firewall_rule_present(
+            "规则名称:      Meshlet-ICMPv4-In\r\n已启用:        是"
+        ));
+        assert!(!firewall_rule_present(
+            "No rules match the specified criteria."
+        ));
+        assert!(!firewall_rule_present("没有与指定标准相匹配的规则。"));
+        assert!(!firewall_rule_present(""));
+    }
+
+    #[test]
+    fn net_category_probe_matches_private_only() {
+        assert!(net_category_is_private("NetworkCategory : Private"));
+        assert!(!net_category_is_private("NetworkCategory : Public"));
+        assert!(!net_category_is_private(
+            "Get-NetConnectionProfile : No matching MSFT_NetConnectionProfile"
+        ));
     }
 }

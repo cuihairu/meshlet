@@ -39,6 +39,43 @@ pub const MESHLET_FILTER_COMMENT: &str = "meshlet tunnel";
 /// Routing-protocol number used as Meshlet's route ownership marker.
 pub const MESHLET_ROUTE_PROTO: &str = "198";
 
+/// 宿主防火墙放行动作（AGENT-FW-2）。
+///
+/// 背景：Linux 宿主若启用 ufw/firewalld，其默认 INPUT 策略可能挡 mesh 接口
+/// 的 ICMP/业务流量（与 Windows Public 档挡 ICMP 同源）。检测到管理器活跃
+/// 时自动放行 mesh 接口流量，幂等。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostFirewallAction {
+    /// `ufw allow in on <if>`：放行接口入向。
+    UfwAllowInOn { interface: String },
+    /// `firewall-cmd --zone=trusted --add-interface=<if>`：接口入 trusted 区
+    /// （全放行）。运行时配置；agent 每次 apply 重探，重启后对账恢复。
+    FirewalldTrustedInterface { interface: String },
+}
+
+/// 纯规划（AGENT-FW-2，跨平台单测）：给定 ufw/firewalld 活跃态与规则现状，
+/// 产出放行动作。全幂等——已放行 → 空计划；管理器未活跃 → 不动作。
+pub fn host_firewall_allow_actions(
+    ufw_active: bool,
+    ufw_interface_allowed: bool,
+    firewalld_active: bool,
+    firewalld_interface_allowed: bool,
+    interface: &str,
+) -> Vec<HostFirewallAction> {
+    let mut actions = Vec::new();
+    if ufw_active && !ufw_interface_allowed {
+        actions.push(HostFirewallAction::UfwAllowInOn {
+            interface: interface.into(),
+        });
+    }
+    if firewalld_active && !firewalld_interface_allowed {
+        actions.push(HostFirewallAction::FirewalldTrustedInterface {
+            interface: interface.into(),
+        });
+    }
+    actions
+}
+
 /// 从 `ip link show <if>` 输出解析实际 MTU 读数（首行形如
 /// `3: wg0: <...> mtu 1420 qdisc noqueue ...`）。读不到 `mtu` 字段或无法
 /// 解析时返回 `None`——调用方按「读数不可得」处理，不臆测默认值。
@@ -1093,6 +1130,10 @@ impl LinuxNetworkBackend {
                 routes_result.error.unwrap_or_default(),
             ));
         }
+        // AGENT-FW-2：宿主 ufw/firewalld 活跃时自动放行 mesh 接口流量（幂等；
+        // 探测失败按「未活跃」处理，放行失败显式报错——不假装生效）。netns
+        // 测试钩子不跑此步，避免污染宿主防火墙。
+        self.ensure_host_firewall_sync()?;
         if plan.nat_rules.is_empty() {
             return Ok(());
         }
@@ -1152,6 +1193,66 @@ impl LinuxNetworkBackend {
             NatAction::SnatToGatewayLan => Some(rule.match_dest),
             _ => None,
         })
+    }
+
+    /// 探测宿主防火墙管理器并产出放行计划（AGENT-FW-2）。
+    ///
+    /// 命令缺失/未活跃一律按「未活跃」处理（no-op）；探测失败不阻断数据面
+    /// 应用——放行是增益而非前提。
+    fn host_firewall_allow_plan(&self) -> Vec<HostFirewallAction> {
+        let (ufw_active, ufw_allowed) = match self.run(&["ufw", "status"]) {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                (
+                    text.contains("status: active"),
+                    text.contains(&format!("on {}", self.interface)),
+                )
+            }
+            // `ufw` 未安装（spawn 失败）→ 不活跃。
+            Err(_) => (false, false),
+        };
+        let firewalld_active = matches!(
+            self.run(&["firewall-cmd", "--state"]),
+            Ok(out) if String::from_utf8_lossy(&out.stdout).trim() == "running"
+        );
+        let firewalld_allowed = matches!(
+            self.run(&[
+                "firewall-cmd",
+                "--zone=trusted",
+                &format!("--query-interface={}", self.interface),
+            ]),
+            Ok(out) if String::from_utf8_lossy(&out.stdout).trim() == "yes"
+        );
+        host_firewall_allow_actions(
+            ufw_active,
+            ufw_allowed,
+            firewalld_active,
+            firewalld_allowed,
+            &self.interface,
+        )
+    }
+
+    /// 执行宿主防火墙放行（AGENT-FW-2）。测试 netns 钩子下跳过——探测经
+    /// `ip netns exec` 仍能读到宿主 ufw 状态文件，若真放行会改宿主防火墙。
+    fn ensure_host_firewall_sync(&self) -> Result<(), NetworkError> {
+        if self.netns.is_some() {
+            return Ok(());
+        }
+        for action in self.host_firewall_allow_plan() {
+            match action {
+                HostFirewallAction::UfwAllowInOn { interface } => {
+                    self.run(&["ufw", "allow", "in", "on", &interface])?;
+                }
+                HostFirewallAction::FirewalldTrustedInterface { interface } => {
+                    self.run(&[
+                        "firewall-cmd",
+                        "--zone=trusted",
+                        &format!("--add-interface={interface}"),
+                    ])?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 同步回滚（[NetworkBackend::rollback] 的命令核心）。
@@ -1612,5 +1713,45 @@ mod tests {
         let signature =
             LinuxNetworkBackend::nat_rule_signature_from_iptables("POSTROUTING", &foreign).unwrap();
         assert!(signature.contains("|user rule|"));
+    }
+
+    #[test]
+    fn host_firewall_plan_is_idempotent_and_manager_gated() {
+        // 管理器都未活跃 → 不动作（放行规则存不存在都不影响）。
+        assert!(host_firewall_allow_actions(false, false, false, false, "wg0").is_empty());
+        assert!(host_firewall_allow_actions(false, true, false, true, "wg0").is_empty());
+
+        // ufw 活跃且接口已放行 → 只补 firewalld 侧（若有）。
+        assert_eq!(
+            host_firewall_allow_actions(true, true, false, false, "wg0"),
+            vec![]
+        );
+        assert_eq!(
+            host_firewall_allow_actions(true, false, false, false, "wg0"),
+            vec![HostFirewallAction::UfwAllowInOn {
+                interface: "wg0".into()
+            }]
+        );
+
+        // firewalld 活跃且接口未入 trusted → 补 trusted 接口。
+        assert_eq!(
+            host_firewall_allow_actions(false, false, true, false, "wg0"),
+            vec![HostFirewallAction::FirewalldTrustedInterface {
+                interface: "wg0".into()
+            }]
+        );
+
+        // 双管理器都活跃且都未放行 → 两条动作，顺序确定（ufw 在前）。
+        assert_eq!(
+            host_firewall_allow_actions(true, false, true, false, "wg0"),
+            vec![
+                HostFirewallAction::UfwAllowInOn {
+                    interface: "wg0".into()
+                },
+                HostFirewallAction::FirewalldTrustedInterface {
+                    interface: "wg0".into()
+                },
+            ]
+        );
     }
 }

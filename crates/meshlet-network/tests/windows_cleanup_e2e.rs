@@ -63,6 +63,7 @@ fn probe_rule() -> FirewallRule {
         remote_port: "any".into(),
         profiles: Some(vec![FirewallProfile::Public]),
         description: Some("meshlet probe".into()),
+        local_ip: None,
     }
 }
 
