@@ -103,6 +103,7 @@ export default defineConfig({
             { text: 'R-06 Service Publishing', link: '/implementation/r06-service-publishing' },
             { text: 'R-07 Deployment Acceptance', link: '/implementation/r07-deployment-acceptance' },
             { text: 'M3 Fault Matrix', link: '/implementation/m3-fault-matrix' },
+            { text: 'Decisions Actions (2026-10-30)', link: '/implementation/decisions-actions-2026-10-30' },
           ] }],
           '/review/': [{ text: 'Archive', items: [
             { text: 'Conversation Archive · 2026-10-13', link: '/review/chatgpt-2026-10-13' },
@@ -194,6 +195,7 @@ export default defineConfig({
             { text: 'R-06 服务发布', link: '/zh/implementation/r06-service-publishing' },
             { text: 'R-07 部署验收', link: '/zh/implementation/r07-deployment-acceptance' },
             { text: 'M3 故障矩阵', link: '/zh/implementation/m3-fault-matrix' },
+            { text: '决策立即动作执行（2026-10-30）', link: '/implementation/decisions-actions-2026-10-30' },
           ] }],
           '/zh/review/': [{ text: '存档', items: [
             { text: '对话存档 · 2026-10-13', link: '/zh/review/chatgpt-2026-10-13' },
