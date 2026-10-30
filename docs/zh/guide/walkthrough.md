@@ -328,6 +328,51 @@ netsh interface ipv4 show route    # 预期：无 192.0.2.0/24
 
 ---
 
+## 4.1 走查 FW — 安装即配防火墙（AGENT-FW-1/2）
+
+**验收目标：** 数据面 apply 后无需手工防火墙配置，远端 ping 该机 wg 地址直接通；重复 apply 不产生重复规则（幂等）。背景：2026-10-30 实战 dev→win 的 wg 握手正常但 ping 不通——Windows 把 wg 接口判为 **Public** 档默认挡 ICMP，手工建 `Meshlet-ICMPv4-In` 才通；Linux 侧 ufw/firewalld 同理。
+
+### FW-1 Windows（AGENT-FW-1）
+
+前置：Windows 机已装 agent 且数据面 apply 已接线（#52 之后）。记录 `wg-meshlet`（或实际接口名）。
+
+```powershell
+# 1) 接口档位必须是 Private（根因：Public 挡 ICMP）
+Get-NetConnectionProfile -InterfaceAlias wg-meshlet | Select NetworkCategory
+# 预期：Private
+
+# 2) 入站 ICMPv4 放行规则已由 apply 自动创建
+netsh advfirewall firewall show rule name="Meshlet-ICMPv4-In"
+# 预期：规则存在，protocol=icmpv4:8,any，localip=本机 overlay 地址
+
+# 3) 远端 ping 该机 wg 地址直接通（无需手工建规则）
+ping <本机overlay地址>
+```
+
+幂等回归：重复跑一次 agent apply，`netsh advfirewall firewall show rule name="Meshlet-ICMPv4-In"` 仍只有一条规则（不重复 add）。
+
+### FW-2 Linux（AGENT-FW-2）
+
+前置：干净 Linux 机先启用 ufw（或 firewalld）再启动 agent；`[dataplane] enabled=true`。
+
+```bash
+# 1) 数据面 apply 后，mesh 接口流量已放行（ufw 例）
+ufw status verbose | grep -F "on wg0"        # 预期：有 ALLOW 行
+# firewalld 例
+firewall-cmd --zone=trusted --query-interface=wg0   # 预期：yes
+
+# 2) mesh 内 ping 通（远端 → 本机 wg 地址）
+ping -c3 <本机overlay地址>
+```
+
+幂等回归：再跑一次 apply，`ufw status` 中 `on wg0` 行数不增加（未重复添加）。
+
+### 判定
+
+FW-1 的「档位 Private + ICMP 规则存在 + ping 通」三项符合 → AGENT-FW-1 可勾（端到端仍受 #52 接线前置，见 R-05）。FW-2 的「放行存在 + ping 通」两项符合 → AGENT-FW-2 可勾。任一不符 → 记录差距，条目保持未勾。
+
+---
+
 ## E — Linux 托盘与状态通知（#104 剩余桌面验收）
 
 **仓内已验证（bus 级/纯逻辑证据，不等于真实桌面显示）**
