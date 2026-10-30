@@ -1,0 +1,51 @@
+/* ============================================================================
+   meshlet console — design tokens (single source of truth)
+   Central color / spacing / type scale. Component rules live in App.css and
+   consume these custom properties. Brand accent stays the green from 918542b
+   (#22c55e); status-pill styles are load-bearing and never renamed.
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface-2: #272f42;
+  --border: #334155;
+  --border-strong: #475569;
+
+  /* text */
+  --text: #e2e8f0;
+  --text-strong: #f8fafc;
+  --muted-c: #94a3b8;
+
+  /* brand + semantics (AA on their fills) */
+  --accent: #22c55e;
+  --accent-rgb: 34 197 94;
+  --accent-strong: #4ade80;
+  --on-accent: #0f172a;
+  --info: #60a5fa;
+  --warn: #f59e0b;
+  --danger: #f87171;
+  --danger-strong: #ef4444;
+
+  /* type */
+  --font: Inter, 'Helvetica Neue', 'Segoe UI', system-ui, -apple-system,
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+
+  /* density: dashboard scale (8–32px) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  --radius: 8px;
+  --radius-sm: 6px;
+
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-2: 0 8px 24px rgb(0 0 0 / 0.35);
+}

@@ -13,6 +13,7 @@ import { AccessPage } from './pages/access/AccessPage';
 import { DevicesPage } from './pages/devices/DevicesPage';
 import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
 import { NetworksPage } from './pages/networks/NetworksPage';
+import './theme.css';
 import './App.css';
 
 type AuthState =
