@@ -6,7 +6,11 @@
 //! 用法：`meshlet-tray-host <state_dir>`
 
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::HICON;
+#[cfg(windows)]
+use windows_sys::Win32::Graphics::Gdi::*;
 #[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
@@ -71,12 +75,14 @@ fn main() {
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_APP + 1;
-        nid.hIcon = LoadIconW(GetModuleHandleW(std::ptr::null()), IDI_APPLICATION);
+        nid.hIcon = create_green_icon();
+        eprintln!("meshlet-tray-host: hIcon={:p}", nid.hIcon);
         let tip: Vec<u16> = "Meshlet\0".encode_utf16().collect();
         for (i, &w) in tip.iter().enumerate().take(127) {
             nid.szTip[i] = w;
         }
-        Shell_NotifyIconW(NIM_ADD, &nid);
+        let ok = Shell_NotifyIconW(NIM_ADD, &nid);
+        eprintln!("meshlet-tray-host: NIM_ADD = {ok}");
 
         let hmenu = CreatePopupMenu();
         let exit_text: Vec<u16> = "退出\0".encode_utf16().collect();
@@ -126,6 +132,41 @@ fn main() {
 
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+    }
+}
+
+/// 用 GDI 创建 16x16 绿色位图图标并转换为 HICON。
+#[cfg(windows)]
+fn create_green_icon() -> HICON {
+    use windows_sys::Win32::Graphics::Gdi::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::HICON;
+
+    unsafe {
+        let hdc = GetDC(0 as HWND);
+        let mem_dc = CreateCompatibleDC(hdc);
+        let bmp = CreateCompatibleBitmap(hdc, 16, 16);
+        let old = SelectObject(mem_dc, bmp);
+
+        let brush = CreateSolidBrush(0x0000FF00); // green
+        let rect = RECT { left: 0, top: 0, right: 16, bottom: 16 };
+        FillRect(mem_dc, &rect, brush);
+        DeleteObject(brush as isize as _);
+
+        SelectObject(mem_dc, old as isize as _);
+
+        let mut ii: ICONINFO = std::mem::zeroed();
+        ii.fIcon = 1;
+        ii.hbmColor = bmp;
+        ii.hbmMask = CreateCompatibleBitmap(hdc, 16, 16);
+        let icon = CreateIconIndirect(&ii);
+
+        DeleteObject(ii.hbmMask as isize as _);
+        DeleteObject(bmp as isize as _);
+        DeleteDC(mem_dc);
+        ReleaseDC(0 as HWND, hdc);
+
+        eprintln!("meshlet-tray-host: GDI icon={icon:p}");
+        icon
     }
 }
 
