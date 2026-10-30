@@ -115,7 +115,7 @@ fn main() {
                         SetForegroundWindow(hwnd);
                         let cmd = TrackPopupMenuEx(
                             hmenu,
-                            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+                            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD,
                             pt.x,
                             pt.y,
                             hwnd,
