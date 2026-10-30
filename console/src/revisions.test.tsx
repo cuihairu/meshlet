@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from './api';
-import { RevisionsSection } from './App';
+import { RevisionsSection } from './pages/networks/RevisionsSection';
 import * as api from './api';
 
 const revision = {
