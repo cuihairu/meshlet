@@ -8,11 +8,6 @@
   },
   "app": {
     "windows": [],
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "tooltip": "Meshlet",
-      "iconAsTemplate": false
-    },
     "security": {
       "csp": null
     }
