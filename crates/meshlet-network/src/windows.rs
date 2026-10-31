@@ -96,8 +96,42 @@ impl WindowsNetworkBackend {
     }
 
     fn read_tunnel_peers(&self, tunnel_name: &str) -> Vec<PeerObserved> {
-        let _ = tunnel_name;
-        Vec::new()
+        // 漂移探测：从 `wg.exe show <name> dump` 读回实际生效的 peer。读不到
+        // （wg.exe 缺失 / 隧道未运行 / 输出异常）一律返回空——调用方据存在性
+        // 判定为「与期望不符」宁可重装收敛，绝不因读数缺失假装一致。
+        let Some(exe) = self.find_wg_exe() else {
+            return Vec::new();
+        };
+        let Ok(out) = std::process::Command::new(&exe)
+            .args(["show", tunnel_name, "dump"])
+            .output()
+        else {
+            return Vec::new();
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        crate::windows_tunnel::parse_wg_dump_peers(&text)
+    }
+
+    /// `wg.exe` 路径解析（与 [Self::find_wireguard_exe] 同纪律：WireGuard for
+    /// Windows 把 wg.exe 与 wireguard.exe 装在同一目录，故优先复用其目录）。
+    fn find_wg_exe(&self) -> Option<PathBuf> {
+        if let Some(wireguard) = self.find_wireguard_exe() {
+            if let Some(dir) = wireguard.parent() {
+                let candidate = dir.join("wg.exe");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join("wg.exe");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
     }
 
     fn forwarding_enabled(&self) -> Option<bool> {
@@ -110,14 +144,60 @@ impl WindowsNetworkBackend {
             ])
             .output()
             .ok()?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        if text.contains("0x1") {
-            Some(true)
-        } else if text.contains("0x0") {
-            Some(false)
-        } else {
-            None
+        parse_ip_enable_router(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// 确保 IP 转发开启（镜像 Linux `sysctl -w net.ipv4.ip_forward=1`）。
+    ///
+    /// [crate::NetworkSnapshot] 的 `forwarding_enabled` 读 `IPEnableRouter`
+    /// 注册表；[`apps/agent` 的漂移判定] 要求其为 `Some(true)`，否则
+    /// `KernelDrift` 每轮重放。Windows 客户端默认缺失/为 0，必须在此置 1
+    /// 才能收敛（幂等：已为 1 则跳过，`/f` 覆盖写仅在实际变更时）。
+    fn ensure_ip_forwarding_sync(&self) -> Result<(), NetworkError> {
+        if self.forwarding_enabled() == Some(true) {
+            return Ok(());
         }
+        let status = std::process::Command::new("reg")
+            .args([
+                "add",
+                r"HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters",
+                "/v",
+                "IPEnableRouter",
+                "/t",
+                "REG_DWORD",
+                "/d",
+                "1",
+                "/f",
+            ])
+            .status()
+            .map_err(|error| {
+                NetworkError::Io(format!(
+                    "enable IP forwarding (reg add IPEnableRouter): {error}"
+                ))
+            })?;
+        if !status.success() {
+            return Err(NetworkError::ApplyRejected(
+                "enable IP forwarding failed: `reg add IPEnableRouter=1` did not succeed \
+                 (run the agent elevated)"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 受管接口的 MTU（`netsh interface ipv4 show subinterfaces`）。
+    /// 读不到（接口未起 / 命令失败）→ `None`，漂移判定对未显式配置 MTU 的
+    /// 计划不触发；显式 MTU 计划则由 [Self::inspect_sync] 的 `tunnel_mtu`
+    /// 驱动（不再恒 None 导致的永不收敛）。
+    fn interface_mtu(&self) -> Option<u32> {
+        let output = std::process::Command::new("netsh")
+            .args(["interface", "ipv4", "show", "subinterfaces"])
+            .output()
+            .ok()?;
+        crate::windows_tunnel::parse_netsh_subinterface_mtu(
+            &String::from_utf8_lossy(&output.stdout),
+            &self.interface,
+        )
     }
 
     fn routes_on_interface(&self) -> Vec<meshlet_domain::Ipv4Cidr> {
@@ -163,13 +243,18 @@ impl WindowsNetworkBackend {
         } else {
             Vec::new()
         };
+        let tunnel_mtu = if tunnel_exists {
+            self.interface_mtu()
+        } else {
+            None
+        };
         Ok(NetworkSnapshot {
             tunnel_exists,
             forwarding_enabled,
             peers,
             installed_routes,
             nat_rules: Vec::new(),
-            tunnel_mtu: None,
+            tunnel_mtu,
         })
     }
 
@@ -217,6 +302,10 @@ impl WindowsNetworkBackend {
         _gateway_lan_addr: Option<std::net::Ipv4Addr>,
         _keep_keys: &BTreeSet<String>,
     ) -> Result<(), NetworkError> {
+        // §内核漂移：IP 转发是 drifted() 的收敛前提（镜像 Linux
+        // ip_forward=1）。先于任何隧道变更执行——失败即 fail closed，
+        // 绝不改动隧道后留下半应用状态。
+        self.ensure_ip_forwarding_sync()?;
         let exe = self.find_wireguard_exe().ok_or_else(|| {
             NetworkError::Unsupported("WireGuard for Windows is not installed".to_string())
         })?;
@@ -385,6 +474,18 @@ impl NetworkBackend for WindowsNetworkBackend {
     }
 }
 
+/// 解析 `reg query IPEnableRouter` 输出为布尔（`0x1` → true、`0x0` → false，
+/// 值缺失/其他 → None）。纯字符串判定：Windows 语言包不影响 `0x` 前缀。
+fn parse_ip_enable_router(text: &str) -> Option<bool> {
+    if text.contains("0x1") {
+        Some(true)
+    } else if text.contains("0x0") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 fn mask_to_prefix(mask: &str) -> u8 {
     let octets: Vec<u8> = mask.split('.').filter_map(|s| s.parse().ok()).collect();
     if octets.len() != 4 {
@@ -416,5 +517,29 @@ mod tests {
     fn with_interface_overrides_default() {
         let backend = WindowsNetworkBackend::new().with_interface("wg0");
         assert_eq!(backend.interface, "wg0");
+    }
+
+    /// IPEnableRouter 注册表输出 → 转发开关（drifted() 收敛前提）。
+    #[test]
+    fn ip_enable_router_registry_text_maps_to_forwarding_flag() {
+        assert_eq!(
+            parse_ip_enable_router(
+                r"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
+    IPEnableRouter    REG_DWORD    0x1"
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            parse_ip_enable_router(r"    IPEnableRouter    REG_DWORD    0x0"),
+            Some(false)
+        );
+        // 值缺失（reg query 失败文本）→ None：漂移判定视为未开启。
+        assert_eq!(
+            parse_ip_enable_router(
+                "ERROR: The system was unable to find the specified registry key or value."
+            ),
+            None
+        );
+        assert_eq!(parse_ip_enable_router(""), None);
     }
 }

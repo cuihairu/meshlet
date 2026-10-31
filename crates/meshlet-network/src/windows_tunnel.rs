@@ -184,6 +184,67 @@ fn render_allowed_ips(allowed_ips: &[meshlet_domain::Ipv4Cidr]) -> String {
         .join(", ")
 }
 
+/// 解析 `netsh interface ipv4 show subinterfaces` 输出，取受管接口的 MTU。
+///
+/// 供 [`crate::NetworkSnapshot`] 的 `tunnel_mtu` 读数——漂移判定的第三项
+/// （计划显式配置 MTU 而内核读数不符 → 漂移）在 Windows 上此前恒为
+/// `None`，显式 MTU 的计划会永不收敛。只匹配行尾等接口名的数据行、首字段
+/// 可解析为数值（跳过表头与分隔线）；匹配不到返回 `None`（不下断言）。
+pub fn parse_netsh_subinterface_mtu(text: &str, interface: &str) -> Option<u32> {
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 2 {
+            continue;
+        }
+        if !fields
+            .last()
+            .map(|s| s.eq_ignore_ascii_case(interface))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if let Ok(mtu) = fields[0].parse::<u32>() {
+            return Some(mtu);
+        }
+    }
+    None
+}
+
+/// 解析 `wg.exe show <name> dump` 输出为受管隧道的 peer 观测集。
+///
+/// 官方 `dump` 格式为制表符分隔：首行是接口（private-key / public-key /
+/// listen-port / fwmark），其后每行一个 peer（public-key / preshared-key /
+/// endpoint / allowed-ips / latest-handshake / transfer-rx / transfer-tx /
+/// keepalive）。只取 `public-key`（字段 0）与 `allowed-ips`（字段 3，逗号
+/// 分隔 CIDR）——与 [`crate::PeerObserved`] 对应，供 [crate::NetworkSnapshot]
+/// 的 peer 漂移判定使用。格式不符的行跳过（fail closed 于调用方的存在性
+/// 判定：读不到即视为无 peer，宁重装不假装一致）。
+pub fn parse_wg_dump_peers(dump: &str) -> Vec<crate::PeerObserved> {
+    let mut peers = Vec::new();
+    for (idx, line) in dump.lines().enumerate() {
+        if idx == 0 {
+            continue; // 接口行
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 4 {
+            continue;
+        }
+        let public_key = fields[0].trim();
+        if public_key.is_empty() {
+            continue;
+        }
+        let allowed_ips = fields[3]
+            .split(',')
+            .filter_map(|s| s.trim().parse::<meshlet_domain::Ipv4Cidr>().ok())
+            .collect();
+        peers.push(crate::PeerObserved {
+            public_key: public_key.to_string(),
+            allowed_ips,
+        });
+    }
+    peers
+}
+
 /// 分类 `wireguard.exe` 失败：卸载/停止重入按幂等成功，提权失败明示，
 /// 其余 fail closed。
 ///
@@ -438,6 +499,63 @@ mod tests {
              PublicKey = PEER2-PUBLIC-KEY-BASE64==\n\
              AllowedIPs = 10.240.0.2/32\n"
         );
+    }
+
+    /// `wg.exe show <name> dump` 官方格式解析：接口行跳过，peer 行取
+    /// public-key 与 allowed-ips；格式不符的行跳过（不假装一致）。
+    #[test]
+    fn wg_dump_parses_peer_public_keys_and_allowed_ips() {
+        let dump = "PRIVATE-KEY\tINTERFACE-PUBLIC-KEY\t51820\t0\n\
+                    HUB-PUBLIC-KEY-BASE64==\t(preshared)\t198.51.100.10:51820\t10.240.0.1/32, 10.241.0.0/24\t1234567\t1024\t2048\t25\n\
+                    PEER2-PUBLIC-KEY-BASE64==\t\t10.240.0.2:51820\t10.240.0.2/32\t0\t0\t0\t0\n";
+        let peers = parse_wg_dump_peers(dump);
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0].public_key, "HUB-PUBLIC-KEY-BASE64==");
+        assert_eq!(
+            peers[0].allowed_ips,
+            vec![
+                "10.240.0.1/32".parse::<Ipv4Cidr>().unwrap(),
+                "10.241.0.0/24".parse::<Ipv4Cidr>().unwrap(),
+            ]
+        );
+        assert_eq!(peers[1].public_key, "PEER2-PUBLIC-KEY-BASE64==");
+        assert_eq!(peers[1].allowed_ips, vec!["10.240.0.2/32".parse().unwrap()]);
+    }
+
+    #[test]
+    fn wg_dump_skips_interface_line_and_malformed_rows() {
+        // 仅接口行 / 空行 / 缺字段行 → 无 peer；不会误报一个 peer。
+        let dump = "PRIVATE-KEY\tPUBLIC-KEY\t51820\t0\n\n\t\t\t\nPARTIAL-ROW\n";
+        assert!(parse_wg_dump_peers(dump).is_empty());
+        assert!(parse_wg_dump_peers("").is_empty());
+        assert!(parse_wg_dump_peers("only-one-line").is_empty());
+    }
+
+    #[test]
+    fn netsh_subinterface_mtu_matches_interface_line_and_skips_header() {
+        let text = "   MTU  MediaSenseState   Bytes In  Bytes Out  Interface\n\
+                    ------  ---------------  ---------  ---------  -------------\n\
+                      1420                1     1234567      123456  meshlet\n\
+                      1500                1        1000         900  Ethernet\n";
+        assert_eq!(parse_netsh_subinterface_mtu(text, "meshlet"), Some(1420));
+        assert_eq!(parse_netsh_subinterface_mtu(text, "Ethernet"), Some(1500));
+        // 未知接口 / 空 / 表头 → None（不误判）。
+        assert_eq!(parse_netsh_subinterface_mtu(text, "wg0"), None);
+        assert_eq!(parse_netsh_subinterface_mtu("", "meshlet"), None);
+        assert_eq!(
+            parse_netsh_subinterface_mtu("   MTU  Interface\n", "meshlet"),
+            None
+        );
+    }
+
+    #[test]
+    fn wg_dump_ignores_unparseable_allowed_ips_but_keeps_the_peer() {
+        let dump = "PRIVATE-KEY\tPUBLIC-KEY\t51820\t0\n\
+                    PEER\t(preshared)\tendpoint\tnot-a-cidr, 10.240.0.9/32\t0\t0\t0\t0\n";
+        let peers = parse_wg_dump_peers(dump);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].public_key, "PEER");
+        assert_eq!(peers[0].allowed_ips, vec!["10.240.0.9/32".parse().unwrap()]);
     }
 
     #[test]
