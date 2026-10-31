@@ -13,6 +13,7 @@ members = [
     "apps/agent",
     "apps/cli",
     "apps/tray-host",
+    "apps/tray-app/src-tauri",
 ]
 
 [workspace.package]
