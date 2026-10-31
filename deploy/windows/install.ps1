@@ -105,15 +105,35 @@ if ($wgExe) {
 }
 
 # ── 3. Download meshlet-agent ──────────────────────────────────────
+# 实际 nightly 发布资产是 zip（scripts/package-windows-zip.ps1 产出，
+# nightly.yml 只上传 zip，zip 根含 meshlet-agent.exe/cli.exe/LICENSE/BUILD_INFO）。
+# 不再按单 exe 下载——否则 URL 命不中任何发布资产（todo.md:239）。
 Write-Step 'Downloading meshlet-agent'
-$assetName = 'meshlet-agent-windows-x64.exe'
+$assetName = 'meshlet-nightly-windows-x86_64.zip'
 $dlUrl = "$ReleaseBase/$assetName"
+$workDir = Join-Path $env:TEMP "meshlet-install-$PID"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 try {
-    Invoke-WebRequest -Uri $dlUrl -OutFile "$AgentExe.tmp" -UseBasicParsing
-    Move-Item "$AgentExe.tmp" $AgentExe -Force
+    New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+    # SHA256 校验（口径同 scripts/install.ps1）：从 SHA256SUMS 精确选一条该
+    # 资产的校验行，缺失/重复/不匹配一律失败（幂等：每次重跑重新下载校验）。
+    Invoke-WebRequest -Uri "$ReleaseBase/SHA256SUMS" -OutFile (Join-Path $workDir 'SHA256SUMS') -UseBasicParsing
+    $found = @(Get-Content (Join-Path $workDir 'SHA256SUMS') | Where-Object {
+        $_ -match ('^[0-9a-f]{64}\s+\*?' + [regex]::Escape($assetName) + '$') })
+    if ($found.Count -ne 1) { throw "missing or duplicate checksum for $assetName" }
+    $expected = ($found[0] -split '\s+')[0]
+    Invoke-WebRequest -Uri $dlUrl -OutFile (Join-Path $workDir $assetName) -UseBasicParsing
+    $actual = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $workDir $assetName)).Hash.ToLowerInvariant()
+    if ($actual -ne $expected.ToLowerInvariant()) { throw "checksum failed for $assetName" }
+    Expand-Archive -Path (Join-Path $workDir $assetName) -DestinationPath (Join-Path $workDir 'package') -Force
+    if (-not (Test-Path (Join-Path $workDir 'package\meshlet-agent.exe'))) {
+        throw "release archive is incomplete: meshlet-agent.exe missing"
+    }
+    Copy-Item (Join-Path $workDir 'package\meshlet-agent.exe') $AgentExe -Force
 } catch {
     Stop-Fail "Failed to download meshlet-agent: $($_.Exception.Message)`nURL: $dlUrl"
+} finally {
+    Remove-Item $workDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 $exeSize = (Get-Item $AgentExe).Length
 if ($exeSize -lt 1MB) { Stop-Fail "Downloaded binary is only $exeSize bytes - download corrupted." }
