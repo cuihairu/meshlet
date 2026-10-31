@@ -858,7 +858,8 @@ pub async fn two_factor_status_handler(
 /// 返回扫码导入 URI。已激活则先关停旧绑定再重建（重新绑定）。
 pub async fn two_factor_enroll_handler(
     State(state): State<SharedAppState>,
-    AuthenticatedUser(user_id): AuthenticatedUser,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
 ) -> Result<Json<TotpEnrollResponse>, AuthApiError> {
     let record = state
         .auth
@@ -892,7 +893,8 @@ pub async fn two_factor_enroll_handler(
 /// `POST /api/v1/auth/2fa/activate`：以验证码确认并激活 TOTP（绑定引导收尾）。
 pub async fn two_factor_activate_handler(
     State(state): State<SharedAppState>,
-    AuthenticatedUser(user_id): AuthenticatedUser,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
     Json(req): Json<TotpCodeRequest>,
 ) -> Result<Json<TotpStatusResponse>, AuthApiError> {
     let record = state
@@ -931,7 +933,8 @@ pub async fn two_factor_activate_handler(
 /// `POST /api/v1/auth/2fa/disable`：以验证码确认后关停并清除 TOTP 绑定。
 pub async fn two_factor_disable_handler(
     State(state): State<SharedAppState>,
-    AuthenticatedUser(user_id): AuthenticatedUser,
+    WriteUser(user_id): WriteUser,
+    CsrfHeader: CsrfHeader,
     Json(req): Json<TotpCodeRequest>,
 ) -> Result<Json<TotpStatusResponse>, AuthApiError> {
     let record = state

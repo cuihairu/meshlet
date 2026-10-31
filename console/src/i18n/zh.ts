@@ -25,6 +25,11 @@ export const zh: Dict = {
   'auth.backToSignIn': '返回登录',
   'auth.required': '此项必填。',
   'auth.passwordMin': '密码至少 12 个字符。',
+  'auth.verifyCode': '两步验证',
+  'auth.codeHint': '请输入认证器中的验证码。',
+  'auth.code': '验证码',
+  'auth.verify': '验证',
+  'auth.verifyCodeInvalid': '验证码无效，请重试。',
 
   'networks.title': '网络',
   'networks.none': '暂无网络。',

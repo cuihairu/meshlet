@@ -148,19 +148,35 @@ function NetworkSelector() {
 
 function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
   const [mode, setMode] = useState<'login' | 'bootstrap'>('login');
+  const [step, setStep] = useState<'credentials' | 'code'>('credentials');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { t } = useLanguage();
 
-  const submit = async (values: { email: string; password: string }) => {
+  const submit = async (values: { email: string; password: string; code?: string }) => {
     setBusy(true);
     setError(null);
     try {
-      const user =
-        mode === 'login'
-          ? await api.login(values.email, values.password)
-          : await api.bootstrap(values.email, values.password);
-      onSignedIn(user);
+      if (step === 'code') {
+        // 第二步：带 TOTP 码重新提交登录。
+        const user = await api.login(values.email, values.password, values.code);
+        if (user.two_factor_required) {
+          setError(t('auth.verifyCodeInvalid'));
+        } else {
+          onSignedIn(user);
+        }
+      } else {
+        const user =
+          mode === 'login'
+            ? await api.login(values.email, values.password)
+            : await api.bootstrap(values.email, values.password);
+        if (mode === 'login' && user.two_factor_required) {
+          // 服务端要求 TOTP 第二步（未种会话）——进入验证码步骤。
+          setStep('code');
+          return;
+        }
+        onSignedIn(user);
+      }
     } catch (e) {
       if (e instanceof ApiError) {
         setError(`${e.code}: ${e.message}`);
@@ -176,8 +192,15 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
 
   return (
     <Form className="auth" layout="vertical" onFinish={submit}>
-      <h1>{mode === 'login' ? t('auth.signIn') : t('auth.createFirstAdmin')}</h1>
-      {mode === 'bootstrap' && (
+      <h1>
+        {step === 'code'
+          ? t('auth.verifyCode')
+          : mode === 'login'
+            ? t('auth.signIn')
+            : t('auth.createFirstAdmin')}
+      </h1>
+      {step === 'code' && <p className="muted">{t('auth.codeHint')}</p>}
+      {mode === 'bootstrap' && step === 'credentials' && (
         <p className="muted">{t('auth.noAdminHint')}</p>
       )}
       <Form.Item
@@ -185,7 +208,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
         name="email"
         rules={[{ required: true, message: t('auth.required') }]}
       >
-        <Input type="email" autoComplete="username" />
+        <Input type="email" autoComplete="username" disabled={step === 'code'} />
       </Form.Item>
       <Form.Item
         label={t('auth.password')}
@@ -199,21 +222,44 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
       >
         <Input.Password
           autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+          disabled={step === 'code'}
         />
       </Form.Item>
+      {step === 'code' && (
+        <Form.Item
+          label={t('auth.code')}
+          name="code"
+          rules={[{ required: true, message: t('auth.required') }]}
+        >
+          <Input inputMode="numeric" autoComplete="one-time-code" maxLength={6} />
+        </Form.Item>
+      )}
       {error && <p className="error">{error}</p>}
       <Button type="primary" htmlType="submit" loading={busy} block>
-        {mode === 'login' ? t('auth.signIn') : t('auth.createAdmin')}
+        {step === 'code'
+          ? t('auth.verify')
+          : mode === 'login'
+            ? t('auth.signIn')
+            : t('auth.createAdmin')}
       </Button>
       <Button
         type="link"
         block
         onClick={() => {
-          setMode(mode === 'login' ? 'bootstrap' : 'login');
+          if (step === 'code') {
+            // 返回凭据步骤（保持登录模式）。
+            setStep('credentials');
+          } else {
+            setMode(mode === 'login' ? 'bootstrap' : 'login');
+          }
           setError(null);
         }}
       >
-        {mode === 'login' ? t('auth.firstRun') : t('auth.backToSignIn')}
+        {step === 'code'
+          ? t('auth.backToSignIn')
+          : mode === 'login'
+            ? t('auth.firstRun')
+            : t('auth.backToSignIn')}
       </Button>
     </Form>
   );

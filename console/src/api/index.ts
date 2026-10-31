@@ -146,6 +146,10 @@ export interface ApproveRegistration {
 export interface SessionUser {
   user_id: string;
   email: string;
+  /** True when the login still needs a TOTP code (no session issued yet). */
+  two_factor_required: boolean;
+  /** True when the account has TOTP enabled. */
+  two_factor_enabled: boolean;
 }
 
 /** Reference to the config revision an operation recorded (server: RevisionRef). */
@@ -406,8 +410,8 @@ async function request<T>(
 
 export const api = {
   me: () => request<SessionUser>('GET', '/auth/me'),
-  login: (email: string, password: string) =>
-    request<SessionUser>('POST', '/auth/login', { email, password }),
+  login: (email: string, password: string, code?: string) =>
+    request<SessionUser>('POST', '/auth/login', { email, password, ...(code ? { code } : {}) }),
   logout: () => request<void>('POST', '/auth/logout', {}),
   bootstrap: (email: string, password: string) =>
     request<SessionUser>('POST', '/auth/bootstrap', { email, password }),

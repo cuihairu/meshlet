@@ -292,6 +292,96 @@ async fn management_writes_require_csrf_header() {
 }
 
 #[tokio::test]
+async fn two_factor_writes_require_csrf_header_and_write_scope() {
+    let ctx = ctx().await;
+    let (_, _, cookie) = bootstrap(&ctx).await;
+    let cookie = cookie_value(&cookie);
+
+    // 有效会话但缺 X-Requested-With：2FA 写操作 403（CSRF 双重防线）。
+    for uri in [
+        "/api/v1/auth/2fa/enroll",
+        "/api/v1/auth/2fa/activate",
+        "/api/v1/auth/2fa/disable",
+    ] {
+        let (st, err, _) = post_json(
+            &ctx,
+            uri,
+            serde_json::json!({ "code": "000000" }),
+            Some(&cookie),
+            false,
+        )
+        .await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{uri}: {err}");
+        assert_eq!(err["error"]["code"], "forbidden", "{uri}");
+    }
+
+    // 带 CSRF 头的 2FA 写操作通过（enroll 无 body）。
+    let (st, _, _) = post_json(
+        &ctx,
+        "/api/v1/auth/2fa/enroll",
+        serde_json::json!({}),
+        Some(&cookie),
+        true,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "enroll with csrf must pass");
+
+    // read-only API Token（Bearer）即便带 CSRF 头也被拒——WriteUser 需 write scope。
+    let (st, created) = {
+        let builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/tokens")
+            .header("content-type", "application/json")
+            .header("cookie", &cookie)
+            .header("x-requested-with", "XMLHttpRequest");
+        let res = ctx
+            .app
+            .clone()
+            .oneshot(
+                builder
+                    .body(Body::from(
+                        serde_json::json!({ "name": "reader", "scopes": "read" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_default(),
+        )
+    };
+    assert_eq!(st, StatusCode::CREATED, "{created}");
+    let token = created["token"].as_str().expect("raw token");
+    let (st, err, _) = {
+        let builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/2fa/enroll")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-requested-with", "XMLHttpRequest");
+        let res = ctx
+            .app
+            .clone()
+            .oneshot(builder.body(Body::from("{}")).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let err: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+        (status, err, None::<String>)
+    };
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "read token must not enroll: {err}"
+    );
+    assert_eq!(err["error"]["code"], "forbidden");
+}
+
+#[tokio::test]
 async fn logout_revokes_session() {
     let ctx = ctx().await;
     let (_, _, cookie) = bootstrap(&ctx).await;

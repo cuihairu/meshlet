@@ -24,6 +24,11 @@ export const en = {
   'auth.backToSignIn': 'Back to sign in',
   'auth.required': 'This field is required.',
   'auth.passwordMin': 'Password must be at least 12 characters.',
+  'auth.verifyCode': 'Two-factor verification',
+  'auth.codeHint': 'Enter the code from your authenticator app.',
+  'auth.code': 'Verification code',
+  'auth.verify': 'Verify',
+  'auth.verifyCodeInvalid': 'Invalid verification code. Try again.',
 
   'networks.title': 'Networks',
   'networks.none': 'No networks yet.',
