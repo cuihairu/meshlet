@@ -95,12 +95,64 @@ fn save_config(
     std::fs::write(path, content).map_err(|e| e.to_string())
 }
 
+/// 从 WireGuard 读取直连 peer 信息。
+#[tauri::command]
+fn get_peers() -> Vec<serde_json::Value> {
+    let wg_path = "C:\\Program Files\\WireGuard\\wg.exe";
+    let output = std::process::Command::new(wg_path)
+        .args(["show", "all", "dump"])
+        .output();
+
+    let mut peers = Vec::new();
+    let output = match output {
+        Ok(o) => o,
+        Err(_) => return peers,
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        // peer 行: <iface> <pubkey> <preshared> <endpoint> <allowed> <handshake> <rx> <tx> <keepalive>
+        if cols.len() >= 9 && cols[0] == "WireGuard" {
+            let pubkey = cols[1];
+            let endpoint = cols[3];
+            let allowed = cols[4];
+            let handshake: u64 = cols[5].parse().unwrap_or(0);
+            let rx: u64 = cols[6].parse().unwrap_or(0);
+            let tx: u64 = cols[7].parse().unwrap_or(0);
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let last_seen = if handshake > 0 && now > handshake {
+                format!("{} 秒前", now - handshake)
+            } else {
+                "从未".to_string()
+            };
+
+            let short_key: String = pubkey.chars().take(16).collect();
+            peers.push(serde_json::json!({
+                "public_key": format!("{short_key}…"),
+                "endpoint": endpoint,
+                "allowed_ips": allowed,
+                "last_handshake": last_seen,
+                "rx_bytes": rx,
+                "tx_bytes": tx,
+                "connected": handshake > 0 && (now - handshake) < 180,
+            }));
+        }
+    }
+    peers
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_config,
-            save_config
+            save_config,
+            get_peers
         ])
         .setup(|app| {
             // 托盘菜单

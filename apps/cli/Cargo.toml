@@ -1,6 +1,11 @@
 [package]
 name = "meshlet-cli"
-description = "Meshlet CLI (Phase 1 stub)"
+description = "Meshlet CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
