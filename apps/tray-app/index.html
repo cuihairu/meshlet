@@ -93,13 +93,16 @@
   <div class="msg" id="msg"></div>
 
   <script type="module">
-    const { invoke } = window.__TAURI__?.core ?? (await import('@tauri-apps/api/core'));
+    // Tauri v2 内置 IPC：直接用 window.__TAURI_INTERNALS__.invoke
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (!invoke) {
+      document.getElementById('statusText').textContent = 'Tauri IPC 不可用';
+    }
 
     async function load() {
       try {
         const status = await invoke('get_status', {
-          stateDir: localStorage.getItem('stateDir') ||
-            `${localStorage.getItem('LOCALAPPDATA') || 'C:/Users/Public'}/meshlet/state`
+          stateDir: 'C:/Users/admin/.meshlet'
         });
         const dot = document.getElementById('statusDot');
         const text = document.getElementById('statusText');
