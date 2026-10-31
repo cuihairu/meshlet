@@ -53,6 +53,12 @@ pub enum HostFirewallAction {
     /// `firewall-cmd --zone=trusted --add-interface=<if>`：接口入 trusted 区
     /// （全放行）。运行时配置；agent 每次 apply 重探，重启后对账恢复。
     FirewalldTrustedInterface { interface: String },
+    /// `ufw allow in proto udp to any port <p>`：放行直连 UDP 端口（§12.4）。
+    /// 直连 peer 经 LAN/公网接口到达本机 wg 监听端口，接口级放行（wg0）不
+    /// 覆盖，必须按端口开。
+    UfwAllowPort { port: u16 },
+    /// `firewall-cmd --zone=trusted --add-port=<p>/udp`：同上（firewalld）。
+    FirewalldAllowPort { port: u16 },
 }
 
 /// 纯规划（AGENT-FW-2，跨平台单测）：给定 ufw/firewalld 活跃态与规则现状，
@@ -74,6 +80,26 @@ pub fn host_firewall_allow_actions(
         actions.push(HostFirewallAction::FirewalldTrustedInterface {
             interface: interface.into(),
         });
+    }
+    actions
+}
+
+/// 纯规划（§12.4 防火墙联动，跨平台单测）：直连 UDP 端口的宿主放行计划。
+/// 全幂等——已放行 → 空计划；管理器未活跃 → 不动作。直连 peer 的入向流量
+/// 经 LAN/公网接口到达，接口级放行不覆盖，须按端口开。
+pub fn direct_udp_firewall_allow_actions(
+    ufw_active: bool,
+    ufw_port_allowed: bool,
+    firewalld_active: bool,
+    firewalld_port_allowed: bool,
+    port: u16,
+) -> Vec<HostFirewallAction> {
+    let mut actions = Vec::new();
+    if ufw_active && !ufw_port_allowed {
+        actions.push(HostFirewallAction::UfwAllowPort { port });
+    }
+    if firewalld_active && !firewalld_port_allowed {
+        actions.push(HostFirewallAction::FirewalldAllowPort { port });
     }
     actions
 }
@@ -1347,6 +1373,12 @@ impl LinuxNetworkBackend {
         // 探测失败按「未活跃」处理，放行失败显式报错——不假装生效）。netns
         // 测试钩子不跑此步，避免污染宿主防火墙。
         self.ensure_host_firewall_sync()?;
+        // §12.4 防火墙联动：直连开启（计划携带 listen_port——agent 只在
+        // direct_connect.enabled 时改写）→ 自动放行直连 UDP 端口。直连 peer
+        // 经 LAN/公网接口到达，接口级放行不覆盖，须按端口开。
+        if let Some(port) = plan.tunnel.listen_port {
+            self.ensure_direct_udp_firewall_sync(port)?;
+        }
         if plan.nat_rules.is_empty() {
             return Ok(());
         }
@@ -1463,6 +1495,70 @@ impl LinuxNetworkBackend {
                         &format!("--add-interface={interface}"),
                     ])?;
                 }
+                // 端口类动作走直连专用路径（§12.4），接口放行里不可能出现。
+                HostFirewallAction::UfwAllowPort { .. }
+                | HostFirewallAction::FirewalldAllowPort { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// 探测宿主防火墙管理器并产出直连 UDP 端口放行计划（§12.4）。
+    ///
+    /// 命令缺失/未活跃一律按「未活跃」处理（no-op）；探测失败不阻断数据面
+    /// 应用——放行是增益而非前提（同 [host_firewall_allow_plan]）。
+    fn host_direct_udp_allow_plan(&self, port: u16) -> Vec<HostFirewallAction> {
+        let (ufw_active, ufw_port_allowed) = match self.run(&["ufw", "status"]) {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                (
+                    text.contains("status: active"),
+                    text.contains(&format!("{port}/udp")),
+                )
+            }
+            // `ufw` 未安装（spawn 失败）→ 不活跃。
+            Err(_) => (false, false),
+        };
+        let firewalld_active = matches!(
+            self.run(&["firewall-cmd", "--state"]),
+            Ok(out) if String::from_utf8_lossy(&out.stdout).trim() == "running"
+        );
+        let firewalld_port_allowed = matches!(
+            self.run(&["firewall-cmd", "--query-port", &format!("{port}/udp")]),
+            Ok(out) if String::from_utf8_lossy(&out.stdout).trim() == "yes"
+        );
+        direct_udp_firewall_allow_actions(
+            ufw_active,
+            ufw_port_allowed,
+            firewalld_active,
+            firewalld_port_allowed,
+            port,
+        )
+    }
+
+    /// 执行直连 UDP 端口放行（§12.4）。netns 钩子下跳过（同
+    /// [ensure_host_firewall_sync]）；直连关闭时端口规则保留无害（只开一个
+    /// UDP 端口），幂等重复执行。失败显式报错——不假装生效。
+    fn ensure_direct_udp_firewall_sync(&self, port: u16) -> Result<(), NetworkError> {
+        if self.netns.is_some() {
+            return Ok(());
+        }
+        for action in self.host_direct_udp_allow_plan(port) {
+            match action {
+                HostFirewallAction::UfwAllowPort { port } => {
+                    // `ufw allow 51820/udp`：规范形式（ufw status 同形展示）。
+                    self.run(&["ufw", "allow", &format!("{port}/udp")])?;
+                }
+                HostFirewallAction::FirewalldAllowPort { port } => {
+                    self.run(&[
+                        "firewall-cmd",
+                        "--zone=trusted",
+                        "--add-port",
+                        &format!("{port}/udp"),
+                    ])?;
+                }
+                HostFirewallAction::UfwAllowInOn { .. }
+                | HostFirewallAction::FirewalldTrustedInterface { .. } => {}
             }
         }
         Ok(())
@@ -2046,5 +2142,44 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn direct_udp_firewall_plan_is_idempotent_and_manager_gated() {
+        // 管理器未活跃 → 不动作；已放行 → 不动作（幂等）。
+        assert!(direct_udp_firewall_allow_actions(false, false, false, false, 51820).is_empty());
+        assert!(direct_udp_firewall_allow_actions(true, true, false, false, 51820).is_empty());
+        assert!(direct_udp_firewall_allow_actions(false, false, true, true, 51820).is_empty());
+
+        // ufw 活跃且端口未放行 → 按端口开。
+        assert_eq!(
+            direct_udp_firewall_allow_actions(true, false, false, false, 51820),
+            vec![HostFirewallAction::UfwAllowPort { port: 51820 }]
+        );
+
+        // firewalld 活跃且端口未放行 → trusted 端口开。
+        assert_eq!(
+            direct_udp_firewall_allow_actions(false, false, true, false, 51820),
+            vec![HostFirewallAction::FirewalldAllowPort { port: 51820 }]
+        );
+
+        // 双管理器都活跃且都未放行 → 两条，顺序确定（ufw 在前）。
+        assert_eq!(
+            direct_udp_firewall_allow_actions(true, false, true, false, 20000),
+            vec![
+                HostFirewallAction::UfwAllowPort { port: 20000 },
+                HostFirewallAction::FirewalldAllowPort { port: 20000 },
+            ]
+        );
+    }
+
+    #[test]
+    fn ufw_status_port_line_detects_direct_udp_allow() {
+        // `ufw status` 的端口行是 `51820/udp ALLOW IN Anywhere`；放行后
+        // contains("{port}/udp") 命中，plan 不再补规则（幂等）。
+        let allowed = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n51820/udp                 ALLOW IN    Anywhere\n";
+        assert!(allowed.to_lowercase().contains("51820/udp"));
+        let not_allowed = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\n";
+        assert!(!not_allowed.to_lowercase().contains("51820/udp"));
     }
 }
