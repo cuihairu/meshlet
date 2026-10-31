@@ -24,8 +24,8 @@ use std::path::Path;
 
 use meshlet_domain::{
     classify_probe, decide_direct_path, direct_peer_allowed_ips, on_probe, DirectDecision,
-    Ipv4Cidr, PeerEndpoints, PeerLinkAction, PeerLinkState, DIRECT_HEALTH_WINDOW_SECS,
-    DIRECT_PERSISTENT_KEEPALIVE_SECS, MAX_PROMOTE_ATTEMPTS,
+    DirectLinkStatus, Ipv4Cidr, PeerEndpoints, PeerLinkAction, PeerLinkState,
+    DIRECT_HEALTH_WINDOW_SECS, DIRECT_PERSISTENT_KEEPALIVE_SECS, MAX_PROMOTE_ATTEMPTS,
 };
 
 /// 单个对端的直连管理状态（域层状态机状态 + 对端 overlay 地址）。
@@ -35,6 +35,9 @@ pub struct DirectPeer {
     pub virtual_ipv4: Ipv4Addr,
     /// 当前直连链路状态。
     pub state: PeerLinkState,
+    /// 最近一次探测读到的直连握手年龄（秒）。探测时快照（不是心跳时再读
+    /// 内核——状态机的决策输入与上报信号同源）；`None` = pending 中或读数失败。
+    pub last_handshake_age_secs: Option<u64>,
 }
 
 /// 直连管理器：对端公钥 → 管理状态。跨周期持留（状态机要记住 pending 尝试次数）。
@@ -152,10 +155,27 @@ impl DirectManager {
                 DirectPeer {
                     virtual_ipv4: entry.virtual_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED),
                     state: PeerLinkState::Direct,
+                    last_handshake_age_secs: None,
                 },
             );
         }
         manager
+    }
+
+    /// §12.3 链路状态上报：每个在管对端一条（按公钥排序，确定性）。供心跳
+    /// 携带给 hub（控制台展示 P2P/中继）。Relay 状态的对端不在此列——它们
+    /// 没有直连链路，UI 按「中继」默认呈现。
+    pub fn link_statuses(&self) -> Vec<DirectLinkStatus> {
+        self.peers
+            .iter()
+            .filter(|(_, peer)| peer.state != PeerLinkState::Relay)
+            .map(|(key, peer)| DirectLinkStatus {
+                public_key: key.clone(),
+                virtual_ipv4: peer.virtual_ipv4,
+                link_state: peer.state.as_str().to_string(),
+                last_handshake_age_secs: peer.last_handshake_age_secs,
+            })
+            .collect()
     }
 }
 
@@ -216,6 +236,7 @@ pub fn plan_updates(
             DirectPeer {
                 virtual_ipv4: peer.virtual_ipv4,
                 state: next_state,
+                last_handshake_age_secs: handshake_ages.get(&key).copied(),
             },
         );
         match action {
@@ -333,6 +354,7 @@ mod tests {
             DirectPeer {
                 virtual_ipv4: "10.240.0.3".parse().unwrap(),
                 state: PeerLinkState::Direct,
+                last_handshake_age_secs: None,
             },
         );
         let mut ages = BTreeMap::new();
@@ -362,6 +384,7 @@ mod tests {
             DirectPeer {
                 virtual_ipv4: "10.240.0.3".parse().unwrap(),
                 state: PeerLinkState::Direct,
+                last_handshake_age_secs: None,
             },
         );
         let mut ages = BTreeMap::new();
@@ -389,6 +412,7 @@ mod tests {
             DirectPeer {
                 virtual_ipv4: "10.240.0.3".parse().unwrap(),
                 state: PeerLinkState::Direct,
+                last_handshake_age_secs: None,
             },
         );
         let updates = plan_updates(
@@ -403,6 +427,62 @@ mod tests {
             matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b")
         );
         assert!(current2.is_empty());
+    }
+
+    #[test]
+    fn link_statuses_report_active_direct_links_only() {
+        let mut manager = DirectManager::new();
+        // 无在管对端 → 空上报（UI 默认按中继呈现）。
+        assert!(manager.link_statuses().is_empty());
+
+        // Pending（第 1 周期）：状态 direct_pending，无握手读数。
+        let wanted = vec![peer("peer-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+        manager.apply_plan(
+            &wanted,
+            &[cidr(HOME)],
+            cidr(OVERLAY),
+            "10.240.0.2".parse().unwrap(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            manager.link_statuses(),
+            vec![DirectLinkStatus {
+                public_key: "peer-b".into(),
+                virtual_ipv4: "10.240.0.3".parse().unwrap(),
+                link_state: "direct_pending".into(),
+                last_handshake_age_secs: None,
+            }]
+        );
+
+        // 握手健康 → Direct，并携带探测时的握手年龄快照。
+        let mut ages = BTreeMap::new();
+        ages.insert("peer-b".into(), 7u64);
+        manager.apply_plan(
+            &wanted,
+            &[cidr(HOME)],
+            cidr(OVERLAY),
+            "10.240.0.2".parse().unwrap(),
+            &ages,
+        );
+        assert_eq!(
+            manager.link_statuses(),
+            vec![DirectLinkStatus {
+                public_key: "peer-b".into(),
+                virtual_ipv4: "10.240.0.3".parse().unwrap(),
+                link_state: "direct".into(),
+                last_handshake_age_secs: Some(7),
+            }]
+        );
+
+        // 回退（候选撤销）→ 不再上报该对端。
+        manager.apply_plan(
+            &[],
+            &[cidr(HOME)],
+            cidr(OVERLAY),
+            "10.240.0.2".parse().unwrap(),
+            &BTreeMap::new(),
+        );
+        assert!(manager.link_statuses().is_empty());
     }
 
     #[test]

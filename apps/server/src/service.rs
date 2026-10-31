@@ -10,9 +10,10 @@ use meshlet_api_types::ErrorResponse;
 use meshlet_domain::{
     generate_token, token_hash, AliasError, AliasMapping, AliasMappingId, BootstrapToken,
     DataplaneEvidence, DesiredStateStatus, Device, DeviceDirectState, DeviceId, DeviceRegistration,
-    DeviceRegistry, DirectEndpointReport, Invite, Ipam, Ipv4Cidr, LanRoute, LanRouteId, Network,
-    Platform, RegistryError, ReturnPathMode, RouteMode, Segment, SegmentGrant, SegmentGrantBuilder,
-    SegmentGrantId, SegmentGrantStatus, SegmentId, SegmentStatus, Timestamp, TranslationMode,
+    DeviceRegistry, DirectEndpointReport, DirectLinkStatus, Invite, Ipam, Ipv4Cidr, LanRoute,
+    LanRouteId, Network, Platform, RegistryError, ReturnPathMode, RouteMode, Segment, SegmentGrant,
+    SegmentGrantBuilder, SegmentGrantId, SegmentGrantStatus, SegmentId, SegmentStatus, Timestamp,
+    TranslationMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -69,6 +70,9 @@ pub struct DeviceView {
     pub presence_source: String,
     /// 最近一次心跳回传的数据面实测证据（§7.5）；`None` = 尚无上报。
     pub dataplane_evidence: Option<DataplaneEvidence>,
+    /// §12.3 P2P 链路状态上报：本设备对各对端的直连链路（direct /
+    /// direct_pending）。空 = 全中继或未上报；控制台据此展示 P2P/中继。
+    pub direct_links: Vec<DirectLinkStatus>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1528,6 +1532,7 @@ pub fn record_direct_state(
     device_id: &DeviceId,
     observed_ip: Option<Ipv4Addr>,
     report: Option<DirectEndpointReport>,
+    links: Vec<DirectLinkStatus>,
 ) {
     match report {
         Some(report) => {
@@ -1536,6 +1541,7 @@ pub fn record_direct_state(
                 DeviceDirectState {
                     observed_ip,
                     report: Some(report),
+                    links,
                 },
             );
         }
@@ -1588,7 +1594,14 @@ pub fn list_devices(state: &MeshState, network_id: &str) -> Result<Vec<DeviceVie
         .devices()
         .iter()
         .filter(|d| d.network_id.to_string() == network_id)
-        .map(|d| to_device_view(d, &now, &state.presence_thresholds))
+        .map(|d| {
+            let direct_links = state
+                .direct_states
+                .get(&d.id)
+                .map(|s| s.links.clone())
+                .unwrap_or_default();
+            to_device_view(d, &now, &state.presence_thresholds, direct_links)
+        })
         .collect())
 }
 
@@ -2566,6 +2579,7 @@ fn to_device_view(
     d: &Device,
     now: &Timestamp,
     thresholds: &meshlet_domain::PresenceThresholds,
+    direct_links: Vec<DirectLinkStatus>,
 ) -> DeviceView {
     let presence = evaluate_presence(d, now, thresholds);
     DeviceView {
@@ -2587,6 +2601,7 @@ fn to_device_view(
         online_state: presence.state.as_str().to_string(),
         presence_source: presence.source.as_str().to_string(),
         dataplane_evidence: d.dataplane_evidence.clone(),
+        direct_links,
     }
 }
 

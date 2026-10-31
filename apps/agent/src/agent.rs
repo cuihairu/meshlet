@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use meshlet_config::{AgentConfig, DataplaneConfig, DirectConnectConfig};
 use meshlet_domain::{
-    DataplaneEvidence, DirectEndpointReport, Ipv4Cidr, DIRECT_PROBE_INTERVAL_SECS,
+    DataplaneEvidence, DirectEndpointReport, DirectLinkStatus, Ipv4Cidr, DIRECT_PROBE_INTERVAL_SECS,
 };
 use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 use meshlet_publish::{ProbeReport, PublishPlan, Publisher};
@@ -694,12 +694,16 @@ impl Agent {
     pub fn heartbeat(&self, plan: Option<&DevicePlan>) -> Result<(), String> {
         let evidence = self.collect_evidence(plan);
         let direct = self.direct_report();
+        // §12.3：随心跳上报各对端直连链路状态（P2P/中继），供控制台展示。
+        // 状态是最近一次 30s 探测的结果——心跳比探测密，上报的是最后已知态。
+        let direct_links = self.direct.link_statuses();
         server::heartbeat(
             &self.server_url,
             &self.token,
             self.last_handshake(),
             Some(evidence),
             direct,
+            direct_links,
         )
         .map(|_| ())
         .map_err(|e| format!("heartbeat failed: {e}"))
@@ -713,6 +717,12 @@ impl Agent {
             &self.dataplane.direct_connect,
             self.backend.lan_addresses_sync().unwrap_or_default(),
         )
+    }
+
+    /// §12.3：本设备当前各对端直连链路状态（供心跳上报与诊断导出）。
+    /// 空 = 全中继（无直连链路）。状态是最近一次 30s 探测的结果。
+    pub fn direct_link_statuses(&self) -> Vec<DirectLinkStatus> {
+        self.direct.link_statuses()
     }
 
     /// 数据面实测证据（§7.5）：内核读数 + 大包探测。读数失败按 `None` 上报

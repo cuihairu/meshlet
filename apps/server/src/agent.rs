@@ -15,8 +15,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use meshlet_api_types::{ErrorCode, ErrorResponse};
 use meshlet_domain::{
-    generate_token, token_hash, DataplaneEvidence, DeviceId, DirectEndpointReport, PeerEndpoints,
-    Timestamp,
+    generate_token, token_hash, DataplaneEvidence, DeviceId, DirectEndpointReport,
+    DirectLinkStatus, PeerEndpoints, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -199,6 +199,10 @@ pub struct HeartbeatRequest {
     /// §12 P2P 直连候选端点（监听端口 + LAN 地址）；缺省表示未上报/已关闭直连。
     #[serde(default)]
     pub direct: Option<DirectEndpointReport>,
+    /// §12.3 链路状态上报：本设备对各对端的直连链路（direct / direct_pending）。
+    /// 空缺省 = 全中继/旧版未上报；hub 仅存内存，供控制台展示 P2P/中继。
+    #[serde(default)]
+    pub direct_links: Vec<DirectLinkStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -254,6 +258,7 @@ pub async fn heartbeat_handler(
                     &device_id,
                     direct_observed_ip(&addr),
                     req.direct.clone(),
+                    req.direct_links.clone(),
                 );
                 (Some(presence), network_id, Some(device))
             }

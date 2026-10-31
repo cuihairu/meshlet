@@ -179,6 +179,12 @@ export const en = {
   'devices.noEvidence': 'no evidence',
   'devices.updated': 'updated {time}',
   'devices.tunnelTitle': "dataplane readings from the device's last heartbeat",
+  'devices.colDirect': 'Direct links',
+  'devices.directOk': 'P2P',
+  'devices.directPending': 'P2P pending',
+  'devices.directRelay': 'all relay via hub',
+  'devices.directAge': 'last direct handshake {secs}s ago',
+  'devices.directAgeUnknown': 'no direct handshake yet',
 
   'aliases.title': 'Alias mappings',
   'aliases.intro1':

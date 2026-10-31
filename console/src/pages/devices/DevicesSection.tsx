@@ -108,6 +108,35 @@ export function DevicesSection({
       ),
     },
     {
+      title: t('devices.colDirect'),
+      key: 'direct',
+      render: (_, d) =>
+        d.direct_links.length === 0 ? (
+          <span className="muted" title={t('devices.directRelay')}>
+            {t('devices.directRelay')}
+          </span>
+        ) : (
+          d.direct_links.map((link) => {
+            const peer = devices?.find((p) => p.virtual_ipv4 === link.virtual_ipv4);
+            const label = peer ? peer.name : link.virtual_ipv4;
+            const direct = link.link_state === 'direct';
+            const title =
+              link.last_handshake_age_secs == null
+                ? t('devices.directAgeUnknown')
+                : t('devices.directAge', { secs: String(link.last_handshake_age_secs) });
+            return (
+              <Tag
+                key={link.public_key}
+                color={direct ? 'green' : 'orange'}
+                title={`${label} · ${title}`}
+              >
+                {label} · {direct ? t('devices.directOk') : t('devices.directPending')}
+              </Tag>
+            );
+          })
+        ),
+    },
+    {
       title: t('devices.colFingerprint'),
       key: 'fingerprint',
       render: (_, d) => <code className="fingerprint">{d.fingerprint.slice(0, 16)}…</code>,

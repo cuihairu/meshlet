@@ -46,6 +46,18 @@ export interface DataplaneEvidence {
   mtu_probe_payload: number | null;
 }
 
+/** Direct-connect link status this device reported for one peer (P2P, §12.3). */
+export interface DirectLink {
+  /** Peer WireGuard public key (unique per device). */
+  public_key: string;
+  /** Peer overlay address. */
+  virtual_ipv4: string;
+  /** direct | direct_pending — relay peers are not reported (absence = relay). */
+  link_state: 'direct' | 'direct_pending';
+  /** Seconds since the last direct handshake at probe time; null = no reading yet. */
+  last_handshake_age_secs: number | null;
+}
+
 export interface Device {
   id: string;
   network_id: string;
@@ -65,6 +77,8 @@ export interface Device {
   dataplane_evidence: DataplaneEvidence | null;
   /** Approval time for self-registered devices; null = enrolled via invite. */
   approved_at: string | null;
+  /** Direct links this device reported in its latest heartbeat; empty = all relay / not reported. */
+  direct_links: DirectLink[];
 }
 
 export interface InviteCreated {

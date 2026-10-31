@@ -87,6 +87,25 @@ async fn admin(
     (res.status(), res_body(res).await)
 }
 
+/// 管理员 GET（`GET /api/v1/networks/{id}/devices` 等只读端点）。
+async fn admin_get(app: &Router, cookie: &str, path: &str) -> serde_json::Value {
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(path)
+                .header("cookie", cookie)
+                .header("x-requested-with", "XMLHttpRequest")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    res_body(res).await
+}
+
 /// bootstrap → 建网络 → 建邀请 → 首台设备加入。返回 ctx 与首台设备 agent_token。
 async fn bootstrap(name: &str, public_key: &str) -> (Ctx, String) {
     let app = app().await;
@@ -184,6 +203,18 @@ async fn heartbeat(
     listen_port: u16,
     src: &str,
 ) -> StatusCode {
+    heartbeat_with_links(app, token, lan, listen_port, src, serde_json::json!([])).await
+}
+
+/// 同 [heartbeat]，另带 §12.3 链路状态上报（`direct_links`）。
+async fn heartbeat_with_links(
+    app: &Router,
+    token: &str,
+    lan: &[&str],
+    listen_port: u16,
+    src: &str,
+    direct_links: serde_json::Value,
+) -> StatusCode {
     let mut req = Request::builder()
         .method("POST")
         .uri("/api/v1/agent/heartbeat")
@@ -194,6 +225,7 @@ async fn heartbeat(
                 "last_handshake_at": null,
                 "dataplane": null,
                 "direct": { "listen_port": listen_port, "lan_addrs": lan },
+                "direct_links": direct_links,
             })
             .to_string(),
         ))
@@ -422,4 +454,68 @@ async fn agent_scoped_endpoints_excludes_self_and_unreported() {
     let (st, body) = agent_peers(&ctx.app, Some(&a_token)).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     assert!(body.as_array().unwrap().is_empty(), "{body}");
+}
+
+#[tokio::test]
+async fn heartbeat_link_statuses_surface_in_the_devices_view() {
+    let (ctx, a_token) = bootstrap("edge-links", "pub-edge-links").await;
+    let (b_id, _) = enroll(&ctx, "peer-links-b", "pub-peer-links-b").await;
+    let (c_id, _) = enroll(&ctx, "peer-links-c", "pub-peer-links-c").await;
+
+    // A 心跳携带候选 + §12.3 链路状态：对 B 直连已建立（握手 12s 前，健康），
+    // 对 C 建立中（pending，尚无读数）。
+    let links = serde_json::json!([
+        {
+            "public_key": "pub-peer-links-b",
+            "virtual_ipv4": "10.240.0.3",
+            "link_state": "direct",
+            "last_handshake_age_secs": 12
+        },
+        {
+            "public_key": "pub-peer-links-c",
+            "virtual_ipv4": "10.240.0.4",
+            "link_state": "direct_pending",
+            "last_handshake_age_secs": null
+        }
+    ]);
+    assert_eq!(
+        heartbeat_with_links(
+            &ctx.app,
+            &a_token,
+            &["192.168.1.50"],
+            51820,
+            "203.0.113.9:40000",
+            links
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    // 控制台读设备列表：A 行的 direct_links 原样可见（供 UI 展示 P2P/中继）。
+    let devices = admin_get(
+        &ctx.app,
+        &ctx.cookie,
+        &format!("/api/v1/networks/{}/devices", ctx.network_id),
+    )
+    .await;
+    let arr = devices.as_array().unwrap();
+    assert_eq!(arr.len(), 3, "{devices}");
+    let a_row = arr.iter().find(|d| d["name"] == "edge-links").unwrap();
+    let links_view = a_row["direct_links"].as_array().unwrap();
+    assert_eq!(links_view.len(), 2, "{devices}");
+    assert_eq!(links_view[0]["public_key"], "pub-peer-links-b", "{devices}");
+    assert_eq!(links_view[0]["link_state"], "direct", "{devices}");
+    assert_eq!(links_view[0]["last_handshake_age_secs"], 12, "{devices}");
+    assert_eq!(links_view[1]["public_key"], "pub-peer-links-c", "{devices}");
+    assert_eq!(links_view[1]["link_state"], "direct_pending", "{devices}");
+
+    // 未上报链路的设备：direct_links 为空数组（UI 默认按「中继」呈现）。
+    for id in [&b_id, &c_id] {
+        let row = arr.iter().find(|d| d["id"] == id.as_str()).unwrap();
+        assert_eq!(
+            row["direct_links"].as_array().unwrap().len(),
+            0,
+            "{devices}"
+        );
+    }
 }

@@ -121,6 +121,7 @@ pub fn heartbeat(
     last_handshake_at: Option<String>,
     dataplane: Option<DataplaneEvidence>,
     direct: Option<meshlet_domain::DirectEndpointReport>,
+    direct_links: Vec<meshlet_domain::DirectLinkStatus>,
 ) -> Result<String, String> {
     let url = format!(
         "{}/api/v1/agent/heartbeat",
@@ -130,6 +131,7 @@ pub fn heartbeat(
         "last_handshake_at": last_handshake_at,
         "dataplane": dataplane,
         "direct": direct,
+        "direct_links": direct_links,
     })
     .to_string();
     let req = ureq::post(&url)

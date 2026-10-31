@@ -23,6 +23,7 @@ const device: api.Device = {
   presence_source: 'agent_report',
   dataplane_evidence: null,
   approved_at: '2026-01-01T00:00:00Z',
+  direct_links: [],
 };
 
 const published: api.PublishForward = {

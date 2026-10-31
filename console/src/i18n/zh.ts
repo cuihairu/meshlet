@@ -177,6 +177,12 @@ export const zh: Dict = {
   'devices.noEvidence': '无证据',
   'devices.updated': '更新于 {time}',
   'devices.tunnelTitle': '来自设备最近心跳的数据面读数',
+  'devices.colDirect': '直连链路',
+  'devices.directOk': 'P2P',
+  'devices.directPending': 'P2P 建立中',
+  'devices.directRelay': '全部经 hub 中继',
+  'devices.directAge': '最近直连握手 {secs} 秒前',
+  'devices.directAgeUnknown': '尚无直连握手',
 
   'aliases.title': '别名映射',
   'aliases.intro1':

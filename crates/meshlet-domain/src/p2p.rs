@@ -160,6 +160,8 @@ pub struct DeviceDirectState {
     pub observed_ip: Option<Ipv4Addr>,
     /// 最近一次 [DirectEndpointReport]（`None` = 该 agent 版本未上报）。
     pub report: Option<DirectEndpointReport>,
+    /// §12.3 链路状态上报：本设备对各对端的直连链路（空 = 全中继/未上报）。
+    pub links: Vec<DirectLinkStatus>,
 }
 
 /// 把「hub 观测源地址 + agent 上报」合并成候选 endpoint 列表（纯函数）：
@@ -302,6 +304,18 @@ pub enum PeerLinkState {
     Direct,
 }
 
+impl PeerLinkState {
+    /// 状态上报契约字段（`relay` / `direct_pending` / `direct`），供控制台
+    /// 展示 P2P/中继。pending 的尝试次数是内部计数，不对外暴露。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PeerLinkState::Relay => "relay",
+            PeerLinkState::DirectPending { .. } => "direct_pending",
+            PeerLinkState::Direct => "direct",
+        }
+    }
+}
+
 /// 一次直连健康探测的结果（由执行层从 per-peer 握手年龄翻译，见
 /// [classify_probe]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,6 +396,22 @@ pub fn on_probe(
             _ => (PeerLinkState::Direct, PeerLinkAction::Keep),
         },
     }
+}
+
+/// 单对端直连链路状态上报（§12.3：agent 心跳携带，hub 仅存内存，供控制台
+/// 展示「P2P / 中继」）。以对端公钥为主键——服务端/控制台据此映射到设备。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DirectLinkStatus {
+    /// 对端 wg 公钥（设备唯一标识）。
+    pub public_key: String,
+    /// 对端 overlay 地址。
+    pub virtual_ipv4: Ipv4Addr,
+    /// `relay` / `direct_pending` / `direct`（[PeerLinkState::as_str]）。
+    pub link_state: String,
+    /// 最近一次探测读到的直连握手年龄（秒）；`None` = 尚无读数（pending 中 /
+    /// 读数失败）。链路新鲜度信号，非精确 RTT——WireGuard 不暴露每 peer RTT，
+    /// 握手年龄是设计采用的活度代理（[classify_probe] 同一口径）。
+    pub last_handshake_age_secs: Option<u64>,
 }
 
 #[cfg(test)]
@@ -566,6 +596,7 @@ mod tests {
             DeviceDirectState {
                 observed_ip: Some("203.0.113.1".parse().unwrap()),
                 report: Some(report(51820, &["192.168.1.2"])),
+                links: Vec::new(),
             },
         );
         direct.insert(
@@ -573,6 +604,7 @@ mod tests {
             DeviceDirectState {
                 observed_ip: Some("203.0.113.3".parse().unwrap()),
                 report: Some(report(51820, &[])),
+                links: Vec::new(),
             },
         );
 
@@ -602,6 +634,7 @@ mod tests {
             DeviceDirectState {
                 observed_ip: None,
                 report: Some(report(51820, &["192.168.1.2"])),
+                links: Vec::new(),
             },
         );
         direct.insert(
@@ -609,6 +642,7 @@ mod tests {
             DeviceDirectState {
                 observed_ip: None,
                 report: Some(report(51820, &["192.168.1.9"])),
+                links: Vec::new(),
             },
         );
 
@@ -627,6 +661,7 @@ mod tests {
             DeviceDirectState {
                 observed_ip: None,
                 report: Some(report(51820, &["192.168.1.2"])),
+                links: Vec::new(),
             },
         );
         let list = peer_endpoints_for(cidr(OVERLAY), &DeviceId("dev-b".into()), &devices, &direct);
@@ -843,5 +878,43 @@ mod tests {
         );
         assert!(json.contains(r#""kind":"lan""#));
         assert!(json.contains(r#""kind":"public""#));
+    }
+
+    #[test]
+    fn link_state_as_str_is_the_report_contract() {
+        assert_eq!(PeerLinkState::Relay.as_str(), "relay");
+        assert_eq!(
+            PeerLinkState::DirectPending { attempts: 3 }.as_str(),
+            "direct_pending"
+        );
+        assert_eq!(PeerLinkState::Direct.as_str(), "direct");
+    }
+
+    #[test]
+    fn direct_link_status_round_trips_as_json() {
+        let status = DirectLinkStatus {
+            public_key: "pub-b".into(),
+            virtual_ipv4: "10.240.0.3".parse().unwrap(),
+            link_state: PeerLinkState::Direct.as_str().into(),
+            last_handshake_age_secs: Some(12),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(
+            serde_json::from_str::<DirectLinkStatus>(&json).unwrap(),
+            status
+        );
+        assert!(json.contains(r#""link_state":"direct""#));
+
+        let pending = DirectLinkStatus {
+            public_key: "pub-c".into(),
+            virtual_ipv4: "10.240.0.4".parse().unwrap(),
+            link_state: PeerLinkState::DirectPending { attempts: 1 }.as_str().into(),
+            last_handshake_age_secs: None,
+        };
+        assert_eq!(
+            serde_json::from_str::<DirectLinkStatus>(&serde_json::to_string(&pending).unwrap())
+                .unwrap(),
+            pending
+        );
     }
 }

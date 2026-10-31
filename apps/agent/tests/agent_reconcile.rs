@@ -1225,6 +1225,33 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
     };
     assert!(established, "direct handshake A <-> B did not establish");
 
+    // ---- §12.3 状态上报：等一个「到期」探测周期（30s 节流真实生效，keepalive
+    // 15s 持续刷新握手 → 到期周期读到健康 → 状态机转 Direct）。届时链路状态
+    // 导出「direct」并携带探测时的握手年龄快照（供 hub/控制台展示）。------
+    let reported_direct = {
+        let start = Instant::now();
+        loop {
+            a_agent.reconcile_direct(&a_plan);
+            let statuses = a_agent.direct_link_statuses();
+            if statuses.first().is_some_and(|s| s.link_state == "direct") {
+                break Some(statuses);
+            }
+            if start.elapsed() >= Duration::from_secs(50) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    };
+    let statuses = reported_direct.expect("state machine promotes to Direct within a due probe");
+    assert_eq!(statuses.len(), 1, "one direct link reported: {statuses:?}");
+    assert_eq!(statuses[0].public_key, topo.b.public_key, "{statuses:?}");
+    assert!(
+        statuses[0]
+            .last_handshake_age_secs
+            .is_some_and(|age| age <= 35),
+        "healthy handshake age snapshotted: {statuses:?}"
+    );
+
     // ---- 关 hub 入口：A/B 的 hub peer endpoint 指到死地址。此后 A→B 仍通
     // 必然是直连 peer（/32 长前缀优先）承载，而非 hub。-------------------
     for node in [&topo.a, &topo.b] {
@@ -1296,6 +1323,12 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
         }
     };
     assert!(demoted, "direct peer must be demoted after the revoke");
+
+    // ---- §12.3 状态上报随回退清空：不再上报该对端（UI 默认按中继呈现）----
+    assert!(
+        a_agent.direct_link_statuses().is_empty(),
+        "no direct link reported after fallback"
+    );
 
     // ---- 恢复 hub 入口 → 经 hub 恢复 -------------------------------------
     for node in [&topo.a, &topo.b] {
