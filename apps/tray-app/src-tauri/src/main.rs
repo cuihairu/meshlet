@@ -89,18 +89,16 @@ fn main() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    match event {
-                        tauri::tray::TrayIconEvent::DoubleClick { .. }
-                        | tauri::tray::TrayIconEvent::Click {
-                            button: tauri::tray::MouseButton::Left,
-                            button_state: tauri::tray::MouseButtonState::Up,
-                            ..
-                        } => {
-                            open_settings_window(tray.app_handle());
-                        }
-                        _ => {}
+                .on_tray_icon_event(|tray, event| match event {
+                    tauri::tray::TrayIconEvent::DoubleClick { .. }
+                    | tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } => {
+                        open_settings_window(tray.app_handle());
                     }
+                    _ => {}
                 })
                 .build(app)?;
 
