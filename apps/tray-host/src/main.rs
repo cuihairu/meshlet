@@ -91,9 +91,10 @@ fn main() {
         let exit_text: Vec<u16> = "退出\0".encode_utf16().collect();
         AppendMenuW(hmenu, MF_STRING, 1, exit_text.as_ptr());
 
-        let mut last_mtime = std::fs::metadata(&status_path)
-            .and_then(|m| m.modified())
-            .ok();
+        // 启动时立即读取当前状态并应用图标
+        update_tray(&status_path, &mut nid);
+
+        let mut last_mtime: Option<std::time::SystemTime> = None;
 
         loop {
             if let Ok(meta) = std::fs::metadata(&status_path) {
@@ -113,6 +114,8 @@ fn main() {
                         let mut pt: POINT = std::mem::zeroed();
                         GetCursorPos(&mut pt);
                         SetForegroundWindow(hwnd);
+                        // Windows 要求 SetForegroundWindow 后发 WM_NULL 否则菜单不显示
+                        PostMessageW(hwnd, WM_NULL, 0, 0);
                         let cmd = TrackPopupMenuEx(
                             hmenu,
                             TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD,
