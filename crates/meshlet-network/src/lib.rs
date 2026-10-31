@@ -213,6 +213,8 @@ pub enum NetworkError {
 /// 供 Windows 后端 `device_plan_matches_sync` 使用（Linux 有内联的更强实现）；
 /// 把「隧道在但配置已漂移」从「误判一致」中分辨出来：
 /// ① 每个计划 peer 公钥必须存在于快照 peers（子集方向）；
+/// ①a. 每个计划 peer 的 `allowed_ips` 必须与快照读回的 allowed-ips 精确一致
+///    （顺序无关；与 Linux 同职责实现的身份级判定对齐）；
 /// ② 快照里每个 peer 必须是计划 peer 或 `extra_peer_keys`（无未受管漂移；
 ///    `extra_peer_keys` 是直连保留等允许存在的额外 peer）；
 /// ③ 每个计划路由 `destination` 必须在 `installed_routes`（CIDR 精确匹配）；
@@ -232,11 +234,15 @@ pub(crate) fn device_plan_matches(
         return false;
     }
     for peer in &plan.tunnel.peers {
-        if !snapshot
-            .peers
-            .iter()
-            .any(|p| p.public_key == peer.public_key)
-        {
+        if !snapshot.peers.iter().any(|p| {
+            p.public_key == peer.public_key
+                // 集合语义：wg dump 读回的 CIDR 顺序不稳定，按集合比较。
+                && p.allowed_ips.len() == peer.allowed_ips.len()
+                && peer
+                    .allowed_ips
+                    .iter()
+                    .all(|cidr| p.allowed_ips.contains(cidr))
+        }) {
             return false;
         }
     }
@@ -360,6 +366,16 @@ mod device_plan_matches_tests {
         let mut extra = empty_extra();
         extra.insert("pk-x".into());
         assert!(device_plan_matches(&p, &extra, &s));
+    }
+
+    #[test]
+    fn drifted_peer_allowed_ips_false() {
+        // 计划 peer 存在但内核 allowed-ips 已漂移（如被外部 wg set 改过）
+        // → 必须判定不匹配以触发重放纠回。
+        let p = plan(&["pk-a"], &[], None);
+        let mut s = snapshot(true, &["pk-a"], &[], None);
+        s.peers[0].allowed_ips = vec!["10.240.0.6/32".parse().unwrap()];
+        assert!(!device_plan_matches(&p, &empty_extra(), &s));
     }
 
     #[test]
