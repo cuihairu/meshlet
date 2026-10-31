@@ -8,8 +8,6 @@
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 #[cfg(windows)]
-use windows_sys::Win32::UI::WindowsAndMessaging::HICON;
-#[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::*;
 #[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -18,6 +16,8 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NOTIFYICONDATAW,
 };
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::HICON;
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -151,7 +151,12 @@ fn create_green_icon() -> HICON {
         let old = SelectObject(mem_dc, bmp);
 
         let brush = CreateSolidBrush(0x0000FF00); // green
-        let rect = RECT { left: 0, top: 0, right: 16, bottom: 16 };
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: 16,
+            bottom: 16,
+        };
         FillRect(mem_dc, &rect, brush);
         DeleteObject(brush as isize as _);
 
