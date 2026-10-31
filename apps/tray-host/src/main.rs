@@ -6,6 +6,8 @@
 //! 用法：`meshlet-tray-host <state_dir>`
 
 #[cfg(windows)]
+use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 #[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::*;
@@ -18,8 +20,6 @@ use windows_sys::Win32::UI::Shell::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
-#[cfg(windows)]
-use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 
 /// 全局状态，供窗口过程访问。
 #[cfg(windows)]
