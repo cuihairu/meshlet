@@ -100,10 +100,9 @@
     }
 
     async function load() {
+      if (!invoke) return; // IPC 不可用：保留「Tauri IPC 不可用」提示，不覆盖。
       try {
-        const status = await invoke('get_status', {
-          stateDir: 'C:/Users/admin/.meshlet'
-        });
+        const status = await invoke('get_status');
         const dot = document.getElementById('statusDot');
         const text = document.getElementById('statusText');
         text.textContent = status.tooltip || status.state || '未知';
@@ -128,6 +127,7 @@
     }
 
     async function save() {
+      if (!invoke) return; // IPC 不可用：不执行保存。
       try {
         await invoke('save_config', {
           serverUrl: document.getElementById('serverUrl').value,

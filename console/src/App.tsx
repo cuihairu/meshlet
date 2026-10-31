@@ -160,11 +160,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
       if (step === 'code') {
         // 第二步：带 TOTP 码重新提交登录。
         const user = await api.login(values.email, values.password, values.code);
-        if (user.two_factor_required) {
-          setError(t('auth.verifyCodeInvalid'));
-        } else {
-          onSignedIn(user);
-        }
+        onSignedIn(user);
       } else {
         const user =
           mode === 'login'
@@ -179,6 +175,13 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
       }
     } catch (e) {
       if (e instanceof ApiError) {
+        // 第二步错码：服务端返回 401（auth.rs 的 bad_totp_code 路径），而非
+        // two_factor_required。此时必须明确提示「验证码无效」，不能把它误当
+        // 成「缺码重新要求」而停留在 code 步且无提示。
+        if (step === 'code' && e.status === 401) {
+          setError(t('auth.verifyCodeInvalid'));
+          return;
+        }
         setError(`${e.code}: ${e.message}`);
         // Bootstrap closes once an admin exists — send the user to login.
         if (mode === 'bootstrap' && e.code === 'conflict') setMode('login');
