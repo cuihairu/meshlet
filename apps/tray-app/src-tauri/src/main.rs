@@ -135,8 +135,24 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running meshlet-tray");
+        .build(tauri::generate_context!())
+        .expect("error while running meshlet-tray")
+        .run(|app_handle, event| {
+            // 拦截设置窗口的关闭请求：隐藏而非退出应用
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } = event
+            {
+                if label == "settings" {
+                    api.prevent_close();
+                    if let Some(w) = app_handle.get_webview_window("settings") {
+                        let _ = w.hide();
+                    }
+                }
+            }
+        });
 }
 
 fn open_settings_window(app: &tauri::AppHandle) {
