@@ -26,12 +26,14 @@
 
 #![cfg(target_os = "linux")]
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use meshlet_agent::{Agent, Reason};
-use meshlet_config::{AgentConfig, DataplaneConfig};
+use meshlet_config::{AgentConfig, DataplaneConfig, DirectConnectConfig};
 use meshlet_domain::{AliasMapping, AliasMappingId, LanRouteId, NetworkId, TranslationMode};
 use meshlet_network::linux::LinuxNetworkBackend;
 use meshlet_network::nat::alias_nat_rules;
@@ -40,11 +42,12 @@ use meshlet_network::{DevicePlan, PeerConfig, RouteConfig, TunnelConfig};
 const PREFIX: &str = "mlg";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(40);
 
-/// 本进程的对象标签（`mlg<pid>`）：内核对象名是全局的，崩溃残留或并行跑的
-/// 另一份测试都不该让本轮撞名失败。接口名限长 15 字符，`mlg` + pid(≤7) + 3
-/// 字符仍在限内。
-fn tag() -> String {
-    format!("{PREFIX}{}", std::process::id())
+/// 本进程的对象标签（`mlg<pid><suffix>`）：内核对象名是全局的，崩溃残留或
+/// 并行跑的另一份测试都不该让本轮撞名失败。接口名限长 15 字符，`mlg` +
+/// pid(≤7) + suffix(1) 仍在限内；**suffix 按测试区分**——同一测试进程里并行
+/// 跑的多个用例共享 pid，没有 suffix 会撞名（bridge File exists）。
+fn tag(suffix: &str) -> String {
+    format!("{PREFIX}{}{suffix}", std::process::id())
 }
 
 // ---------------------------------------------------------------- 进程辅助
@@ -224,7 +227,7 @@ struct Topology {
 }
 
 impl Topology {
-    fn setup() -> Option<Topology> {
+    fn setup(suffix: &str) -> Option<Topology> {
         prerequisites()?;
         preflight_cleanup();
 
@@ -267,7 +270,7 @@ impl Topology {
             ("B", "10.98.0.30", "10.240.0.3"),
             ("G", "10.98.0.40", "10.240.0.4"),
         ];
-        let tag = tag();
+        let tag = tag(suffix);
         let mut nodes = Vec::new();
         for ((name, underlay, overlay), (private, public)) in defs.iter().zip(keys.iter()) {
             nodes.push(Node {
@@ -601,11 +604,113 @@ fn temp_state_dir(name: &str) -> String {
     dir.to_string_lossy().to_string()
 }
 
+/// 带直连配置的 agent（§12）：`direct_connect.enabled` + 固定 `listen_port`——
+/// reconcile 会把 wg 接口绑到该端口，直连对端才能按它发包。
+fn agent_in_direct(
+    node: &Node,
+    state_dir: &str,
+    listen_port: u16,
+    server_url: &str,
+    token: &str,
+) -> Agent {
+    let config = AgentConfig {
+        server_url: server_url.into(),
+        state_dir: state_dir.into(),
+        device_token: Some(token.into()),
+        bootstrap_token: None,
+        device_name: None,
+        tray: meshlet_config::TrayConfig::OFF,
+        upgrade: meshlet_config::UpgradeConfig::default(),
+        dataplane: DataplaneConfig {
+            enabled: true,
+            direct_connect: DirectConnectConfig {
+                enabled: true,
+                listen_port,
+            },
+            ..DataplaneConfig::default()
+        },
+    };
+    let backend = LinuxNetworkBackend::new()
+        .with_netns(&node.netns)
+        .with_sudo()
+        .with_interface("wg0");
+    Agent::with_backend(config, Some(node.private_key.clone()), backend)
+}
+
+/// 极简 agent API mock（std-only）：按 Bearer 凭证分发 `GET .../peers/endpoints`
+/// 的 JSON 应答（服务端视角的候选列表）。应答体可热切换（撤候选 → 回退）。
+/// 连接级语义（connection: close）与 ureq 兼容；每连接一个请求。
+/// 端点 mock 的可热切换应答池：`(服务端候选列表, 可变的剩余应答)`。
+type EndpointResponses = Arc<Mutex<Vec<(String, String)>>>;
+
+fn spawn_endpoint_server(responses: Vec<(String, String)>) -> (String, EndpointResponses) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+    let addr = listener.local_addr().unwrap();
+    let shared = Arc::new(Mutex::new(responses));
+    let map = Arc::clone(&shared);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = std::io::Read::read(&mut stream, &mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let text = String::from_utf8_lossy(&buf).to_string();
+            let token = text
+                .split("\r\n")
+                .find_map(|line| {
+                    let (k, v) = line.split_once(':')?;
+                    k.trim()
+                        .eq_ignore_ascii_case("authorization")
+                        .then(|| v.trim().to_string())
+                })
+                .unwrap_or_default();
+            let token = token
+                .strip_prefix("Bearer ")
+                .unwrap_or_default()
+                .to_string();
+            let body = map
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(t, _)| *t == token)
+                .map(|(_, body)| body.clone())
+                .unwrap_or_else(|| "[]".to_string());
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            std::io::Write::write_all(&mut stream, resp.as_bytes()).ok();
+        }
+    });
+    (format!("http://{addr}"), shared)
+}
+
+/// 服务端视角的单设备候选列表（`GET .../peers/endpoints` 应答体）。
+fn endpoints_body(public_key: &str, vip: &str, lan_ip: &str, port: u16) -> String {
+    serde_json::json!([{
+        "device_id": "dev-peer",
+        "public_key": public_key,
+        "virtual_ipv4": vip,
+        "endpoints": [{ "ip": lan_ip, "port": port, "kind": "lan" }],
+    }])
+    .to_string()
+}
+
 // ---------------------------------------------------------------- 测试
 
 #[test]
 fn agent_applies_the_plan_and_replays_after_a_reboot() {
-    let topo = match Topology::setup() {
+    let topo = match Topology::setup("r") {
         Some(t) => t,
         None => return, // 已打印 SKIP:
     };
@@ -616,7 +721,12 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         .with_sudo()
         .with_interface("wg0");
     hub_backend
-        .apply_device_plan_sync(&hub_plan(&topo), Some(topo.hub.private_key.clone()), None)
+        .apply_device_plan_sync(
+            &hub_plan(&topo),
+            Some(topo.hub.private_key.clone()),
+            None,
+            &BTreeSet::new(),
+        )
         .expect("hub applies its own plan");
     // 内核级 MTU 断言（#51①）：计划里的 MTU 真的落在了接口上。
     assert_eq!(
@@ -1005,7 +1115,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
     // teardown 并断言「跑完不留垃圾」（按本进程标签计，历史残留由
     // `preflight_cleanup` 负责）。
     drop(topo);
-    let tag = tag();
+    let tag = tag("r");
     let netns_text = String::from_utf8_lossy(&sudo(&["ip", "netns", "list"]).stdout).to_string();
     let links_text = String::from_utf8_lossy(&sudo(&["ip", "-br", "link"]).stdout).to_string();
     assert_eq!(
@@ -1019,6 +1129,213 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "leftover links after teardown:\n{links_text}"
     );
     for dir in [a_dir, b_dir, gw_dir] {
+        std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+/// §12 直连建立/回退的真机验收：走**完整真实流程**——mock agent API 下发候选
+/// → `reconcile_direct`（拉候选 → 域层状态机 → `wg set`）建立同网段直连 →
+/// hub 入口关闭仍通（证明走的是直连，/32 长前缀优先）→ 服务端撤候选 →
+/// 状态机回退并移除直连 → 经 hub 恢复。对账全程不得把直连对端当漂移清掉；
+/// 外来 peer 注入仍必须按漂移清除。
+#[test]
+fn agent_direct_connect_establishes_and_falls_back_to_hub() {
+    let topo = match Topology::setup("d") {
+        Some(t) => t,
+        None => return, // 已打印 SKIP:
+    };
+    let port: u16 = 51820;
+
+    // ---- mock agent API：A 看到候选 B，B 看到候选 A（各自 LAN endpoint）----
+    let (server_url, responses) = spawn_endpoint_server(vec![
+        (
+            "tok-a".into(),
+            endpoints_body(&topo.b.public_key, &topo.b.overlay, &topo.b.underlay, port),
+        ),
+        (
+            "tok-b".into(),
+            endpoints_body(&topo.a.public_key, &topo.a.overlay, &topo.a.underlay, port),
+        ),
+    ]);
+
+    // ---- hub 侧先行（server 数据面） --------------------------------------
+    let mut hub_backend = LinuxNetworkBackend::new()
+        .with_netns(&topo.hub.netns)
+        .with_sudo()
+        .with_interface("wg0");
+    hub_backend
+        .apply_device_plan_sync(
+            &hub_plan(&topo),
+            Some(topo.hub.private_key.clone()),
+            None,
+            &BTreeSet::new(),
+        )
+        .expect("hub applies its own plan");
+
+    // ---- A、B 各起一个带直连配置的 agent：reconcile 把 wg0 绑到直连端口 ----
+    let a_dir = temp_state_dir("direct-a");
+    let b_dir = temp_state_dir("direct-b");
+    let mut a_agent = agent_in_direct(&topo.a, &a_dir, port, &server_url, "tok-a");
+    let mut b_agent = agent_in_direct(&topo.b, &b_dir, port, &server_url, "tok-b");
+    let a_plan = leaf_plan(
+        &topo.a,
+        &topo.hub,
+        &["10.240.0.0/16"],
+        &[],
+        Vec::new(),
+        "hash-a-d",
+    );
+    let b_plan = leaf_plan(
+        &topo.b,
+        &topo.hub,
+        &["10.240.0.0/16"],
+        &[],
+        Vec::new(),
+        "hash-b-d",
+    );
+    a_agent.reconcile(&a_plan).expect("A applies hub plan");
+    b_agent.reconcile(&b_plan).expect("B applies hub plan");
+    assert!(topo.wait_handshake(&topo.a.netns), "A hub handshake");
+    assert!(topo.wait_handshake(&topo.b.netns), "B hub handshake");
+    assert!(
+        topo.ping_within(&topo.a.netns, &topo.b.overlay, HANDSHAKE_TIMEOUT),
+        "A -> B via hub"
+    );
+    // ---- 真实直连探测一轮（拉候选 → SameLan 决策 → wg set 下发）----------
+    a_agent.reconcile_direct(&a_plan);
+    b_agent.reconcile_direct(&b_plan);
+
+    // 直连握手建立（keepalive 15s 触发；域层健康窗口 35s 判健康）。
+    let a_backend = LinuxNetworkBackend::new()
+        .with_netns(&topo.a.netns)
+        .with_sudo()
+        .with_interface("wg0");
+    let established = {
+        let start = Instant::now();
+        loop {
+            let ages = a_backend.handshake_ages_sync().expect("A handshake ages");
+            if ages.get(&topo.b.public_key).is_some_and(|age| *age <= 35) {
+                break true;
+            }
+            if start.elapsed() >= HANDSHAKE_TIMEOUT {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    };
+    assert!(established, "direct handshake A <-> B did not establish");
+
+    // ---- 关 hub 入口：A/B 的 hub peer endpoint 指到死地址。此后 A→B 仍通
+    // 必然是直连 peer（/32 长前缀优先）承载，而非 hub。-------------------
+    for node in [&topo.a, &topo.b] {
+        require_ok(
+            &netns_exec(
+                &node.netns,
+                &[
+                    "wg",
+                    "set",
+                    "wg0",
+                    "peer",
+                    &topo.hub.public_key,
+                    "endpoint",
+                    "10.98.0.99:16180",
+                ],
+            ),
+            "kill hub endpoint",
+        );
+    }
+    assert!(
+        topo.ping_within(&topo.a.netns, &topo.b.overlay, HANDSHAKE_TIMEOUT),
+        "A -> B via direct with hub down"
+    );
+    assert!(
+        topo.ping_within(&topo.b.netns, &topo.a.overlay, HANDSHAKE_TIMEOUT),
+        "B -> A via direct with hub down"
+    );
+
+    // ---- 直连对端不得被对账当漂移清掉：reconcile 后仍在、且不重放 -------
+    let decision = a_agent
+        .reconcile(&a_plan)
+        .expect("A reconcile with a direct peer");
+    assert!(
+        !decision.needs_apply,
+        "a direct peer must not force a replay: {:?}",
+        decision.reason
+    );
+    assert!(
+        a_backend
+            .handshake_ages_sync()
+            .unwrap()
+            .contains_key(&topo.b.public_key),
+        "direct peer survived reconcile"
+    );
+
+    // ---- 服务端撤候选（B 下线）→ 下一探测周期状态机回退并移除直连 -------
+    responses
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .for_each(|(_, body)| *body = "[]".into());
+    let demoted = {
+        let start = Instant::now();
+        loop {
+            // 30s 节流内新周期不触发，直接再驱动一轮（测试不受节流约束语义）。
+            a_agent.reconcile_direct(&a_plan);
+            b_agent.reconcile_direct(&b_plan);
+            if !a_backend
+                .handshake_ages_sync()
+                .unwrap()
+                .contains_key(&topo.b.public_key)
+            {
+                break true;
+            }
+            if start.elapsed() >= Duration::from_secs(60) {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    };
+    assert!(demoted, "direct peer must be demoted after the revoke");
+
+    // ---- 恢复 hub 入口 → 经 hub 恢复 -------------------------------------
+    for node in [&topo.a, &topo.b] {
+        require_ok(
+            &netns_exec(
+                &node.netns,
+                &[
+                    "wg",
+                    "set",
+                    "wg0",
+                    "peer",
+                    &topo.hub.public_key,
+                    "endpoint",
+                    &format!("{}:16180", topo.hub.underlay),
+                ],
+            ),
+            "restore hub endpoint",
+        );
+    }
+    assert!(
+        topo.ping_within(&topo.a.netns, &topo.b.overlay, HANDSHAKE_TIMEOUT),
+        "A -> B via hub after fallback"
+    );
+    assert!(
+        topo.ping_within(&topo.b.netns, &topo.a.overlay, HANDSHAKE_TIMEOUT),
+        "B -> A via hub after fallback"
+    );
+
+    // ---- 回退后对账不再持有直连保留集，也不重放（缺失的直连对端不算漂移）
+    let decision = a_agent
+        .reconcile(&a_plan)
+        .expect("A reconcile after fallback");
+    assert!(
+        !decision.needs_apply,
+        "no replay after fallback: {:?}",
+        decision.reason
+    );
+
+    drop(topo);
+    for dir in [a_dir, b_dir] {
         std::fs::remove_dir_all(dir).ok();
     }
 }

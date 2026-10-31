@@ -5,13 +5,16 @@
 //! 本模块只负责**何时**调用它与**喂什么配置**（计划来自 server，绝非本地拼装
 //! 的 Shell 命令，§16.4）。
 
+use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
 use meshlet_config::{AgentConfig, DataplaneConfig, DirectConnectConfig};
-use meshlet_domain::{DataplaneEvidence, DirectEndpointReport};
+use meshlet_domain::{
+    DataplaneEvidence, DirectEndpointReport, Ipv4Cidr, DIRECT_PROBE_INTERVAL_SECS,
+};
 use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 use meshlet_publish::{ProbeReport, PublishPlan, Publisher};
 
@@ -20,6 +23,7 @@ use crate::dbus::DesktopClient;
 use crate::desktop::{desktop_trigger, DesktopPublish, DesktopTrigger};
 #[cfg(not(target_os = "linux"))]
 use crate::desktop_unsupported::DesktopClient;
+use crate::direct::{keepalive_secs, DirectManager, DirectUpdate};
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
 use crate::self_update;
 use crate::server;
@@ -54,6 +58,12 @@ pub struct Agent {
     device_name: Option<String>,
     /// 服务发布运行时（R-06）：转发/HTTP/DNS 监听 + 探针排程 + 未送达报告。
     publish: PublishRuntime,
+    /// §12 P2P 直连管理器：每对端的链路状态机 + 重启恢复（ledger）。
+    direct: DirectManager,
+    /// 直连 keep set 的持久化文件（`{state_dir}/direct.json`）。
+    direct_ledger: std::path::PathBuf,
+    /// 上次直连探测时刻（30s 节流；`None` = 未探测过，首轮即探）。
+    last_direct_probe: Option<Instant>,
 }
 
 /// 发布运行时（R-06）：一个单 worker 的 tokio runtime 承载
@@ -149,6 +159,9 @@ impl Agent {
             private_key,
             backend,
             publish: PublishRuntime::new(),
+            direct_ledger: direct_ledger_path(&config.state_dir),
+            direct: DirectManager::load(&direct_ledger_path(&config.state_dir)),
+            last_direct_probe: None,
         }
     }
 
@@ -209,6 +222,9 @@ impl Agent {
         self.report_publish_health();
         let decision = result?;
         let control_ok = self.report_heartbeat(Some(&plan));
+        // §12：心跳（带本机直连候选）之后探直连——服务端先看到本机端点，
+        // 下一轮拉候选时数据已就位；直连失败只记日志，不影响数据面循环。
+        self.reconcile_direct(&plan);
         // 托盘态：reason × 控制通道 × 隧道握手（映射依据见 [`crate::tray`]）。
         self.publish_tray(TrayState::derive(
             decision.reason,
@@ -398,8 +414,18 @@ impl Agent {
             .backend
             .inspect_sync()
             .map_err(|e| format!("inspect the local network state: {e}"))?;
+        // §12：直连保留集来自**ledger 恢复 + 探测周期状态机**，不从内核猜——
+        // 内核里非 hub 的 peer 若非自有直连，必须按漂移清掉（外来 peer 注入
+        // 的真机验收）。keep set 传给内核对账：直连对端被保留，不被重放冲掉。
+        let direct_keys = self.direct.keep_keys();
         let mut local_plan = plan_with_hub_endpoint(plan, self.dataplane.hub_endpoint.as_deref());
         local_plan.tunnel.name = self.dataplane.interface.clone();
+        // §12：直连开启时把 wg 接口绑定到配置的监听端口——直连对端按
+        // `listen_port` 发包（`direct_report` 上报的正是它）。本地改写不影响
+        // 期望哈希（与 hub_endpoint 兜底同一口径）。
+        if self.dataplane.direct_connect.enabled {
+            local_plan.tunnel.listen_port = Some(self.dataplane.direct_connect.listen_port);
+        }
         for route in &mut local_plan.routes {
             route.interface = self.dataplane.interface.clone();
         }
@@ -411,11 +437,11 @@ impl Agent {
             }
         }
         local_plan.tunnel.private_key = self.private_key.clone();
-        let mut decision = needs_apply(&state, &snapshot, plan);
+        let mut decision = needs_apply(&state, &snapshot, plan, &direct_keys);
         if !decision.needs_apply
             && !self
                 .backend
-                .device_plan_matches_sync(&local_plan)
+                .device_plan_matches_sync(&local_plan, &direct_keys)
                 .unwrap_or(false)
         {
             decision = Decision {
@@ -452,9 +478,12 @@ impl Agent {
         // hub 入口地址兜底（§16.4：服务端不下发 agent 的网络位置）：计划未带
         // endpoint 时用本地 `[dataplane] hub_endpoint` 填充——只影响本次内核下
         // 发，账本仍按服务端原计划记（desired_config_hash 不因此变化）。
-        let transition =
-            self.backend
-                .apply_device_plan_sync(&local_plan, self.private_key.clone(), None);
+        let transition = self.backend.apply_device_plan_sync(
+            &local_plan,
+            self.private_key.clone(),
+            None,
+            &direct_keys,
+        );
         if let Err(error) = transition {
             return Err(self.fail_transition(
                 last_good.as_ref(),
@@ -463,7 +492,7 @@ impl Agent {
         }
         let matches = self
             .backend
-            .device_plan_matches_sync(&local_plan)
+            .device_plan_matches_sync(&local_plan, &direct_keys)
             .map_err(|error| {
                 self.fail_transition(
                     last_good.as_ref(),
@@ -497,14 +526,17 @@ impl Agent {
         match last_good {
             None => transition_error,
             Some(last_good) => {
-                match self
-                    .backend
-                    .apply_device_plan_sync(last_good, self.private_key.clone(), None)
-                {
+                let direct_keys = self.direct.keep_keys();
+                match self.backend.apply_device_plan_sync(
+                    last_good,
+                    self.private_key.clone(),
+                    None,
+                    &direct_keys,
+                ) {
                     Ok(()) => {
                         let restored = self
                             .backend
-                            .device_plan_matches_sync(last_good)
+                            .device_plan_matches_sync(last_good, &direct_keys)
                             .map_err(|e| e.to_string());
                         match restored {
                         Ok(true) => {
@@ -530,6 +562,128 @@ impl Agent {
                         );
                         format!("{transition_error}; restore failed: {restore_error}")
                     }
+                }
+            }
+        }
+    }
+
+    /// §12 P2P 直连探测循环（30s 节流）：拉候选 → 域层状态机 → `wg set` 下发。
+    ///
+    /// 直连是**增益**：所有失败（拉候选失败 / LAN 枚举失败 / 握手读数失败 /
+    /// `wg set` 失败）只记日志，绝不打断 hub 中继路径——对端仍按 hub 整段
+    /// 路由可达，下一周期重试。开关关闭时清空已建立的直连（交还 hub，由
+    /// 内核对账的漂移清理兜底）。
+    ///
+    /// 生产由 [`Agent::tick`] 在心跳之后调度（服务端先看到本机直连候选）；
+    /// netns 集成测试可直接驱动一轮。
+    pub fn reconcile_direct(&mut self, plan: &DevicePlan) {
+        if !self.dataplane.direct_connect.enabled {
+            let updates = self.direct.demote_all();
+            if !updates.is_empty() {
+                for update in &updates {
+                    self.apply_direct_update(update);
+                }
+                self.save_direct_ledger();
+            }
+            self.last_direct_probe = Some(Instant::now());
+            return;
+        }
+        let due = self
+            .last_direct_probe
+            .map(|last| last.elapsed().as_secs() >= DIRECT_PROBE_INTERVAL_SECS)
+            .unwrap_or(true);
+        if !due {
+            return;
+        }
+        self.last_direct_probe = Some(Instant::now());
+        let wanted = match server::fetch_peer_endpoints(&self.server_url, &self.token) {
+            Ok(wanted) => wanted,
+            Err(e) => {
+                tracing::warn!(error = %e, "direct probe: peer endpoints unavailable");
+                return;
+            }
+        };
+        let Some(scope) = direct_scope(plan) else {
+            tracing::warn!("direct probe: no routable scope in the plan; keeping hub relay");
+            return;
+        };
+        let my_lan_subnets = match self.backend.lan_subnets_sync() {
+            Ok(subnets) => subnets,
+            Err(e) => {
+                tracing::warn!(error = %e, "direct probe: lan subnets unavailable");
+                Vec::new()
+            }
+        };
+        let handshake_ages = match self.backend.handshake_ages_sync() {
+            Ok(ages) => ages,
+            Err(e) => {
+                tracing::warn!(error = %e, "direct probe: handshake ages unavailable");
+                BTreeMap::new()
+            }
+        };
+        let updates = self.direct.apply_plan(
+            &wanted,
+            &my_lan_subnets,
+            scope,
+            plan.tunnel.address,
+            &handshake_ages,
+        );
+        if !updates.is_empty() {
+            for update in &updates {
+                self.apply_direct_update(update);
+            }
+            self.save_direct_ledger();
+        }
+    }
+
+    /// 持久化直连 keep set（§12 重启恢复）：失败只记日志——ledger 丢失顶多
+    /// 多一个探测周期重建直连，绝不影响数据面循环。
+    fn save_direct_ledger(&self) {
+        if let Err(e) = self.direct.save(&self.direct_ledger) {
+            tracing::warn!(
+                error = %e,
+                "direct ledger not written; keep set may be rebuilt on restart"
+            );
+        }
+    }
+
+    /// 应用单个直连动作（`wg set`）：失败只记日志——直连是增益，绝不回滚
+    /// hub（对端仍按 hub 整段路由可达）。
+    fn apply_direct_update(&self, update: &DirectUpdate) {
+        match update {
+            DirectUpdate::Promote {
+                public_key,
+                allowed_ips,
+                endpoint,
+            } => {
+                if let Err(e) = self.backend.set_direct_peer_sync(
+                    public_key,
+                    allowed_ips,
+                    *endpoint,
+                    keepalive_secs(),
+                ) {
+                    tracing::warn!(
+                        public_key = %public_key,
+                        error = %e,
+                        "direct promote failed; keeping hub relay"
+                    );
+                } else {
+                    tracing::info!(
+                        public_key = %public_key,
+                        endpoint = %endpoint,
+                        "direct link promoted"
+                    );
+                }
+            }
+            DirectUpdate::Demote { public_key } => {
+                if let Err(e) = self.backend.remove_peer_sync(public_key) {
+                    tracing::warn!(
+                        public_key = %public_key,
+                        error = %e,
+                        "direct demote failed; hub relay already covers this peer"
+                    );
+                } else {
+                    tracing::info!(public_key = %public_key, "direct link demoted to hub relay");
                 }
             }
         }
@@ -603,6 +757,28 @@ impl Agent {
             .max()?;
         chrono::DateTime::from_timestamp(ts, 0).map(|d| d.to_rfc3339())
     }
+}
+
+/// 直连 keep set 持久化路径（与 `applied.json` 同目录；§12 重启恢复）。
+fn direct_ledger_path(state_dir: &str) -> std::path::PathBuf {
+    Path::new(state_dir).join("direct.json")
+}
+
+/// §12：本设备可路由网段 = hub peer 的 AllowedIPs 中**包含本设备 overlay
+/// 地址**的那条。分段网络时 hub peer 有多条 AllowedIPs 且 `normalize` 排序
+/// 不保证（`allowed_ips[0]` 不一定是所属段），包含关系才是唯一可靠判据；
+/// 与 `peer_endpoints_for` 的 scope 推导同一口径。取不到（无 hub peer /
+/// 地址越出所有段）返回 `None`——无法安全下发 `/32`，保持 hub 中继。
+/// 本设备可路由网段（直连 AllowedIPs `/32` 的冲突边界）：hub peer 的
+/// AllowedIPs 里**最长前缀**且包含本机 overlay 地址的 CIDR。多段重叠时
+/// 最具体的才是本机自己的段（宽段可能覆盖其他段）。
+fn direct_scope(plan: &DevicePlan) -> Option<Ipv4Cidr> {
+    plan.tunnel
+        .peers
+        .iter()
+        .flat_map(|peer| peer.allowed_ips.iter().copied())
+        .filter(|cidr| cidr.contains(plan.tunnel.address))
+        .max_by_key(|cidr| cidr.prefix_len())
 }
 
 /// 本设备私钥（ADR-010：只在本机文件里，服务端永不携带；未配置则保留接口现有私钥）。
@@ -831,6 +1007,42 @@ mod tests {
         assert_eq!(probe_decision(&p), None);
         let p = probe_plan(Some(28), Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(probe_decision(&p), None);
+    }
+
+    #[test]
+    fn direct_scope_is_the_allowed_cidr_that_contains_own_address() {
+        let hub = |allowed: &[&str]| meshlet_network::PeerConfig {
+            public_key: "hub-pub".into(),
+            allowed_ips: allowed.iter().map(|s| s.parse().unwrap()).collect(),
+            endpoint: None,
+            persistent_keepalive_secs: None,
+        };
+
+        // 单段：唯一 AllowedIPs 即 scope。
+        let mut p = probe_plan(None, Some("10.240.0.1"), "10.240.0.2");
+        p.tunnel.peers.push(hub(&["10.240.0.0/16"]));
+        assert_eq!(
+            direct_scope(&p),
+            Some("10.240.0.0/16".parse::<Ipv4Cidr>().unwrap())
+        );
+
+        // 分段路由：AllowedIPs 多条且排序不保证——包含自身地址的那条才是 scope
+        //（不是 `allowed_ips[0]`）。
+        let mut p = probe_plan(None, Some("10.240.0.1"), "10.240.1.2");
+        p.tunnel
+            .peers
+            .push(hub(&["10.240.0.0/16", "10.240.1.0/24"]));
+        assert_eq!(
+            direct_scope(&p),
+            Some("10.240.1.0/24".parse::<Ipv4Cidr>().unwrap())
+        );
+
+        // 无 hub peer / 自身地址越出所有段：None（保持 hub 中继，不猜）。
+        let p = probe_plan(None, Some("10.240.0.1"), "10.240.0.2");
+        assert_eq!(direct_scope(&p), None);
+        let mut p = probe_plan(None, Some("10.240.0.1"), "10.250.0.2");
+        p.tunnel.peers.push(hub(&["10.240.0.0/16"]));
+        assert_eq!(direct_scope(&p), None);
     }
 
     #[test]

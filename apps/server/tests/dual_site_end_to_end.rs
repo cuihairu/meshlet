@@ -1651,6 +1651,15 @@ fn tick_agent(
         dataplane: meshlet_config::DataplaneConfig {
             enabled: true,
             hub_endpoint: hub_endpoint.map(str::to_string),
+            // 本测试验的是「发布→路由→转发」，不是 P2P 直连：直连留给
+            // agent_reconcile 的直连专测（那里按真实节流驱动多轮探测）。
+            // 这里每个 agent 只 tick 一轮，直连探测会看到不对称的候选集
+            // （先 tick 的设备还没等到别人的上报），promote 出死链路反而
+            // 干扰 hub 路径的验收。
+            direct_connect: meshlet_config::DirectConnectConfig {
+                enabled: false,
+                ..meshlet_config::DirectConnectConfig::default()
+            },
             ..meshlet_config::DataplaneConfig::default()
         },
     };

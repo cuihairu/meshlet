@@ -19,6 +19,8 @@
 //! （`netns=None, sudo=false`）；集成测试在无特权 runner 上用 `sudo -n` 进
 //! 入 netns 操作（`with_netns(..).with_sudo()`）。
 
+use std::collections::BTreeMap;
+use std::net::SocketAddrV4;
 use std::process::{Command, Output, Stdio};
 
 use meshlet_domain::Ipv4Cidr;
@@ -106,6 +108,30 @@ fn parse_ip_octet_addrs(output: &str) -> Vec<(String, Ipv4Addr)> {
         .collect()
 }
 
+/// 同 [`parse_ip_octet_addrs`]，但保留前缀长度（`192.168.1.50/24` → 网段）。
+/// 仅解析合法网段（前缀 0–32）；解析失败的行跳过（调用方按「该子网不可知」
+/// 处理，不臆造）。
+fn parse_ip_octet_subnets(output: &str) -> Vec<(String, meshlet_domain::Ipv4Cidr)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 4 || fields[2] != "inet" {
+                return None;
+            }
+            let ifname = fields[1].to_string();
+            // 接口地址形如 `10.98.0.20/24`——主机位恒非零，不能用
+            // `Ipv4Cidr::from_str`（其要求规范化网络地址）；按「地址+前缀」
+            // 掩出所属网段（`10.98.0.0/24`）。
+            let (addr, prefix) = fields[3].split_once('/')?;
+            let addr: std::net::Ipv4Addr = addr.parse().ok()?;
+            let prefix: u8 = prefix.parse().ok()?;
+            let subnet = meshlet_domain::Ipv4Cidr::from_host_address(addr, prefix).ok()?;
+            Some((ifname, subnet))
+        })
+        .collect()
+}
+
 /// 候选 LAN 接口：排除回环、受管隧道，以及容器/虚拟化/vpn 等不会承载
 /// 对端直连的虚拟接口（`docker*`/`br-*`/`veth*`/`virbr*`/`vmbr*`/
 /// `tailscale*`/`wg*`）。
@@ -134,6 +160,32 @@ fn enforced_tunnel_mtu(planned: Option<u32>) -> u32 {
 /// is seen as drifted on the next reconcile instead of matching the plan.
 fn mtu_matches_planned(link_show: &str, planned: Option<u32>) -> bool {
     parse_link_mtu(link_show) == Some(enforced_tunnel_mtu(planned))
+}
+
+/// 解析 `wg show <if> latest-handshakes` 输出（每行 `公钥 握手unix时间 距今秒`）：
+/// 公钥 → 距今秒数。第三列优先（WireGuard 自己算好的年龄）；缺第三列时按
+/// `now - 握手时间` 兜底。握手时间为 0（从未握手）的 peer 不在输出里——
+/// 调用方按「无读数」处理（§12 `classify_probe` 的 Unknown/Unhealthy 之别）。
+fn parse_handshake_ages(text: &str, now_secs: u64) -> BTreeMap<String, u64> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let key = fields.next()?;
+            // 公钥 44 字符 base64 且以 `=` 结尾（与 dump 行解析同一判据）。
+            if key.len() != 44 || !key.ends_with('=') {
+                return None;
+            }
+            let ts: u64 = fields.next()?.parse().ok()?;
+            if ts == 0 {
+                return None;
+            }
+            let age = fields
+                .next()
+                .and_then(|ago| ago.parse::<u64>().ok())
+                .unwrap_or_else(|| now_secs.saturating_sub(ts));
+            Some((key.to_string(), age))
+        })
+        .collect()
 }
 
 /// Kernel-selected source for the actual destination, not an address inside its prefix.
@@ -326,7 +378,16 @@ impl LinuxNetworkBackend {
     }
 
     /// 对账式 peer 下发：目标集之外的 peer 显式移除（撤销即失效，§11.5）。
-    fn reconcile_peers(&self, config: &TunnelConfig) -> Result<(), NetworkError> {
+    ///
+    /// `keep_keys` 是 P2P 直连对端（§12）：它们由 agent 的直连管理器单独
+    /// 增删（`set_direct_peer_sync` / `remove_peer_sync`），不属于服务端计划。
+    /// 计划重放时把它们当「保留集」，**只不删**、不重刷——避免与服务端期望
+    /// 哈希无关的直连态在每次配置变更时被冲掉。
+    fn reconcile_peers(
+        &self,
+        config: &TunnelConfig,
+        keep_keys: &BTreeSet<String>,
+    ) -> Result<(), NetworkError> {
         let existing = self.existing_peers()?;
         for peer in &config.peers {
             let allowed = peer
@@ -354,10 +415,72 @@ impl LinuxNetworkBackend {
             self.run(&argv)?;
         }
         for key in existing {
-            if !config.peers.iter().any(|p| p.public_key == key) {
-                self.run(&["wg", "set", &self.interface, "peer", &key, "remove"])?;
+            if config.peers.iter().any(|p| p.public_key == key) {
+                continue;
             }
+            if keep_keys.contains(&key) {
+                continue;
+            }
+            self.run(&["wg", "set", &self.interface, "peer", &key, "remove"])?;
         }
+        Ok(())
+    }
+
+    /// 各对端最近一次握手距今秒数（`wg show <if> latest-handshakes`）：
+    /// 公钥 → 距今秒数。从未握手的 peer 不在输出里（WireGuard 输出 0，
+    /// 这里按「无读数」跳过）。P2P 健康探测用（§12）。
+    pub fn handshake_ages_sync(&self) -> Result<BTreeMap<String, u64>, NetworkError> {
+        let out = self.run(&["wg", "show", &self.interface, "latest-handshakes"])?;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok(parse_handshake_ages(
+            &String::from_utf8_lossy(&out.stdout),
+            now_secs,
+        ))
+    }
+
+    /// 直连 peer 下发（P2P，§12）：`allowed-ips` 只写对端 overlay `/32` +
+    /// `endpoint`（直连地址）+ `persistent-keepalive`（既开 NAT 打洞的洞，
+    /// 也是健康探测的心跳）。幂等：重复调用结果一致。
+    ///
+    /// `/32` 最长前缀匹配天然优先于 hub peer 的整段路由，故不触碰 hub 配置
+    /// 也能把流量引到直连路径。
+    pub fn set_direct_peer_sync(
+        &self,
+        public_key: &str,
+        allowed_ips: &[Ipv4Cidr],
+        endpoint: SocketAddrV4,
+        persistent_keepalive_secs: u32,
+    ) -> Result<(), NetworkError> {
+        let allowed = allowed_ips
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let endpoint = endpoint.to_string();
+        let keepalive = persistent_keepalive_secs.to_string();
+        self.run(&[
+            "wg",
+            "set",
+            &self.interface,
+            "peer",
+            public_key,
+            "allowed-ips",
+            &allowed,
+            "endpoint",
+            &endpoint,
+            "persistent-keepalive",
+            &keepalive,
+        ])?;
+        Ok(())
+    }
+
+    /// 移除直连 peer（回退 hub，§12）：`wg set <if> peer <key> remove`。
+    /// 幂等：不存在也成功（WireGuard 对缺失 peer 的 remove 是 no-op）。
+    pub fn remove_peer_sync(&self, public_key: &str) -> Result<(), NetworkError> {
+        self.run(&["wg", "set", &self.interface, "peer", public_key, "remove"])?;
         Ok(())
     }
 
@@ -529,6 +652,23 @@ impl LinuxNetworkBackend {
         Ok(addrs)
     }
 
+    /// 枚举本机 RFC1918 局域网**子网**（§12 P2P 同网段判定）：与
+    /// [`lan_addresses_sync`] 同一来源，但保留前缀长度——「对端 LAN 候选是否
+    /// 落在本机子网内」需要网段而不是单个地址。
+    pub fn lan_subnets_sync(&self) -> Result<Vec<meshlet_domain::Ipv4Cidr>, NetworkError> {
+        let out = self.run(&["ip", "-4", "-o", "addr", "show"])?;
+        let mut subnets: Vec<meshlet_domain::Ipv4Cidr> =
+            parse_ip_octet_subnets(&String::from_utf8_lossy(&out.stdout))
+                .into_iter()
+                .filter(|(ifname, _)| is_lan_interface(ifname, &self.interface))
+                .map(|(_, subnet)| subnet)
+                .filter(|subnet| meshlet_domain::is_private_ip(subnet.network()))
+                .collect();
+        subnets.sort();
+        subnets.dedup();
+        Ok(subnets)
+    }
+
     /// Remove only this hub interface and its isolation rules; gateways own NAT.
     pub fn clear_hub_sync(&self) -> Result<(), NetworkError> {
         let chain = format!("MLT_{}", self.interface);
@@ -641,7 +781,16 @@ impl LinuxNetworkBackend {
     }
 
     /// Read back each planned object; counts alone do not prove convergence.
-    pub fn device_plan_matches_sync(&self, plan: &DevicePlan) -> Result<bool, NetworkError> {
+    ///
+    /// `extra_peer_keys` 是 P2P 直连对端公钥集（§12）：它们由 agent 直连管理
+    /// 器单独增删，**不属于**服务端计划——读回时按「额外允许的 peer」容忍
+    /// （只认存在、不严格核其 allowed-ips，直连态由管理器自己收敛），绝不让
+    /// 直连 peer 的存在被判成「计划未收敛」而反复重放。
+    pub fn device_plan_matches_sync(
+        &self,
+        plan: &DevicePlan,
+        extra_peer_keys: &BTreeSet<String>,
+    ) -> Result<bool, NetworkError> {
         let addresses = self.run(&["ip", "-4", "-o", "addr", "show", "dev", &self.interface])?;
         let expected = format!("{}/{}", plan.tunnel.address, plan.tunnel.address_prefix);
         if !String::from_utf8_lossy(&addresses.stdout)
@@ -681,9 +830,7 @@ impl LinuxNetworkBackend {
             }
         }
         let peers: Vec<_> = body.lines().skip(1).collect();
-        if peers.len() != plan.tunnel.peers.len() {
-            return Ok(false);
-        }
+        // 每个计划 peer 必须存在且 allowed-ips 精确匹配（身份级，非计数）。
         for peer in &plan.tunnel.peers {
             let Some(line) = peers
                 .iter()
@@ -698,6 +845,17 @@ impl LinuxNetworkBackend {
             if actual != wanted.iter().map(String::as_str).collect() {
                 return Ok(false);
             }
+        }
+        // 受管接口上不得有既非计划、也非直连保留的 peer（未受管对象 → 漂移）。
+        for line in &peers {
+            let key = line.split_whitespace().next().unwrap_or("");
+            if plan.tunnel.peers.iter().any(|p| p.public_key == key) {
+                continue;
+            }
+            if extra_peer_keys.contains(key) {
+                continue;
+            }
+            return Ok(false);
         }
         for route in &plan.routes {
             let out = self.run(&[
@@ -773,7 +931,13 @@ impl LinuxNetworkBackend {
     }
 
     /// 同步隧道应用（[NetworkBackend::apply_tunnel] 的命令核心）。
-    pub fn apply_tunnel_sync(&self, config: &TunnelConfig) -> Result<ApplyResult, NetworkError> {
+    ///
+    /// `keep_keys`：P2P 直连对端公钥集（§12）——计划重放时保留它们，不冲掉。
+    pub fn apply_tunnel_sync(
+        &self,
+        config: &TunnelConfig,
+        keep_keys: &BTreeSet<String>,
+    ) -> Result<ApplyResult, NetworkError> {
         let ifname = config.name.clone();
         if ifname.is_empty()
             || ifname.len() > 15
@@ -821,7 +985,7 @@ impl LinuxNetworkBackend {
             self.run(&["wg", "set", &ifname, "listen-port", &port.to_string()])?;
         }
         // key 与 peer 分两次 set（合并调用会静默丢 peer，真机实测坑位）。
-        self.reconcile_peers(config)?;
+        self.reconcile_peers(config, keep_keys)?;
         Ok(ApplyResult::ok())
     }
 
@@ -1163,10 +1327,11 @@ impl LinuxNetworkBackend {
         plan: &DevicePlan,
         private_key: Option<String>,
         gateway_lan_addr: Option<Ipv4Addr>,
+        keep_keys: &BTreeSet<String>,
     ) -> Result<(), NetworkError> {
         let mut tunnel = plan.tunnel.clone();
         tunnel.private_key = private_key;
-        let tunnel_result = self.apply_tunnel_sync(&tunnel)?;
+        let tunnel_result = self.apply_tunnel_sync(&tunnel, keep_keys)?;
         if !tunnel_result.applied {
             return Err(NetworkError::ApplyRejected(
                 tunnel_result.error.unwrap_or_default(),
@@ -1355,7 +1520,8 @@ impl NetworkBackend for LinuxNetworkBackend {
     }
 
     async fn apply_tunnel(&self, config: TunnelConfig) -> Result<ApplyResult, NetworkError> {
-        self.apply_tunnel_sync(&config)
+        // trait 面无直连保留集语义（trait 是旧接口，直连只走 sync 面）。
+        self.apply_tunnel_sync(&config, &BTreeSet::new())
     }
 
     async fn apply_routes(
@@ -1392,6 +1558,54 @@ impl Default for LinuxNetworkBackend {
 mod tests {
     use super::*;
     use crate::nat::{NatAction, NatChain, NatRule};
+
+    #[test]
+    fn ip_octet_subnets_mask_interface_host_bits_into_the_lan_subnet() {
+        // `ip -4 -o addr show` 的地址带主机位（接口地址不是网络地址）——
+        // 回归：按规范化 CIDR 解析曾整行失败，LAN 枚举恒为空，直连永不
+        // 触发（netns 真机测试抓到）。
+        let output = "1: lo    inet 127.0.0.1/8 scope host lo\\\n\
+                      2: wg0    inet 10.240.0.2/24 scope global wg0\\\n\
+                      18623: eth0    inet 10.98.0.20/24 brd 10.98.0.255 scope global eth0\\\n";
+        let subnets = parse_ip_octet_subnets(output);
+        assert_eq!(subnets.len(), 3, "every addr line parses, host bits masked");
+        assert_eq!(subnets[0].1.to_string(), "127.0.0.0/8");
+        assert_eq!(subnets[1].1.to_string(), "10.240.0.0/24");
+        assert_eq!(subnets[2].0, "eth0");
+        assert_eq!(subnets[2].1.to_string(), "10.98.0.0/24");
+
+        // 与 lan_subnets_sync 同一口径的过滤：lo/受管隧道出局、非私网出局
+        // → 只剩 eth0 的网段。
+        let lan: Vec<String> = subnets
+            .iter()
+            .filter(|(ifname, _)| is_lan_interface(ifname, "wg0"))
+            .map(|(_, subnet)| subnet)
+            .filter(|subnet| meshlet_domain::is_private_ip(subnet.network()))
+            .map(|subnet| subnet.to_string())
+            .collect();
+        assert_eq!(lan, vec!["10.98.0.0/24"]);
+
+        // 前缀越界/非地址的行被跳过，不 panic。
+        assert!(parse_ip_octet_subnets("3: eth1 inet 1.2.3.4/99 x\n").is_empty());
+        assert!(parse_ip_octet_subnets("3: eth1 inet junk/24 x\n").is_empty());
+    }
+
+    #[test]
+    fn handshake_ages_parses_peer_lines_and_skips_never_handshaked() {
+        // 标准三列：公钥 握手时间 距今秒。
+        let pk_a = "A".repeat(43) + "=";
+        let pk_b = "B".repeat(43) + "=";
+        // 从未握手的 peer：握手时间戳为 0（WireGuard 语义），非「距今 0 秒」。
+        let text = format!("{pk_a} 1750000000 12\n{pk_b} 0 0\nnot-a-key 1750000000 5\n");
+        let ages = parse_handshake_ages(&text, 1750000060);
+        assert_eq!(ages.len(), 1, "zero-handshake and junk lines are skipped");
+        assert_eq!(ages.get(&pk_a), Some(&12));
+
+        // 缺第三列：按 now - 握手时间兜底。
+        let two_col = format!("{pk_b} 1750000000\n");
+        let ages = parse_handshake_ages(&two_col, 1750000060);
+        assert_eq!(ages.get(&pk_b), Some(&60));
+    }
 
     #[test]
     fn mtu_readback_enforces_the_default_like_an_explicit_value() {

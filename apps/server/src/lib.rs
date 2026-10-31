@@ -1038,6 +1038,10 @@ pub fn router(state: SharedAppState) -> Router {
             get(agent::desired_device_plan_handler),
         )
         .route(
+            "/api/v1/agent/device/peers/endpoints",
+            get(agent::agent_peers_endpoints_handler),
+        )
+        .route(
             "/api/v1/networks/{network_id}/peers/endpoints",
             get(agent::peers_endpoints_handler),
         )

@@ -715,7 +715,10 @@ fn backend_driven_tunnel_routes_and_nat() {
 
     // hub：tunnel（peer A/B/G）+ Alias 前缀转发路由。
     hub_backend
-        .apply_tunnel_sync(&hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true))
+        .apply_tunnel_sync(
+            &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true),
+            &BTreeSet::new(),
+        )
         .expect("hub apply_tunnel");
     hub_backend
         .apply_routes_sync(&hub_routes())
@@ -724,11 +727,10 @@ fn backend_driven_tunnel_routes_and_nat() {
     // 客户端 A/B：tunnel + Alias 段进隧道的路由。
     for (node, backend) in [(&topo.a, &mut a_backend), (&topo.b, &mut b_backend)] {
         backend
-            .apply_tunnel_sync(&leaf_tunnel(
-                node,
-                &topo.hub,
-                &["10.240.0.0/16", "10.241.0.0/16"],
-            ))
+            .apply_tunnel_sync(
+                &leaf_tunnel(node, &topo.hub, &["10.240.0.0/16", "10.241.0.0/16"]),
+                &BTreeSet::new(),
+            )
             .unwrap_or_else(|e| panic!("{} apply_tunnel: {e}", node.netns));
         backend
             .apply_routes_sync(&[RouteConfig {
@@ -741,11 +743,10 @@ fn backend_driven_tunnel_routes_and_nat() {
 
     // 网关 G：tunnel + 回程路由 + Alias NAT（计划层渲染执行）。
     gw_backend
-        .apply_tunnel_sync(&leaf_tunnel(
-            &topo.gw,
-            &topo.hub,
-            &["10.240.0.0/16", "10.241.0.0/16"],
-        ))
+        .apply_tunnel_sync(
+            &leaf_tunnel(&topo.gw, &topo.hub, &["10.240.0.0/16", "10.241.0.0/16"]),
+            &BTreeSet::new(),
+        )
         .expect("gw apply_tunnel");
     gw_backend
         .apply_routes_sync(&[RouteConfig {
@@ -826,7 +827,10 @@ fn backend_driven_tunnel_routes_and_nat() {
 
     // ---- 4. 幂等：同一配置重复应用结果一致（§10.3） ------------------------
     hub_backend
-        .apply_tunnel_sync(&hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true))
+        .apply_tunnel_sync(
+            &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true),
+            &BTreeSet::new(),
+        )
         .expect("hub apply_tunnel (re-apply)");
     gw_backend
         .apply_nat_sync(&rules, "192.168.1.1".parse().unwrap())
@@ -896,7 +900,10 @@ fn backend_driven_tunnel_routes_and_nat() {
 
     // ---- 7. 撤销即失效：hub 重应用去掉 B，其余 peer 不受影响（§11.5） -------
     hub_backend
-        .apply_tunnel_sync(&hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, false))
+        .apply_tunnel_sync(
+            &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, false),
+            &BTreeSet::new(),
+        )
         .expect("hub apply_tunnel without B");
     let hub_peers = topo.wg_show(&topo.hub.netns);
     assert!(
@@ -1035,7 +1042,10 @@ fn backend_driven_tunnel_routes_and_nat() {
     // ---- 11. 身份级漂移注入（M2）：观测层如实报出身份，外来资源不入集合
     // 本文件只允许一个 netns 前缀，故并入本测试末尾而非另开 #[test]。
     hub_backend
-        .apply_tunnel_sync(&hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true))
+        .apply_tunnel_sync(
+            &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true),
+            &BTreeSet::new(),
+        )
         .expect("hub re-apply for drift injection");
     gw_backend
         .apply_nat_sync(&rules, "192.168.1.1".parse().unwrap())
@@ -1200,7 +1210,10 @@ fn backend_driven_tunnel_routes_and_nat() {
 
     // 修复：再 apply 一次清掉 Meshlet 自有的注入，外来路由与外来规则保留。
     hub_backend
-        .apply_tunnel_sync(&hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true))
+        .apply_tunnel_sync(
+            &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true),
+            &BTreeSet::new(),
+        )
         .expect("hub apply clears the meshlet-owned peers");
     hub_backend
         .apply_routes_sync(&hub_routes())
@@ -1314,7 +1327,7 @@ fn backend_driven_tunnel_routes_and_nat() {
             mtu: None,
             private_key: Some(own_key),
         };
-        host.apply_tunnel_sync(&host_tunnel)
+        host.apply_tunnel_sync(&host_tunnel, &BTreeSet::new())
             .expect("root apply_tunnel");
         host.apply_routes_sync(&[RouteConfig {
             destination: "10.249.1.0/24".parse().unwrap(),

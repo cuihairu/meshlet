@@ -7,13 +7,16 @@
 //! 占位的意义是**错误面**而不是假绿：应用失败可见、读数按「未证实」
 //! 处理，绝不静默假装生效（§10.3、§12.2）。
 
-use std::net::Ipv4Addr;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::nat::NatRule;
 use crate::{
     ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
     RouteConfig, TunnelConfig,
 };
+use meshlet_domain::Ipv4Cidr;
 
 /// 非 Linux 平台的占位后端：所有数据面操作显式拒绝（ADR-008 待接入）。
 #[derive(Clone, Default)]
@@ -61,7 +64,11 @@ impl UnsupportedBackend {
         Err(self.refuse("isolate_hub"))
     }
 
-    pub fn device_plan_matches_sync(&self, _plan: &DevicePlan) -> Result<bool, NetworkError> {
+    pub fn device_plan_matches_sync(
+        &self,
+        _plan: &DevicePlan,
+        _extra_peer_keys: &BTreeSet<String>,
+    ) -> Result<bool, NetworkError> {
         Err(self.refuse("device_plan_matches"))
     }
 
@@ -69,7 +76,11 @@ impl UnsupportedBackend {
         Err(self.refuse("inspect"))
     }
 
-    pub fn apply_tunnel_sync(&self, _config: &TunnelConfig) -> Result<ApplyResult, NetworkError> {
+    pub fn apply_tunnel_sync(
+        &self,
+        _config: &TunnelConfig,
+        _keep_keys: &BTreeSet<String>,
+    ) -> Result<ApplyResult, NetworkError> {
         Err(self.refuse("apply_tunnel"))
     }
 
@@ -91,6 +102,7 @@ impl UnsupportedBackend {
         _plan: &DevicePlan,
         _private_key: Option<String>,
         _gateway_lan_addr: Option<Ipv4Addr>,
+        _keep_keys: &BTreeSet<String>,
     ) -> Result<(), NetworkError> {
         Err(self.refuse("apply_device_plan"))
     }
@@ -105,6 +117,31 @@ impl UnsupportedBackend {
 
     pub fn lan_addresses_sync(&self) -> Result<Vec<Ipv4Addr>, NetworkError> {
         Err(self.refuse("enumerate lan addresses"))
+    }
+
+    pub fn lan_subnets_sync(&self) -> Result<Vec<Ipv4Cidr>, NetworkError> {
+        Err(self.refuse("enumerate lan subnets"))
+    }
+
+    /// P2P 直连执行层本平台无实现：显式拒绝（不假装直连成功）。
+    pub fn handshake_ages_sync(&self) -> Result<BTreeMap<String, u64>, NetworkError> {
+        Err(self.refuse("handshake_ages"))
+    }
+
+    /// P2P 直连 peer 下发本平台无实现：显式拒绝。
+    pub fn set_direct_peer_sync(
+        &self,
+        _public_key: &str,
+        _allowed_ips: &[Ipv4Cidr],
+        _endpoint: SocketAddrV4,
+        _persistent_keepalive_secs: u32,
+    ) -> Result<(), NetworkError> {
+        Err(self.refuse("set_direct_peer"))
+    }
+
+    /// P2P 直连 peer 移除本平台无实现：显式拒绝。
+    pub fn remove_peer_sync(&self, _public_key: &str) -> Result<(), NetworkError> {
+        Err(self.refuse("remove_peer"))
     }
 
     pub fn remove_stale_meshlet_routes_sync(

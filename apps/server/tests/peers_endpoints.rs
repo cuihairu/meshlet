@@ -359,3 +359,67 @@ async fn peers_endpoints_rejects_wrong_network() {
     assert_eq!(st, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"]["code"], "not_found");
 }
+
+/// `GET /api/v1/agent/device/peers/endpoints`：agent 凭证即身份，无需网络 ID。
+async fn agent_peers(app: &Router, token: Option<&str>) -> (StatusCode, serde_json::Value) {
+    let mut builder = Request::builder().uri("/api/v1/agent/device/peers/endpoints");
+    if let Some(token) = token {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    let res = app
+        .clone()
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    (res.status(), res_body(res).await)
+}
+
+#[tokio::test]
+async fn agent_scoped_endpoints_uses_the_tokens_device_without_a_network_path() {
+    let (ctx, a_token) = bootstrap("edge-a", "pub-edge-a").await;
+    let (_, b_token) = enroll(&ctx, "peer-b", "pub-peer-b").await;
+
+    // 无凭证 → 401（agent API 认证边界）。
+    let (st, body) = agent_peers(&ctx.app, None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "{body}");
+
+    // B 上报直连候选；A 用**自己的**凭证拉取，看到 B（A 自身被排除）。
+    assert_eq!(
+        heartbeat(
+            &ctx.app,
+            &b_token,
+            &["192.168.1.51"],
+            51820,
+            "192.168.1.11:40001"
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (st, body) = agent_peers(&ctx.app, Some(&a_token)).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let arr = body.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "{body}");
+    assert_eq!(arr[0]["public_key"], "pub-peer-b", "{body}");
+    assert_eq!(arr[0]["virtual_ipv4"], "10.240.0.3", "{body}");
+    assert_eq!(arr[0]["endpoints"][0]["kind"], "lan", "{body}");
+}
+
+#[tokio::test]
+async fn agent_scoped_endpoints_excludes_self_and_unreported() {
+    let (ctx, a_token) = bootstrap("edge-a", "pub-edge-a").await;
+    // 仅 A 上报：A 拉取候选时自身被排除 → 空列表（没有其他可直连设备）。
+    assert_eq!(
+        heartbeat(
+            &ctx.app,
+            &a_token,
+            &["192.168.1.50"],
+            51820,
+            "192.168.1.10:40001"
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (st, body) = agent_peers(&ctx.app, Some(&a_token)).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert!(body.as_array().unwrap().is_empty(), "{body}");
+}

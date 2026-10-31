@@ -333,7 +333,10 @@ pub struct DataplaneConfig {
     /// 轮询间隔（秒）：到期向 server 拉取期望配置，有变更才重放（§10.1）。
     pub poll_interval_secs: u64,
     /// P2P 直连（§12 P2P）：agent 每轮心跳上报候选端点，数据面尝试绕过 hub
-    /// 直连对端；不可达时自动回退 hub 中继。**默认开启**（数据面开启时生效）。
+    /// 直连对端；不可达时自动回退 hub 中继。**默认关闭**，显式开启
+    /// （`[dataplane.direct_connect] enabled = true`）才生效——批次④（防火墙
+    /// 联动放行 UDP 端口）落地前直连链路不完整，且开启会把数据面 wg 接口
+    /// 绑定到固定监听端口，静默改变既有部署行为。
     pub direct_connect: DirectConnectConfig,
 }
 
@@ -348,7 +351,7 @@ pub struct DirectConnectConfig {
 impl Default for DirectConnectConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             listen_port: 51820,
         }
     }
@@ -762,14 +765,15 @@ interface = "  "
     }
 
     #[test]
-    fn agent_direct_connect_defaults_on_and_parses_section() {
-        // §12 P2P：直连是数据面的设计核心，默认开启；监听端口 51820（WireGuard 默认）。
+    fn agent_direct_connect_defaults_off_and_parses_section() {
+        // §12 P2P：直连链路在批次④（防火墙联动放行 UDP 端口）落地前不完整，默认关闭；
+        // 显式 [dataplane.direct_connect] enabled = true 才开启。监听端口默认 51820。
         let d = AgentConfig::default().dataplane.direct_connect;
-        assert!(d.enabled);
+        assert!(!d.enabled);
         assert_eq!(d.listen_port, 51820);
-        // 缺 [dataplane] 段同样默认开启。
+        // 缺 [dataplane] 段同样默认关闭。
         assert!(
-            AgentConfig::from_toml("")
+            !AgentConfig::from_toml("")
                 .unwrap()
                 .dataplane
                 .direct_connect

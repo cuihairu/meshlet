@@ -10,7 +10,7 @@
 //! NAT 清理按**所有权注释**（`meshlet alias {id}`，§12.6）：账本里装过、计划里
 //! 不再出现的单元才移除——绝不触碰非 Meshlet 规则，也绝不误删计划里还在的规则。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use meshlet_network::nat::NatRule;
@@ -116,13 +116,22 @@ impl Reason {
 
 /// 对账：账本 vs 内核实际 vs 服务端期望。
 ///
+/// `extra_peer_keys`：P2P 直连对端公钥集（§12）——由 agent 直连管理器单独
+/// 增删，不属于服务端计划；它们的存在**不算**漂移（纯增益，缺失也不算——
+/// 直连态由管理器自己收敛，绝不因「直连 peer 还没加上」而反复重放计划）。
+///
 /// 判定顺序：先看期望哈希（真变更优先说真变更），再看账本，最后看内核漂移。
-pub fn needs_apply(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) -> Decision {
+pub fn needs_apply(
+    state: &AgentState,
+    snapshot: &NetworkSnapshot,
+    plan: &DevicePlan,
+    extra_peer_keys: &BTreeSet<String>,
+) -> Decision {
     let reason = if state.desired_config_hash.is_empty() {
         Reason::NoLocalLedger
     } else if state.desired_config_hash != plan.desired_config_hash {
         Reason::DesiredConfigChanged
-    } else if drifted(state, snapshot, plan) {
+    } else if drifted(state, snapshot, plan, extra_peer_keys) {
         Reason::KernelDrift
     } else {
         Reason::UpToDate
@@ -144,7 +153,12 @@ pub fn needs_apply(state: &AgentState, snapshot: &NetworkSnapshot, plan: &Device
 ///   再期望的路由 → 漂移（未标记路由属他人，不进观测集合）；
 /// - NAT：期望与实际按规则指纹集合精确比对（所有权注释认领，重启清空
 ///   iptables 后两边都空也一致）。
-fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) -> bool {
+fn drifted(
+    state: &AgentState,
+    snapshot: &NetworkSnapshot,
+    plan: &DevicePlan,
+    extra_peer_keys: &BTreeSet<String>,
+) -> bool {
     if !snapshot.tunnel_exists || snapshot.forwarding_enabled != Some(true) {
         return true;
     }
@@ -158,7 +172,8 @@ fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) ->
     }
     // Peer 身份（不是条数）：公钥 → allowed-ips 两侧逐项比对。数量相同但换了
     // 一个 peer、或某个 peer 的 allowed-ips 被改宽，与「少一个 peer」同样必须
-    // 重放纠回——受管接口上的 peer 都是 Meshlet 自有对象，多出即漂移。
+    // 重放纠回。受管接口上的 peer 都是 Meshlet 自有对象，但 P2P 直连对端
+    // （`extra_peer_keys`）由管理器单独增删——它们的存在不算漂移。
     let ips = |cidrs: &[meshlet_domain::Ipv4Cidr]| -> BTreeSet<String> {
         cidrs.iter().map(ToString::to_string).collect()
     };
@@ -167,13 +182,24 @@ fn drifted(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) ->
         .peers
         .iter()
         .map(|peer| (peer.public_key.clone(), ips(&peer.allowed_ips)))
-        .collect::<BTreeSet<_>>();
+        .collect::<BTreeMap<_, _>>();
     let observed_peers = snapshot
         .peers
         .iter()
         .map(|peer| (peer.public_key.clone(), ips(&peer.allowed_ips)))
-        .collect::<BTreeSet<_>>();
-    if expected_peers != observed_peers {
+        .collect::<BTreeMap<_, _>>();
+    // 计划 peer 必须与内核一一对应（直连对端不在计划侧比较里）。
+    for (key, wanted_ips) in &expected_peers {
+        if observed_peers.get(key) != Some(wanted_ips) {
+            return true;
+        }
+    }
+    // 内核里不得出现既非计划、也非直连保留的 peer（未受管对象 → 漂移）。
+    // 直连保留的 peer 缺失不算漂移（管理器会补上），避免死循环。
+    if observed_peers
+        .keys()
+        .any(|key| !expected_peers.contains_key(key) && !extra_peer_keys.contains(key))
+    {
         return true;
     }
     let installed: BTreeSet<String> = snapshot
@@ -296,6 +322,11 @@ mod tests {
     use meshlet_network::{PeerConfig, PeerObserved, RouteConfig, TunnelConfig};
     use std::net::Ipv4Addr;
 
+    /// 测试便捷包装：不关心直连对端的用例走空保留集。
+    fn apply(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) -> Decision {
+        needs_apply(state, snapshot, plan, &BTreeSet::new())
+    }
+
     fn plan(hash: &str, with_nat: bool) -> DevicePlan {
         DevicePlan {
             desired_revision: 0,
@@ -378,7 +409,7 @@ mod tests {
     #[test]
     fn up_to_date_plan_is_not_reapplied() {
         let p = plan("hash-a", true);
-        let d = needs_apply(&state_of(&p), &healthy(&p), &p);
+        let d = apply(&state_of(&p), &healthy(&p), &p);
         assert!(!d.needs_apply);
         assert_eq!(d.reason, Reason::UpToDate);
         assert_eq!(d.reason.as_str(), "up_to_date");
@@ -388,7 +419,7 @@ mod tests {
     fn missing_ledger_triggers_apply() {
         // 首次安装：没有账本必须重放，不能凭“内存是空的”推断已生效。
         let p = plan("hash-a", false);
-        let d = needs_apply(&AgentState::default(), &healthy(&p), &p);
+        let d = apply(&AgentState::default(), &healthy(&p), &p);
         assert!(d.needs_apply);
         assert_eq!(d.reason, Reason::NoLocalLedger);
     }
@@ -397,7 +428,7 @@ mod tests {
     fn new_server_revision_triggers_apply() {
         let old = plan("hash-a", false);
         let new = plan("hash-b", false);
-        let d = needs_apply(&state_of(&old), &healthy(&new), &new);
+        let d = apply(&state_of(&old), &healthy(&new), &new);
         assert!(d.needs_apply);
         assert_eq!(d.reason, Reason::DesiredConfigChanged);
     }
@@ -410,7 +441,7 @@ mod tests {
             tunnel_exists: false,
             ..healthy(&p)
         };
-        let d = needs_apply(&state_of(&p), &rebooted, &p);
+        let d = apply(&state_of(&p), &rebooted, &p);
         assert!(d.needs_apply, "a vanished tunnel must be replayed");
         assert_eq!(d.reason, Reason::KernelDrift);
     }
@@ -424,25 +455,60 @@ mod tests {
             installed_routes: Vec::new(),
             ..healthy(&p)
         };
-        assert_eq!(
-            needs_apply(&state, &no_route, &p).reason,
-            Reason::KernelDrift
-        );
+        assert_eq!(apply(&state, &no_route, &p).reason, Reason::KernelDrift);
 
         let no_nat = NetworkSnapshot {
             nat_rules: Vec::new(),
             ..healthy(&p)
         };
-        assert_eq!(needs_apply(&state, &no_nat, &p).reason, Reason::KernelDrift);
+        assert_eq!(apply(&state, &no_nat, &p).reason, Reason::KernelDrift);
 
         let no_peer = NetworkSnapshot {
             peers: Vec::new(),
             ..healthy(&p)
         };
+        assert_eq!(apply(&state, &no_peer, &p).reason, Reason::KernelDrift);
+    }
+
+    #[test]
+    fn direct_peer_in_the_keep_set_is_not_drift_but_its_absence_is_not_either() {
+        // §12：直连对端由 agent 直连管理器单独增删。计划重放对账时：
+        // - 在内核里 → 不算漂移（保留，不触发重放）；
+        // - 不在内核里 → 也不算漂移（管理器会自己补上——若按漂移重放，
+        //   重放并不会装直连 peer，会陷入「重放也修不好」的死循环）。
+        let p = plan("hash-a", false);
+        let state = state_of(&p);
+        let direct_key = "direct-peer-pubkey==".to_string();
+
+        let with_direct = NetworkSnapshot {
+            peers: vec![
+                PeerObserved {
+                    public_key: p.tunnel.peers[0].public_key.clone(),
+                    allowed_ips: p.tunnel.peers[0].allowed_ips.clone(),
+                },
+                PeerObserved {
+                    public_key: direct_key.clone(),
+                    allowed_ips: vec!["10.240.0.9/32".parse().unwrap()],
+                },
+            ],
+            ..healthy(&p)
+        };
+        let keep: BTreeSet<String> = [direct_key.clone()].into_iter().collect();
+        assert!(
+            !needs_apply(&state, &with_direct, &p, &keep).needs_apply,
+            "a kept direct peer must not read as drift"
+        );
+
+        // 保留集之外的多余 peer 仍然是漂移（未受管对象）。
+        let keep: BTreeSet<String> = BTreeSet::new();
         assert_eq!(
-            needs_apply(&state, &no_peer, &p).reason,
+            needs_apply(&state, &with_direct, &p, &keep).reason,
             Reason::KernelDrift
         );
+
+        // 直连 peer 声明在保留集但内核没有：不算漂移（管理器负责补上）。
+        let keep: BTreeSet<String> = [direct_key].into_iter().collect();
+        assert!(!needs_apply(&state, &healthy(&p), &p, &keep).needs_apply);
     }
 
     #[test]
@@ -458,7 +524,7 @@ mod tests {
             ..healthy(&p)
         };
         assert_eq!(
-            needs_apply(&state_of(&p), &swapped, &p).reason,
+            apply(&state_of(&p), &swapped, &p).reason,
             Reason::KernelDrift
         );
 
@@ -472,10 +538,7 @@ mod tests {
             });
             snapshot
         };
-        assert_eq!(
-            needs_apply(&state_of(&p), &extra, &p).reason,
-            Reason::KernelDrift
-        );
+        assert_eq!(apply(&state_of(&p), &extra, &p).reason, Reason::KernelDrift);
     }
 
     #[test]
@@ -490,7 +553,7 @@ mod tests {
             ..healthy(&p)
         };
         assert_eq!(
-            needs_apply(&state_of(&p), &widened, &p).reason,
+            apply(&state_of(&p), &widened, &p).reason,
             Reason::KernelDrift
         );
 
@@ -510,7 +573,7 @@ mod tests {
             }],
             ..healthy(&multi)
         };
-        assert!(!needs_apply(&state_of(&multi), &reordered, &multi).needs_apply);
+        assert!(!apply(&state_of(&multi), &reordered, &multi).needs_apply);
     }
 
     #[test]
@@ -521,7 +584,7 @@ mod tests {
         let mut dnat_missing = healthy(&p);
         dnat_missing.nat_rules = vec![p.nat_rules[1].signature()];
         assert_eq!(
-            needs_apply(&state_of(&p), &dnat_missing, &p).reason,
+            apply(&state_of(&p), &dnat_missing, &p).reason,
             Reason::KernelDrift
         );
 
@@ -535,7 +598,7 @@ mod tests {
         let mut extra_rule = healthy(&p);
         extra_rule.nat_rules.push(stale_rule.signature());
         assert_eq!(
-            needs_apply(&state_of(&p), &extra_rule, &p).reason,
+            apply(&state_of(&p), &extra_rule, &p).reason,
             Reason::KernelDrift
         );
     }
@@ -557,7 +620,7 @@ mod tests {
         let mut leftover = healthy(&p);
         leftover.nat_rules = vec![orphan.signature()];
         assert_eq!(
-            needs_apply(&state_of(&p), &leftover, &p).reason,
+            apply(&state_of(&p), &leftover, &p).reason,
             Reason::KernelDrift
         );
     }
@@ -572,16 +635,13 @@ mod tests {
             tunnel_mtu: Some(1420),
             ..healthy(&p)
         };
-        assert_eq!(
-            needs_apply(&state_of(&p), &wrong, &p).reason,
-            Reason::KernelDrift
-        );
+        assert_eq!(apply(&state_of(&p), &wrong, &p).reason, Reason::KernelDrift);
 
         let matching = NetworkSnapshot {
             tunnel_mtu: Some(1380),
             ..healthy(&p)
         };
-        assert!(!needs_apply(&state_of(&p), &matching, &p).needs_apply);
+        assert!(!apply(&state_of(&p), &matching, &p).needs_apply);
     }
 
     #[test]
@@ -592,7 +652,7 @@ mod tests {
             tunnel_mtu: Some(1300),
             ..healthy(&p)
         };
-        assert!(!needs_apply(&state_of(&p), &other, &p).needs_apply);
+        assert!(!apply(&state_of(&p), &other, &p).needs_apply);
     }
 
     #[test]
@@ -603,7 +663,7 @@ mod tests {
             nat_rules: Vec::new(),
             ..healthy(&p)
         };
-        assert!(!needs_apply(&state_of(&p), &no_nat, &p).needs_apply);
+        assert!(!apply(&state_of(&p), &no_nat, &p).needs_apply);
     }
 
     #[test]

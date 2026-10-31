@@ -460,3 +460,44 @@ pub async fn peers_endpoints_handler(
     );
     Ok(Json(peers))
 }
+
+/// `GET /api/v1/agent/device/peers/endpoints`：本设备可直连的 peer 候选端点
+/// 列表（§12 P2P，agent 视角）。
+///
+/// 与 [`peers_endpoints_handler`] 同一聚合，但无需网络 ID 路径参数——agent
+/// 凭证本身即身份，网络从设备记录解析（与 `desired_device_plan_handler`
+/// 同一口径）。agent 因此无需知道网络 ID 就能拉取候选。
+pub async fn agent_peers_endpoints_handler(
+    State(state): State<SharedAppState>,
+    AuthorizedAgent(device_id): AuthorizedAgent,
+) -> Result<Json<Vec<PeerEndpoints>>, AgentApiError> {
+    let guard = state.mesh.lock().unwrap();
+    let Some(device) = guard.registry.find_by_id(&device_id) else {
+        if guard.registry.find_registration(&device_id).is_some() {
+            return Err(AgentApiError::NotFound(format!(
+                "device {device_id} is pending approval: no endpoints until approved"
+            )));
+        }
+        return Err(AgentApiError::NotFound(format!(
+            "device {device_id} not found"
+        )));
+    };
+    if !device.is_active() {
+        return Err(AgentApiError::NotFound(format!(
+            "device {device_id} is not active"
+        )));
+    }
+    let network_id = device.network_id.to_string();
+    let Some(source_segment) = crate::device_plan::segment_for(&guard, &network_id, device) else {
+        return Err(AgentApiError::Internal(format!(
+            "device {device_id} has no segment assignment"
+        )));
+    };
+    let peers = meshlet_domain::peer_endpoints_for(
+        source_segment.cidr,
+        &device_id,
+        guard.registry.devices(),
+        &guard.direct_states,
+    );
+    Ok(Json(peers))
+}

@@ -9,6 +9,7 @@ use http_body_util::BodyExt;
 use meshlet_network::{DevicePlan, SystemBackend};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeSet,
     process::{Command, Output},
     sync::{Arc, Mutex},
 };
@@ -326,7 +327,7 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
             .with_netns(sandbox.names[i + 1].clone())
             .with_sudo();
         backend
-            .apply_device_plan_sync(&local, Some(keys[i].clone()), None)
+            .apply_device_plan_sync(&local, Some(keys[i].clone()), None, &BTreeSet::new())
             .unwrap();
         let (status, _) = request(&app, "POST", "/api/v1/agent/device/applied", json!({"desired_revision":plan.desired_revision,"plan_hash":plan.desired_config_hash,"error":null}), None, Some(&tokens[i])).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
@@ -343,7 +344,7 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
         .with_netns(sandbox.names[1].clone())
         .with_sudo();
     backend
-        .apply_device_plan_sync(&malicious, Some(keys[0].clone()), None)
+        .apply_device_plan_sync(&malicious, Some(keys[0].clone()), None, &BTreeSet::new())
         .unwrap();
     net(
         &sandbox.names[1],
@@ -453,7 +454,7 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
             .with_netns(sandbox.names[i + 1].clone())
             .with_sudo();
         backend
-            .apply_device_plan_sync(&local, Some(keys[i].clone()), None)
+            .apply_device_plan_sync(&local, Some(keys[i].clone()), None, &BTreeSet::new())
             .unwrap();
         if i == 0 {
             gateway_plan = Some(plan);
@@ -558,7 +559,7 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
         .with_netns(sandbox.names[2].clone())
         .with_sudo();
     backend
-        .apply_device_plan_sync(&dual_client, Some(keys[1].clone()), None)
+        .apply_device_plan_sync(&dual_client, Some(keys[1].clone()), None, &BTreeSet::new())
         .unwrap();
     assert!(!ping(&sandbox.names[2], "192.168.60.5"));
     net(
@@ -609,7 +610,7 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
         .with_netns(sandbox.names[2].clone())
         .with_sudo();
     backend
-        .apply_device_plan_sync(&client, Some(keys[1].clone()), None)
+        .apply_device_plan_sync(&client, Some(keys[1].clone()), None, &BTreeSet::new())
         .unwrap();
     assert!(
         !ping(&sandbox.names[2], "10.243.61.5"),
@@ -1291,7 +1292,12 @@ async fn converge_device(sandbox: &Sandbox, boot: &Boot, index: usize) -> Device
         .with_netns(sandbox.names[index + 1].clone())
         .with_sudo();
     backend
-        .apply_device_plan_sync(&local, Some(boot.keys[index].clone()), None)
+        .apply_device_plan_sync(
+            &local,
+            Some(boot.keys[index].clone()),
+            None,
+            &BTreeSet::new(),
+        )
         .unwrap();
     let (status, _) = request(
         &boot.app,

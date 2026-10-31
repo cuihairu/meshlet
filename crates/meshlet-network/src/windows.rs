@@ -13,6 +13,7 @@
 //! 与 Linux 后端同纪律：每个触碰内核的操作都返回明确结果，
 //! 不静默失败；不支持的操作返回 [`NetworkError::Unsupported`]。
 
+use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
@@ -24,6 +25,7 @@ use crate::{
     ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
     PeerObserved, RouteConfig, TunnelConfig,
 };
+use meshlet_domain::Ipv4Cidr;
 
 /// Windows 网络后端：WireGuardNT 隧道 + netsh 路由。
 pub struct WindowsNetworkBackend {
@@ -170,7 +172,11 @@ impl WindowsNetworkBackend {
         })
     }
 
-    pub fn device_plan_matches_sync(&self, _plan: &DevicePlan) -> Result<bool, NetworkError> {
+    pub fn device_plan_matches_sync(
+        &self,
+        _plan: &DevicePlan,
+        _extra_peer_keys: &BTreeSet<String>,
+    ) -> Result<bool, NetworkError> {
         Ok(self.tunnel_service_exists(&self.interface))
     }
 
@@ -181,6 +187,12 @@ impl WindowsNetworkBackend {
     pub fn lan_addresses_sync(&self) -> Result<Vec<Ipv4Addr>, NetworkError> {
         Err(NetworkError::Unsupported(
             "LAN address enumeration on Windows is not yet implemented".to_string(),
+        ))
+    }
+
+    pub fn lan_subnets_sync(&self) -> Result<Vec<Ipv4Cidr>, NetworkError> {
+        Err(NetworkError::Unsupported(
+            "LAN subnet enumeration on Windows is not yet implemented".to_string(),
         ))
     }
 
@@ -202,6 +214,7 @@ impl WindowsNetworkBackend {
         plan: &DevicePlan,
         private_key: Option<String>,
         _gateway_lan_addr: Option<std::net::Ipv4Addr>,
+        _keep_keys: &BTreeSet<String>,
     ) -> Result<(), NetworkError> {
         let exe = self.find_wireguard_exe().ok_or_else(|| {
             NetworkError::Unsupported("WireGuard for Windows is not installed".to_string())
@@ -257,6 +270,35 @@ impl WindowsNetworkBackend {
             .output()
             .map(|out| out.status.success())
             .unwrap_or(false)
+    }
+
+    /// P2P 直连执行层（§12）Windows 尚未接线：显式拒绝，不假装直连成功。
+    pub fn handshake_ages_sync(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, u64>, NetworkError> {
+        Err(NetworkError::Unsupported(
+            "direct-connect handshake ages on Windows are not yet implemented".to_string(),
+        ))
+    }
+
+    /// P2P 直连 peer 下发（§12）Windows 尚未接线：显式拒绝。
+    pub fn set_direct_peer_sync(
+        &self,
+        _public_key: &str,
+        _allowed_ips: &[Ipv4Cidr],
+        _endpoint: std::net::SocketAddrV4,
+        _persistent_keepalive_secs: u32,
+    ) -> Result<(), NetworkError> {
+        Err(NetworkError::Unsupported(
+            "direct-connect peer setup on Windows is not yet implemented".to_string(),
+        ))
+    }
+
+    /// P2P 直连 peer 移除（§12）Windows 尚未接线：显式拒绝。
+    pub fn remove_peer_sync(&self, _public_key: &str) -> Result<(), NetworkError> {
+        Err(NetworkError::Unsupported(
+            "direct-connect peer removal on Windows is not yet implemented".to_string(),
+        ))
     }
 }
 

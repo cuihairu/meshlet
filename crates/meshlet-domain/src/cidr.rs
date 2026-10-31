@@ -51,6 +51,20 @@ impl Ipv4Cidr {
         })
     }
 
+    /// 由「接口地址 + 前缀」构造所属网段：主机位被掩掉。接口地址如
+    /// `10.98.0.20/24` 不是网络地址（[Self::new] 会拒绝），但它**所在**的
+    /// 局域网段就是 `10.98.0.0/24`——`ip -o addr show` 读到的正是这类地址，
+    /// LAN 枚举必须用它构造网段。
+    pub fn from_host_address(addr: Ipv4Addr, prefix: u8) -> Result<Self, CidrError> {
+        if prefix > 32 {
+            return Err(CidrError::PrefixOutOfRange(prefix));
+        }
+        Ok(Self {
+            network: u32::from(addr) & mask_of(prefix),
+            prefix,
+        })
+    }
+
     pub fn network(&self) -> Ipv4Addr {
         Ipv4Addr::from(self.network)
     }

@@ -30,6 +30,7 @@ use meshlet_domain::{
 };
 use meshlet_network::{PeerConfig, RouteConfig, SystemBackend, TunnelConfig};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
@@ -267,7 +268,9 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
         backend
             .isolate_hub_sync(check.tunnel.address)
             .map_err(|e| e.to_string())?;
-        if !backend.device_plan_matches_sync(&check).unwrap_or(false)
+        if !backend
+            .device_plan_matches_sync(&check, &BTreeSet::new())
+            .unwrap_or(false)
             || backend
                 .inspect_sync()
                 .map_err(|e| e.to_string())?
@@ -297,7 +300,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
         #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
         let mut backend = (self.make_backend)().with_interface(self.interface.clone());
         let tunnel_result = backend
-            .apply_tunnel_sync(&tunnel)
+            .apply_tunnel_sync(&tunnel, &BTreeSet::new())
             .map_err(|e| format!("apply tunnel: {e}"))?;
         if !tunnel_result.applied {
             return Err(format!(
@@ -328,7 +331,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
             desired_config_hash: String::new(),
         };
         if !backend
-            .device_plan_matches_sync(&check)
+            .device_plan_matches_sync(&check, &BTreeSet::new())
             .map_err(|e| e.to_string())?
         {
             return Err("hub plan did not match kernel readback".into());
@@ -346,7 +349,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
             let mut tunnel = previous.hub.tunnel.clone();
             tunnel.private_key = self.read_private_key()?;
             backend
-                .apply_tunnel_sync(&tunnel)
+                .apply_tunnel_sync(&tunnel, &BTreeSet::new())
                 .map_err(|e| e.to_string())?;
             backend
                 .apply_routes_sync(&previous.hub.routes)
@@ -365,7 +368,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
                 desired_config_hash: String::new(),
             };
             if !backend
-                .device_plan_matches_sync(&check)
+                .device_plan_matches_sync(&check, &BTreeSet::new())
                 .map_err(|e| e.to_string())?
             {
                 return Err("previous hub plan could not be verified".into());

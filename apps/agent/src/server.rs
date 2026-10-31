@@ -14,7 +14,7 @@
 //! 服务端数据面未开启时返回 503（`dataplane_not_configured`）——agent 视为
 //! 「计划暂不可用」重试，绝不把空计划当成「已生效」。
 
-use meshlet_domain::DataplaneEvidence;
+use meshlet_domain::{DataplaneEvidence, PeerEndpoints};
 use meshlet_network::DevicePlan;
 
 /// 拉取本设备的期望数据面计划。
@@ -28,6 +28,21 @@ pub fn fetch_plan(server_url: &str, token: &str) -> Result<DevicePlan, String> {
     // 服务端契约：结构化配置对象。解析失败必须显式报错——绝不吞掉、也绝不
     // 用「空计划」顶替（空计划会抹掉现有隧道配置）。
     serde_json::from_str(&body).map_err(|e| format!("parse the desired plan: {e}"))
+}
+
+/// 拉取本设备可直连的对端候选端点（§12 P2P）。
+///
+/// 服务端已按本设备视角聚合（排除自身/非 Active/未上报/越出路由范围）并
+/// 确定性排序。失败（服务端不可达 / 401 / 待审批 404）以 `Err` 报出，由
+/// 调用方决定——直连是增益，失败不打断 hub 中继路径。
+pub fn fetch_peer_endpoints(server_url: &str, token: &str) -> Result<Vec<PeerEndpoints>, String> {
+    let url = format!(
+        "{}/api/v1/agent/device/peers/endpoints",
+        server_url.trim_end_matches('/')
+    );
+    let req = ureq::get(&url).set("authorization", &format!("Bearer {token}"));
+    let body = read(req.call())?;
+    serde_json::from_str(&body).map_err(|e| format!("parse the peer endpoints: {e}"))
 }
 
 /// Public control-plane response reader for endpoints that deliberately have

@@ -20,6 +20,7 @@ pub mod dbus;
 pub mod desktop;
 #[cfg(not(target_os = "linux"))]
 pub mod desktop_unsupported;
+pub mod direct;
 pub mod reconcile;
 pub mod self_update;
 pub mod server;
