@@ -192,9 +192,14 @@ fn rgba_to_icon(rgba: &[u8], width: u32, height: u32) -> HICON {
 fn load_status_icon(status_path: &std::path::Path) -> Option<(u32, u32, Vec<u8>)> {
     let text = std::fs::read_to_string(status_path).ok()?;
     let status: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let parent = status_path.parent()?;
     for key in ["icon_24", "icon_16"] {
-        let name = status.get(key).and_then(|v| v.as_str())?;
-        let path = status_path.parent()?.join(name);
+        // 缺失/非字符串 → 继续尝试下一档（回退 icon_16），而非 `?` 早退——
+        // 否则 icon_24 缺席时 icon_16 永远不被尝试（审核发现）。
+        let Some(name) = status.get(key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let path = parent.join(name);
         if let Ok(data) = std::fs::read(&path) {
             if let Some(rgba) = png_decode(&data) {
                 return Some(rgba);
@@ -514,6 +519,40 @@ mod tests {
         // icon_16 缺席时回退（status.json 声明但文件缺失 → None）。
         std::fs::remove_file(dir.join("icon-24.png")).unwrap();
         assert!(load_status_icon(&dir.join("status.json")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 回退回归（审核发现）：status.json 只声明 icon_16（icon_24 键缺席）
+    /// 时必须回退加载 icon_16——此前循环内 `?` 在 icon_24 缺席时早退 None，
+    /// icon_16 永远不被尝试，与注释声明的回退语义不符。
+    #[test]
+    fn load_status_icon_falls_back_to_icon16_when_icon24_key_absent() {
+        let dir = std::env::temp_dir().join(format!(
+            "meshlet-tray-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h) = (16u32, 16u32);
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        rgba[0] = 0x22;
+        rgba[1] = 0xc5;
+        rgba[2] = 0x5e;
+        rgba[3] = 0xff;
+        std::fs::write(dir.join("icon-16.png"), png_encode(w, h, &rgba)).unwrap();
+        // 仅声明 icon_16——icon_24 键缺席，正是此前 `?` 早退的场景。
+        std::fs::write(
+            dir.join("status.json"),
+            r#"{"state":"Meshlet online","tooltip":"Meshlet：在线","icon_16":"icon-16.png"}"#,
+        )
+        .unwrap();
+        let got = load_status_icon(&dir.join("status.json")).expect("fall back to icon_16");
+        assert_eq!(got.0, w);
+        assert_eq!(got.1, h);
+        assert_eq!(&got.2[..4], &[0x22, 0xc5, 0x5e, 0xff]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
