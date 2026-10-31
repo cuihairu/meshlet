@@ -85,16 +85,6 @@ fn main() {
                         } => {
                             open_settings_window(tray.app_handle());
                         }
-                        tauri::tray::TrayIconEvent::Click {
-                            button: tauri::tray::MouseButton::Right,
-                            button_state: tauri::tray::MouseButtonState::Up,
-                            ..
-                        } => {
-                            // 右键弹出菜单
-                            if let Some(menu) = tray.menu() {
-                                let _ = menu.show();
-                            }
-                        }
                         _ => {}
                     }
                 })
