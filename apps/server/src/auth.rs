@@ -253,16 +253,6 @@ impl AuthStore {
         ))
     }
 
-    /// 管理员重置密码（离线维护 CLI；登录恒重读库，运行中生效）。
-    pub async fn set_password(&self, id: &UserId, new_hash: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
-            .bind(new_hash)
-            .bind(&id.0)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
     /// 写入/清除 TOTP 密钥（`None` = 清除并关停）。
     pub async fn set_totp_secret(
         &self,
