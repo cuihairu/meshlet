@@ -29,6 +29,15 @@ export function antdThemeConfig(theme: Theme): ThemeConfig {
           colorText: '#0f172a',
           colorTextSecondary: '#475569',
           colorBorder: '#cbd5e1',
+          // Semantic status text on their pale fills: antd's success (#52c41a)
+          // and warning (#d48806) greens fail WCAG AA (2.2:1 / 3.4:1) on light
+          // backgrounds. Pin text + fill pairs to AA-compliant shades — antd
+          // derives the fill as a tint of the seed, so both must be set.
+          // Brand primary is untouched (colorPrimary above).
+          colorSuccess: '#15803d',
+          colorSuccessBg: '#f0fdf4',
+          colorWarning: '#b45309',
+          colorWarningBg: '#fffbeb',
           fontSize: 16,
           lineHeight: 1.6,
           borderRadius: 8,

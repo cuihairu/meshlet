@@ -110,13 +110,15 @@ export function DevicesSection({
     {
       title: t('devices.colDirect'),
       key: 'direct',
-      render: (_, d) =>
-        d.direct_links.length === 0 ? (
+      render: (_, d) => {
+        // Version skew: an older server omits direct_links instead of [].
+        const links = d.direct_links ?? [];
+        return links.length === 0 ? (
           <span className="muted" title={t('devices.directRelay')}>
             {t('devices.directRelay')}
           </span>
         ) : (
-          d.direct_links.map((link) => {
+          links.map((link) => {
             const peer = devices?.find((p) => p.virtual_ipv4 === link.virtual_ipv4);
             const label = peer ? peer.name : link.virtual_ipv4;
             const direct = link.link_state === 'direct';
@@ -134,7 +136,8 @@ export function DevicesSection({
               </Tag>
             );
           })
-        ),
+        );
+      },
     },
     {
       title: t('devices.colFingerprint'),
