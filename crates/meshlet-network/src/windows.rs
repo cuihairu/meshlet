@@ -335,10 +335,13 @@ impl WindowsNetworkBackend {
 
     pub fn device_plan_matches_sync(
         &self,
-        _plan: &DevicePlan,
-        _extra_peer_keys: &BTreeSet<String>,
+        plan: &DevicePlan,
+        extra_peer_keys: &BTreeSet<String>,
     ) -> Result<bool, NetworkError> {
-        Ok(self.tunnel_service_exists(&self.interface))
+        // 逐项对账（peer 公钥 / routes / MTU）替代「只看隧道存在」——
+        // 隧道在但配置漂移不再误判一致（todo.md:241）。
+        let snapshot = self.inspect_sync()?;
+        Ok(crate::device_plan_matches(plan, extra_peer_keys, &snapshot))
     }
 
     pub fn meshlet_nat_owners_sync(&self) -> Result<Vec<String>, NetworkError> {

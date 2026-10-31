@@ -208,6 +208,192 @@ pub enum NetworkError {
     ApplyRejected(String),
 }
 
+/// 计划与内核快照逐项对账（纯函数，无 IO，Linux 本机可测）。
+///
+/// 供 Windows 后端 `device_plan_matches_sync` 使用（Linux 有内联的更强实现）；
+/// 把「隧道在但配置已漂移」从「误判一致」中分辨出来：
+/// ① 每个计划 peer 公钥必须存在于快照 peers（子集方向）；
+/// ② 快照里每个 peer 必须是计划 peer 或 `extra_peer_keys`（无未受管漂移；
+///    `extra_peer_keys` 是直连保留等允许存在的额外 peer）；
+/// ③ 每个计划路由 `destination` 必须在 `installed_routes`（CIDR 精确匹配）；
+/// ④ 计划显式指定 MTU 则须与快照 `tunnel_mtu` 一致；
+/// ⑤ 隧道不存在（`tunnel_exists=false`）→ 不匹配。
+///
+/// 调用方是 `#[cfg(windows)]` 的 `WindowsNetworkBackend`，故非 Windows 目标
+/// 上本函数保持可编译（含单测）但无调用方——按仓内惯例以 cfg_attr 豁免
+/// dead_code，让 Linux 本机能跑这些对账单测。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn device_plan_matches(
+    plan: &DevicePlan,
+    extra_peer_keys: &std::collections::BTreeSet<String>,
+    snapshot: &NetworkSnapshot,
+) -> bool {
+    if !snapshot.tunnel_exists {
+        return false;
+    }
+    for peer in &plan.tunnel.peers {
+        if !snapshot
+            .peers
+            .iter()
+            .any(|p| p.public_key == peer.public_key)
+        {
+            return false;
+        }
+    }
+    for p in &snapshot.peers {
+        if plan
+            .tunnel
+            .peers
+            .iter()
+            .any(|pp| pp.public_key == p.public_key)
+        {
+            continue;
+        }
+        if extra_peer_keys.contains(&p.public_key) {
+            continue;
+        }
+        return false;
+    }
+    for route in &plan.routes {
+        if !snapshot.installed_routes.contains(&route.destination) {
+            return false;
+        }
+    }
+    if let Some(mtu) = plan.tunnel.mtu {
+        if snapshot.tunnel_mtu != Some(mtu) {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod device_plan_matches_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn peer(key: &str) -> PeerConfig {
+        PeerConfig {
+            public_key: key.into(),
+            allowed_ips: vec!["10.240.0.5/32".parse().unwrap()],
+            endpoint: None,
+            persistent_keepalive_secs: None,
+        }
+    }
+
+    fn plan(peers: &[&str], routes: &[&str], mtu: Option<u32>) -> DevicePlan {
+        DevicePlan {
+            desired_revision: 1,
+            hub_port: None,
+            tunnel: TunnelConfig {
+                name: "Meshlet".into(),
+                address: "10.240.0.1".parse().unwrap(),
+                address_prefix: 16,
+                listen_port: None,
+                peers: peers.iter().map(|p| peer(p)).collect(),
+                mtu,
+                private_key: None,
+            },
+            routes: routes
+                .iter()
+                .map(|r| RouteConfig {
+                    destination: r.parse().unwrap(),
+                    interface: "Meshlet".into(),
+                    gateway: None,
+                })
+                .collect(),
+            nat_rules: Vec::new(),
+            hub_address: None,
+            publish: None,
+            desired_config_hash: "h".into(),
+        }
+    }
+
+    fn snapshot(
+        tunnel_exists: bool,
+        peers: &[&str],
+        routes: &[&str],
+        mtu: Option<u32>,
+    ) -> NetworkSnapshot {
+        NetworkSnapshot {
+            tunnel_exists,
+            forwarding_enabled: None,
+            peers: peers
+                .iter()
+                .map(|k| PeerObserved {
+                    public_key: (*k).into(),
+                    allowed_ips: vec!["10.240.0.5/32".parse().unwrap()],
+                })
+                .collect(),
+            installed_routes: routes.iter().map(|r| r.parse().unwrap()).collect(),
+            nat_rules: Vec::new(),
+            tunnel_mtu: mtu,
+        }
+    }
+
+    fn empty_extra() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
+    #[test]
+    fn all_match_true() {
+        let p = plan(&["pk-a", "pk-b"], &["10.240.0.0/24"], Some(1420));
+        let s = snapshot(true, &["pk-a", "pk-b"], &["10.240.0.0/24"], Some(1420));
+        assert!(device_plan_matches(&p, &empty_extra(), &s));
+    }
+
+    #[test]
+    fn missing_plan_peer_false() {
+        // 计划有 pk-c，快照缺 → 漂移。
+        let p = plan(&["pk-a", "pk-c"], &[], None);
+        let s = snapshot(true, &["pk-a"], &[], None);
+        assert!(!device_plan_matches(&p, &empty_extra(), &s));
+    }
+
+    #[test]
+    fn drifted_peer_false_but_extra_allowed_true() {
+        // 快照多出 pk-x：不在计划也不在 extra → 未受管漂移。
+        let p = plan(&["pk-a"], &[], None);
+        let s = snapshot(true, &["pk-a", "pk-x"], &[], None);
+        assert!(!device_plan_matches(&p, &empty_extra(), &s));
+        // extra_peer_keys 放行 pk-x → 一致。
+        let mut extra = empty_extra();
+        extra.insert("pk-x".into());
+        assert!(device_plan_matches(&p, &extra, &s));
+    }
+
+    #[test]
+    fn missing_route_false() {
+        // 计划路由 10.240.0.0/24 未安装 → 漂移。
+        let p = plan(&[], &["10.240.0.0/24"], None);
+        let s = snapshot(true, &[], &["192.168.1.0/24"], None);
+        assert!(!device_plan_matches(&p, &empty_extra(), &s));
+    }
+
+    #[test]
+    fn mtu_drift_false() {
+        // 计划显式 1420，内核读数 1300 → 漂移。
+        let p = plan(&[], &[], Some(1420));
+        let s = snapshot(true, &[], &[], Some(1300));
+        assert!(!device_plan_matches(&p, &empty_extra(), &s));
+    }
+
+    #[test]
+    fn tunnel_not_exists_false() {
+        let p = plan(&["pk-a"], &["10.240.0.0/24"], Some(1420));
+        let s = snapshot(false, &[], &[], None);
+        assert!(!device_plan_matches(&p, &empty_extra(), &s));
+    }
+
+    #[test]
+    fn no_planned_mtu_skips_mtu_check() {
+        // 计划未指定 MTU → 不比对，仅其余项判定。
+        let p = plan(&["pk-a"], &["10.240.0.0/24"], None);
+        let s = snapshot(true, &["pk-a"], &["10.240.0.0/24"], Some(1300));
+        assert!(device_plan_matches(&p, &empty_extra(), &s));
+    }
+}
+
 /// 统一网络后端抽象：inspect → apply → rollback。
 ///
 /// 原生 async fn 在 trait 里无法声明 `Send` 边界；这里改用 RPITIT + `Send`
