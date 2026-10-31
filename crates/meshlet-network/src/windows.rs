@@ -130,13 +130,14 @@ impl WindowsNetworkBackend {
         let mut routes = Vec::new();
         for line in text.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 && parts[0].contains('.') {
-                if parts[3].eq_ignore_ascii_case(&self.interface) {
-                    if let Ok(cidr) = format!("{}/{}", parts[0], mask_to_prefix(parts[1]))
-                        .parse::<meshlet_domain::Ipv4Cidr>()
-                    {
-                        routes.push(cidr);
-                    }
+            if parts.len() >= 4
+                && parts[0].contains('.')
+                && parts[3].eq_ignore_ascii_case(&self.interface)
+            {
+                if let Ok(cidr) = format!("{}/{}", parts[0], mask_to_prefix(parts[1]))
+                    .parse::<meshlet_domain::Ipv4Cidr>()
+                {
+                    routes.push(cidr);
                 }
             }
         }
