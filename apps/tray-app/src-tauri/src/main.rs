@@ -76,8 +76,26 @@ fn main() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::DoubleClick { .. } = event {
-                        open_settings_window(tray.app_handle());
+                    match event {
+                        tauri::tray::TrayIconEvent::DoubleClick { .. }
+                        | tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        } => {
+                            open_settings_window(tray.app_handle());
+                        }
+                        tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Right,
+                            button_state: tauri::tray::MouseButtonState::Up,
+                            ..
+                        } => {
+                            // 右键弹出菜单
+                            if let Some(menu) = tray.menu() {
+                                let _ = menu.show();
+                            }
+                        }
+                        _ => {}
                     }
                 })
                 .build(app)?;
