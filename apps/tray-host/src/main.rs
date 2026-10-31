@@ -61,16 +61,17 @@ fn main() {
             0,
             class_name.as_ptr(),
             std::ptr::null(),
+            0, // WS_OVERLAPPED, 不显示
             0,
             0,
             0,
             0,
-            0,
-            HWND_MESSAGE,
+            std::ptr::null_mut(), // 父窗口 = NULL（非 HWND_MESSAGE）
             std::ptr::null_mut(),
             GetModuleHandleW(std::ptr::null()),
             std::ptr::null(),
         );
+        eprintln!("meshlet-tray-host: hwnd={hwnd:p}");
 
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -111,14 +112,16 @@ fn main() {
             }
 
             let mut msg: MSG = std::mem::zeroed();
-            while PeekMessageW(&mut msg, hwnd, 0, 0, PM_REMOVE) > 0 {
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) > 0 {
                 if msg.message == WM_APP + 1 {
                     let lparam = msg.lParam as u32;
-                    if lparam == WM_RBUTTONUP {
+                    let wparam = msg.wParam;
+                    eprintln!("meshlet-tray-host: tray callback wparam={wparam} lparam={lparam:#x}");
+                    if lparam == WM_RBUTTONUP || lparam == WM_LBUTTONUP {
                         let mut pt: POINT = std::mem::zeroed();
                         GetCursorPos(&mut pt);
+                        eprintln!("meshlet-tray-host: showing menu at ({}, {})", pt.x, pt.y);
                         SetForegroundWindow(hwnd);
-                        // Windows 要求 SetForegroundWindow 后发 WM_NULL 否则菜单不显示
                         PostMessageW(hwnd, WM_NULL, 0, 0);
                         let cmd = TrackPopupMenuEx(
                             hmenu,
@@ -128,6 +131,7 @@ fn main() {
                             hwnd,
                             std::ptr::null(),
                         );
+                        eprintln!("meshlet-tray-host: menu cmd={cmd}");
                         if cmd == 1 {
                             Shell_NotifyIconW(NIM_DELETE, &nid);
                             DestroyMenu(hmenu);
