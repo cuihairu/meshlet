@@ -17,9 +17,19 @@ use windows_sys::Win32::UI::Shell::{
     NOTIFYICONDATAW,
 };
 #[cfg(windows)]
-use windows_sys::Win32::UI::WindowsAndMessaging::HICON;
-#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
+
+/// 全局状态，供窗口过程访问。
+#[cfg(windows)]
+static G_HWND: AtomicIsize = AtomicIsize::new(0);
+#[cfg(windows)]
+static G_NID: AtomicPtr<NOTIFYICONDATAW> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg(windows)]
+static G_MENU: AtomicIsize = AtomicIsize::new(0);
+#[cfg(windows)]
+static G_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(windows)]
 fn main() {
@@ -44,7 +54,7 @@ fn main() {
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: 0,
-            lpfnWndProc: Some(def_window_proc),
+            lpfnWndProc: Some(tray_wnd_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: GetModuleHandleW(std::ptr::null()),
@@ -61,17 +71,18 @@ fn main() {
             0,
             class_name.as_ptr(),
             std::ptr::null(),
-            0, // WS_OVERLAPPED, 不显示
             0,
             0,
             0,
             0,
-            std::ptr::null_mut(), // 父窗口 = NULL（非 HWND_MESSAGE）
+            0,
+            std::ptr::null_mut(),
             std::ptr::null_mut(),
             GetModuleHandleW(std::ptr::null()),
             std::ptr::null(),
         );
         eprintln!("meshlet-tray-host: hwnd={hwnd:p}");
+        G_HWND.store(hwnd as isize, Ordering::SeqCst);
 
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -79,8 +90,6 @@ fn main() {
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_APP + 1;
-        // 启动即消费现存状态（agent 先于宿主运行时不用等首个状态变更）；
-        // 尚无 status.json / 解码失败时以 GDI 绿色方块兜底。
         nid.hIcon = load_status_icon(&status_path)
             .map(|(w, h, rgba)| rgba_to_icon(&rgba, w, h))
             .unwrap_or_else(create_green_icon);
@@ -95,57 +104,42 @@ fn main() {
         let hmenu = CreatePopupMenu();
         let exit_text: Vec<u16> = "退出\0".encode_utf16().collect();
         AppendMenuW(hmenu, MF_STRING, 1, exit_text.as_ptr());
+        G_NID.store(&mut nid as *mut _, Ordering::SeqCst);
+        G_MENU.store(hmenu as isize, Ordering::SeqCst);
 
         // 启动时立即读取当前状态并应用图标
         update_tray(&status_path, &mut nid);
 
-        let mut last_mtime: Option<std::time::SystemTime> = None;
-
-        loop {
-            if let Ok(meta) = std::fs::metadata(&status_path) {
-                if let Ok(mtime) = meta.modified() {
-                    if last_mtime.map_or(true, |old| mtime > old) {
-                        last_mtime = Some(mtime);
-                        update_tray(&status_path, &mut nid);
-                    }
+        // 文件监听放独立线程，主循环专心处理消息
+        let watch_path = status_path.clone();
+        std::thread::spawn(move || {
+            let mut last_mtime: Option<std::time::SystemTime> = None;
+            loop {
+                if G_EXIT.load(Ordering::SeqCst) {
+                    return;
                 }
-            }
-
-            let mut msg: MSG = std::mem::zeroed();
-            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) > 0 {
-                if msg.message == WM_APP + 1 {
-                    let lparam = msg.lParam as u32;
-                    let wparam = msg.wParam;
-                    eprintln!("meshlet-tray-host: tray callback wparam={wparam} lparam={lparam:#x}");
-                    if lparam == WM_RBUTTONUP || lparam == WM_LBUTTONUP {
-                        let mut pt: POINT = std::mem::zeroed();
-                        GetCursorPos(&mut pt);
-                        eprintln!("meshlet-tray-host: showing menu at ({}, {})", pt.x, pt.y);
-                        SetForegroundWindow(hwnd);
-                        PostMessageW(hwnd, WM_NULL, 0, 0);
-                        let cmd = TrackPopupMenuEx(
-                            hmenu,
-                            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD,
-                            pt.x,
-                            pt.y,
-                            hwnd,
-                            std::ptr::null(),
-                        );
-                        eprintln!("meshlet-tray-host: menu cmd={cmd}");
-                        if cmd == 1 {
-                            Shell_NotifyIconW(NIM_DELETE, &nid);
-                            DestroyMenu(hmenu);
-                            DestroyWindow(hwnd);
-                            return;
+                if let Ok(meta) = std::fs::metadata(&watch_path) {
+                    if let Ok(mtime) = meta.modified() {
+                        if last_mtime.map_or(true, |old| mtime > old) {
+                            last_mtime = Some(mtime);
+                            let nid_ptr = G_NID.load(Ordering::SeqCst);
+                            if !nid_ptr.is_null() {
+                                update_tray(&watch_path, unsafe { &mut *nid_ptr });
+                            }
                         }
                     }
                 }
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
+        });
 
-            std::thread::sleep(std::time::Duration::from_millis(100));
+        // 阻塞消息循环
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
+        eprintln!("meshlet-tray-host: message loop exited");
     }
 }
 
@@ -388,12 +382,42 @@ fn main() {
 }
 
 #[cfg(windows)]
-unsafe extern "system" fn def_window_proc(
+unsafe extern "system" fn tray_wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_APP + 1 {
+        let event = lparam as u32;
+        eprintln!("meshlet-tray-host: tray event={event:#x}");
+        if event == WM_RBUTTONUP || event == WM_LBUTTONUP {
+            let mut pt: POINT = std::mem::zeroed();
+            GetCursorPos(&mut pt);
+            let hmenu = G_MENU.load(Ordering::SeqCst) as HMENU;
+            SetForegroundWindow(hwnd);
+            PostMessageW(hwnd, WM_NULL, 0, 0);
+            let cmd = TrackPopupMenuEx(
+                hmenu,
+                TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD,
+                pt.x,
+                pt.y,
+                hwnd,
+                std::ptr::null(),
+            );
+            eprintln!("meshlet-tray-host: menu cmd={cmd}");
+            if cmd == 1 {
+                let nid_ptr = G_NID.load(Ordering::SeqCst) as *mut NOTIFYICONDATAW;
+                if !nid_ptr.is_null() {
+                    Shell_NotifyIconW(NIM_DELETE, &*nid_ptr);
+                }
+                G_EXIT.store(true, Ordering::SeqCst);
+                DestroyMenu(hmenu);
+                DestroyWindow(hwnd);
+            }
+        }
+        return 0;
+    }
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
