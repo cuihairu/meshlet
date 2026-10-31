@@ -200,6 +200,81 @@ impl WindowsNetworkBackend {
         )
     }
 
+    /// AGENT-FW-1 接线：设备计划 apply 时按档位走 mesh 可达性防火墙。
+    ///
+    /// 镜像 Linux `ensure_host_firewall_sync` 的纪律——探测
+    /// 失败按「未满足」处理（fail toward action；档位 set 与规则 add 均幂等），
+    /// 执行失败显式报错，绝不假装生效。置于隧道与路由之后调用：
+    /// `SetNetworkCategoryPrivate` 需接口已存在。
+    fn ensure_mesh_reachability_sync(
+        &self,
+        device_addr: std::net::Ipv4Addr,
+    ) -> Result<(), NetworkError> {
+        let category_is_private = self.probe_net_category_is_private();
+        let icmp_rule_present = self.probe_icmp_rule_present();
+        let commands = crate::windows_firewall::mesh_reachability_commands(
+            &self.interface,
+            device_addr,
+            category_is_private,
+            icmp_rule_present,
+        )?;
+        for command in &commands {
+            crate::windows_firewall::exec::run_mesh_firewall_command(command)?;
+        }
+        Ok(())
+    }
+
+    /// `Get-NetConnectionProfile -InterfaceAlias <if>` 探测：exit 0 且输出含
+    /// Private → 已满足；接口未找到 / 命令失败 → 未满足（宁补不漏，档位 set
+    /// 天然幂等）。接口名由后端构造控制，与既有 apply 路径同信任级。
+    fn probe_net_category_is_private(&self) -> bool {
+        let Ok(output) = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!(
+                    "Get-NetConnectionProfile -InterfaceAlias '{}'",
+                    self.interface
+                ),
+            ])
+            .output()
+        else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        crate::windows_firewall::net_category_is_private(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// `netsh advfirewall firewall show rule name=Meshlet-ICMPv4-In` 探测：
+    /// exit 0 且输出列出规则 → 已放行；其余 → 未放行（宁补不漏，add 重放
+    /// 同名同谓词规则无害）。netsh 输出按活动代码页编码，走 GBK 兑底解码。
+    fn probe_icmp_rule_present(&self) -> bool {
+        let Ok(output) = std::process::Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "show",
+                "rule",
+                "name=Meshlet-ICMPv4-In",
+            ])
+            .output()
+        else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let text = format!(
+            "{}{}",
+            crate::windows_console::decode_output(&output.stdout),
+            crate::windows_console::decode_output(&output.stderr),
+        );
+        crate::windows_firewall::firewall_rule_present(&text)
+    }
+
     fn routes_on_interface(&self) -> Vec<meshlet_domain::Ipv4Cidr> {
         let output = std::process::Command::new("netsh")
             .args(["interface", "ipv4", "show", "routes"])
@@ -344,6 +419,10 @@ impl WindowsNetworkBackend {
             };
             run_route_command(&netsh_cmd)?;
         }
+        // AGENT-FW-1：mesh 可达性防火墙（Private 档位 + ICMPv4 放行，幂等）。
+        // 置于隧道与路由之后（档位命令需接口已存在）；失败显式报错，不假装
+        // 生效——真机「ping 直接通」属验收走查，见 todo.md AGENT-FW-1。
+        self.ensure_mesh_reachability_sync(plan.tunnel.address)?;
         Ok(())
     }
 
