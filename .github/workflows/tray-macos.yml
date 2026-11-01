@@ -47,9 +47,11 @@ jobs:
       - name: Install tauri-cli 2.12.4
         run: cargo install tauri-cli --locked --version 2.12.4
 
-      - name: Test tray
+      # 同时跑 meshlet-network：macOS 上后端走 UnsupportedBackend（unsupported.rs
+      # 只在非 linux/windows 编译），它的拒绝语义测试只在 macOS 才真实执行。
+      - name: Test network + tray
         working-directory: apps/tray-app/src-tauri
-        run: cargo test -p meshlet-tray
+        run: cargo test -p meshlet-network -p meshlet-tray
 
       - name: Build .app (unsigned, ad-hoc)
         working-directory: apps/tray-app/src-tauri
