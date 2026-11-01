@@ -190,6 +190,7 @@ export const en = {
   'devices.directRelay': 'all relay via hub',
   'devices.directAge': 'last direct handshake {secs}s ago',
   'devices.directAgeUnknown': 'no direct handshake yet',
+  'devices.directDetailNone': 'no endpoint or traffic yet',
 
   'aliases.title': 'Alias mappings',
   'aliases.intro1':

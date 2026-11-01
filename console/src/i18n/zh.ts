@@ -188,6 +188,7 @@ export const zh: Dict = {
   'devices.directRelay': '全部经 hub 中继',
   'devices.directAge': '最近直连握手 {secs} 秒前',
   'devices.directAgeUnknown': '尚无直连握手',
+  'devices.directDetailNone': '暂无端点或流量',
 
   'aliases.title': '别名映射',
   'aliases.intro1':

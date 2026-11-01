@@ -253,6 +253,23 @@ tr.state-unknown td { color: var(--muted-c); }
   font-size: 0.875rem;
 }
 
+.mono {
+  font-family: var(--mono, monospace);
+}
+
+/* R-DIAG-2: per-peer direct link block in the devices table — mode tag on
+   the first line, raw readings (endpoint · RTT · traffic) on the second. */
+.direct-peer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.direct-detail {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 .error {
   color: var(--danger);
   font-size: 0.875rem;

@@ -56,6 +56,20 @@ export interface DirectLink {
   link_state: 'direct' | 'direct_pending';
   /** Seconds since the last direct handshake at probe time; null = no reading yet. */
   last_handshake_age_secs: number | null;
+  /** Peer display name (R-DIAG-2); older servers omit it. */
+  peer_name?: string;
+  /** p2p_direct | direct_pending | hub_relay (R-DIAG-2); older servers omit it. */
+  connection_mode?: string;
+  /** Direct endpoint ip:port (R-DIAG-2); older servers omit it. */
+  endpoint?: string;
+  /** Measured direct-path RTT in ms (R-DIAG-2); older servers omit it. */
+  rtt_ms?: number | null;
+  /** Last handshake Unix seconds (R-DIAG-2); older servers omit it. */
+  last_handshake_at?: number | null;
+  /** Cumulative rx bytes (R-DIAG-2); older servers omit it. */
+  rx_bytes?: number;
+  /** Cumulative tx bytes (R-DIAG-2); older servers omit it. */
+  tx_bytes?: number;
 }
 
 export interface Device {

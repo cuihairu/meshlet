@@ -113,30 +113,48 @@ export function DevicesSection({
       render: (_, d) => {
         // Version skew: an older server omits direct_links instead of [].
         const links = d.direct_links ?? [];
-        return links.length === 0 ? (
-          <span className="muted" title={t('devices.directRelay')}>
-            {t('devices.directRelay')}
-          </span>
-        ) : (
-          links.map((link) => {
-            const peer = devices?.find((p) => p.virtual_ipv4 === link.virtual_ipv4);
-            const label = peer ? peer.name : link.virtual_ipv4;
-            const direct = link.link_state === 'direct';
-            const title =
-              link.last_handshake_age_secs == null
-                ? t('devices.directAgeUnknown')
-                : t('devices.directAge', { secs: String(link.last_handshake_age_secs) });
-            return (
-              <Tag
-                key={link.public_key}
-                color={direct ? 'green' : 'orange'}
-                title={`${label} · ${title}`}
-              >
-                {label} · {direct ? t('devices.directOk') : t('devices.directPending')}
+        if (links.length === 0) {
+          return (
+            <span className="muted" title={t('devices.directRelay')}>
+              {t('devices.directRelay')}
+            </span>
+          );
+        }
+        return links.map((link) => {
+          const peer = devices?.find((p) => p.virtual_ipv4 === link.virtual_ipv4);
+          const label = link.peer_name || (peer ? peer.name : link.virtual_ipv4);
+          // R-DIAG-2 连接模式：优先 connection_mode，旧服务端回退 link_state。
+          const direct =
+            link.connection_mode === 'p2p_direct' ||
+            (link.connection_mode == null && link.link_state === 'direct');
+          const modeLabel = direct
+            ? t('devices.directOk')
+            : t('devices.directPending');
+          const title =
+            link.last_handshake_age_secs == null
+              ? t('devices.directAgeUnknown')
+              : t('devices.directAge', { secs: String(link.last_handshake_age_secs) });
+          // R-DIAG-2 详情：endpoint · RTT ms · rx↑/tx↓（原始值，非 UI 标签不译）。
+          const detail = [
+            link.endpoint || null,
+            link.rtt_ms != null ? `${link.rtt_ms} ms` : null,
+            link.rx_bytes != null || link.tx_bytes != null
+              ? `${formatBytes(link.rx_bytes ?? 0)}↑ ${formatBytes(link.tx_bytes ?? 0)}↓`
+              : null,
+          ].filter(Boolean);
+          return (
+            <div className="direct-peer" key={link.public_key}>
+              <Tag color={direct ? 'green' : 'orange'} title={`${label} · ${title}`}>
+                {label} · {modeLabel}
               </Tag>
-            );
-          })
-        );
+              {detail.length > 0 ? (
+                <div className="direct-detail muted mono">{detail.join(' · ')}</div>
+              ) : (
+                <div className="direct-detail muted mono">{t('devices.directDetailNone')}</div>
+              )}
+            </div>
+          );
+        });
       },
     },
     {
@@ -205,3 +223,11 @@ const SOURCE_KEY: Record<string, MessageKey> = {
   enrollment: 'devices.sourceEnrollment',
   none: 'devices.sourceNone',
 };
+
+/** 流量读数展示（R-DIAG-2，原始数值非 UI 标签，不译）。 */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}K`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)}M`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)}G`;
+}
