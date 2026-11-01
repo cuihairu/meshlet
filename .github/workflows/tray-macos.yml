@@ -42,8 +42,10 @@ jobs:
         with:
           workspaces: apps/tray-app/src-tauri
 
-      - name: Install tauri-cli (pinned to tauri 2.12.5)
-        run: cargo install tauri-cli --locked --version 2.12.5
+      # tauri-cli 与 tauri crate 不严格同步发版：tauri 2.12.5 无对应 cli，
+      # 2.x 最新 cli 为 2.12.4（同 major，兼容 2.x 配置）。
+      - name: Install tauri-cli 2.12.4
+        run: cargo install tauri-cli --locked --version 2.12.4
 
       - name: Test tray
         working-directory: apps/tray-app/src-tauri
