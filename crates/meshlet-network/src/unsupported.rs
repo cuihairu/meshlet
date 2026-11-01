@@ -13,8 +13,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::nat::NatRule;
 use crate::{
-    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkDiagnostics, NetworkError,
-    NetworkSnapshot, RouteConfig, TunnelConfig,
+    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
+    RouteConfig, TunnelConfig,
 };
 use meshlet_domain::Ipv4Cidr;
 
@@ -183,7 +183,7 @@ impl NetworkBackend for UnsupportedBackend {
     }
 
     async fn apply_tunnel(&self, config: TunnelConfig) -> Result<ApplyResult, NetworkError> {
-        self.apply_tunnel_sync(&config)
+        self.apply_tunnel_sync(&config, &BTreeSet::new())
     }
 
     async fn apply_routes(
@@ -251,7 +251,9 @@ mod tests {
             ("inspect", backend.inspect_sync().unwrap_err()),
             (
                 "apply_tunnel",
-                backend.apply_tunnel_sync(&tunnel).unwrap_err(),
+                backend
+                    .apply_tunnel_sync(&tunnel, &BTreeSet::new())
+                    .unwrap_err(),
             ),
             (
                 "apply_routes",
@@ -283,6 +285,7 @@ mod tests {
                         },
                         None,
                         None,
+                        &BTreeSet::new(),
                     )
                     .unwrap_err(),
             ),
