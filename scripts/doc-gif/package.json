@@ -1,0 +1,12 @@
+{
+  "name": "meshlet-doc-gif",
+  "private": true,
+  "type": "module",
+  "description": "Reproducible capture pipeline for the docs configuration-effects page (off/on screenshots + GIF).",
+  "scripts": {
+    "capture": "node capture.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

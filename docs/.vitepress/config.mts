@@ -92,6 +92,7 @@ export default defineConfig({
             { text: 'Installation', link: '/guide/install' },
             { text: 'External Callers', link: '/guide/external-caller' },
             { text: 'Hands-on Walkthrough', link: '/guide/walkthrough' },
+            { text: 'Toggle Effects', link: '/guide/toggles' },
           ] }],
           '/implementation/': [{ text: 'Implementation Records', items: [
             { text: 'P0 Fixes and Nightly Build', link: '/implementation/fixes-and-nightly-2026-10-17' },
@@ -184,6 +185,7 @@ export default defineConfig({
             { text: '安装指南', link: '/zh/guide/install' },
             { text: '外部调用方指南', link: '/zh/guide/external-caller' },
             { text: '真机走查', link: '/zh/guide/walkthrough' },
+            { text: '配置效果', link: '/zh/guide/toggles' },
           ] }],
           '/zh/implementation/': [{ text: '实施记录', items: [
             { text: 'P0 修复与 nightly', link: '/zh/implementation/fixes-and-nightly-2026-10-17' },
