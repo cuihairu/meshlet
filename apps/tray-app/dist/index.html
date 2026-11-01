@@ -1,42 +1,56 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Meshlet 设置</title>
+  <title>Meshlet Settings</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: "Segoe UI", system-ui, sans-serif;
       background: #1a1a2e;
       color: #e0e0e0;
-      padding: 24px;
+      padding: 20px 24px 24px;
+      font-size: 14px;
     }
-    h1 { font-size: 18px; margin-bottom: 20px; color: #4e8fa6; }
+    h1 { font-size: 17px; margin-bottom: 14px; color: #4e8fa6; }
+    /* ── 四分区 Tab ── */
+    .tabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid #2a2a4a; }
+    .tab {
+      padding: 8px 18px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: #80868c;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .tab:hover { color: #e0e0e0; }
+    .tab.active { color: #4e8fa6; border-bottom-color: #4e8fa6; font-weight: 600; }
+    .zone { display: none; }
+    .zone.active { display: block; }
+    .zone h2 { font-size: 13px; color: #80868c; font-weight: 500; margin: 18px 0 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .zone h2:first-child { margin-top: 0; }
+
     .status-bar {
       background: #16213e;
       border-radius: 8px;
       padding: 12px 16px;
-      margin-bottom: 20px;
+      margin-bottom: 14px;
       display: flex;
       align-items: center;
       gap: 10px;
     }
-    .status-dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      background: #80868c;
-    }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #80868c; }
     .status-dot.online { background: #22c55e; }
     .status-dot.error { background: #ef4444; }
-    .status-text { font-size: 14px; }
-    .field { margin-bottom: 16px; }
-    .field label {
-      display: block;
-      font-size: 13px;
-      color: #80868c;
-      margin-bottom: 6px;
-    }
+
+    .kv { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
+    .kv .k { color: #80868c; min-width: 130px; }
+    .kv .v { color: #e0e0e0; font-family: Consolas, monospace; }
+
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 13px; color: #80868c; margin-bottom: 6px; }
     .field input {
       width: 100%;
       padding: 8px 12px;
@@ -47,7 +61,8 @@
       font-size: 14px;
     }
     .field input:focus { outline: none; border-color: #4e8fa6; }
-    .actions { display: flex; gap: 10px; margin-top: 24px; }
+
+    .actions { display: flex; gap: 10px; margin-top: 16px; }
     .btn {
       padding: 8px 20px;
       border: none;
@@ -59,64 +74,332 @@
     .btn-primary:hover { background: #5a9fb8; }
     .btn-secondary { background: #2a2a4a; color: #e0e0e0; }
     .btn-secondary:hover { background: #3a3a5a; }
+    .btn-mini { padding: 3px 10px; font-size: 12px; background: #2a2a4a; color: #e0e0e0; border-radius: 4px; }
+    .btn-mini:hover { background: #3a3a5a; }
     .msg { font-size: 13px; margin-top: 12px; color: #22c55e; display: none; }
+    .msg.err { color: #ef4444; }
+
+    .peer-card { background: #16213e; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+    .peer-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .peer-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .peer-dot.on { background: #22c55e; }
+    .peer-dot.off { background: #ef4444; }
+    .peer-endpoint { color: #e0e0e0; font-weight: 500; }
+    .peer-detail { color: #80868c; font-size: 12px; }
+    .muted { color: #80868c; font-size: 13px; }
+
+    /* 诊断区 */
+    .diag-pre {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre;
+      margin-bottom: 8px;
+    }
+    table.diag { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 8px; }
+    table.diag th, table.diag td {
+      text-align: left;
+      padding: 4px 8px;
+      border-bottom: 1px solid #2a2a4a;
+      white-space: nowrap;
+    }
+    table.diag th { color: #80868c; font-weight: 500; }
+    table.diag td.mono { font-family: Consolas, monospace; }
+
+    /* 命令区 */
+    .cmd-group { margin-bottom: 14px; }
+    .cmd-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      background: #16213e;
+      border-radius: 6px;
+      margin-bottom: 6px;
+    }
+    .cmd-name { font-family: Consolas, monospace; color: #4e8fa6; white-space: nowrap; }
+    .cmd-summary { color: #80868c; font-size: 12.5px; flex: 1; }
+
+    /* 常规区 */
+    .gen-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .gen-row label { min-width: 130px; color: #e0e0e0; }
+    .gen-row select {
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      color: #e0e0e0;
+      padding: 6px 10px;
+    }
+    .switch { position: relative; width: 40px; height: 20px; flex: none; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch .slider {
+      position: absolute; inset: 0;
+      background: #2a2a4a;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .switch .slider::before {
+      content: '';
+      position: absolute;
+      width: 14px; height: 14px;
+      left: 3px; top: 3px;
+      background: #80868c;
+      border-radius: 50%;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .switch input:checked + .slider { background: #2a4a5a; }
+    .switch input:checked + .slider::before { transform: translateX(20px); background: #22c55e; }
+    body.no-anim * { transition: none !important; animation: none !important; }
   </style>
 </head>
 <body>
-  <h1>Meshlet 设置</h1>
+  <h1 id="title">Meshlet Settings</h1>
 
-  <div class="status-bar">
-    <div class="status-dot" id="statusDot"></div>
-    <span class="status-text" id="statusText">加载中...</span>
+  <div class="tabs">
+    <button class="tab active" data-zone="conn" id="tabConn"></button>
+    <button class="tab" data-zone="diag" id="tabDiag"></button>
+    <button class="tab" data-zone="cmd" id="tabCmd"></button>
+    <button class="tab" data-zone="gen" id="tabGen"></button>
   </div>
 
-  <div class="field">
-    <label for="serverUrl">服务器地址</label>
-    <input id="serverUrl" type="text" placeholder="https://meshlet.example.com" />
-  </div>
+  <!-- ① 连接：hub 地址 / 隧道状态 / 本机 overlay IP / 直连 peers -->
+  <section class="zone active" id="zone-conn">
+    <div class="status-bar">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Loading...</span>
+    </div>
 
-  <div class="field">
-    <label for="deviceName">设备名称</label>
-    <input id="deviceName" type="text" placeholder="my-device" />
-  </div>
+    <h2 id="lblConnInfo">Connection</h2>
+    <div class="kv"><span class="k" id="lblTunnelState">Tunnel</span><span class="v" id="tunnelState">—</span></div>
+    <div class="kv"><span class="k" id="lblOverlayIp">Overlay IP</span><span class="v" id="overlayIp">—</span></div>
 
-  <div class="field">
-    <label for="hubEndpoint">Hub 端点</label>
-    <input id="hubEndpoint" type="text" placeholder="1.2.3.4:51820" />
-  </div>
+    <h2 id="lblHubCfg">Hub</h2>
+    <div class="field">
+      <label for="serverUrl" id="lblServer">Server URL</label>
+      <input id="serverUrl" type="text" placeholder="https://meshlet.example.com" />
+    </div>
+    <div class="field">
+      <label for="deviceName" id="lblDevice">Device Name</label>
+      <input id="deviceName" type="text" placeholder="my-device" />
+    </div>
+    <div class="field">
+      <label for="hubEndpoint" id="lblHub">Hub Endpoint</label>
+      <input id="hubEndpoint" type="text" placeholder="1.2.3.4:51820" />
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" id="btnSave" onclick="save()"></button>
+      <button class="btn btn-secondary" id="btnClose" onclick="window.close()"></button>
+    </div>
+    <div class="msg" id="msg"></div>
 
-  <div class="actions">
-    <button class="btn btn-primary" onclick="save()">保存</button>
-    <button class="btn btn-secondary" onclick="window.close()">关闭</button>
-  </div>
+    <h2 id="peersTitle">Peers</h2>
+    <div id="peers" class="muted">Loading...</div>
+  </section>
 
-  <div class="msg" id="msg"></div>
+  <!-- ② 诊断：路由表 / 接口清单 / wg 读数（联动 R-DIAG） -->
+  <section class="zone" id="zone-diag">
+    <div class="muted" id="diagState">Loading...</div>
+    <div id="diagBody" style="display:none;">
+      <h2 id="lblRoutes">Route table</h2>
+      <pre class="diag-pre" id="diagRoutes"></pre>
+      <h2 id="lblIfaces">Interfaces</h2>
+      <table class="diag" id="diagIfaces">
+        <thead><tr><th id="thIfName">name</th><th id="thIfAddr">address</th><th id="thIfState">state</th><th>MTU</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h2 id="lblWg">WireGuard peers</h2>
+      <table class="diag" id="diagWg">
+        <thead><tr><th id="thWgEndpoint">endpoint</th><th>allowed IPs</th><th id="thWgHandshake">handshake</th><th id="thWgTraffic">traffic</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
 
-  <h2 style="font-size:14px;margin:20px 0 10px;color:#4e8fa6;">直连节点</h2>
-  <div id="peers" style="font-size:13px;color:#80868c;">加载中...</div>
+  <!-- ③ 命令：CLI 全部子命令（目录单一事实源，联动 R-TRAY-1） -->
+  <section class="zone" id="zone-cmd">
+    <div id="cmdList"></div>
+  </section>
+
+  <!-- ④ 常规：开机自启 / 动效 / 语言 / 日志目录 -->
+  <section class="zone" id="zone-gen">
+    <div class="gen-row">
+      <label for="autostart" id="lblAutostart">Start with Windows</label>
+      <span class="switch"><input type="checkbox" id="autostart" onchange="onAutostart(this.checked)" /><span class="slider"></span></span>
+    </div>
+    <div class="gen-row">
+      <label for="animToggle" id="lblAnim">Animations</label>
+      <span class="switch"><input type="checkbox" id="animToggle" onchange="onAnim(this.checked)" /><span class="slider"></span></span>
+    </div>
+    <div class="gen-row">
+      <label for="langSel" id="lblLang">Language</label>
+      <select id="langSel" onchange="onLang(this.value)">
+        <option value="en">English</option>
+        <option value="zh">中文</option>
+      </select>
+    </div>
+    <div class="gen-row">
+      <label id="lblLogDir">Logs</label>
+      <button class="btn btn-secondary" id="btnLogDir" onclick="openLogs()"></button>
+    </div>
+    <div class="msg" id="genMsg"></div>
+  </section>
 
   <script type="module">
-    // Tauri v2 内置 IPC：直接用 window.__TAURI_INTERNALS__.invoke
     const invoke = window.__TAURI_INTERNALS__?.invoke;
-    if (!invoke) {
-      document.getElementById('statusText').textContent = 'Tauri IPC 不可用';
+
+    // i18n（语言优先级：localStorage > navigator.language）
+    const i18n = {
+      en: {
+        title: 'Meshlet Settings',
+        tabConn: 'Connection', tabDiag: 'Diagnostics', tabCmd: 'Commands', tabGen: 'General',
+        connInfo: 'Connection', tunnelState: 'Tunnel state', overlayIp: 'Overlay IP',
+        hubCfg: 'Hub', server: 'Server URL', device: 'Device Name', hub: 'Hub Endpoint',
+        save: 'Save', close: 'Close',
+        saved: 'Saved. Restart agent to apply.',
+        saveFailed: 'Save failed: ',
+        peers: 'Direct peers', noPeers: 'No peers connected',
+        lastHandshake: 'Last handshake', never: 'never',
+        readFailed: 'Read failed: ',
+        statusUnknown: 'Unknown', statusError: 'Cannot read status',
+        ipcMissing: 'Tauri IPC unavailable',
+        diagLoading: 'Collecting diagnostics...', diagFailed: 'Diagnostics failed: ',
+        routes: 'Route table', ifaces: 'Interfaces', wg: 'WireGuard peers',
+        ifName: 'interface', ifAddr: 'address', ifState: 'state',
+        wgEndpoint: 'endpoint', wgHandshake: 'handshake', wgTraffic: 'traffic',
+        notCollected: '(not collected)', noPeersWg: '(no direct peers)',
+        cmdConnection: 'Connection management', cmdDiagnostics: 'Diagnostics',
+        cmdConfig: 'Configuration', cmdService: 'Service control',
+        copy: 'Copy', copied: 'Copied',
+        autostart: 'Start with Windows', anim: 'Animations', lang: 'Language',
+        logDir: 'Open log directory', logDirFailed: 'Open failed: ',
+        autostartFailed: 'Autostart change failed: ',
+        groupLabels: { connection: 'Connection management', diagnostics: 'Diagnostics', config: 'Configuration', service: 'Service control' },
+      },
+      zh: {
+        title: 'Meshlet 设置',
+        tabConn: '连接', tabDiag: '诊断', tabCmd: '命令', tabGen: '常规',
+        connInfo: '连接', tunnelState: '隧道状态', overlayIp: '本机 overlay IP',
+        hubCfg: 'Hub 配置', server: '服务器地址', device: '设备名称', hub: 'Hub 端点',
+        save: '保存', close: '关闭',
+        saved: '已保存，重启 agent 后生效',
+        saveFailed: '保存失败: ',
+        peers: '直连节点', noPeers: '暂无直连节点',
+        lastHandshake: '最近握手', never: '从未',
+        readFailed: '读取失败: ',
+        statusUnknown: '未知', statusError: '无法读取状态',
+        ipcMissing: 'Tauri IPC 不可用',
+        diagLoading: '诊断采集中...', diagFailed: '诊断失败: ',
+        routes: '路由表', ifaces: '接口清单', wg: 'WireGuard 对端',
+        ifName: '接口', ifAddr: '地址', ifState: '状态',
+        wgEndpoint: '端点', wgHandshake: '握手', wgTraffic: '流量',
+        notCollected: '(未采集到)', noPeersWg: '(无直连对端)',
+        cmdConnection: '连接管理', cmdDiagnostics: '诊断',
+        cmdConfig: '配置', cmdService: '服务控制',
+        copy: '复制', copied: '已复制',
+        autostart: '开机自启', anim: '动效', lang: '语言',
+        logDir: '打开日志目录', logDirFailed: '打开失败: ',
+        autostartFailed: '自启设置失败: ',
+        groupLabels: { connection: '连接管理', diagnostics: '诊断', config: '配置', service: '服务控制' },
+      },
+    };
+
+    const savedLang = localStorage.getItem('meshlet-lang');
+    const lang = savedLang || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+    const t = i18n[lang];
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+
+    function applyI18n() {
+      document.getElementById('title').textContent = t.title;
+      document.getElementById('tabConn').textContent = t.tabConn;
+      document.getElementById('tabDiag').textContent = t.tabDiag;
+      document.getElementById('tabCmd').textContent = t.tabCmd;
+      document.getElementById('tabGen').textContent = t.tabGen;
+      document.getElementById('lblConnInfo').textContent = t.connInfo;
+      document.getElementById('lblTunnelState').textContent = t.tunnelState;
+      document.getElementById('lblOverlayIp').textContent = t.overlayIp;
+      document.getElementById('lblHubCfg').textContent = t.hubCfg;
+      document.getElementById('lblServer').textContent = t.server;
+      document.getElementById('lblDevice').textContent = t.device;
+      document.getElementById('lblHub').textContent = t.hub;
+      document.getElementById('btnSave').textContent = t.save;
+      document.getElementById('btnClose').textContent = t.close;
+      document.getElementById('peersTitle').textContent = t.peers;
+      document.getElementById('lblRoutes').textContent = t.routes;
+      document.getElementById('lblIfaces').textContent = t.ifaces;
+      document.getElementById('lblWg').textContent = t.wg;
+      document.getElementById('thIfName').textContent = t.ifName;
+      document.getElementById('thIfAddr').textContent = t.ifAddr;
+      document.getElementById('thIfState').textContent = t.ifState;
+      document.getElementById('thWgEndpoint').textContent = t.wgEndpoint;
+      document.getElementById('thWgHandshake').textContent = t.wgHandshake;
+      document.getElementById('thWgTraffic').textContent = t.wgTraffic;
+      document.getElementById('lblAutostart').textContent = t.autostart;
+      document.getElementById('lblAnim').textContent = t.anim;
+      document.getElementById('lblLang').textContent = t.lang;
+      document.getElementById('btnLogDir').textContent = t.logDir;
+      document.getElementById('statusText').textContent = t.statusUnknown;
+    }
+    applyI18n();
+    document.getElementById('langSel').value = lang;
+    applyAnim(localStorage.getItem('meshlet-anim') !== 'off');
+
+    // Tab 切换
+    for (const btn of document.querySelectorAll('.tab')) {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.zone').forEach(z => z.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('zone-' + btn.dataset.zone).classList.add('active');
+      });
     }
 
+    if (!invoke) {
+      document.getElementById('statusText').textContent = t.ipcMissing;
+    }
+
+    function formatBytes(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+      return (n / 1073741824).toFixed(2) + ' GB';
+    }
+
+    function fmtHandshake(secs) {
+      if (!secs || secs <= 0) return t.never;
+      return lang === 'zh' ? `${secs} 秒前` : `${secs}s ago`;
+    }
+
+    function showMsg(id, text, err) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.className = err ? 'msg err' : 'msg';
+      el.style.display = 'block';
+      setTimeout(() => { el.style.display = 'none'; }, 3000);
+    }
+
+    // ── 连接区数据 ─────────────────────────────────────────────
+    let lastDiag = null; // 诊断快照缓存：连接区本机 IP / 隧道状态复用
+
     async function load() {
-      if (!invoke) return; // IPC 不可用：保留「Tauri IPC 不可用」提示，不覆盖。
+      if (!invoke) return; // IPC 不可用：保留提示，不覆盖。
       try {
         const status = await invoke('get_status');
-        const dot = document.getElementById('statusDot');
         const text = document.getElementById('statusText');
-        text.textContent = status.tooltip || status.state || '未知';
+        text.textContent = status.tooltip || status.state || t.statusUnknown;
         const s = (status.state || '').toLowerCase();
         if (['online','connected','ready','up','ok'].includes(s)) {
-          dot.className = 'status-dot online';
+          document.getElementById('statusDot').className = 'status-dot online';
         } else if (['error','failed','disconnected','down'].includes(s)) {
-          dot.className = 'status-dot error';
+          document.getElementById('statusDot').className = 'status-dot error';
         }
       } catch (e) {
-        document.getElementById('statusText').textContent = '无法读取状态';
+        document.getElementById('statusText').textContent = t.statusError;
       }
 
       try {
@@ -137,50 +420,172 @@
           deviceName: document.getElementById('deviceName').value,
           hubEndpoint: document.getElementById('hubEndpoint').value,
         });
-        const msg = document.getElementById('msg');
-        msg.textContent = '已保存，重启 agent 后生效';
-        msg.style.display = 'block';
-        setTimeout(() => msg.style.display = 'none', 3000);
+        showMsg('msg', t.saved, false);
       } catch (e) {
-        const msg = document.getElementById('msg');
-        msg.textContent = '保存失败: ' + e;
-        msg.style.color = '#ef4444';
-        msg.style.display = 'block';
+        showMsg('msg', t.saveFailed + e, true);
+      }
+    }
+
+    async function loadPeers() {
+      if (!invoke) return;
+      const el = document.getElementById('peers');
+      el.textContent = '...';
+      try {
+        const peers = await invoke('get_peers');
+        if (!peers || peers.length === 0) {
+          el.innerHTML = `<div class="muted">${t.noPeers}</div>`;
+          return;
+        }
+        // 对齐 get_peers 实际字段：last_handshake（字符串）/ connected / rx_bytes / tx_bytes。
+        el.innerHTML = peers.map(p => `
+          <div class="peer-card">
+            <div class="peer-header">
+              <span class="peer-dot ${p.connected ? 'on' : 'off'}"></span>
+              <span class="peer-endpoint">${p.endpoint}</span>
+            </div>
+            <div class="peer-detail">${p.allowed_ips}</div>
+            <div class="peer-detail">${t.lastHandshake}: ${p.last_handshake || t.never} · ↓${formatBytes(p.rx_bytes)} ↑${formatBytes(p.tx_bytes)}</div>
+          </div>
+        `).join('');
+      } catch (e) {
+        el.innerHTML = `<div style="color:#ef4444;">${t.readFailed}${e}</div>`;
+      }
+    }
+
+    // ── 诊断区（联动 R-DIAG 三快照）────────────────────────────
+    async function loadDiag() {
+      if (!invoke) return;
+      document.getElementById('diagState').textContent = t.diagLoading;
+      try {
+        const diag = await invoke('get_diag');
+        lastDiag = diag;
+        document.getElementById('diagState').style.display = 'none';
+        document.getElementById('diagBody').style.display = 'block';
+
+        document.getElementById('diagRoutes').textContent =
+          diag.route_table.length ? diag.route_table.join('\n') : t.notCollected;
+
+        const ifBody = document.querySelector('#diagIfaces tbody');
+        ifBody.innerHTML = diag.interfaces.length
+          ? diag.interfaces.map(i => `
+              <tr>
+                <td class="mono">${i.name}</td>
+                <td class="mono">${i.ipv4 ? i.ipv4 + (i.prefix != null ? '/' + i.prefix : '') : '—'}</td>
+                <td>${i.state}</td>
+                <td class="mono">${i.mtu != null ? i.mtu : '?'}</td>
+              </tr>`).join('')
+          : `<tr><td colspan="4" class="muted">${t.notCollected}</td></tr>`;
+
+        const wgBody = document.querySelector('#diagWg tbody');
+        wgBody.innerHTML = diag.wg.length
+          ? diag.wg.map(p => `
+              <tr>
+                <td class="mono">${p.endpoint || '—'}</td>
+                <td class="mono">${p.allowed_ips || '—'}</td>
+                <td>${fmtHandshake(p.last_handshake)}</td>
+                <td class="mono">↓${formatBytes(p.rx_bytes)} ↑${formatBytes(p.tx_bytes)}</td>
+              </tr>`).join('')
+          : `<tr><td colspan="4" class="muted">${t.noPeersWg}</td></tr>`;
+
+        renderConnFromDiag(diag);
+      } catch (e) {
+        document.getElementById('diagState').textContent = t.diagFailed + e;
+        // 连接区字段如实显示取不到，不臆测。
+        document.getElementById('tunnelState').textContent = '—';
+        document.getElementById('overlayIp').textContent = '—';
+      }
+    }
+
+    /// 连接区的隧道状态 / 本机 overlay IP 复用诊断快照（同源不重复采集）。
+    function renderConnFromDiag(diag) {
+      const wgIf = diag.interfaces.find(i => /meshlet|wg/i.test(i.name) && i.ipv4);
+      document.getElementById('overlayIp').textContent =
+        wgIf ? (wgIf.ipv4 + (wgIf.prefix != null ? '/' + wgIf.prefix : '')) : '—';
+      const wgUp = diag.interfaces.some(i => /meshlet|wg/i.test(i.name) && i.state === 'up');
+      document.getElementById('tunnelState').textContent =
+        wgUp ? (lang === 'zh' ? 'up（接口在位）' : 'up (interface present)')
+             : (lang === 'zh' ? 'down（无接口）' : 'down (no interface)');
+    }
+
+    // ── 命令区（目录单一事实源，新增命令自动出现）──────────────
+    async function loadCommands() {
+      if (!invoke) return;
+      const el = document.getElementById('cmdList');
+      el.textContent = '...';
+      try {
+        const cmds = await invoke('get_commands');
+        const groups = {};
+        for (const c of cmds) {
+          (groups[c.group] = groups[c.group] || []).push(c);
+        }
+        const order = ['connection', 'diagnostics', 'config', 'service'];
+        el.innerHTML = order.filter(g => groups[g]).map(g => `
+          <div class="cmd-group">
+            <h2>${t.groupLabels[g] || g}</h2>
+            ${groups[g].map(c => {
+              const args = (c.args || []).join(' ');
+              const line = 'meshlet ' + c.name + (args ? ' ' + args : '');
+              return `
+                <div class="cmd-row">
+                  <span class="cmd-name">${c.name}${args ? ' ' + args : ''}</span>
+                  <span class="cmd-summary">${c.summary}</span>
+                  <button class="btn-mini" data-cmd="${line.replace(/"/g, '&quot;')}" onclick="copyCmd(this)">${t.copy}</button>
+                </div>`;
+            }).join('')}
+          </div>`).join('');
+      } catch (e) {
+        el.innerHTML = `<div style="color:#ef4444;">${t.readFailed}${e}</div>`;
+      }
+    }
+
+    function copyCmd(btn) {
+      const line = btn.dataset.cmd;
+      navigator.clipboard.writeText(line).then(() => {
+        btn.textContent = t.copied;
+        setTimeout(() => { btn.textContent = t.copy; }, 1500);
+      });
+    }
+
+    // ── 常规区 ─────────────────────────────────────────────────
+    async function onAutostart(enabled) {
+      if (!invoke) return;
+      try {
+        await invoke('set_autostart', { enabled });
+        showMsg('genMsg', enabled ? t.autostart + ': on' : t.autostart + ': off', false);
+      } catch (e) {
+        showMsg('genMsg', t.autostartFailed + e, true);
+        document.getElementById('autostart').checked = !enabled;
+      }
+    }
+
+    function applyAnim(on) {
+      document.body.classList.toggle('no-anim', !on);
+      document.getElementById('animToggle').checked = on;
+    }
+
+    function onAnim(on) {
+      localStorage.setItem('meshlet-anim', on ? 'on' : 'off');
+      applyAnim(on);
+    }
+
+    function onLang(value) {
+      localStorage.setItem('meshlet-lang', value);
+      location.reload();
+    }
+
+    async function openLogs() {
+      if (!invoke) return;
+      try {
+        await invoke('open_log_dir');
+      } catch (e) {
+        showMsg('genMsg', t.logDirFailed + e, true);
       }
     }
 
     load();
     loadPeers();
-
-    async function loadPeers() {
-      try {
-        const peers = await invoke('get_peers');
-        const el = document.getElementById('peers');
-        if (!peers || peers.length === 0) {
-          el.innerHTML = '<div style="color:#80868c;">暂无直连节点</div>';
-          return;
-        }
-        el.innerHTML = peers.map(p => `
-          <div style="background:#16213e;border-radius:6px;padding:10px 12px;margin-bottom:8px;">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-              <span style="width:8px;height:8px;border-radius:50%;background:${p.connected ? '#22c55e' : '#ef4444'};display:inline-block;"></span>
-              <span style="color:#e0e0e0;font-weight:500;">${p.endpoint}</span>
-            </div>
-            <div style="color:#80868c;font-size:12px;">${p.allowed_ips}</div>
-            <div style="color:#80868c;font-size:12px;">最近握手: ${p.last_handshake} · ↓${formatBytes(p.rx_bytes)} ↑${formatBytes(p.tx_bytes)}</div>
-          </div>
-        `).join('');
-      } catch (e) {
-        document.getElementById('peers').innerHTML = `<div style="color:#ef4444;">读取失败: ${e}</div>`;
-      }
-    }
-
-    function formatBytes(n) {
-      if (n < 1024) return n + ' B';
-      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
-      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
-      return (n / 1073741824).toFixed(2) + ' GB';
-    }
+    loadDiag();
+    loadCommands();
   </script>
 </body>
 </html>
