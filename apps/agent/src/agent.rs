@@ -744,6 +744,10 @@ impl Agent {
         // §12.3：随心跳上报各对端直连链路状态（P2P/中继），供控制台展示。
         // 状态是最近一次 30s 探测的结果——心跳比探测密，上报的是最后已知态。
         let direct_links = self.direct.link_statuses();
+        // R-DIAG：随心跳上报本地网络诊断三快照（路由表/接口/wg 读数）。采集
+        // 失败按 `None` 上报（服务端与控制台显示"无快照"，证据缺失可见），
+        // 绝不吞掉心跳本身。
+        let diagnostics = self.backend.diagnostics_sync().ok();
         server::heartbeat(
             &self.server_url,
             &self.token,
@@ -751,6 +755,7 @@ impl Agent {
             Some(evidence),
             direct,
             direct_links,
+            diagnostics,
         )
         .map(|_| ())
         .map_err(|e| format!("heartbeat failed: {e}"))

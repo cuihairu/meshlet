@@ -18,6 +18,7 @@ const hub: api.Device = {
   dataplane_evidence: null,
   approved_at: '2026-01-01T00:00:00Z',
   direct_links: [],
+  diagnostics: null,
 };
 
 const edge: api.Device = {
@@ -58,6 +59,7 @@ const edge: api.Device = {
       connection_mode: 'direct_pending',
     },
   ],
+  diagnostics: null,
 };
 
 afterEach(() => {

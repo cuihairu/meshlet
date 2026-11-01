@@ -72,6 +72,40 @@ export interface DirectLink {
   tx_bytes?: number;
 }
 
+/** One interface entry in the R-DIAG snapshot (name / address / state / MTU). */
+export interface InterfaceDiagnostic {
+  name: string;
+  /** Dotted quad; empty string = no IPv4 address. */
+  ipv4: string;
+  prefix: number | null;
+  /** up | down | unknown. */
+  state: string;
+  mtu: number | null;
+}
+
+/** One wg peer reading in the R-DIAG snapshot (`wg show dump` parsed). */
+export interface WgPeerDiagnostic {
+  public_key: string;
+  /** ip:port; empty = not configured. */
+  endpoint: string;
+  /** Comma-separated CIDR list. */
+  allowed_ips: string;
+  /** Unix seconds; 0 = never handshaked. */
+  last_handshake: number;
+  rx_bytes: number;
+  tx_bytes: number;
+}
+
+/** R-DIAG network diagnostics: three snapshots the agent reports each heartbeat. */
+export interface NetworkDiagnostics {
+  /** Agent-local ISO-8601 collection time; null = incomplete collection. */
+  collected_at: string | null;
+  /** Raw route table lines (ip route / route print). */
+  route_table: string[];
+  interfaces: InterfaceDiagnostic[];
+  wg: WgPeerDiagnostic[];
+}
+
 export interface Device {
   id: string;
   network_id: string;
@@ -93,6 +127,8 @@ export interface Device {
   approved_at: string | null;
   /** Direct links this device reported in its latest heartbeat; empty = all relay / not reported. */
   direct_links: DirectLink[];
+  /** R-DIAG network diagnostics snapshots (routes/interfaces/wg); null = none reported. */
+  diagnostics: NetworkDiagnostics | null;
 }
 
 export interface InviteCreated {

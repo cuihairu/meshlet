@@ -298,6 +298,57 @@ tr.state-unknown td { color: var(--muted-c); }
   font-weight: 500;
 }
 
+/* R-DIAG diagnostics-page 网络快照 block（路由表/接口/wg 三快照，按设备分节）。 */
+.snapshots-block {
+  margin-top: var(--space-5);
+}
+
+.snapshots-block h3 {
+  margin-bottom: var(--space-2);
+}
+
+.snapshot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-top: 1px dashed var(--border);
+}
+
+.snapshot:first-of-type {
+  border-top: none;
+}
+
+.snapshot-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 0.9rem;
+}
+
+.snapshot h5 {
+  margin: var(--space-1) 0 0;
+  color: var(--muted-c);
+  font-size: 0.78rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.snapshot-pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 .error {
   color: var(--danger);
   font-size: 0.875rem;

@@ -15,6 +15,7 @@ use meshlet_domain::{
     SegmentGrantBuilder, SegmentGrantId, SegmentGrantStatus, SegmentId, SegmentStatus, Timestamp,
     TranslationMode,
 };
+use meshlet_network::NetworkDiagnostics;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv4Addr;
@@ -73,6 +74,9 @@ pub struct DeviceView {
     /// §12.3 P2P 链路状态上报：本设备对各对端的直连链路（direct /
     /// direct_pending）。空 = 全中继或未上报；控制台据此展示 P2P/中继。
     pub direct_links: Vec<DirectLinkStatus>,
+    /// R-DIAG 网络诊断三快照（路由表/接口/wg 读数）；`None` = 尚无上报或
+    /// 采集失败。控制台诊断页据此展示。
+    pub diagnostics: Option<NetworkDiagnostics>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -502,6 +506,9 @@ pub struct MeshState {
     /// 由连接 socket 取（公网候选），LAN 地址由 agent 心跳上报。用 `BTreeMap`
     /// 与域层 `peer_endpoints_for` 一致（确定性排序）。
     pub(crate) direct_states: BTreeMap<DeviceId, DeviceDirectState>,
+    /// R-DIAG 网络诊断三快照（**内存态**，同 `direct_states` 纪律）：每轮心跳
+    /// 重报，不落库——持久化只添陈旧风险。`None` 上报（采集失败）即移除。
+    pub(crate) diagnostics: BTreeMap<DeviceId, NetworkDiagnostics>,
 }
 
 impl MeshState {
@@ -525,6 +532,7 @@ impl MeshState {
             bootstrap_seq: 0,
             registration_seq: 0,
             direct_states: BTreeMap::new(),
+            diagnostics: BTreeMap::new(),
         }
     }
 
@@ -1551,6 +1559,23 @@ pub fn record_direct_state(
     }
 }
 
+/// R-DIAG：记录设备最新一轮网络诊断三快照（内存态，心跳重报即覆盖）。
+/// `None` = agent 采集失败/未上报 → 移除旧快照（证据缺失可见，不留陈旧读数）。
+pub fn record_diagnostics(
+    state: &mut MeshState,
+    device_id: &DeviceId,
+    diagnostics: Option<NetworkDiagnostics>,
+) {
+    match diagnostics {
+        Some(snap) => {
+            state.diagnostics.insert(device_id.clone(), snap);
+        }
+        None => {
+            state.diagnostics.remove(device_id);
+        }
+    }
+}
+
 /// 把一次上报写到设备记录（内部共享）。证据与握手时间同一纪律：请求未携带
 /// 时保留上次读数（「最后已知读数」， staleness 由 last_report_at 承载）。
 fn apply_agent_report(
@@ -1600,7 +1625,14 @@ pub fn list_devices(state: &MeshState, network_id: &str) -> Result<Vec<DeviceVie
                 .get(&d.id)
                 .map(|s| s.links.clone())
                 .unwrap_or_default();
-            to_device_view(d, &now, &state.presence_thresholds, direct_links)
+            let diagnostics = state.diagnostics.get(&d.id).cloned();
+            to_device_view(
+                d,
+                &now,
+                &state.presence_thresholds,
+                direct_links,
+                diagnostics,
+            )
         })
         .collect())
 }
@@ -2580,6 +2612,7 @@ fn to_device_view(
     now: &Timestamp,
     thresholds: &meshlet_domain::PresenceThresholds,
     direct_links: Vec<DirectLinkStatus>,
+    diagnostics: Option<NetworkDiagnostics>,
 ) -> DeviceView {
     let presence = evaluate_presence(d, now, thresholds);
     DeviceView {
@@ -2602,6 +2635,7 @@ fn to_device_view(
         presence_source: presence.source.as_str().to_string(),
         dataplane_evidence: d.dataplane_evidence.clone(),
         direct_links,
+        diagnostics,
     }
 }
 
@@ -2838,6 +2872,39 @@ mod forwarding_tests {
             ));
             assert_eq!(snapshot(&state), before);
         }
+    }
+
+    #[test]
+    fn diagnostics_roundtrip_record_list_clear() {
+        let mut state = MeshState::default();
+        let (_net, device_id) = network(&mut state, "10.240.0.0/24");
+        let snap = NetworkDiagnostics {
+            collected_at: Some("2026-11-01T04:00:00Z".into()),
+            route_table: vec!["default via 10.0.0.1 dev eth0".into()],
+            interfaces: vec![meshlet_network::InterfaceDiagnostic {
+                name: "wg-mlt".into(),
+                ipv4: "10.240.0.4".into(),
+                prefix: Some(24),
+                state: "up".into(),
+                mtu: Some(1420),
+            }],
+            wg: vec![meshlet_network::WgPeerDiagnostic {
+                public_key: "pk-hub".into(),
+                endpoint: "106.14.216.177:51820".into(),
+                allowed_ips: "10.240.0.0/16".into(),
+                last_handshake: 1_730_000_000,
+                rx_bytes: 4096,
+                tx_bytes: 128,
+            }],
+        };
+        let did = DeviceId(device_id);
+        record_diagnostics(&mut state, &did, Some(snap.clone()));
+        let views = list_devices(&state, &_net).unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].diagnostics, Some(snap));
+        record_diagnostics(&mut state, &did, None);
+        let views = list_devices(&state, &_net).unwrap();
+        assert_eq!(views[0].diagnostics, None);
     }
 
     #[test]

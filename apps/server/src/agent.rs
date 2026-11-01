@@ -203,6 +203,10 @@ pub struct HeartbeatRequest {
     /// 空缺省 = 全中继/旧版未上报；hub 仅存内存，供控制台展示 P2P/中继。
     #[serde(default)]
     pub direct_links: Vec<DirectLinkStatus>,
+    /// R-DIAG 网络诊断三快照（路由表/接口/wg 读数）；缺省表示未上报/采集失败。
+    /// 与 `direct_links` 同纪律：hub 仅存内存，控制台诊断页据此展示。
+    #[serde(default)]
+    pub diagnostics: Option<meshlet_network::NetworkDiagnostics>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -260,6 +264,8 @@ pub async fn heartbeat_handler(
                     req.direct.clone(),
                     req.direct_links.clone(),
                 );
+                // R-DIAG：网络诊断快照同纪律——只对已注册设备记录。
+                service::record_diagnostics(&mut guard, &device_id, req.diagnostics.clone());
                 (Some(presence), network_id, Some(device))
             }
             Err(service::ServiceError::DeviceNotFound(_)) => {
