@@ -1,4 +1,5 @@
-<p align="center"><img src="logo-copper.svg" width="64" height="64"> <a href="https://cuihairu.github.io/meshlet/zh/"><img src="https://img.shields.io/badge/docs-文档-blue" alt="docs"></a></p>
+<p align="center"><img src="logo-copper.svg" width="64" height="64"> <a href="https://cuihairu.github.io/meshlet/zh//"><img src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue" alt="docs"></a>
+</p>
 
 > [English](README.md) | **中文**
 
@@ -6,7 +7,7 @@
 
 <p align="center">
 <a href="https://github.com/cuihairu/meshlet/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
-<a href="https://github.com/cuihairu/meshlet/actions/workflows/ci.yml"><img src="https://github.com/cuihairu/meshlet/actions/workflows/ci.yml/badge.svg" alt="Tests"></a> <a href="https://github.com/cuihairu/meshlet/actions/workflows/docs.yml"><img src="https://github.com/cuihairu/meshlet/actions/workflows/docs.yml/badge.svg" alt="Docs deploy"></a> <a href="https://cuihairu.github.io/meshlet/zh/"><img src="https://img.shields.io/badge/docs-site-brightgreen" alt="Docs"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a> <a href="https://cuihairu.github.io/meshlet/zh/design/logo-preview.html"><img src="https://img.shields.io/badge/logo-B%20amber%20copper-C97B2E" alt="Logo variant"></a>
+<a href="https://github.com/cuihairu/meshlet/actions/workflows/ci.yml"><img src="https://github.com/cuihairu/meshlet/actions/workflows/ci.yml/badge.svg" alt="Tests"></a> <a href="https://github.com/cuihairu/meshlet/actions/workflows/docs.yml"><img src="https://github.com/cuihairu/meshlet/actions/workflows/docs.yml/badge.svg" alt="Docs deploy"></a> <a href="https://cuihairu.github.io/meshlet/zh//"><img src="https://img.shields.io/badge/docs-site-brightgreen" alt="Docs"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a> <a href="https://cuihairu.github.io/meshlet/zh//design/logo-preview.html"><img src="https://img.shields.io/badge/logo-B%20amber%20copper-C97B2E" alt="Logo variant"></a>
 </p>
 
 基于自有 VPS 的自托管私人虚拟网络 —— Rust + WireGuard。
@@ -62,13 +63,13 @@ nightly 同时按组件发布两种架构的包——`meshlet-server`（服务�
 
 ```bash
 # Debian / Ubuntu（ARM 平台把 amd64 换成 arm64）
-curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0.nightly_amd64.deb
-curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0.nightly_amd64.deb
-sudo apt install ./meshlet-server_0.0.0.nightly_amd64.deb ./meshlet-agent_0.0.0.nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0~nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0~nightly_amd64.deb
+sudo apt install ./meshlet-server_0.0.0~nightly_amd64.deb ./meshlet-agent_0.0.0~nightly_amd64.deb
 
 # Fedora / RHEL（ARM 平台把 x86_64 换成 aarch64）
-sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0.nightly-1.x86_64.rpm
-sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0.nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0~nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0~nightly-1.x86_64.rpm
 ```
 
 包会创建服务账户与状态目录，但刻意不生成活动配置（配置因机而异，含密钥与 token）：复制 `/etc/meshlet/*.toml.example` 填好，生成密钥（服务端 `wg genkey > /etc/meshlet/hub.key`），再 `sudo systemctl enable --now meshlet-server`（或 `meshlet-agent`）。想要引导式首次安装请用上面的 `install.sh`。

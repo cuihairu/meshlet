@@ -1,4 +1,5 @@
-<p align="center"><img src="logo-copper.svg" width="64" height="64"> <a href="https://cuihairu.github.io/meshlet/"><img src="https://img.shields.io/badge/docs-docs-blue" alt="docs"></a></p>
+<p align="center"><img src="logo-copper.svg" width="64" height="64"> <a href="https://cuihairu.github.io/meshlet//"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a>
+</p>
 
 > **English** | [中文](README.zh.md)
 
@@ -66,13 +67,13 @@ The nightly release also publishes component-split packages for both architectur
 
 ```bash
 # Debian / Ubuntu (replace amd64 with arm64 on ARM)
-curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0.nightly_amd64.deb
-curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0.nightly_amd64.deb
-sudo apt install ./meshlet-server_0.0.0.nightly_amd64.deb ./meshlet-agent_0.0.0.nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0~nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0~nightly_amd64.deb
+sudo apt install ./meshlet-server_0.0.0~nightly_amd64.deb ./meshlet-agent_0.0.0~nightly_amd64.deb
 
 # Fedora / RHEL (replace x86_64 with aarch64 on ARM)
-sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0.nightly-1.x86_64.rpm
-sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0.nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0~nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0~nightly-1.x86_64.rpm
 ```
 
 Packages create the service account and state directory, but deliberately do not generate live configuration (it is machine-specific and contains keys and tokens): copy `/etc/meshlet/*.toml.example`, fill it in, generate the key (`wg genkey > /etc/meshlet/hub.key` for the server), then `sudo systemctl enable --now meshlet-server` (or `meshlet-agent`). For a guided first install use `install.sh` above.
