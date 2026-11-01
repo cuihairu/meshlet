@@ -266,3 +266,9 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
 - [x] 审核发现：`save_config` 本 diff 路径变更后写入真实 `%LOCALAPPDATA%\meshlet\agent.toml`，但只写 `server_url`/`device_name`/`[dataplane].enabled`/`interface`/`hub_endpoint` 五键，丢弃 install.ps1 写入的 `state_dir`/`bootstrap_token`/`private_key_file`/`poll_interval_secs` 且硬编码 `interface="WireGuard"`（应为 `wg-meshlet`），保存设置会破坏 agent 配置（apps/tray-app/src-tauri/src/main.rs:79-96）【不属实：该问题已由远端提交 3d71188 修复，`rebuild_config` 现保留安装键并写 `interface="wg-meshlet"`（apps/tray-app/src-tauri/src/main.rs:95-126），回归测 `save_config_preserves_agent_managed_keys` 断言 `interface = "wg-meshlet"` 且保留 state_dir/bootstrap_token/private_key_file/poll_interval_secs。】
 - [x] 审核发现：`apps/tray-app/index.html:237` 读取 `p.handshake_secs`，但 Rust `get_peers` 从不返回该字段（返回字符串 `last_handshake`），源前端「最近握手」恒显示 `never`；且与已构建的 `apps/tray-app/dist/index.html:170`（用 `p.last_handshake`）不一致，源/构建产物分叉（apps/tray-app/index.html:237）【已修 691fc36：源前端改读 `p.last_handshake`（apps/tray-app/index.html:439,447,485），全文无 `handshake_secs`；dist 与源逐字节一致（apps/tray-app/dist/index.html:439,447,485）。】
 - [x] 审核发现：apps/cli/Cargo.toml:9-11 新增 `serde`、`toml` 依赖，但 main.rs 仅使用 `serde_json`，`serde`/`toml` 未被引用（配置为手写行式解析而非用 `toml` crate），属无用依赖（apps/cli/Cargo.toml:9-11）【已修 6c755c7：删 `serde`/`toml`，现依赖仅 `serde_json`/`meshlet-network`/`meshlet-commands`（apps/cli/Cargo.toml:9-11）；clippy -D warnings 全绿（未用依赖会触发 unused_crate_dependencies 类告警）。】
+
+- [ ] **DOC-GIF · P2 · 文档 · 配置开关效果动态图(每个开关 off→on 对比+GIF)**
+  - 交付:枚举本仓全部「开启后有效果」的开关/配置项;自动流水线生成证据——GUI 类用 @vscode/test-electron 或应用截图(off 一张/on 一张+切换过程录屏),CLI 类用终端录屏(asciinema→GIF 或 ffmpeg);ffmpeg 缝合动态 GIF。
+  - 文档:docs「配置效果」页(双语)逐开关嵌入:说明+off 图+on 图+GIF。
+  - 验收:清单内每个开关都有 off/on+GIF;流水线可重跑(配置变更随时再生成);兼作配置效果回归测试。
+  - 参考:kode todo C-24 同款流水线模式(2026-11-01 用户令全舰队推广)。
