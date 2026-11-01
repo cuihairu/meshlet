@@ -200,6 +200,9 @@ pub struct PeerEndpoints {
     pub public_key: String,
     /// 对端 overlay 地址（AllowedIPs `/32` 的来源）。
     pub virtual_ipv4: Ipv4Addr,
+    /// 对端设备名（控制台/CLI 直连 peers 展示用；旧服务端缺省为空）。
+    #[serde(default)]
+    pub name: String,
     /// 候选 endpoint 列表（公网 + 局域网）。
     pub endpoints: Vec<EndpointCandidate>,
 }
@@ -240,6 +243,7 @@ pub fn peer_endpoints_for(
             device_id: device.id.clone(),
             public_key: device.public_key.clone(),
             virtual_ipv4: device.virtual_ipv4,
+            name: device.name.clone(),
             endpoints,
         });
     }
@@ -400,6 +404,10 @@ pub fn on_probe(
 
 /// 单对端直连链路状态上报（§12.3：agent 心跳携带，hub 仅存内存，供控制台
 /// 展示「P2P / 中继」）。以对端公钥为主键——服务端/控制台据此映射到设备。
+fn default_connection_mode() -> String {
+    "hub_relay".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DirectLinkStatus {
     /// 对端 wg 公钥（设备唯一标识）。
@@ -412,6 +420,29 @@ pub struct DirectLinkStatus {
     /// 读数失败）。链路新鲜度信号，非精确 RTT——WireGuard 不暴露每 peer RTT，
     /// 握手年龄是设计采用的活度代理（[classify_probe] 同一口径）。
     pub last_handshake_age_secs: Option<u64>,
+    /// 对端名称（agent 从计划候选中读到；旧 agent / 未取到为空）。UI/CLI
+    /// 直接展示，服务端按设备身份索引时仍以公钥为准。
+    #[serde(default)]
+    pub peer_name: String,
+    /// 连接模式（`p2p_direct` / `direct_pending` / `hub_relay`；与
+    /// [link_state] 语义一致，但「中继」不再以缺省隐式表示）。
+    #[serde(default = "default_connection_mode")]
+    pub connection_mode: String,
+    /// 直连 endpoint（`ip:port`；中继 / 未取到为空）。
+    #[serde(default)]
+    pub endpoint: String,
+    /// 最近一次直连路径实测 RTT（毫秒）；`None` = 未测 / 探测失败。
+    #[serde(default)]
+    pub rtt_ms: Option<u64>,
+    /// 最近一次握手 Unix 时间戳（秒）；0 / `None` = 尚无握手。
+    #[serde(default)]
+    pub last_handshake_at: Option<u64>,
+    /// 累计接收字节（直连 wg peer 读数；中继为 0）。
+    #[serde(default)]
+    pub rx_bytes: u64,
+    /// 累计发送字节（直连 wg peer 读数；中继为 0）。
+    #[serde(default)]
+    pub tx_bytes: u64,
 }
 
 #[cfg(test)]
@@ -869,6 +900,7 @@ mod tests {
             device_id: DeviceId("dev-a".into()),
             public_key: "pub-a".into(),
             virtual_ipv4: "10.240.0.2".parse().unwrap(),
+            name: "edge-a".into(),
             endpoints: vec![lan("192.168.1.2", 51821), public("203.0.113.1", 51821)],
         }];
         let json = serde_json::to_string(&list).unwrap();
@@ -897,6 +929,13 @@ mod tests {
             virtual_ipv4: "10.240.0.3".parse().unwrap(),
             link_state: PeerLinkState::Direct.as_str().into(),
             last_handshake_age_secs: Some(12),
+            peer_name: "edge-b".into(),
+            connection_mode: "p2p_direct".into(),
+            endpoint: "192.168.1.2:51821".into(),
+            rtt_ms: Some(7),
+            last_handshake_at: Some(1_700_000_000),
+            rx_bytes: 1024,
+            tx_bytes: 2048,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(
@@ -910,6 +949,13 @@ mod tests {
             virtual_ipv4: "10.240.0.4".parse().unwrap(),
             link_state: PeerLinkState::DirectPending { attempts: 1 }.as_str().into(),
             last_handshake_age_secs: None,
+            peer_name: "edge-c".into(),
+            connection_mode: "direct_pending".into(),
+            endpoint: String::new(),
+            rtt_ms: None,
+            last_handshake_at: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
         };
         assert_eq!(
             serde_json::from_str::<DirectLinkStatus>(&serde_json::to_string(&pending).unwrap())

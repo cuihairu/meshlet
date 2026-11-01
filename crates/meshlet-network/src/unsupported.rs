@@ -13,8 +13,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::nat::NatRule;
 use crate::{
-    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
-    RouteConfig, TunnelConfig,
+    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkDiagnostics, NetworkError,
+    NetworkSnapshot, RouteConfig, TunnelConfig,
 };
 use meshlet_domain::Ipv4Cidr;
 
@@ -70,6 +70,15 @@ impl UnsupportedBackend {
         _extra_peer_keys: &BTreeSet<String>,
     ) -> Result<bool, NetworkError> {
         Err(self.refuse("device_plan_matches"))
+    }
+
+    pub fn diagnostics_sync(&self) -> Result<crate::NetworkDiagnostics, NetworkError> {
+        Err(self.refuse("network diagnostics"))
+    }
+
+    /// RTT probe is unavailable on this platform; absence is visible, not fake.
+    pub fn ping_rtt_ms(&self, _target: Ipv4Addr) -> Option<u128> {
+        None
     }
 
     pub fn inspect_sync(&self) -> Result<NetworkSnapshot, NetworkError> {

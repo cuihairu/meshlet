@@ -22,8 +22,9 @@ use crate::windows_routes::exec::run_route_command;
 use crate::windows_tunnel::exec::{run_wireguard_command, write_tunnel_conf};
 use crate::windows_tunnel::{render_wireguard_conf, wireguard_exe, WireGuardCommand};
 use crate::{
-    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
-    PeerObserved, RouteConfig, TunnelConfig,
+    ApplyResult, ConfigRevisionRef, DevicePlan, InterfaceDiagnostic, NetworkBackend,
+    NetworkDiagnostics, NetworkError, NetworkSnapshot, PeerObserved, RouteConfig, TunnelConfig,
+    WgPeerDiagnostic,
 };
 use meshlet_domain::Ipv4Cidr;
 
@@ -297,6 +298,81 @@ impl WindowsNetworkBackend {
             }
         }
         routes
+    }
+
+    /// R-DIAG 网络诊断信息面采集（Windows，2026-11-01 用户令）：三类快照。
+    ///
+    /// - 路由表：`route print`（IPv4 全表原文）；
+    /// - 接口清单：`Get-NetIPConfiguration`（Name / IPv4 / Prefix / MTU /
+    ///   InterfaceOperationalStatus）；
+    /// - wg-mlt 读数：`wg.exe show <if> dump` 解析（[parse_wg_dump_peers] 同
+    ///   源但保留 endpoint / 握手 / 流量列，[WgPeerDiagnostic]）。
+    ///
+    /// 采集只读；单项失败按空/缺上报（诊断面如实展示「未取到」）。
+    pub fn diagnostics_sync(&self) -> Result<NetworkDiagnostics, NetworkError> {
+        let route_table = std::process::Command::new("route")
+            .args(["print"])
+            .output()
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let interfaces = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-NetIPConfiguration | Where-Object { $_.IPv4Address } | ForEach-Object {                  $addr = $_.IPv4Address | Select-Object -First 1;                  $name = $_.InterfaceAlias;                  $state = $_.NetAdapter.Status;                  $mtu = (Get-NetAdapter -Name $name -ErrorAction SilentlyContinue).MtuSize;                  $prefix = if ($addr) { $addr.PrefixLength } else { '' };                  [PSCustomObject]@{ Name=$name; IP=$addr.IPAddress; Prefix=$prefix; State=$state; Mtu=$mtu } } |                  ConvertTo-Json -Compress",
+            ])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+            .unwrap_or_default();
+        let interfaces = parse_windows_interfaces_json(&interfaces);
+
+        let wg = if self.tunnel_service_exists(&self.interface) {
+            self.read_tunnel_diag(&self.interface)
+        } else {
+            Vec::new()
+        };
+
+        Ok(NetworkDiagnostics {
+            collected_at: Some(now_iso_utc()),
+            route_table,
+            interfaces,
+            wg,
+        })
+    }
+
+    /// 读 `wg.exe show <if> dump` 的诊断读数（保留 endpoint / 握手 / 流量列）。
+    fn read_tunnel_diag(&self, tunnel_name: &str) -> Vec<WgPeerDiagnostic> {
+        let Some(exe) = self.find_wg_exe() else {
+            return Vec::new();
+        };
+        let Ok(out) = std::process::Command::new(&exe)
+            .args(["show", tunnel_name, "dump"])
+            .output()
+        else {
+            return Vec::new();
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        text.lines()
+            .skip(1)
+            .filter_map(parse_wg_dump_diag_line_windows)
+            .collect()
+    }
+
+    /// 以 `ping -n 1` 实测直连路径 RTT（毫秒）。Windows 输出
+    /// `Reply from 10.0.0.2: bytes=32 time=12ms TTL=64`（中文为
+    /// `时间=12ms`，二者 `time` / `时间` 均匹配）；失败按 `None`。
+    pub fn ping_rtt_ms(&self, target: Ipv4Addr) -> Option<u128> {
+        let out = std::process::Command::new("ping")
+            .args(["-n", "1", "-w", "2000", &target.to_string()])
+            .output()
+            .ok()?;
+        parse_ping_rtt_ms_windows(&String::from_utf8_lossy(&out.stdout))
     }
 
     pub fn inspect_sync(&self) -> Result<NetworkSnapshot, NetworkError> {
@@ -576,9 +652,196 @@ fn mask_to_prefix(mask: &str) -> u8 {
     octets.iter().map(|b| b.count_ones() as u8).sum()
 }
 
+/// 从 Windows `ping` 输出解析首个 RTT（毫秒），支持英文 `time=1ms` 与
+/// 中文 `时间=1ms`；无读数返回 `None`。
+fn parse_ping_rtt_ms_windows(text: &str) -> Option<u128> {
+    let marker = if text.contains("time") {
+        "time"
+    } else if text.contains("时间") {
+        "时间"
+    } else {
+        return None;
+    };
+    let start = text.find(marker)?;
+    let rest = &text[start + marker.len()..];
+    let start = rest.find(|c: char| c.is_ascii_digit())?;
+    let rest = &rest[start..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(rest.len());
+    rest[..end].parse::<f64>().ok().map(|v| v.round() as u128)
+}
+
+/// 解析 `wg.exe show <name> dump` 的 peer 行为诊断读数（纯函数，任意平台
+/// 单测）。官方格式为制表符分隔：首行接口，其后每行
+/// `pubkey preshared endpoint allowed-ips latest-handshake transfer-rx
+/// transfer-tx keepalive`。缺列按 0/空补。
+fn parse_wg_dump_diag_line_windows(line: &str) -> Option<WgPeerDiagnostic> {
+    let fields: Vec<&str> = line.split('\t').collect();
+    let public_key = fields.first()?.trim();
+    if public_key.is_empty() {
+        return None;
+    }
+    let endpoint = fields.get(2).unwrap_or(&"").trim().to_string();
+    let allowed_ips = fields.get(3).unwrap_or(&"").trim().to_string();
+    let last_handshake: u64 = fields
+        .get(4)
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    let rx_bytes: u64 = fields
+        .get(6)
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    let tx_bytes: u64 = fields
+        .get(7)
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    Some(WgPeerDiagnostic {
+        public_key: public_key.to_string(),
+        endpoint,
+        allowed_ips,
+        last_handshake,
+        rx_bytes,
+        tx_bytes,
+    })
+}
+
+/// 解析 `Get-NetIPConfiguration | ConvertTo-Json` 的接口清单（纯函数，任意
+/// 平台单测）。输出为对象数组或单个对象；字段缺省按空/None 处理。
+fn parse_windows_interfaces_json(text: &str) -> Vec<InterfaceDiagnostic> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let value: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let items: Vec<&serde_json::Value> = match &value {
+        serde_json::Value::Array(arr) => arr.iter().collect(),
+        serde_json::Value::Object(_) => vec![&value],
+        _ => return Vec::new(),
+    };
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let name = item.get("Name").and_then(|v| v.as_str()).unwrap_or("");
+            if name.is_empty() {
+                return None;
+            }
+            let ipv4 = item
+                .get("IP")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let prefix = item.get("Prefix").and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_u64().and_then(|n| u8::try_from(n).ok()))
+            });
+            let state = item
+                .get("State")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let mtu = item
+                .get("Mtu")
+                .and_then(|v| v.as_u64().and_then(|n| u32::try_from(n).ok()));
+            Some(InterfaceDiagnostic {
+                name: name.to_string(),
+                ipv4,
+                prefix,
+                state,
+                mtu,
+            })
+        })
+        .collect()
+}
+
+/// 当前 UTC 时刻的 ISO-8601 字符串（Windows；不引 chrono）。用
+/// `powershell` 读取，失败回退纪元秒。
+fn now_iso_utc() -> String {
+    let out = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')",
+        ])
+        .output();
+    if let Ok(out) = out {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let text = text.trim();
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_ping_rtt_windows_supports_english_and_chinese() {
+        assert_eq!(
+            parse_ping_rtt_ms_windows("Reply from 10.0.0.2: bytes=32 time=12ms TTL=64"),
+            Some(12)
+        );
+        assert_eq!(
+            parse_ping_rtt_ms_windows("来自 10.0.0.2 的回复: 字节=32 时间=1ms TTL=64"),
+            Some(1)
+        );
+        assert_eq!(parse_ping_rtt_ms_windows("Request timed out."), None);
+    }
+
+    #[test]
+    fn wg_dump_diag_line_windows_reads_all_columns() {
+        let line =
+            "PUB-KEY\t(preshared)\t198.51.100.10:51820\t10.240.0.1/32\t1234567\t1024\t2048\t25";
+        let diag = parse_wg_dump_diag_line_windows(line).expect("valid");
+        assert_eq!(diag.public_key, "PUB-KEY");
+        assert_eq!(diag.endpoint, "198.51.100.10:51820");
+        assert_eq!(diag.allowed_ips, "10.240.0.1/32");
+        assert_eq!(diag.last_handshake, 1234567);
+        assert_eq!(diag.rx_bytes, 2048);
+        assert_eq!(diag.tx_bytes, 25);
+        // 空行 / 空公钥 → None。
+        assert!(parse_wg_dump_diag_line_windows("").is_none());
+        assert!(parse_wg_dump_diag_line_windows("\t\t\t").is_none());
+    }
+
+    #[test]
+    fn windows_interfaces_json_parses_object_and_array() {
+        let single = r#"{"Name":"meshlet","IP":"10.240.0.2","Prefix":16,"State":"Up","Mtu":1420}"#;
+        let v = parse_windows_interfaces_json(single);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].name, "meshlet");
+        assert_eq!(v[0].ipv4, "10.240.0.2");
+        assert_eq!(v[0].prefix, Some(16));
+        assert_eq!(v[0].state, "Up");
+        assert_eq!(v[0].mtu, Some(1420));
+
+        let arr = r#"[{"Name":"eth0","IP":"192.168.1.5","Prefix":24,"State":"Up","Mtu":1500},
+                       {"Name":"meshlet","IP":"10.240.0.2","Prefix":16,"State":"Up","Mtu":1420}]"#;
+        let v = parse_windows_interfaces_json(arr);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[1].name, "meshlet");
+        assert_eq!(v[1].ipv4, "10.240.0.2");
+        assert_eq!(v[1].prefix, Some(16));
+        assert_eq!(v[1].state, "Up");
+        assert_eq!(v[1].mtu, Some(1420));
+
+        // 空 / 非法 JSON → 空（不臆造接口）。
+        assert!(parse_windows_interfaces_json("").is_empty());
+        assert!(parse_windows_interfaces_json("not-json").is_empty());
+    }
 
     #[test]
     fn mask_to_prefix_conversion() {

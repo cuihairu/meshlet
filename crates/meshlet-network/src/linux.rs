@@ -30,8 +30,8 @@ use std::str::FromStr;
 
 use crate::nat::{NatAction, NatChain, NatRule};
 use crate::{
-    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
-    PeerObserved, RouteConfig, TunnelConfig, DEFAULT_TUNNEL_MTU,
+    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkDiagnostics, NetworkError,
+    NetworkSnapshot, PeerObserved, RouteConfig, TunnelConfig, WgPeerDiagnostic, DEFAULT_TUNNEL_MTU,
 };
 
 /// iptables 所有权注释前缀：nat 规则带 `meshlet alias {id}`（§12.6），filter
@@ -186,6 +186,66 @@ fn enforced_tunnel_mtu(planned: Option<u32>) -> u32 {
 /// is seen as drifted on the next reconcile instead of matching the plan.
 fn mtu_matches_planned(link_show: &str, planned: Option<u32>) -> bool {
     parse_link_mtu(link_show) == Some(enforced_tunnel_mtu(planned))
+}
+
+/// 当前 UTC 时刻的 ISO-8601 字符串（秒精度，`Z` 后缀）——诊断采集时刻。
+/// 不引 chrono（meshlet-network 是纯命令执行层）；用 `date` 命令读取本机
+/// UTC 时间，失败回退 `SystemTime` 的纪元秒格式化（仅作采集时刻展示）。
+fn chrono_now_iso() -> String {
+    if let Ok(out) = std::process::Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+    {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let text = text.trim();
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
+/// 从 `ping` 输出解析首个 RTT（毫秒）。支持 `time=12.3 ms` 与 `time<1 ms`
+///（Linux iputils 的超小延迟表示）；无读数返回 `None`。
+pub(crate) fn parse_ping_rtt_ms(text: &str) -> Option<u128> {
+    let start = text.find("time")?;
+    let rest = &text[start + 4..];
+    let digit_start = rest.find(|c: char| c.is_ascii_digit())?;
+    let value = &rest[digit_start..];
+    let end = value
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(value.len());
+    value[..end].parse::<f64>().ok().map(|v| v.round() as u128)
+}
+
+/// 解析 `wg show <if> dump` 的 peer 行为诊断读数（纯函数，Linux 本机可测）。
+/// 空白分隔：`pubkey preshared endpoint allowed-ips latest-handshake rx tx
+/// keepalive`；与 Linux 现有 peer dump 解析器同一公钥判据，缺列按 0/空补。
+pub(crate) fn parse_wg_dump_diag_line(line: &str) -> Option<WgPeerDiagnostic> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let public_key = fields.first()?;
+    if public_key.len() != 44 || !public_key.ends_with('=') {
+        return None;
+    }
+    let endpoint = fields.get(2).unwrap_or(&"").to_string();
+    let allowed_ips = fields.get(3).unwrap_or(&"").to_string();
+    let last_handshake: u64 = fields.get(4).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let rx_bytes: u64 = fields.get(5).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let tx_bytes: u64 = fields.get(6).and_then(|v| v.parse().ok()).unwrap_or(0);
+    Some(WgPeerDiagnostic {
+        public_key: public_key.to_string(),
+        endpoint,
+        allowed_ips,
+        last_handshake,
+        rx_bytes,
+        tx_bytes,
+    })
 }
 
 /// 解析 `wg show <if> latest-handshakes` 输出（每行 `公钥 握手unix时间 距今秒`）：
@@ -693,6 +753,119 @@ impl LinuxNetworkBackend {
         subnets.sort();
         subnets.dedup();
         Ok(subnets)
+    }
+
+    /// R-DIAG 网络诊断信息面采集（2026-11-01 用户令）：三类快照。
+    ///
+    /// - 路由表：`ip route show table all` 原文（全表，含多表）；命令失败按
+    ///   空表上报（诊断展示「未取到」，绝不臆测）；
+    /// - 接口清单：`ip -o link show` + `ip -4 -o addr show` + `ip -o link show`
+    ///   的 MTU 字段，按接口名聚合（IPv4 地址/前缀 + 状态 + MTU）；
+    /// - wg-mlt 读数：`wg show <if> dump` 解析（复用既有 peer dump 解析器
+    ///   的形状，但保留 endpoint / 握手 / 流量列，[WgPeerDiagnostic]）。
+    ///
+    /// 采集只读、不写内核；单项失败按空/缺上报，不吞掉整体。
+    pub fn diagnostics_sync(&self) -> Result<NetworkDiagnostics, NetworkError> {
+        use crate::{InterfaceDiagnostic, NetworkDiagnostics};
+
+        let route_table = self
+            .run(&["ip", "route", "show", "table", "all"])
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // 接口清单：`ip -o link show`（名称 + UP flag + MTU）与
+        // `ip -4 -o addr show`（地址/前缀）按接口名聚合。
+        let mut interfaces: Vec<InterfaceDiagnostic> = Vec::new();
+        let link_show = self.run(&["ip", "-o", "link", "show"]).ok();
+        let addr_show = self.run(&["ip", "-4", "-o", "addr", "show"]).ok();
+        if let Some(out) = &link_show {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                // `1: lo: <LOOPBACK,UP,...> mtu 65536 ...`
+                if fields.len() < 3 {
+                    continue;
+                }
+                let name = fields[1].trim_end_matches(':').to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let flags = fields[2].trim_start_matches('<').trim_end_matches('>');
+                let state = if flags.split(',').any(|f| f == "UP") {
+                    "up".to_string()
+                } else {
+                    "down".to_string()
+                };
+                let mtu = fields
+                    .iter()
+                    .position(|t| *t == "mtu")
+                    .and_then(|i| fields.get(i + 1))
+                    .and_then(|v| v.parse::<u32>().ok());
+                interfaces.push(InterfaceDiagnostic {
+                    name,
+                    ipv4: String::new(),
+                    prefix: None,
+                    state,
+                    mtu,
+                });
+            }
+        }
+        if let Some(out) = &addr_show {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                // `2: eth0    inet 192.168.1.50/24 ...`
+                if fields.len() < 4 || fields[2] != "inet" {
+                    continue;
+                }
+                let name = fields[1].trim_end_matches(':').to_string();
+                let Some((addr, prefix)) = fields[3].split_once('/') else {
+                    continue;
+                };
+                let Some(prefix) = prefix.parse::<u8>().ok() else {
+                    continue;
+                };
+                if let Some(iface) = interfaces.iter_mut().find(|i| i.name == name) {
+                    if iface.ipv4.is_empty() {
+                        iface.ipv4 = addr.to_string();
+                        iface.prefix = Some(prefix);
+                    }
+                }
+            }
+        }
+
+        // wg-mlt 读数：`wg show <if> dump`（第一行接口，其后每行一个 peer）。
+        let wg = self
+            .run(&["wg", "show", &self.interface, "dump"])
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .skip(1)
+                    .filter_map(parse_wg_dump_diag_line)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(NetworkDiagnostics {
+            collected_at: Some(chrono_now_iso()),
+            route_table,
+            interfaces,
+            wg,
+        })
+    }
+
+    /// 以 `ping -c 1` 实测直连路径 RTT（毫秒）。返回原始输出中首个
+    /// `time=…` / `time<…` 数值；失败按 `None`（诊断面显示不可得）。
+    pub fn ping_rtt_ms(&self, target: Ipv4Addr) -> Option<u128> {
+        let out = self
+            .run(&["ping", "-c", "1", "-W", "2", &target.to_string()])
+            .ok()?;
+        parse_ping_rtt_ms(&String::from_utf8_lossy(&out.stdout))
     }
 
     /// Remove only this hub interface and its isolation rules; gateways own NAT.
@@ -1845,6 +2018,57 @@ mod tests {
             None
         );
         assert_eq!(parse_link_mtu("7: wg0: mtu junk qdisc"), None);
+    }
+
+    #[test]
+    fn parse_ping_rtt_ms_reads_normal_and_sub_millisecond_values() {
+        assert_eq!(
+            super::parse_ping_rtt_ms("64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=12.3 ms"),
+            Some(12)
+        );
+        assert_eq!(
+            super::parse_ping_rtt_ms("64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time<1.0 ms"),
+            Some(1)
+        );
+        assert_eq!(
+            super::parse_ping_rtt_ms("ping: sendmsg: Destination host unreachable"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_wg_dump_diag_line_reads_peer_readings() {
+        // Linux `wg show dump` 的 peer 行：pubkey preshared endpoint
+        // allowed-ips latest-handshake rx tx keepalive。
+        let line = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= (preshared) 198.51.100.10:51820 \
+            10.240.0.1/32,10.241.0.0/24 1234567 1024 2048 25";
+        let diag = super::parse_wg_dump_diag_line(line).expect("valid line");
+        assert_eq!(
+            diag.public_key,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        );
+        assert_eq!(diag.endpoint, "198.51.100.10:51820");
+        assert_eq!(diag.allowed_ips, "10.240.0.1/32,10.241.0.0/24");
+        assert_eq!(diag.last_handshake, 1234567);
+        assert_eq!(diag.rx_bytes, 1024);
+        assert_eq!(diag.tx_bytes, 2048);
+
+        // 缺列 / 空行 / 非公钥行 → None（不臆造 peer）。
+        assert!(super::parse_wg_dump_diag_line("").is_none());
+        assert!(super::parse_wg_dump_diag_line("short-row").is_none());
+        assert!(super::parse_wg_dump_diag_line("bad-key not-a-peer").is_none());
+    }
+
+    #[test]
+    fn wg_dump_diag_defaults_missing_numeric_columns_to_zero() {
+        // 端点/流量列缺失时按 0/空串处理（读数不可得可见，不吞行）。
+        let diag =
+            super::parse_wg_dump_diag_line("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= x y")
+                .expect("row");
+        assert_eq!(diag.endpoint, "y");
+        assert_eq!(diag.last_handshake, 0);
+        assert_eq!(diag.rx_bytes, 0);
+        assert_eq!(diag.tx_bytes, 0);
     }
 
     #[test]

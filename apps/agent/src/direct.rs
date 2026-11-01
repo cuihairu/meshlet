@@ -29,7 +29,7 @@ use meshlet_domain::{
 };
 
 /// 单个对端的直连管理状态（域层状态机状态 + 对端 overlay 地址）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectPeer {
     /// 对端 overlay 地址（AllowedIPs `/32` 来源；域层已保证在路由范围内）。
     pub virtual_ipv4: Ipv4Addr,
@@ -38,6 +38,18 @@ pub struct DirectPeer {
     /// 最近一次探测读到的直连握手年龄（秒）。探测时快照（不是心跳时再读
     /// 内核——状态机的决策输入与上报信号同源）；`None` = pending 中或读数失败。
     pub last_handshake_age_secs: Option<u64>,
+    /// 对端名称（R-DIAG-2 展示；候选里读到）。
+    pub peer_name: String,
+    /// 当前直连 endpoint（`ip:port`）；未建立 / 无候选为空。
+    pub endpoint: String,
+    /// 最近一次直连路径实测 RTT（毫秒）。
+    pub rtt_ms: Option<u64>,
+    /// 最近一次握手 Unix 时间戳（秒）。
+    pub last_handshake_at: Option<u64>,
+    /// 累计接收字节（wg 读数）。
+    pub rx_bytes: u64,
+    /// 累计发送字节（wg 读数）。
+    pub tx_bytes: u64,
 }
 
 /// 直连管理器：对端公钥 → 管理状态。跨周期持留（状态机要记住 pending 尝试次数）。
@@ -156,6 +168,12 @@ impl DirectManager {
                     virtual_ipv4: entry.virtual_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED),
                     state: PeerLinkState::Direct,
                     last_handshake_age_secs: None,
+                    peer_name: String::new(),
+                    endpoint: String::new(),
+                    rtt_ms: None,
+                    last_handshake_at: None,
+                    rx_bytes: 0,
+                    tx_bytes: 0,
                 },
             );
         }
@@ -174,6 +192,17 @@ impl DirectManager {
                 virtual_ipv4: peer.virtual_ipv4,
                 link_state: peer.state.as_str().to_string(),
                 last_handshake_age_secs: peer.last_handshake_age_secs,
+                peer_name: peer.peer_name.clone(),
+                connection_mode: match peer.state {
+                    PeerLinkState::Direct => "p2p_direct".into(),
+                    PeerLinkState::DirectPending { .. } => "direct_pending".into(),
+                    PeerLinkState::Relay => "hub_relay".into(),
+                },
+                endpoint: peer.endpoint.clone(),
+                rtt_ms: peer.rtt_ms,
+                last_handshake_at: peer.last_handshake_at,
+                rx_bytes: peer.rx_bytes,
+                tx_bytes: peer.tx_bytes,
             })
             .collect()
     }
@@ -231,12 +260,24 @@ pub fn plan_updates(
             DIRECT_HEALTH_WINDOW_SECS,
         );
         let (next_state, action) = on_probe(state, decision, probe, MAX_PROMOTE_ATTEMPTS);
+        let handshake_age = handshake_ages.get(&key).copied();
         current.insert(
             key.clone(),
             DirectPeer {
                 virtual_ipv4: peer.virtual_ipv4,
                 state: next_state,
-                last_handshake_age_secs: handshake_ages.get(&key).copied(),
+                last_handshake_age_secs: handshake_age,
+                peer_name: peer.name.clone(),
+                // endpoint 在 Promote 动作里给出；Relay/Demote 保留上次值，
+                // 由动作执行侧在 Demote 时清空（见 agent.apply_direct_update）。
+                endpoint: current
+                    .get(&key)
+                    .map(|e| e.endpoint.clone())
+                    .unwrap_or_default(),
+                rtt_ms: None,
+                last_handshake_at: None,
+                rx_bytes: 0,
+                tx_bytes: 0,
             },
         );
         match action {
@@ -290,11 +331,26 @@ mod tests {
         s.parse().unwrap()
     }
 
+    fn direct_peer(key: &str, vip: &str, state: PeerLinkState) -> DirectPeer {
+        DirectPeer {
+            virtual_ipv4: vip.parse().unwrap(),
+            state,
+            last_handshake_age_secs: None,
+            peer_name: format!("{key}-name"),
+            endpoint: String::new(),
+            rtt_ms: None,
+            last_handshake_at: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        }
+    }
+
     fn peer(key: &str, vip: &str, endpoints: &[EndpointCandidate]) -> PeerEndpoints {
         PeerEndpoints {
             device_id: meshlet_domain::DeviceId(key.into()),
             public_key: key.into(),
             virtual_ipv4: vip.parse().unwrap(),
+            name: format!("{key}-name"),
             endpoints: endpoints.to_vec(),
         }
     }
@@ -351,11 +407,7 @@ mod tests {
         let mut current = BTreeMap::new();
         current.insert(
             "dev-b".into(),
-            DirectPeer {
-                virtual_ipv4: "10.240.0.3".parse().unwrap(),
-                state: PeerLinkState::Direct,
-                last_handshake_age_secs: None,
-            },
+            direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
         );
         let mut ages = BTreeMap::new();
         ages.insert("dev-b".into(), 5u64);
@@ -381,11 +433,7 @@ mod tests {
         let mut current = BTreeMap::new();
         current.insert(
             "dev-b".into(),
-            DirectPeer {
-                virtual_ipv4: "10.240.0.3".parse().unwrap(),
-                state: PeerLinkState::Direct,
-                last_handshake_age_secs: None,
-            },
+            direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
         );
         let mut ages = BTreeMap::new();
         ages.insert("dev-b".into(), 90u64);
@@ -409,11 +457,7 @@ mod tests {
         let mut current2 = BTreeMap::new();
         current2.insert(
             "dev-b".into(),
-            DirectPeer {
-                virtual_ipv4: "10.240.0.3".parse().unwrap(),
-                state: PeerLinkState::Direct,
-                last_handshake_age_secs: None,
-            },
+            direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
         );
         let updates = plan_updates(
             &[],
@@ -451,6 +495,13 @@ mod tests {
                 virtual_ipv4: "10.240.0.3".parse().unwrap(),
                 link_state: "direct_pending".into(),
                 last_handshake_age_secs: None,
+                peer_name: "peer-b-name".into(),
+                connection_mode: "direct_pending".into(),
+                endpoint: String::new(),
+                rtt_ms: None,
+                last_handshake_at: None,
+                rx_bytes: 0,
+                tx_bytes: 0,
             }]
         );
 
@@ -471,6 +522,13 @@ mod tests {
                 virtual_ipv4: "10.240.0.3".parse().unwrap(),
                 link_state: "direct".into(),
                 last_handshake_age_secs: Some(7),
+                peer_name: "peer-b-name".into(),
+                connection_mode: "p2p_direct".into(),
+                endpoint: String::new(),
+                rtt_ms: None,
+                last_handshake_at: None,
+                rx_bytes: 0,
+                tx_bytes: 0,
             }]
         );
 
