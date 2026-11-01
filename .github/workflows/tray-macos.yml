@@ -1,0 +1,63 @@
+name: tray-macos
+
+# R-TRAY-1 后续（用户令 2026-11-01：macOS x86_64 = tray 应用 macOS 打包）：
+# 在 Intel macOS 上构建 tray 的 .app（无签名、ad-hoc），并跑 tray 单测。
+# 诚实边界：set_autostart/open_log_dir 是 #[cfg(windows)]，macOS 上如实报
+# 不支持；SystemBackend 在 macOS 走 UnsupportedBackend；无签名证书、无
+# mac 真机走查——本 workflow 只验证「能编译出 .app」与单测绿。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/tray-app/**'
+      - 'crates/meshlet-commands/**'
+      - 'crates/meshlet-network/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/tray-macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-app:
+    name: build / macos-14 (x86_64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # 运行器架构守卫：macos-latest 已迁 arm64，本任务明确要 x86_64（Intel），
+      # 若 GitHub 变更运行器架构，显式失败而不是默默产出 arm64 假 x86_64 资产。
+      - name: Assert x86_64 runner
+        run: |
+          arch=$(uname -m)
+          echo "runner arch: $arch"
+          test "$arch" = "x86_64" || { echo "expected x86_64 runner, got $arch" >&2; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: apps/tray-app/src-tauri
+
+      - name: Install tauri-cli (pinned to tauri 2.12.5)
+        run: cargo install tauri-cli --locked --version 2.12.5
+
+      - name: Test tray
+        working-directory: apps/tray-app/src-tauri
+        run: cargo test -p meshlet-tray
+
+      - name: Build .app (unsigned, ad-hoc)
+        working-directory: apps/tray-app/src-tauri
+        run: |
+          cargo tauri build \
+            --config '{"bundle":{"active":true,"targets":["app"],"macOS":{"signingIdentity":"-"}}}'
+
+      - name: Upload .app
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: meshlet-tray-macos-x86_64-app
+          path: apps/tray-app/src-tauri/target/release/bundle/macos/Meshlet.app
+          if-no-files-found: error
