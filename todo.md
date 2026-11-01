@@ -251,7 +251,7 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
   - 交付：agent 采集并上报「路由表（ip route/route print 全表）、接口清单（含地址/状态/MTU）、wg-mlt 接口读数（wg show：peer/握手/流量）」三类快照；console 诊断页新增展示；CLI `meshlet agent diag` 本地一键输出同内容
   - 复用：meshlet-network 已有 ip route/wg show 解析器（linux.rs §18.3/wg dump），不重写解析；Windows 侧用 `route print` + `Get-NetIPConfiguration` 等价采集
   - 验收：三类快照在 console 可见且与真实路由表一致（抽样比对 3 条）；Linux+Windows 各验一台；心跳周期内更新【Linux CLI 侧已验；console 全链路+Windows 真机待验，见条目附注】
-- [ ] R-TRAY-1 · P2 · 托盘设置界面功能化扩展（用户令 2026-11-01：设置页太简单，支持命令要能在界面看到，按功能拆分）
+- [x] R-TRAY-1 · P2 · 托盘设置界面功能化扩展（用户令 2026-11-01：设置页太简单，支持命令要能在界面看到，按功能拆分）【已交付 2026-11-01：①命令清单单一事实源=新 crate crates/meshlet-commands（CommandSpec 分组目录，CLI `--help` 由目录生成，对账测 `catalog_matches_help_and_dispatch` 钉死 help/目录/分发三处一致，b8d9e75）；②tray Rust 侧新增 get_commands（返回目录）/get_diag（三快照，联动 R-DIAG）/set_autostart（HKCU Run 注册表，非 Windows 如实报不支持）/open_log_dir，get_peers 改 `is_tunnel_interface` 匹配 wg-meshlet/meshlet，save_config 保留 agent 管理键且 interface=wg-meshlet（fb1e90d/3d71188/73be78f），tray 5 测 + clippy -D warnings 全绿；③前端 index.html 四分区重写（连接/诊断/命令/常规），命令区按 get_commands 分组渲染+复制、诊断区用 get_diag 三快照、自启用 set_autostart，字段对齐 get_peers 实际返回 `last_handshake`，dist 与源逐字节一致（691fc36）。验收差异如实记：Windows 真机走查未跑——本机 Linux，Tauri tray 为 Windows 宿主，GUI 无法本机走查；前端 JS 仅经 `node --check` 语法校验；set_autostart/open_log_dir 的 Windows 注册表/资源管理器路径本机不可执行，不冒充通过，待 Windows 真机走查。】
   - 现状：Tauri tray host（76ddfbc）设置页仅有基础项，无命令可见性、无功能分区。
   - 交付：设置窗口按功能分区（Tab 或侧栏）：①连接——hub 地址/隧道状态/本机 overlay IP/直连 peers（联动 R-DIAG-2 数据）；②诊断——路由表/接口/网关读数快照（联动 R-DIAG）；③命令——agent 支持的全部 CLI 子命令浏览：按功能分组（连接管理/诊断/配置/服务控制），每条含名称+用途+参数说明，支持复制完整命令行；④常规——开机自启/动效开关/语言/日志目录打开。
   - 数据源：命令清单从 CLI 注册表/clap 定义生成（单一事实源，新增命令自动出现在界面），不手工维护清单。
