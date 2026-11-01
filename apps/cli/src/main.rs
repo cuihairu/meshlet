@@ -70,15 +70,24 @@ fn config_path() -> PathBuf {
 
 fn cmd_info() {
     let cfg = read_config();
-    let device_name = cfg.get("device_name").and_then(|v| v.as_str()).unwrap_or("unknown");
-    let server_url = cfg.get("server_url").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let device_name = cfg
+        .get("device_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let server_url = cfg
+        .get("server_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
 
     // 从 WireGuard 获取本机 IP
     let wg_ip = wg_local_ip().unwrap_or_else(|| "not connected".to_string());
 
     // 从 status.json 获取状态
     let status = read_status();
-    let state = status.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let state = status
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
 
     println!("device:    {device_name}");
     println!("server:    {server_url}");
@@ -88,15 +97,24 @@ fn cmd_info() {
 
 fn cmd_status() {
     let status = read_status();
-    let state = status.get("state").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let state = status
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let tooltip = status.get("tooltip").and_then(|v| v.as_str()).unwrap_or("");
 
     // agent 进程是否存活
     let agent_alive = cfg!(windows) && process_exists("meshlet-agent");
     let tray_alive = cfg!(windows) && process_exists("meshlet-tray");
 
-    println!("agent:     {}", if agent_alive { "running" } else { "stopped" });
-    println!("tray:      {}", if tray_alive { "running" } else { "stopped" });
+    println!(
+        "agent:     {}",
+        if agent_alive { "running" } else { "stopped" }
+    );
+    println!(
+        "tray:      {}",
+        if tray_alive { "running" } else { "stopped" }
+    );
     println!("state:     {state}");
     if !tooltip.is_empty() {
         println!("detail:    {tooltip}");
@@ -115,12 +133,20 @@ fn cmd_peers() {
         println!("no peers (tunnel not active or no handshake)");
         return;
     }
-    println!("{:<20} {:<24} {:<18} {:>10} {:>10}  {}", "ENDPOINT", "ALLOWED_IPS", "LAST_HANDSHAKE", "RX", "TX", "STATE");
+    println!(
+        "{:<20} {:<24} {:<18} {:>10} {:>10}  {}",
+        "ENDPOINT", "ALLOWED_IPS", "LAST_HANDSHAKE", "RX", "TX", "STATE"
+    );
     for p in peers {
         let state = if p.connected { "connected" } else { "idle" };
         println!(
             "{:<20} {:<24} {:<18} {:>10} {:>10}  {}",
-            p.endpoint, p.allowed_ips, p.last_handshake, format_bytes(p.rx), format_bytes(p.tx), state
+            p.endpoint,
+            p.allowed_ips,
+            p.last_handshake,
+            format_bytes(p.rx),
+            format_bytes(p.tx),
+            state
         );
     }
 }
@@ -192,7 +218,10 @@ fn wg_peers() -> Vec<WgPeer> {
     #[cfg(windows)]
     {
         let wg = "C:\\Program Files\\WireGuard\\wg.exe";
-        let Ok(output) = std::process::Command::new(wg).args(["show", "all", "dump"]).output() else {
+        let Ok(output) = std::process::Command::new(wg)
+            .args(["show", "all", "dump"])
+            .output()
+        else {
             return vec![];
         };
         let text = String::from_utf8_lossy(&output.stdout);
@@ -208,11 +237,19 @@ fn wg_peers() -> Vec<WgPeer> {
                 let handshake: u64 = cols[5].parse().unwrap_or(0);
                 let rx: u64 = cols[6].parse().unwrap_or(0);
                 let tx: u64 = cols[7].parse().unwrap_or(0);
-                let age = if handshake > 0 && now > handshake { now - handshake } else { 0 };
+                let age = if handshake > 0 && now > handshake {
+                    now - handshake
+                } else {
+                    0
+                };
                 peers.push(WgPeer {
                     endpoint: cols[3].to_string(),
                     allowed_ips: cols[4].to_string(),
-                    last_handshake: if handshake > 0 { format!("{age}s ago") } else { "never".into() },
+                    last_handshake: if handshake > 0 {
+                        format!("{age}s ago")
+                    } else {
+                        "never".into()
+                    },
                     rx,
                     tx,
                     connected: handshake > 0 && age < 180,
@@ -236,7 +273,11 @@ fn wg_local_ip() -> Option<String> {
             .output()
             .ok()?;
         let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if ip.is_empty() { None } else { Some(ip) }
+        if ip.is_empty() {
+            None
+        } else {
+            Some(ip)
+        }
     }
     #[cfg(not(windows))]
     {
@@ -256,7 +297,10 @@ fn wg_routes() -> Vec<(String, String)> {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .filter(|l| !l.trim().is_empty())
-                .filter_map(|l| l.split_once('|').map(|(a, b)| (a.to_string(), b.to_string())))
+                .filter_map(|l| {
+                    l.split_once('|')
+                        .map(|(a, b)| (a.to_string(), b.to_string()))
+                })
                 .collect()
         } else {
             vec![]
