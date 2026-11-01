@@ -146,13 +146,102 @@ fn get_peers() -> Vec<serde_json::Value> {
     peers
 }
 
+/// R-TRAY-1：命令目录（单一事实源，与 CLI `--help` 同源）——「命令」区据此
+/// 渲染并按分组排列，新增命令自动出现，不手工维护清单。
+#[tauri::command]
+fn get_commands() -> Vec<meshlet_commands::CommandSpec> {
+    meshlet_commands::COMMANDS.to_vec()
+}
+
+/// R-TRAY-1：本机网络诊断三快照（路由表/接口/wg 读数，联动 R-DIAG）。
+/// 采集失败如实报 `Err`（诊断面绝不臆测默认值）。
+#[tauri::command]
+fn get_diag() -> Result<meshlet_network::NetworkDiagnostics, String> {
+    meshlet_network::SystemBackend::new()
+        .diagnostics_sync()
+        .map_err(|e| e.to_string())
+}
+
+/// R-TRAY-1：开机自启开关（Windows `HKCU\...\Run` 注册表；其它平台如实报
+/// 不支持——不假装成功）。
+#[tauri::command]
+fn set_autostart(enabled: bool) -> Result<(), String> {
+    set_autostart_impl(enabled)
+}
+
+fn set_autostart_impl(enabled: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        if enabled {
+            let out = std::process::Command::new("reg")
+                .args([
+                    "add",
+                    key,
+                    "/v",
+                    "meshlet",
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &exe.to_string_lossy(),
+                    "/f",
+                ])
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+            }
+        } else {
+            let out = std::process::Command::new("reg")
+                .args(["delete", key, "/v", "meshlet", "/f"])
+                .output()
+                .map_err(|e| e.to_string())?;
+            // 删除不存在的值：reg 报 "unable to find"，按幂等成功处理。
+            if !out.status.success()
+                && !String::from_utf8_lossy(&out.stderr).contains("unable to find")
+            {
+                return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = enabled;
+        Err("autostart is only supported on Windows".into())
+    }
+}
+
+/// R-TRAY-1：打开日志目录（Windows 资源管理器；其它平台如实报不支持）。
+#[tauri::command]
+fn open_log_dir() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let dir = meshlet_state_dir();
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("opening a log directory is only supported on Windows".into())
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_config,
             save_config,
-            get_peers
+            get_peers,
+            get_commands,
+            get_diag,
+            set_autostart,
+            open_log_dir
         ])
         .setup(|app| {
             // 托盘菜单
@@ -252,8 +341,9 @@ fn open_settings_window(app: &tauri::AppHandle) {
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("Meshlet 设置")
-    .inner_size(480.0, 400.0)
-    .resizable(false)
+    .inner_size(760.0, 600.0)
+    .min_inner_size(600.0, 480.0)
+    .resizable(true)
     .build();
 }
 
