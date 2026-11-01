@@ -2433,6 +2433,11 @@ dependencies = [
 [[package]]
 name = "meshlet-cli"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
 
 [[package]]
 name = "meshlet-config"
