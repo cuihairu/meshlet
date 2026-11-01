@@ -83,16 +83,67 @@ fn save_config(
 ) -> Result<(), String> {
     let config_path = meshlet_config_path();
     let path = std::path::Path::new(&config_path);
-    let content = format!(
-        "server_url = \"{server_url}\"\n\
-         device_name = \"{device_name}\"\n\
-         \n\
-         [dataplane]\n\
-         enabled = true\n\
-         interface = \"WireGuard\"\n\
-         hub_endpoint = \"{hub_endpoint}\"\n"
-    );
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let content = rebuild_config(&existing, &server_url, &device_name, &hub_endpoint);
     std::fs::write(path, content).map_err(|e| e.to_string())
+}
+
+/// 纯配置重建（可测）：只替换设置页管理的键（server_url/device_name/
+/// hub_endpoint/interface/enabled），**保留** agent 自行管理的键
+/// （state_dir/bootstrap_token/private_key_file/poll_interval_secs 等）——
+/// 否则保存设置会丢掉 install.ps1 写入的键，破坏 agent 配置。
+fn rebuild_config(
+    existing: &str,
+    server_url: &str,
+    device_name: &str,
+    hub_endpoint: &str,
+) -> String {
+    let cfg = parse_agent_toml(existing);
+    let mut out = String::new();
+    let push = |out: &mut String, k: &str, v: &str| out.push_str(&format!("{k} = {v}\n"));
+    push(&mut out, "server_url", &quote(server_url));
+    if let Some(v) = cfg.get("state_dir") {
+        push(&mut out, "state_dir", &quote(v));
+    }
+    if let Some(v) = cfg.get("bootstrap_token") {
+        push(&mut out, "bootstrap_token", &quote(v));
+    }
+    push(&mut out, "device_name", &quote(device_name));
+    out.push('\n');
+    out.push_str("[dataplane]\n");
+    out.push_str("enabled = true\n");
+    // 实际隧道名按 install.ps1/README 为 wg-meshlet（后端默认 meshlet），
+    // 不再写死 "WireGuard"。
+    out.push_str("interface = \"wg-meshlet\"\n");
+    if let Some(v) = cfg.get("private_key_file") {
+        push(&mut out, "private_key_file", &quote(v));
+    }
+    push(&mut out, "hub_endpoint", &quote(hub_endpoint));
+    if let Some(v) = cfg.get("poll_interval_secs") {
+        out.push_str(&format!("poll_interval_secs = {v}\n"));
+    }
+    out
+}
+
+/// 简单 TOML 键值解析（扁平，忽略 section 头/注释）：与 get_config 同解析
+/// 口径；返回 键→去引号后的值。
+fn parse_agent_toml(text: &str) -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().trim_matches('"').to_string());
+        }
+    }
+    map
+}
+
+/// TOML 字符串引号包裹（转义内嵌双引号）。
+fn quote(v: &str) -> String {
+    format!("\"{}\"", v.replace('"', "\\\""))
 }
 
 /// 从 WireGuard 读取直连 peer 信息。
@@ -388,5 +439,42 @@ mod path_convention_tests {
         assert!(is_tunnel_interface("meshlet"));
         assert!(!is_tunnel_interface("WireGuard"));
         assert!(!is_tunnel_interface("wg0"));
+    }
+
+    #[test]
+    fn save_config_preserves_agent_managed_keys() {
+        // install.ps1 生成的 agent.toml 含 agent 自行管理的键；保存设置只
+        // 改 server_url/device_name/interface/hub_endpoint，不得丢其余键。
+        let existing = "server_url = \"https://old.example.com\"\n\
+                        state_dir = \"C:\\\\Users\\\\bob\\\\AppData\\\\Local\\\\meshlet\\\\state\"\n\
+                        bootstrap_token = \"bt-123\"\n\
+                        device_name = \"old-name\"\n\
+                        \n\
+                        [dataplane]\n\
+                        enabled = true\n\
+                        interface = \"meshlet\"\n\
+                        private_key_file = \"C:\\\\keys\\\\priv.key\"\n\
+                        hub_endpoint = \"1.2.3.4:51820\"\n\
+                        poll_interval_secs = 30\n";
+        let rebuilt = rebuild_config(existing, "https://new.example.com", "new-name", "5.6.7.8:51820");
+        assert!(rebuilt.contains("server_url = \"https://new.example.com\""));
+        assert!(rebuilt.contains("device_name = \"new-name\""));
+        assert!(rebuilt.contains("hub_endpoint = \"5.6.7.8:51820\""));
+        assert!(rebuilt.contains("interface = \"wg-meshlet\""));
+        // 保留键一个不丢。
+        assert!(rebuilt.contains("state_dir"));
+        assert!(rebuilt.contains("bootstrap_token"));
+        assert!(rebuilt.contains("private_key_file"));
+        assert!(rebuilt.contains("poll_interval_secs = 30"));
+        assert!(!rebuilt.contains("\"WireGuard\""));
+    }
+
+    #[test]
+    fn save_config_handles_missing_optional_keys() {
+        // 无 state_dir/bootstrap_token 等（配置缺失时）不 panic，仍写出托管键。
+        let rebuilt = rebuild_config("", "https://x", "dev", "9.9.9.9:1");
+        assert!(rebuilt.contains("server_url = \"https://x\""));
+        assert!(rebuilt.contains("interface = \"wg-meshlet\""));
+        assert!(!rebuilt.contains("state_dir"));
     }
 }
