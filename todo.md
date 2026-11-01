@@ -247,15 +247,15 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
 - [x] 审核发现：控制台 2FA 第二步在服务端返回 `two_factor_required=true`（缺码场景）时直接进入 code 步骤，但服务端「错码」返回 401 而非 `two_factor_required`，故 `verifyCodeInvalid` 分支在错误码路径下不可达——前端把「验证码无效」误当成「缺码重新要求」，用户输错码后仍停留在 code 步但不提示无效（console/src/App.tsx:163-164，对照 apps/server/src/auth.rs:778-803）。【属实。已修：第二步错码 `ApiError.status === 401` 时显式 `setError(t('auth.verifyCodeInvalid'))` 并停在 code 步（console/src/App.tsx catch 分支）；正常登录路径不再走 `two_factor_required` 分支。新增回归测 `auth.test.tsx::shows an invalid-code error…`（401→显示无效提示且仍停留 code 步）；console 20 测 + `tsc -b` 全绿。】
 - [x] 审核发现：tray-app 托盘菜单「打开设置」在设置窗口已被隐藏（关闭即 hide）后仅调用 `set_focus()`，未先 `show()`；tao 的 `set_focus` 在窗口 `VISIBLE` 标志未置时直接 no-op（tao-0.37.2 window.rs:139-145 `if is_visible && !is_minimized && !is_foreground`），因此再次点击托盘图标窗口不会重新显示，用户需先通过其它方式才能打开设置（apps/tray-app/src-tauri/src/main.rs:159-160）。【属实。已修：`open_settings_window` 对已存在窗口先 `show()` 再 `set_focus()`（apps/tray-app/src-tauri/src/main.rs）；`cargo build/clippy -p meshlet-tray` 绿。窗口显隐属 Win32 交互，无 Linux 端自动化可断言（后续 Windows 真机验证）。】
 - [x] 审核发现：新增 Windows 对账纯函数 `device_plan_matches` 只比对 peer 公钥集合与路由目的地 CIDR，未比对 peer 的 `allowed_ips`（快照 `PeerObserved.allowed_ips` 已从 `wg dump` 读回），而 Linux 同职责实现对每个计划 peer 做 allowed-ips 精确匹配（linux.rs:862-872）——Windows 上计划 peer 的 AllowedIPs 漂移（如被外部 `wg set` 改过）会被误判为一致，不触发重放纠回（crates/meshlet-network/src/lib.rs:234-240，对照 linux.rs:858-875）。【属实。已修：`device_plan_matches` 对每计划 peer 增加 allowed-ips 集合精确比对（顺序无关、长度+逐项包含；crates/meshlet-network/src/lib.rs）；新增回归测 `drifted_peer_allowed_ips_false`（peer 存在但内核 allowed-ips 漂移→false）；meshlet-network 118 测 + clippy/fmt 绿。】
-- [ ] R-DIAG · P2 · agent 本地网络诊断信息面（用户令 2026-11-01：查看本地的路由表等信息）
+- [x] R-DIAG · P2 · agent 本地网络诊断信息面（用户令 2026-11-01：查看本地的路由表等信息）【已交付 2026-11-01：meshlet-network `diagnostics_sync` 三快照采集（linux/windows/unsupported，复用既有解析器）；CLI `meshlet agent diag`；agent 随心跳上报 `diagnostics`，hub 内存态存储并随设备视图下发（026b638），console 诊断页「网络快照」区块展示。验收差异如实记：Linux 本机 CLI 快照与 `ip route show table all`/`wg show` 一致已比对；Windows 真机与 dev 环境 console 全链路（agent→hub→console）实机验证未跑（本机无 Windows、dev 未部署新版），不冒充通过。】
   - 交付：agent 采集并上报「路由表（ip route/route print 全表）、接口清单（含地址/状态/MTU）、wg-mlt 接口读数（wg show：peer/握手/流量）」三类快照；console 诊断页新增展示；CLI `meshlet agent diag` 本地一键输出同内容
   - 复用：meshlet-network 已有 ip route/wg show 解析器（linux.rs §18.3/wg dump），不重写解析；Windows 侧用 `route print` + `Get-NetIPConfiguration` 等价采集
-  - 验收：三类快照在 console 可见且与真实路由表一致（抽样比对 3 条）；Linux+Windows 各验一台；心跳周期内更新
+  - 验收：三类快照在 console 可见且与真实路由表一致（抽样比对 3 条）；Linux+Windows 各验一台；心跳周期内更新【Linux CLI 侧已验；console 全链路+Windows 真机待验，见条目附注】
 - [ ] R-TRAY-1 · P2 · 托盘设置界面功能化扩展（用户令 2026-11-01：设置页太简单，支持命令要能在界面看到，按功能拆分）
   - 现状：Tauri tray host（76ddfbc）设置页仅有基础项，无命令可见性、无功能分区。
   - 交付：设置窗口按功能分区（Tab 或侧栏）：①连接——hub 地址/隧道状态/本机 overlay IP/直连 peers（联动 R-DIAG-2 数据）；②诊断——路由表/接口/网关读数快照（联动 R-DIAG）；③命令——agent 支持的全部 CLI 子命令浏览：按功能分组（连接管理/诊断/配置/服务控制），每条含名称+用途+参数说明，支持复制完整命令行；④常规——开机自启/动效开关/语言/日志目录打开。
   - 数据源：命令清单从 CLI 注册表/clap 定义生成（单一事实源，新增命令自动出现在界面），不手工维护清单。
   - 验收：四分区齐全；命令清单与 `meshlet --help` 实际输出一致（对账测试）；设置项改动持久化并即时生效；Windows 真机走查。
-- [ ] R-DIAG-2 · P2 · 直连 peers 信息展示（用户令 2026-11-01：查看已建立直连的 peers 信息）
+- [x] R-DIAG-2 · P2 · 直连 peers 信息展示（用户令 2026-11-01：查看已建立直连的 peers 信息）【已交付 2026-11-01：agent `enrich_direct_peers` 每 30s 读 wg 端点/握手/流量 + ping 实测 RTT，CLI `meshlet agent diag --peers`/`meshlet peers`，console devices 直连列 + 诊断页「直连对端」区块（d72e4a2/f97f6f0/4ba7d71）。验收差异如实记：2-peer（1 直连 1 中继）场景验收未跑——本机仅 hub 中继对端（106.14.216.177）无直连对端，需第二台 meshlet 节点；RTT 与手工 ping 对账亦需该场景，不冒充通过。】
   - 交付：诊断面增「直连 peers」区块——每 peer 展示：名称、overlay IP（10.240.x.x）、连接模式（P2P 直连 / hub 中继）、直连 endpoint（ip:port）、RTT 延迟（ms，直连路径实测）、最近握手、累计流量；命令可查：CLI `meshlet agent diag --peers`（或 `meshlet peers`）单命令输出全部 peer 的 IP/模式/延迟/endpoint 表格；数据源=agent 上报的 peer 连接状态（依赖 P2P 直连功能的状态上报）；console 诊断页同步展示
-  - 验收：至少 2 peer 场景（1 直连 1 中继）模式标识与实际一致；RTT 数值与手工 ping 对账误差 <20%；直连断开回落 hub 后 60s 内模式翻转为中继
+  - 验收：至少 2 peer 场景（1 直连 1 中继）模式标识与实际一致；RTT 数值与手工 ping 对账误差 <20%；直连断开回落 hub 后 60s 内模式翻转为中继【BLOCKED：本机无直连对端，待第二节点，见条目附注】
