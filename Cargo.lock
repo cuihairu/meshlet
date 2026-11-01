@@ -2434,6 +2434,7 @@ dependencies = [
 name = "meshlet-cli"
 version = "0.1.0"
 dependencies = [
+ "meshlet-network",
  "serde",
  "serde_json",
  "toml 0.8.23",

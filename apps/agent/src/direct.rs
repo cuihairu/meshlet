@@ -206,6 +206,55 @@ impl DirectManager {
             })
             .collect()
     }
+
+    /// 当前处于直连相关状态（非 Relay）的对端清单（公钥 + overlay 地址），
+    /// 供探测周期做内核读数与直连路径延时实测（R-DIAG-2）。
+    pub fn direct_candidates(&self) -> Vec<(String, Ipv4Addr)> {
+        self.peers
+            .iter()
+            .filter(|(_, peer)| peer.state != PeerLinkState::Relay)
+            .map(|(key, peer)| (key.clone(), peer.virtual_ipv4))
+            .collect()
+    }
+
+    /// 记录已建立的直连 endpoint（Promote 成功后由执行侧调用；§12.3 状态
+    /// 上报与控制台/CLI 展示）。对端不在管或处于 Relay（无直连链路）则 no-op。
+    pub fn record_endpoint(&mut self, public_key: &str, endpoint: String) {
+        if let Some(peer) = self.peers.get_mut(public_key) {
+            if peer.state != PeerLinkState::Relay {
+                peer.endpoint = endpoint;
+            }
+        }
+    }
+
+    /// 清空直连 endpoint 与 RTT（Demote 回退 hub 后由执行侧调用）。
+    pub fn clear_endpoint(&mut self, public_key: &str) {
+        if let Some(peer) = self.peers.get_mut(public_key) {
+            peer.endpoint.clear();
+            peer.rtt_ms = None;
+        }
+    }
+
+    /// 刷新直连状态读数（探测周期由执行侧调用）：直连路径实测 RTT（毫秒）、
+    /// 最近握手 Unix 秒、累计收发字节（wg 读数）。对端不在管或处于 Relay
+    /// （无直连链路可测）则 no-op。
+    pub fn record_peer_status(
+        &mut self,
+        public_key: &str,
+        rtt_ms: Option<u64>,
+        last_handshake_at: Option<u64>,
+        rx_bytes: u64,
+        tx_bytes: u64,
+    ) {
+        if let Some(peer) = self.peers.get_mut(public_key) {
+            if peer.state != PeerLinkState::Relay {
+                peer.rtt_ms = rtt_ms;
+                peer.last_handshake_at = last_handshake_at;
+                peer.rx_bytes = rx_bytes;
+                peer.tx_bytes = tx_bytes;
+            }
+        }
+    }
 }
 
 /// 一个周期内的状态跃迁计划（纯函数，无 IO；返回按公钥排序，确定性）。
@@ -576,5 +625,49 @@ mod tests {
         assert_eq!(DirectManager::load(&path).keep_keys().len(), 0);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// R-DIAG-2：record_*/clear_endpoint 只改命中对端，缺失对端 no-op；
+    /// direct_candidates 只列非 Relay 对端。
+    #[test]
+    fn direct_peer_status_records_only_managed_non_relay() {
+        let mut manager = DirectManager::new();
+        manager.peers.insert(
+            "peer-a".into(),
+            direct_peer("peer-a", "10.240.0.3", PeerLinkState::Direct),
+        );
+        manager.peers.insert(
+            "peer-b".into(),
+            direct_peer("peer-b", "10.240.0.4", PeerLinkState::Relay),
+        );
+
+        // 富化：命中直连对端写入，Relay/缺失对端 no-op。
+        manager.record_endpoint("peer-a", "192.168.1.50:51821".into());
+        manager.record_peer_status("peer-a", Some(42), Some(1_700_000_000), 111, 222);
+        manager.record_endpoint("peer-b", "192.168.1.60:51821".into());
+        manager.record_peer_status("ghost", Some(1), Some(1), 1, 1);
+
+        let a = &manager.peers["peer-a"];
+        assert_eq!(a.endpoint, "192.168.1.50:51821");
+        assert_eq!(a.rtt_ms, Some(42));
+        assert_eq!(a.last_handshake_at, Some(1_700_000_000));
+        assert_eq!((a.rx_bytes, a.tx_bytes), (111, 222));
+        // Relay 对端不参与直连状态记录（无直连链路）。
+        assert_eq!(manager.peers["peer-b"].endpoint, "");
+
+        // direct_candidates 只列非 Relay。
+        let candidates = manager.direct_candidates();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, "peer-a");
+        assert_eq!(candidates[0].1, "10.240.0.3".parse::<Ipv4Addr>().unwrap());
+
+        // 清空：endpoint 与 RTT 一并复位，其余读数保留。
+        manager.clear_endpoint("peer-a");
+        assert_eq!(manager.peers["peer-a"].endpoint, "");
+        assert_eq!(manager.peers["peer-a"].rtt_ms, None);
+        assert_eq!(
+            manager.peers["peer-a"].last_handshake_at,
+            Some(1_700_000_000)
+        );
     }
 }

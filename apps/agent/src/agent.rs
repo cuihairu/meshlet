@@ -634,6 +634,49 @@ impl Agent {
             }
             self.save_direct_ledger();
         }
+        // R-DIAG-2：对处于直连状态的对端刷新读数（wg 端点/握手/流量）+ 实测
+        // 直连路径 RTT——即使本周期无动作也要刷新，供心跳与控制台/CLI 展示。
+        self.enrich_direct_peers();
+    }
+
+    /// R-DIAG-2：从内核刷新各直连对端的实际状态（endpoint / 最近握手 /
+    /// 累计流量）并对每条直连链路实测 RTT（`ping` 该对端 overlay 地址）。
+    ///
+    /// 读数失败只记日志——展示数据源是「最后已知态」，绝不让诊断采集干扰
+    /// 数据面；对端已不在管（本周期被 Demote）则各 record_* no-op。
+    fn enrich_direct_peers(&mut self) {
+        let candidates = self.direct.direct_candidates();
+        if candidates.is_empty() {
+            return;
+        }
+        let net = match self.backend.diagnostics_sync() {
+            Ok(net) => net,
+            Err(e) => {
+                tracing::warn!(error = %e, "direct enrich: diagnostics unavailable");
+                return;
+            }
+        };
+        for (public_key, vip) in candidates {
+            let wg_peer = net.wg.iter().find(|p| p.public_key == public_key);
+            let endpoint = wg_peer.map(|p| p.endpoint.clone()).unwrap_or_default();
+            let last_handshake_at =
+                wg_peer.and_then(|p| (p.last_handshake > 0).then_some(p.last_handshake));
+            let (rx_bytes, tx_bytes) = wg_peer.map(|p| (p.rx_bytes, p.tx_bytes)).unwrap_or((0, 0));
+            let rtt_ms = self
+                .backend
+                .ping_rtt_ms(vip)
+                .map(|v| v.min(u64::MAX as u128) as u64);
+            self.direct.record_peer_status(
+                &public_key,
+                rtt_ms,
+                last_handshake_at,
+                rx_bytes,
+                tx_bytes,
+            );
+            if !endpoint.is_empty() {
+                self.direct.record_endpoint(&public_key, endpoint);
+            }
+        }
     }
 
     /// 持久化直连 keep set（§12 重启恢复）：失败只记日志——ledger 丢失顶多
@@ -648,8 +691,9 @@ impl Agent {
     }
 
     /// 应用单个直连动作（`wg set`）：失败只记日志——直连是增益，绝不回滚
-    /// hub（对端仍按 hub 整段路由可达）。
-    fn apply_direct_update(&self, update: &DirectUpdate) {
+    /// hub（对端仍按 hub 整段路由可达）。成功时记录/清空对端 endpoint
+    /// （§12.3 状态上报与控制台/CLI 直连 peers 展示的数据源）。
+    fn apply_direct_update(&mut self, update: &DirectUpdate) {
         match update {
             DirectUpdate::Promote {
                 public_key,
@@ -673,6 +717,8 @@ impl Agent {
                         endpoint = %endpoint,
                         "direct link promoted"
                     );
+                    self.direct
+                        .record_endpoint(public_key, endpoint.to_string());
                 }
             }
             DirectUpdate::Demote { public_key } => {
@@ -684,6 +730,7 @@ impl Agent {
                     );
                 } else {
                     tracing::info!(public_key = %public_key, "direct link demoted to hub relay");
+                    self.direct.clear_endpoint(public_key);
                 }
             }
         }
