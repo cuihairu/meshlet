@@ -4,7 +4,7 @@ import type { TableProps } from 'antd';
 import { api, ApiError } from '../../api';
 import { useLanguage } from '../../i18n/language-context';
 import type { MessageKey } from '../../i18n/en';
-import { formatTime } from '../../lib/format';
+import { formatBytes, formatTime } from '../../lib/format';
 import { tagColor } from '../../lib/status-tag';
 
 export function DevicesSection({
@@ -223,11 +223,3 @@ const SOURCE_KEY: Record<string, MessageKey> = {
   enrollment: 'devices.sourceEnrollment',
   none: 'devices.sourceNone',
 };
-
-/** 流量读数展示（R-DIAG-2，原始数值非 UI 标签，不译）。 */
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n}B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}K`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)}M`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)}G`;
-}

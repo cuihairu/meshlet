@@ -238,6 +238,15 @@ export const zh: Dict = {
 
   'diagnostics.title': '诊断',
   'diagnostics.run': '运行检查',
+  'diagnostics.directPeersTitle': '直连对端',
+  'diagnostics.directPeersNone': '尚无设备上报直连链路',
+  'diagnostics.directPeersDevice': '设备',
+  'diagnostics.directPeersPeer': '对端',
+  'diagnostics.directPeersMode': '模式',
+  'diagnostics.directPeersEndpoint': '端点',
+  'diagnostics.directPeersRtt': 'RTT',
+  'diagnostics.directPeersHandshake': '握手',
+  'diagnostics.directPeersTraffic': '流量',
   'diagnostics.intro1': '跨故障层共 13 项检查。 ',
   'diagnostics.unavailable': '不可用',
   'diagnostics.intro2':

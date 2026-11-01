@@ -241,6 +241,15 @@ export const en = {
 
   'diagnostics.title': 'Diagnostics',
   'diagnostics.run': 'Run checks',
+  'diagnostics.directPeersTitle': 'Direct peers',
+  'diagnostics.directPeersNone': 'no device reported a direct link',
+  'diagnostics.directPeersDevice': 'device',
+  'diagnostics.directPeersPeer': 'peer',
+  'diagnostics.directPeersMode': 'mode',
+  'diagnostics.directPeersEndpoint': 'endpoint',
+  'diagnostics.directPeersRtt': 'RTT',
+  'diagnostics.directPeersHandshake': 'handshake',
+  'diagnostics.directPeersTraffic': 'traffic',
   'diagnostics.intro1': '13 checks across fault layers. ',
   'diagnostics.unavailable': 'unavailable',
   'diagnostics.intro2':

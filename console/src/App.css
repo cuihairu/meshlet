@@ -270,6 +270,34 @@ tr.state-unknown td { color: var(--muted-c); }
   white-space: nowrap;
 }
 
+/* R-DIAG-2 diagnostics-page 直连 peers block. */
+.direct-peers-block {
+  margin-top: var(--space-5);
+}
+
+.direct-peers-block h3 {
+  margin-bottom: var(--space-2);
+}
+
+.direct-peers {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.direct-peers th,
+.direct-peers td {
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.direct-peers th {
+  color: var(--muted-c);
+  font-weight: 500;
+}
+
 .error {
   color: var(--danger);
   font-size: 0.875rem;
