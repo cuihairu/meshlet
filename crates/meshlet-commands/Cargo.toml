@@ -1,0 +1,9 @@
+[package]
+name = "meshlet-commands"
+description = "meshlet CLI command catalog — single source of truth for the command surface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }

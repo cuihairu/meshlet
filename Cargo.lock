@@ -2434,10 +2434,18 @@ dependencies = [
 name = "meshlet-cli"
 version = "0.1.0"
 dependencies = [
+ "meshlet-commands",
  "meshlet-network",
  "serde",
  "serde_json",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "meshlet-commands"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -2551,6 +2559,8 @@ dependencies = [
 name = "meshlet-tray"
 version = "0.1.0"
 dependencies = [
+ "meshlet-commands",
+ "meshlet-network",
  "serde",
  "serde_json",
  "tauri",

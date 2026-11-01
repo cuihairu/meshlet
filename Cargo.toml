@@ -9,6 +9,7 @@ members = [
     "crates/meshlet-store",
     "crates/meshlet-publish",
     "crates/meshlet-executor",
+    "crates/meshlet-commands",
     "apps/server",
     "apps/agent",
     "apps/cli",
@@ -52,6 +53,7 @@ meshlet-domain = { path = "crates/meshlet-domain" }
 meshlet-api-types = { path = "crates/meshlet-api-types" }
 meshlet-config = { path = "crates/meshlet-config" }
 meshlet-network = { path = "crates/meshlet-network" }
+meshlet-commands = { path = "crates/meshlet-commands" }
 meshlet-net-linux = { path = "crates/meshlet-net-linux" }
 meshlet-planner = { path = "crates/meshlet-planner" }
 meshlet-publish = { path = "crates/meshlet-publish" }

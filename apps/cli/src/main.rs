@@ -53,21 +53,9 @@ fn main() {
 }
 
 fn print_usage() {
-    println!(
-        "meshlet-cli {}\n\n\
-         Usage: meshlet <command>\n\n\
-         Commands:\n\
-         \x20 info          Show device info (name, IP, status)\n\
-         \x20 status        Show agent status\n\
-         \x20 peers         List direct peers (IP/mode/RTT/endpoint/traffic)\n\
-         \x20 agent diag    Show network diagnostics snapshot (routes/interfaces/wg)\n\
-         \x20 agent diag --peers   Append direct peers table to the snapshot\n\
-         \x20 networks      List subnets/routes\n\
-         \x20 config        Show configuration\n\
-         \x20 version       Show version\n\
-         \x20 help          Show this help",
-        env!("CARGO_PKG_VERSION")
-    );
+    // R-TRAY-1：帮助文本由命令目录生成（单一事实源），与托盘「命令」区
+    // 同源——新增命令自动出现在两处，`--help` 与目录不可能漂移。
+    print!("{}", meshlet_commands::usage_text(env!("CARGO_PKG_VERSION")));
 }
 
 fn state_dir() -> PathBuf {
@@ -530,6 +518,35 @@ mod tests {
     fn usage_works() {
         // 确保 version 命令不 panic
         let _ = super::format_bytes(0);
+    }
+
+    /// R-TRAY-1：命令目录与 `meshlet --help` 实际输出一致（对账测试）。
+    /// 帮助文本由目录生成，故二者同源；本测防「有人手改 help 造成漂移」。
+    #[test]
+    fn catalog_matches_help_and_dispatch() {
+        let help = meshlet_commands::usage_text(env!("CARGO_PKG_VERSION"));
+        // ① 目录每条命令都出现在 --help 输出里（名称+用途）。
+        for c in meshlet_commands::COMMANDS {
+            assert!(help.contains(c.name), "catalog '{}' missing from help", c.name);
+            assert!(help.contains(c.summary), "summary of '{}' missing", c.name);
+        }
+        // ② 目录顶层命令集合与 main() 实际分发的命令集合一致（不遗漏、
+        //    不虚增——新增命令必须进目录，目录命令必须能分发）。
+        let catalog_top: std::collections::BTreeSet<&str> = meshlet_commands::COMMANDS
+            .iter()
+            .map(|c| c.name.split(' ').next().unwrap())
+            .collect();
+        let dispatched = std::collections::BTreeSet::from([
+            "info", "status", "peers", "agent", "networks", "config", "version", "help",
+        ]);
+        assert_eq!(catalog_top, dispatched, "catalog and dispatch disagree");
+        // ③ agent 子命令同样覆盖（diag 在目录，agent 分发只认 diag）。
+        let sub_catalog: Vec<&str> = meshlet_commands::COMMANDS
+            .iter()
+            .filter(|c| c.name.starts_with("agent "))
+            .map(|c| c.name)
+            .collect();
+        assert!(sub_catalog.contains(&"agent diag"));
     }
 
     /// R-DIAG-2：allowed_ips 判直连（/32）与 hub（整段），握手判 P2P/pending。
