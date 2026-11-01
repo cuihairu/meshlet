@@ -59,22 +59,39 @@ fn print_usage() {
 }
 
 fn state_dir() -> PathBuf {
-    // 优先 ProgramData（服务运行），回退用户目录
-    let pd = PathBuf::from("C:\\ProgramData\\meshlet\\state");
-    if pd.exists() {
-        return pd;
-    }
-    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:/Users/Public".into());
-    PathBuf::from(home).join(".meshlet").join("state")
+    // 与安装脚本/agent/tray 约定一致：状态写 `%LOCALAPPDATA%\meshlet\state`
+    // （install.ps1 的 state_dir；tray `meshlet_state_dir` 同源）。旧的
+    // ProgramData/config.toml 读不到真实 agent 状态，故废弃。
+    state_dir_from_local(&local_appdata().to_string_lossy())
 }
 
 fn config_path() -> PathBuf {
-    let pd = PathBuf::from("C:\\ProgramData\\meshlet\\config.toml");
-    if pd.exists() {
-        return pd;
-    }
-    let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:/Users/Public".into());
-    PathBuf::from(home).join(".meshlet").join("config.toml")
+    // 与安装脚本/agent/tray 约定一致：agent 配置 `%LOCALAPPDATA%\meshlet\agent.toml`
+    // （install.ps1 写该路径；tray `config_path_from_local` 同源）。
+    config_path_from_local(&local_appdata().to_string_lossy())
+}
+
+/// `%LOCALAPPDATA%`（回退 `%USERPROFILE%\AppData\Local`，再回退 Public）。
+fn local_appdata() -> PathBuf {
+    std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|_| {
+            std::env::var("USERPROFILE")
+                .map(|h| PathBuf::from(h).join("AppData").join("Local"))
+        })
+        .unwrap_or_else(|_| PathBuf::from("C:/Users/Public/AppData/Local"))
+}
+
+/// 纯路径构造（可测）：`<local>/meshlet/state`——与 tray
+/// `state_dir_from_local` 同一约定。
+fn state_dir_from_local(local: &str) -> PathBuf {
+    PathBuf::from(local).join("meshlet").join("state")
+}
+
+/// 纯路径构造（可测）：`<local>/meshlet/agent.toml`——与 tray
+/// `config_path_from_local` 同一约定。
+fn config_path_from_local(local: &str) -> PathBuf {
+    PathBuf::from(local).join("meshlet").join("agent.toml")
 }
 
 fn cmd_info() {
@@ -129,9 +146,10 @@ fn cmd_status() {
         println!("detail:    {tooltip}");
     }
 
-    // WireGuard 隧道
+    // WireGuard 隧道（实际隧道名按 install.ps1/README 为 wg-meshlet，后端
+    // 默认 meshlet；旧硬编码 "WireGuard" 查不到真实隧道服务）。
     if cfg!(windows) {
-        let tunnel = service_running("WireGuardTunnel$WireGuard");
+        let tunnel = tunnel_service_running();
         println!("tunnel:    {}", if tunnel { "up" } else { "down" });
     }
 }
@@ -427,7 +445,7 @@ fn wg_local_ip() -> Option<String> {
     {
         let output = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command",
-                "(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -match 'WireGuard' } | Select-Object -First 1).IPAddress"])
+                "(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -match '^(wg-meshlet|meshlet)$' } | Select-Object -First 1).IPAddress"])
             .output()
             .ok()?;
         let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -448,7 +466,7 @@ fn wg_routes() -> Vec<(String, String)> {
     {
         let output = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command",
-                "(Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -match 'WireGuard' } | ForEach-Object { \"$($_.DestinationPrefix)|$($_.InterfaceAlias)\" })"])
+                "(Get-NetRoute -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -match '^(wg-meshlet|meshlet)$' } | ForEach-Object { \"$($_.DestinationPrefix)|$($_.InterfaceAlias)\" })"])
             .output()
             .ok();
         if let Some(o) = output {
@@ -488,13 +506,31 @@ fn service_running(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// WireGuard Windows 隧道服务名候选（`WireGuardTunnel$<iface>`）：实际隧道名
+/// 按 install.ps1/README 为 wg-meshlet，后端默认 meshlet。纯函数（可测）。
+/// 非 Windows 构建下仅测试引用，允许 dead_code 以免 `clippy -D warnings` 挂。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn tunnel_service_names() -> Vec<String> {
+    ["wg-meshlet", "meshlet"]
+        .iter()
+        .map(|iface| format!("WireGuardTunnel${iface}"))
+        .collect()
+}
+
+#[cfg(windows)]
+fn tunnel_service_running() -> bool {
+    tunnel_service_names()
+        .iter()
+        .any(|svc| service_running(svc))
+}
+
 #[cfg(not(windows))]
-fn process_exists(_: &str) -> bool {
+fn tunnel_service_running() -> bool {
     false
 }
 
 #[cfg(not(windows))]
-fn service_running(_: &str) -> bool {
+fn process_exists(_: &str) -> bool {
     false
 }
 
@@ -547,6 +583,34 @@ mod tests {
             .map(|c| c.name)
             .collect();
         assert!(sub_catalog.contains(&"agent diag"));
+    }
+
+    /// 审核发现 3a：state_dir/config_path 走 `%LOCALAPPDATA%\meshlet\`
+    /// （install.ps1/agent/tray 同一约定），旧 ProgramData/config.toml 废弃。
+    /// 用 PathBuf 同构期望，跨平台（Linux `/` 分隔）不失真。
+    #[test]
+    fn state_dir_uses_localappdata_meshlet() {
+        let local = r"C:\Users\bob\AppData\Local";
+        let state = super::state_dir_from_local(local);
+        assert_eq!(
+            state,
+            std::path::Path::new(local).join("meshlet").join("state")
+        );
+        let cfg = super::config_path_from_local(local);
+        assert_eq!(
+            cfg,
+            std::path::Path::new(local).join("meshlet").join("agent.toml")
+        );
+    }
+
+    /// 审核发现 3b：隧道服务名按实际隧道 wg-meshlet/后端默认 meshlet，
+    /// 不再有 `WireGuardTunnel$WireGuard` 硬编码。
+    #[test]
+    fn tunnel_service_names_match_install_conventions() {
+        let names = super::tunnel_service_names();
+        assert!(names.contains(&"WireGuardTunnel$wg-meshlet".to_string()));
+        assert!(names.contains(&"WireGuardTunnel$meshlet".to_string()));
+        assert!(!names.iter().any(|n| n.contains("$WireGuard")));
     }
 
     /// R-DIAG-2：allowed_ips 判直连（/32）与 hub（整段），握手判 P2P/pending。
