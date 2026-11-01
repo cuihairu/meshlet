@@ -23,8 +23,8 @@ permissions:
 
 jobs:
   build-app:
-    name: build / macos-13 (x86_64)
-    runs-on: macos-13
+    name: build / macos-15-intel (x86_64)
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v7.0.1
 
