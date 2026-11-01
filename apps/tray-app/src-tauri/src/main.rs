@@ -113,7 +113,9 @@ fn get_peers() -> Vec<serde_json::Value> {
     for line in text.lines() {
         let cols: Vec<&str> = line.split('\t').collect();
         // peer 行: <iface> <pubkey> <preshared> <endpoint> <allowed> <handshake> <rx> <tx> <keepalive>
-        if cols.len() >= 9 && cols[0] == "WireGuard" {
+        // 实际隧道名按 install.ps1/README 为 wg-meshlet（后端默认 meshlet）；
+        // 硬编码 "WireGuard" 会把真实隧道读成恒为空，须按实际名匹配。
+        if cols.len() >= 9 && is_tunnel_interface(cols[0]) {
             let pubkey = cols[1];
             let endpoint = cols[3];
             let allowed = cols[4];
@@ -144,6 +146,12 @@ fn get_peers() -> Vec<serde_json::Value> {
         }
     }
     peers
+}
+
+/// 受管隧道接口名（与 install.ps1 的 `wg-meshlet` 及后端默认 `meshlet`
+/// 两种约定兼容；不再把 "WireGuard" 当隧道名）。
+fn is_tunnel_interface(name: &str) -> bool {
+    name == "wg-meshlet" || name == "meshlet"
 }
 
 /// R-TRAY-1：命令目录（单一事实源，与 CLI `--help` 同源）——「命令」区据此
@@ -370,5 +378,15 @@ mod path_convention_tests {
         assert!(got.contains("meshlet"));
         assert!(got.contains("agent.toml"));
         assert!(got.starts_with(r"C:\Users\bob\AppData\Local"));
+    }
+
+    #[test]
+    fn tunnel_interface_matches_install_conventions() {
+        // 实际隧道名按 install.ps1/README 为 wg-meshlet，后端默认 meshlet；
+        // 旧的 "WireGuard" 硬编码读不到真实隧道。
+        assert!(is_tunnel_interface("wg-meshlet"));
+        assert!(is_tunnel_interface("meshlet"));
+        assert!(!is_tunnel_interface("WireGuard"));
+        assert!(!is_tunnel_interface("wg0"));
     }
 }
