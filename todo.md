@@ -274,3 +274,5 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
   - 验收:清单内每个开关都有 off/on+GIF;流水线可重跑(配置变更随时再生成);兼作配置效果回归测试。
   - 参考:kode todo C-24 同款流水线模式(2026-11-01 用户令全舰队推广)。
   - 验收差异如实记（本机无法录制，已列文档「本机未能录制的开关」，不冒充通过）：tray 开机自启/动效/语言（需 Windows/macOS 桌面 GUI 会话，本机 Linux 无显示）；agent `[dataplane] enabled`（需 NET_ADMIN + 可达 hub，指向 MESHLET_REQUIRE_DATAPLANE=1 / ADR-007）；agent `[dataplane.direct_connect] enabled`（需真实第二节点，同 R-DIAG-2 附注）；服务通知 / status_notifier_item（tray 桌面宿主限制同）。
+- [ ] AGENT-WIN-3 [P1] 托盘显示本机虚拟 IP+直连节点列表(RTT);菜单:打开面板/本机信息/直连节点/连接节点…/退出;tooltip=设备名+虚拟 IPv4+状态。(用户令 2026-11-02,meshlet-win 席位实现中)
+- [ ] AGENT-WIN-4 [P1] 新增 peer dial <node> 命令:CommandSpec(connection 组)+executor 接 meshlet-network 主动发起直连拨号,结果可显示;托盘「连接节点…」子菜单调用。(用户令 2026-11-02:触发直连此前无操作入口)
