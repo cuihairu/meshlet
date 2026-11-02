@@ -2419,6 +2419,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "windows-sys 0.59.0",
  "zbus",
 ]
 
