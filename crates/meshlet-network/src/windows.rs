@@ -449,6 +449,68 @@ impl WindowsNetworkBackend {
         Ok(ApplyResult::ok())
     }
 
+    // server 侧 revision.rs / device_plan.rs 按 SystemBackend 统一调用这组
+    // 同形 sync 方法（Linux/unsupported 后端同签名），Windows 后端缺一个就
+    // 编译不过。数据面尚未接线的操作一律 fail closed，绝不假装成功。
+    pub fn clear_hub_sync(&self) -> Result<(), NetworkError> {
+        Err(NetworkError::Unsupported(
+            "hub isolation clear on Windows is not yet implemented".to_string(),
+        ))
+    }
+
+    pub fn isolate_hub_sync(&self, _address: Ipv4Addr) -> Result<(), NetworkError> {
+        Err(NetworkError::Unsupported(
+            "hub isolation on Windows is not yet implemented".to_string(),
+        ))
+    }
+
+    pub fn apply_tunnel_sync(
+        &self,
+        _config: &TunnelConfig,
+        _keep_keys: &BTreeSet<String>,
+    ) -> Result<ApplyResult, NetworkError> {
+        Err(NetworkError::Unsupported(
+            "tunnel apply (sync entry) on Windows is not yet implemented".to_string(),
+        ))
+    }
+
+    pub fn apply_routes_sync(&self, _routes: &[RouteConfig]) -> Result<ApplyResult, NetworkError> {
+        Err(NetworkError::Unsupported(
+            "route apply (sync entry) on Windows is not yet implemented".to_string(),
+        ))
+    }
+
+    /// 私钥 → 公钥（`wg pubkey`，密钥走 stdin、不进 argv，与 Linux 后端同法；
+    /// 服务端据此填充下发给设备的 hub peer 公钥，ADR-010）。
+    pub fn public_key_from_private(&self, private_key: &str) -> Result<String, NetworkError> {
+        let Some(exe) = self.find_wg_exe() else {
+            return Err(NetworkError::Unsupported(
+                "wg.exe not found; cannot derive public key".to_string(),
+            ));
+        };
+        use std::io::Write;
+        let mut child = std::process::Command::new(&exe)
+            .arg("pubkey")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| NetworkError::Io(format!("spawn wg pubkey: {e}")))?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| NetworkError::Io("wg pubkey stdin unavailable".into()))?
+            .write_all(format!("{private_key}\n").as_bytes())
+            .map_err(|e| NetworkError::Io(format!("write wg pubkey stdin: {e}")))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| NetworkError::Io(format!("wg pubkey wait: {e}")))?;
+        let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if key.is_empty() {
+            return Err(NetworkError::Io("wg pubkey returned an empty key".into()));
+        }
+        Ok(key)
+    }
+
     pub fn apply_device_plan_sync(
         &mut self,
         plan: &DevicePlan,
