@@ -322,14 +322,22 @@ fn main() {
                     }
                     _ => {}
                 })
+                // 左键单击直接切换面板显隐（Windows 主流约定是单击激活，
+                // 双击才弹是缺陷）。Windows 上一次物理双击会依次产生
+                // Click(Left,Up) → DoubleClick(Left) → Click(Left,Up)（双击
+                // 后的抬起），若每个事件都翻转一次面板会闪两次；统一走
+                // tray_activate_debounced 合并成一次翻转。
                 .on_tray_icon_event(|tray, event| match event {
-                    tauri::tray::TrayIconEvent::DoubleClick { .. }
-                    | tauri::tray::TrayIconEvent::Click {
+                    tauri::tray::TrayIconEvent::Click {
                         button: tauri::tray::MouseButton::Left,
                         button_state: tauri::tray::MouseButtonState::Up,
                         ..
-                    } => {
-                        open_settings_window(tray.app_handle());
+                    }
+                    | tauri::tray::TrayIconEvent::DoubleClick {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } if tray_activate_debounced() => {
+                        toggle_settings_window(tray.app_handle());
                     }
                     _ => {}
                 })
@@ -385,6 +393,8 @@ fn main() {
         });
 }
 
+/// 显示（或聚焦）设置面板——供右键菜单「打开设置」项使用，行为不变：
+/// 始终把窗口带到前台。
 fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
         // 关闭（CloseRequested）已被拦截为 hide()，窗口的 VISIBLE 标志未置时
@@ -394,6 +404,26 @@ fn open_settings_window(app: &tauri::AppHandle) {
         let _ = window.set_focus();
         return;
     }
+    build_settings_window(app);
+}
+
+/// 切换设置面板显隐——托盘图标左键单击路径。可见则隐藏，否则显示并聚焦。
+/// 与 `open_settings_window`（总是显示）不同，单击是「切换」而不是「弹出」，
+/// 这是 Windows 托盘的主流交互约定。
+fn toggle_settings_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return;
+    }
+    build_settings_window(app);
+}
+
+fn build_settings_window(app: &tauri::AppHandle) {
     let _ = tauri::WebviewWindowBuilder::new(
         app,
         "settings",
@@ -404,6 +434,37 @@ fn open_settings_window(app: &tauri::AppHandle) {
     .min_inner_size(600.0, 480.0)
     .resizable(true)
     .build();
+}
+
+/// 托盘左键激活的合并窗口。Windows 上一次物理双击会发出 Click → DoubleClick
+/// → Click（双击后的抬起）三个事件；若每个事件都翻转一次面板会重复触发。
+/// 该窗口把属于同一次激活手势的后续事件吞掉，只翻转一次。250ms 覆盖常见
+/// 双击速度，同时让单击保持即时响应（无需延迟确认）。
+const TRAY_ACTIVATE_DEDUP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// 上次托盘左键激活（翻转面板）的时刻，用于合并 Click/DoubleClick 事件对。
+static LAST_TRAY_ACTIVATE: std::sync::Mutex<Option<std::time::Instant>> =
+    std::sync::Mutex::new(None);
+
+/// 纯判定（可测）：距上次激活已过 `TRAY_ACTIVATE_DEDUP`（或从未激活过）则
+/// 本次应触发；仍在窗口内则吞掉（属于同一次双击的后续事件）。
+fn tray_activate_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    match last {
+        Some(prev) => now.duration_since(prev) >= TRAY_ACTIVATE_DEDUP,
+        None => true,
+    }
+}
+
+/// 记录本次激活并报告是否应翻转面板。合并单/双击：只有窗口外（>= 250ms）
+/// 的事件才会真正触发，窗口内的 Click/DoubleClick 一律吞掉。
+fn tray_activate_debounced() -> bool {
+    let now = std::time::Instant::now();
+    let mut last = LAST_TRAY_ACTIVATE.lock().unwrap();
+    let due = tray_activate_due(*last, now);
+    if due {
+        *last = Some(now);
+    }
+    due
 }
 
 #[cfg(test)]
@@ -481,5 +542,50 @@ mod path_convention_tests {
         assert!(rebuilt.contains("server_url = \"https://x\""));
         assert!(rebuilt.contains("interface = \"wg-meshlet\""));
         assert!(!rebuilt.contains("state_dir"));
+    }
+
+    #[test]
+    fn tray_activate_due_allows_first_activation() {
+        // 从未激活过 → 立即触发。
+        assert!(tray_activate_due(None, std::time::Instant::now()));
+    }
+
+    #[test]
+    fn tray_activate_due_swallows_events_within_window() {
+        let t0 = std::time::Instant::now();
+        // 同一次双击的第二个事件（DoubleClick / 双击后抬起）在窗口内 → 吞掉。
+        assert!(!tray_activate_due(
+            Some(t0),
+            t0 + std::time::Duration::from_millis(50)
+        ));
+        // 恰好等于窗口边界（>=）→ 允许。
+        assert!(tray_activate_due(Some(t0), t0 + TRAY_ACTIVATE_DEDUP));
+    }
+
+    #[test]
+    fn tray_activate_due_allows_events_after_window() {
+        let t0 = std::time::Instant::now();
+        // 超过窗口 → 允许（用户再次有意单击）。
+        assert!(tray_activate_due(
+            Some(t0),
+            t0 + std::time::Duration::from_millis(300)
+        ));
+    }
+
+    #[test]
+    fn tray_activate_sequence_first_true_then_false() {
+        // 模拟 Windows 一次物理双击产生的事件序列：
+        // Click(Left,Up) → DoubleClick(Left) → Click(Left,Up)（双击后抬起）。
+        // 只有第一个事件真正翻转面板，后两个被合并掉（不重复触发）。
+        let t0 = std::time::Instant::now();
+        assert!(tray_activate_due(None, t0)); // Click(up) → 翻转
+        assert!(!tray_activate_due(
+            Some(t0),
+            t0 + std::time::Duration::from_millis(120)
+        )); // DoubleClick → 吞
+        assert!(!tray_activate_due(
+            Some(t0),
+            t0 + std::time::Duration::from_millis(160)
+        )); // 抬起 → 吞
     }
 }
