@@ -32,6 +32,7 @@
 //! 类型化的隧道/路由/NAT 计划，绝不执行服务端下发的任意 Shell 命令。
 
 pub mod diag;
+pub mod dial;
 pub mod keys;
 pub mod nat;
 pub mod windows_cleanup;

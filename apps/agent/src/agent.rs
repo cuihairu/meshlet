@@ -12,9 +12,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use meshlet_config::{AgentConfig, DataplaneConfig, DirectConnectConfig};
+use meshlet_domain::PeerLinkState;
 use meshlet_domain::{
     DataplaneEvidence, DirectEndpointReport, DirectLinkStatus, Ipv4Cidr, DIRECT_PROBE_INTERVAL_SECS,
 };
+use meshlet_network::dial::{self, DirectDialRequest, DirectDialResult, DirectPeerView};
 use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 use meshlet_publish::{ProbeReport, PublishPlan, Publisher};
 
@@ -574,9 +576,18 @@ impl Agent {
     /// 路由可达，下一周期重试。开关关闭时清空已建立的直连（交还 hub，由
     /// 内核对账的漂移清理兜底）。
     ///
+    /// `peer dial` 意图（[`dial::DirectDialRequest`]）：CLI 写在
+    /// `{state_dir}/direct-dial.json`。有意图时**跳过 30s 节流**立刻探测一轮
+    /// （拨号不等下个周期），把目标候选喂给状态机并经
+    /// [`crate::agent::Agent::apply_direct_update`] 调 `wg set`（executor 经
+    /// `meshlet-network` 发起直连拨号）；随后把结果写回
+    /// `{state_dir}/direct-dial-result.json` 并清除意图。拨号失败/无路径/
+    /// 非候选都如实写失败结果——绝不静默。
+    ///
     /// 生产由 [`Agent::tick`] 在心跳之后调度（服务端先看到本机直连候选）；
     /// netns 集成测试可直接驱动一轮。
     pub fn reconcile_direct(&mut self, plan: &DevicePlan) {
+        let request = dial::load_request(Path::new(&self.state_dir));
         if !self.dataplane.direct_connect.enabled {
             let updates = self.direct.demote_all();
             if !updates.is_empty() {
@@ -586,13 +597,22 @@ impl Agent {
                 self.save_direct_ledger();
             }
             self.last_direct_probe = Some(Instant::now());
+            if let Some(req) = request {
+                self.finish_dial(
+                    &req,
+                    false,
+                    "hub_relay",
+                    "direct connect is disabled (config)",
+                );
+            }
             return;
         }
         let due = self
             .last_direct_probe
             .map(|last| last.elapsed().as_secs() >= DIRECT_PROBE_INTERVAL_SECS)
             .unwrap_or(true);
-        if !due {
+        // 有拨号意图即强制本轮（不等节流）；无意图按正常节流。
+        if !due && request.is_none() {
             return;
         }
         self.last_direct_probe = Some(Instant::now());
@@ -600,11 +620,22 @@ impl Agent {
             Ok(wanted) => wanted,
             Err(e) => {
                 tracing::warn!(error = %e, "direct probe: peer endpoints unavailable");
+                if let Some(req) = request {
+                    self.finish_dial(
+                        &req,
+                        false,
+                        "hub_relay",
+                        &format!("peer endpoints unavailable: {e}"),
+                    );
+                }
                 return;
             }
         };
         let Some(scope) = direct_scope(plan) else {
             tracing::warn!("direct probe: no routable scope in the plan; keeping hub relay");
+            if let Some(req) = request {
+                self.finish_dial(&req, false, "hub_relay", "no routable scope in the plan");
+            }
             return;
         };
         let my_lan_subnets = match self.backend.lan_subnets_sync() {
@@ -637,6 +668,44 @@ impl Agent {
         // R-DIAG-2：对处于直连状态的对端刷新读数（wg 端点/握手/流量）+ 实测
         // 直连路径 RTT——即使本周期无动作也要刷新，供心跳与控制台/CLI 展示。
         self.enrich_direct_peers();
+        // 发布直连对端视图（`direct-peers.json`）：托盘「直连节点 / 连接节点…」
+        // 子菜单与 CLI `peer dial` 解析 `<node>` 的数据源。
+        self.publish_direct_peers(&wanted);
+        if let Some(req) = request {
+            self.finish_dial_for_request(&req);
+        }
+    }
+
+    /// 按拨号意图确定结果：状态机已跑完本轮，目标对端当前状态即判定依据。
+    fn finish_dial_for_request(&self, req: &DirectDialRequest) {
+        let (ok, mode, message) = dial_verdict(self.direct.status_of(&req.public_key));
+        self.finish_dial(req, ok, mode, message);
+    }
+
+    /// 写拨号结果并清除意图。结果文件常驻（CLI 轮询它），下次拨号覆盖。
+    fn finish_dial(&self, req: &DirectDialRequest, ok: bool, mode: &str, message: &str) {
+        let result = DirectDialResult {
+            request_id: req.request_id.clone(),
+            ok,
+            mode: mode.into(),
+            message: message.into(),
+            finished_at: dial::now_millis(),
+        };
+        if let Err(e) = dial::write_result(Path::new(&self.state_dir), &result) {
+            tracing::warn!(error = %e, "direct dial result not written");
+        }
+        if let Err(e) = dial::clear_request(Path::new(&self.state_dir)) {
+            tracing::warn!(error = %e, "direct dial request not cleared");
+        }
+    }
+
+    /// 发布直连对端视图：服务端候选集 + 当前链路状态合并（`direct-peers.json`）。
+    /// 候选已直连/待握手取链路状态；候选无路径（Relay）标 `hub_relay`（可拨号）。
+    fn publish_direct_peers(&self, wanted: &[meshlet_domain::PeerEndpoints]) {
+        let views = direct_peer_views(wanted, &self.direct.link_statuses());
+        if let Err(e) = dial::write_direct_peers(Path::new(&self.state_dir), &views) {
+            tracing::warn!(error = %e, "direct peers view not published");
+        }
     }
 
     /// R-DIAG-2：从内核刷新各直连对端的实际状态（endpoint / 最近握手 /
@@ -908,6 +977,48 @@ fn plan_with_hub_endpoint(plan: &DevicePlan, hub_endpoint: Option<&str>) -> Devi
         }
     }
     local
+}
+
+/// `peer dial` 结果判定（纯函数，可测）：目标对端当前状态 → (ok, mode, message)。
+/// `None` = 对端不在管（本周期候选集外）——按失败呈现，绝不假装成功。
+fn dial_verdict(status: Option<&crate::direct::DirectPeer>) -> (bool, &'static str, &'static str) {
+    match status {
+        Some(peer) => match peer.state {
+            PeerLinkState::Direct => (true, "p2p_direct", "direct link established"),
+            PeerLinkState::DirectPending { .. } => {
+                (true, "direct_pending", "dial initiated, awaiting handshake")
+            }
+            PeerLinkState::Relay => (false, "hub_relay", "no direct path; keeping hub relay"),
+        },
+        None => (false, "hub_relay", "node is not a direct candidate"),
+    }
+}
+
+/// 候选集 + 链路状态 → 直连对端视图（纯函数，可测）。候选已直连/待握手取
+/// 链路状态；候选无路径（不在链路状态里）标 `hub_relay`（可拨号目标）。
+fn direct_peer_views(
+    wanted: &[meshlet_domain::PeerEndpoints],
+    links: &[DirectLinkStatus],
+) -> Vec<DirectPeerView> {
+    let by_key: BTreeMap<&str, &DirectLinkStatus> =
+        links.iter().map(|l| (l.public_key.as_str(), l)).collect();
+    wanted
+        .iter()
+        .map(|c| {
+            let link = by_key.get(c.public_key.as_str());
+            DirectPeerView {
+                name: c.name.clone(),
+                virtual_ipv4: c.virtual_ipv4,
+                public_key: c.public_key.clone(),
+                mode: link
+                    .map(|l| l.connection_mode.clone())
+                    .unwrap_or_else(|| "hub_relay".into()),
+                rtt_ms: link.and_then(|l| l.rtt_ms),
+                endpoint: link.map(|l| l.endpoint.clone()).unwrap_or_default(),
+                last_handshake_at: link.and_then(|l| l.last_handshake_at),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1183,5 +1294,90 @@ mod tests {
             Some("error 16")
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// `peer dial` 结果判定：Direct/Pending = 成功；Relay/不在管 = 失败（绝不
+    /// 假装成功）。
+    #[test]
+    fn dial_verdict_maps_state_to_success_or_failure() {
+        use crate::direct::DirectPeer;
+        let peer = |state| DirectPeer {
+            virtual_ipv4: "10.240.0.3".parse().unwrap(),
+            state,
+            last_handshake_age_secs: None,
+            peer_name: String::new(),
+            endpoint: String::new(),
+            rtt_ms: None,
+            last_handshake_at: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        };
+        let (ok, mode, _) = dial_verdict(Some(&peer(PeerLinkState::Direct)));
+        assert!(ok);
+        assert_eq!(mode, "p2p_direct");
+        let (ok, mode, _) = dial_verdict(Some(&peer(PeerLinkState::DirectPending { attempts: 1 })));
+        assert!(ok);
+        assert_eq!(mode, "direct_pending");
+        let (ok, mode, _) = dial_verdict(Some(&peer(PeerLinkState::Relay)));
+        assert!(!ok);
+        assert_eq!(mode, "hub_relay");
+        let (ok, mode, _) = dial_verdict(None);
+        assert!(!ok);
+        assert_eq!(mode, "hub_relay");
+    }
+
+    /// 直连对端视图合并：候选已直连/待握手取链路状态；候选无路径标
+    /// `hub_relay`（可拨号）；候选集外但链路在管的对端不进视图（候选集为
+    /// 服务端下发的可直连集合，视图只反映它）。
+    #[test]
+    fn direct_peer_views_merges_candidates_with_link_status() {
+        use meshlet_domain::EndpointCandidate;
+        let wanted = vec![
+            meshlet_domain::PeerEndpoints {
+                device_id: meshlet_domain::DeviceId("a".into()),
+                public_key: "key-a".into(),
+                virtual_ipv4: "10.240.0.3".parse().unwrap(),
+                name: "peer-a".into(),
+                endpoints: vec![EndpointCandidate::lan(
+                    "192.168.1.50".parse().unwrap(),
+                    51821,
+                )],
+            },
+            meshlet_domain::PeerEndpoints {
+                device_id: meshlet_domain::DeviceId("b".into()),
+                public_key: "key-b".into(),
+                virtual_ipv4: "10.240.0.4".parse().unwrap(),
+                name: "peer-b".into(),
+                endpoints: vec![EndpointCandidate::lan(
+                    "192.168.1.60".parse().unwrap(),
+                    51821,
+                )],
+            },
+        ];
+        let links = vec![DirectLinkStatus {
+            public_key: "key-a".into(),
+            virtual_ipv4: "10.240.0.3".parse().unwrap(),
+            link_state: "direct".into(),
+            last_handshake_age_secs: Some(7),
+            peer_name: "peer-a".into(),
+            connection_mode: "p2p_direct".into(),
+            endpoint: "192.168.1.50:51821".into(),
+            rtt_ms: Some(5),
+            last_handshake_at: Some(1_700_000_000),
+            rx_bytes: 0,
+            tx_bytes: 0,
+        }];
+        let views = direct_peer_views(&wanted, &links);
+        assert_eq!(views.len(), 2);
+        // 已直连：取链路状态（mode/rtt/endpoint）。
+        let a = views.iter().find(|v| v.public_key == "key-a").unwrap();
+        assert_eq!(a.mode, "p2p_direct");
+        assert_eq!(a.rtt_ms, Some(5));
+        assert_eq!(a.endpoint, "192.168.1.50:51821");
+        // 候选无路径：标 hub_relay（可拨号目标）。
+        let b = views.iter().find(|v| v.public_key == "key-b").unwrap();
+        assert_eq!(b.mode, "hub_relay");
+        assert_eq!(b.rtt_ms, None);
+        assert_eq!(b.endpoint, "");
     }
 }

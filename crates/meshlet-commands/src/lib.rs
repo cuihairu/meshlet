@@ -49,6 +49,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         args: &[],
     },
     CommandSpec {
+        name: "peer dial",
+        group: GROUP_CONNECTION,
+        summary: "Force a direct connection to a node (by name or IP)",
+        args: &[],
+    },
+    CommandSpec {
         name: "agent diag",
         group: GROUP_DIAGNOSTICS,
         summary: "Show network diagnostics snapshot (routes/interfaces/wg)",

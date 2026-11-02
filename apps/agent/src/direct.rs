@@ -93,6 +93,12 @@ impl DirectManager {
             .is_some_and(|peer| peer.state == PeerLinkState::Direct)
     }
 
+    /// 单个对端的当前管理状态（`peer dial` 结果判定用）。对端不在管返回
+    /// `None`——不是候选（本周期候选集外），拨号结果按失败呈现。
+    pub fn status_of(&self, public_key: &str) -> Option<&DirectPeer> {
+        self.peers.get(public_key)
+    }
+
     /// 一个周期：拉候选 → 域层状态机 → 就地更新 → 返回待下发动作。
     /// 见 [plan_updates]；执行层拿到动作后逐个 `wg set`（失败只记日志）。
     pub fn apply_plan(
