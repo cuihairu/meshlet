@@ -18,13 +18,15 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 #[cfg(windows)]
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, TerminateProcess, CREATE_NO_WINDOW, PROCESS_TERMINATE,
+};
 #[cfg(windows)]
 use windows_sys::Win32::UI::Shell::{
-    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR,
+    NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -34,9 +36,18 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 const CMD_QUIT: usize = 1;
 #[cfg(windows)]
 const CMD_OPEN_PANEL: usize = 2;
-/// 「连接状态」展示项（禁用态，文本随 `status.json` 的 state 更新）。
+/// 菜单首行「设备名 + 虚拟 IP + 状态」展示项（禁用态；随 `status.json`
+/// tooltip 重建——① 用户要求首行 = 设备名 + 虚拟 IPv4 + 状态）。
 #[cfg(windows)]
 const CMD_STATUS: usize = 3;
+/// 「连接节点…」子菜单项命令基址：第 i 个候选 = `CMD_DIAL_BASE + i`。
+#[cfg(windows)]
+const CMD_DIAL_BASE: usize = 100;
+/// CLI 可执行名（与 `install.ps1` 同目录安装的 `meshlet-cli.exe`；
+/// 「连接节点…」点击即 spawn 它 `peer dial <node>`，④）。仅 Windows 侧使用
+/// （`run_peer_dial` / `cli_exe_path`），故不随 test 编译——Linux 单测不触 Win32。
+#[cfg(windows)]
+const CLI_EXE: &str = "meshlet-cli.exe";
 /// 托盘回调之外的第二内部消息：agent 进程已死，托盘随之退出（④）。
 #[cfg(windows)]
 const WM_TRAY_EXIT: u32 = WM_APP + 2;
@@ -140,23 +151,9 @@ fn main() {
         let ok = Shell_NotifyIconW(NIM_ADD, &nid);
         eprintln!("meshlet-tray-host: NIM_ADD = {ok}");
 
-        let hmenu = CreatePopupMenu();
-        // 连接状态（禁用展示项）：文本随 status.json 的 state 更新，见 update_tray。
-        let status_text: Vec<u16> = "Meshlet\0".encode_utf16().collect();
-        AppendMenuW(
-            hmenu,
-            MF_STRING | MF_GRAYED,
-            CMD_STATUS,
-            status_text.as_ptr(),
-        );
-        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
-        let panel_text: Vec<u16> = "打开面板\0".encode_utf16().collect();
-        AppendMenuW(hmenu, MF_STRING, CMD_OPEN_PANEL, panel_text.as_ptr());
-        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
-        let exit_text: Vec<u16> = "退出\0".encode_utf16().collect();
-        AppendMenuW(hmenu, MF_STRING, CMD_QUIT, exit_text.as_ptr());
+        // 菜单不再在此一次性构建：每次右键按当前状态快照重建（见
+        // tray_wnd_proc / build_menu），首行 + 直连/连接子菜单均为新鲜数据。
         G_NID.store(&mut nid as *mut _, Ordering::SeqCst);
-        G_MENU.store(hmenu as isize, Ordering::SeqCst);
 
         // 启动时立即读取当前状态并应用图标
         update_tray(&status_path, &mut nid);
@@ -413,10 +410,6 @@ fn update_tray(status_path: &std::path::Path, nid: &mut NOTIFYICONDATAW) {
         let tooltip = status["tooltip"].as_str().unwrap_or("Meshlet");
         eprintln!("meshlet-tray-host: tooltip={tooltip}");
 
-        // 菜单「连接状态」展示项：随 state（accessible_name）同步，禁用态。
-        let state = status["state"].as_str().unwrap_or("Meshlet");
-        set_status_item(state);
-
         let tip_wide: Vec<u16> = tooltip.encode_utf16().collect();
         for i in 0..127 {
             nid.szTip[i] = tip_wide.get(i).copied().unwrap_or(0);
@@ -626,9 +619,20 @@ unsafe extern "system" fn tray_wnd_proc(
         let event = lparam as u32;
         eprintln!("meshlet-tray-host: tray event={event:#x}");
         if event == WM_RBUTTONUP || event == WM_LBUTTONUP {
+            // ①②④：每次右键按当前状态快照重建菜单——首行（设备名+虚拟 IP+
+            // 状态）、「直连节点」（IP/模式/RTT）、「连接节点…」（可拨候选）。
+            // 文件变化（status.json / direct-peers.json）由各自线程维护，无需
+            // 常驻菜单；`TrackPopupMenuEx` 同步返回所选命令，快照即点即用。
+            let state_dir = G_STATE_DIR.get().copied();
+            let status_line = status_line_text(state_dir);
+            let peers = load_local_direct_peers(state_dir);
+            let (direct, relay) = split_peer_views(&peers);
+            let hmenu = build_menu(&status_line, &direct, &relay);
+            destroy_current_menu(); // 丢弃上一份菜单（可能为空）
+            G_MENU.store(hmenu as isize, Ordering::SeqCst);
+
             let mut pt: POINT = std::mem::zeroed();
             GetCursorPos(&mut pt);
-            let hmenu = G_MENU.load(Ordering::SeqCst) as HMENU;
             SetForegroundWindow(hwnd);
             PostMessageW(hwnd, WM_NULL, 0, 0);
             let cmd = TrackPopupMenuEx(
@@ -640,6 +644,8 @@ unsafe extern "system" fn tray_wnd_proc(
                 std::ptr::null(),
             ) as usize;
             eprintln!("meshlet-tray-host: menu cmd={cmd}");
+            // 菜单已用毕，立即销毁（`TPM_RETURNCMD` 不投递 WM_COMMAND）。
+            destroy_current_menu();
             match cmd {
                 // 退出：停止当前用户会话 agent（best-effort，D4：不删持久隧道），
                 // 再清托盘；若 agent 已死则仅清托盘（④ 的 watchdog 也会触发）。
@@ -649,6 +655,13 @@ unsafe extern "system" fn tray_wnd_proc(
                 }
                 // 打开面板：浏览器打开 server_url（server 根路径托管控制台）。
                 CMD_OPEN_PANEL => open_panel(hwnd),
+                // ④ 连接节点…：点击候选 → spawn `meshlet-cli peer dial <node>`
+                //（`<node>` 用可解析的名称/IP，非菜单展示串）。
+                id if id >= CMD_DIAL_BASE => {
+                    if let Some(node) = relay.get(id - CMD_DIAL_BASE) {
+                        spawn_peer_dial(hwnd, &node.display_name());
+                    }
+                }
                 _ => {}
             }
         }
@@ -689,23 +702,283 @@ fn do_exit() {
     }
 }
 
-/// 更新菜单「连接状态」展示项文本（禁用态）。
+/// 销毁当前菜单（如有）并把 G_MENU 置空（幂等；`do_exit` 与右键重建共用）。
 #[cfg(windows)]
-fn set_status_item(state: &str) {
-    let wide: Vec<u16> = state.encode_utf16().chain(std::iter::once(0)).collect();
-    let hmenu = G_MENU.load(Ordering::SeqCst) as HMENU;
-    if hmenu.is_null() {
-        return;
+fn destroy_current_menu() {
+    let hmenu = G_MENU.swap(0, Ordering::SeqCst) as HMENU;
+    if !hmenu.is_null() {
+        unsafe {
+            DestroyMenu(hmenu);
+        }
     }
+}
+
+/// `direct-peers.json` 单条（agent 直连探测周期发布；字段与
+/// `meshlet-network::dial::DirectPeerView` 一致——此处仅反序列化，不引
+/// meshlet-network 依赖，托盘宿主保持 windows-sys + serde 的零数据面依赖）。
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct DirectPeerView {
+    #[serde(default)]
+    name: String,
+    virtual_ipv4: std::net::Ipv4Addr,
+    #[serde(default)]
+    public_key: String,
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    rtt_ms: Option<u64>,
+}
+
+#[cfg(any(windows, test))]
+impl DirectPeerView {
+    /// 菜单展示名：设备名缺失（旧服务端）时退回虚拟 IP——`peer dial` 亦按
+    /// IP 解析，两种展示都可点击。
+    fn display_name(&self) -> String {
+        if self.name.trim().is_empty() {
+            self.virtual_ipv4.to_string()
+        } else {
+            self.name.clone()
+        }
+    }
+
+    /// ②「直连节点」子菜单行：IP/模式/RTT（数据展示，禁用态）。
+    fn menu_label(&self) -> String {
+        format!(
+            "{} · {} · {}",
+            self.virtual_ipv4,
+            mode_label(&self.mode),
+            self.rtt_ms
+                .map(|r| format!("{r} ms"))
+                .unwrap_or_else(|| "--".into()),
+        )
+    }
+
+    /// ④「连接节点…」子菜单行：可拨候选（点击触发 `peer dial`）。
+    fn dial_menu_label(&self) -> String {
+        format!("{}  {}", self.virtual_ipv4, self.display_name())
+    }
+}
+
+/// 测试构造 fixture（仅测试用；真实数据来自 agent 的 direct-peers.json）。
+#[cfg(test)]
+impl DirectPeerView {
+    fn sample(name: &str, ip: &str, mode: &str, rtt: Option<u64>) -> Self {
+        Self {
+            name: name.into(),
+            virtual_ipv4: ip.parse().unwrap(),
+            public_key: String::new(),
+            mode: mode.into(),
+            rtt_ms: rtt,
+        }
+    }
+}
+
+/// 直连模式 → 中文短名（② 模式列；未知模式原样展示，不吞数据）。
+#[cfg(any(windows, test))]
+fn mode_label(mode: &str) -> &str {
+    match mode {
+        "p2p_direct" => "直连",
+        "direct_pending" => "拨号中",
+        "hub_relay" => "中继",
+        other => other,
+    }
+}
+
+/// 把 agent 发布的直连视图一分为二（②「直连节点」 / ④「连接节点…」）：
+/// 已直连/拨号中 → direct；候选但走中继（`hub_relay`）→ relay（可拨目标）。
+#[cfg(any(windows, test))]
+fn split_peer_views(peers: &[DirectPeerView]) -> (Vec<&DirectPeerView>, Vec<&DirectPeerView>) {
+    peers
+        .iter()
+        .partition(|p| matches!(p.mode.as_str(), "p2p_direct" | "direct_pending"))
+}
+
+/// 读取 agent 发布的 `{state_dir}/direct-peers.json`（②④ 数据源；与 `peers`
+/// 命令同一链路）。缺失/损坏 → 空表（子菜单显示「（无）」）。
+#[cfg(any(windows, test))]
+fn load_local_direct_peers(state_dir: Option<&std::path::Path>) -> Vec<DirectPeerView> {
+    state_dir
+        .and_then(|dir| std::fs::read_to_string(dir.join("direct-peers.json")).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// ① 菜单首行/tooltip 正文：`status.json` 的 `tooltip` 字段——agent 侧已是
+/// 「Meshlet「设备名」 <虚拟IP>：状态」（与 `info` 同一数据链路）。
+#[cfg(any(windows, test))]
+fn status_line_text(state_dir: Option<&std::path::Path>) -> String {
+    state_dir
+        .and_then(|dir| std::fs::read_to_string(dir.join("tray").join("status.json")).ok())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v.get("tooltip").and_then(|t| t.as_str()).map(String::from))
+        .unwrap_or_else(|| "Meshlet".into())
+}
+
+/// UTF-16 + NUL（Win32 菜单/气泡文本）。
+#[cfg(windows)]
+fn wide_z(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+unsafe fn append_item(menu: HMENU, flags: u32, id: usize, text: &str) {
+    let wide = wide_z(text);
+    AppendMenuW(menu, flags, id, wide.as_ptr());
+}
+
+/// 追加一个弹出式子菜单（`MF_POPUP`，`id` 槽位放子菜单句柄）。
+#[cfg(windows)]
+unsafe fn append_popup(menu: HMENU, text: &str, sub: HMENU) {
+    let wide = wide_z(text);
+    AppendMenuW(menu, MF_POPUP, sub as usize, wide.as_ptr());
+}
+
+/// 按当前快照重建整个右键菜单（首行状态 + 直连节点/连接节点… 子菜单 +
+/// 打开面板 + 退出）。返回新建的 HMENU；调用方（`tray_wnd_proc`）在用毕后
+/// 立即销毁。①②④ 的数据都来自本函数被调时的文件快照，非缓存。
+#[cfg(windows)]
+fn build_menu(status_line: &str, direct: &[&DirectPeerView], relay: &[&DirectPeerView]) -> HMENU {
     unsafe {
-        ModifyMenuW(
-            hmenu,
-            CMD_STATUS as u32,
-            MF_BYCOMMAND | MF_STRING | MF_GRAYED,
-            CMD_STATUS,
-            wide.as_ptr(),
-        );
+        let hmenu = CreatePopupMenu();
+        // ① 首行：设备名 + 虚拟 IP + 状态（tooltip 原文，禁用展示项）。
+        append_item(hmenu, MF_STRING | MF_GRAYED, CMD_STATUS, status_line);
+        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
+
+        // ②「直连节点」：IP/模式/RTT（数据页面，禁用展示项）。
+        let sub = CreatePopupMenu();
+        if direct.is_empty() {
+            append_item(sub, MF_STRING | MF_GRAYED, 0, "（无）");
+        } else {
+            for p in direct {
+                append_item(sub, MF_STRING | MF_GRAYED, 0, &p.menu_label());
+            }
+        }
+        append_popup(hmenu, "直连节点", sub);
+        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
+
+        // ④「连接节点…」：中继候选可点击 → spawn `meshlet-cli peer dial <node>`。
+        let sub = CreatePopupMenu();
+        if relay.is_empty() {
+            append_item(sub, MF_STRING | MF_GRAYED, 0, "（无）");
+        } else {
+            for (i, p) in relay.iter().enumerate() {
+                append_item(sub, MF_STRING, CMD_DIAL_BASE + i, &p.dial_menu_label());
+            }
+        }
+        append_popup(hmenu, "连接节点…", sub);
+        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
+
+        append_item(hmenu, MF_STRING, CMD_OPEN_PANEL, "打开面板");
+        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
+        append_item(hmenu, MF_STRING, CMD_QUIT, "退出");
+        hmenu
     }
+}
+
+/// ④ 点击「连接节点…」：spawn `meshlet-cli peer dial <node>`（异步；agent
+/// 处理后 CLI 打印结果），结果以系统气泡（NIF_INFO）回显——成功/失败如
+/// CLI 输出（`ok:` / `failed:`）同源呈现。
+#[cfg(windows)]
+fn spawn_peer_dial(_hwnd: HWND, node: &str) {
+    let node = node.to_string();
+    let state_dir = G_STATE_DIR.get().map(|d| std::path::Path::to_path_buf(d));
+    std::thread::spawn(move || {
+        let outcome = run_peer_dial(&node, state_dir.as_deref());
+        let nid_ptr = G_NID.load(Ordering::SeqCst);
+        if !nid_ptr.is_null() {
+            // 与文件监听线程共用 nid 指针（既有模型）；气球字段只在
+            // 本线程写，图标/tooltip 更新在另一线程——Shell_NotifyIconW
+            // 各自原子完成，最坏互相覆盖一次，不构成数据竞争 UB。
+            unsafe {
+                show_balloon(&mut *nid_ptr, &outcome);
+            }
+        }
+    });
+}
+
+/// 跑一次 `meshlet-cli peer dial <node>`（隐藏窗口），返回 (成功?, 汇报文本)。
+/// CLI 与本进程同目录（install.ps1 三件套同装）；把 `LOCALAPPDATA` 指到
+/// tray 实际使用的 state_dir 父父级（= `<local>/meshlet/state` 的 `<local>`，
+/// 与 CLI `state_dir_from_local` 同构），保证 CLI 与 agent 读同一拨号文件。
+#[cfg(windows)]
+fn run_peer_dial(node: &str, state_dir: Option<&std::path::Path>) -> (bool, String) {
+    use std::os::windows::process::CommandExt;
+    let Some(exe) = cli_exe_path() else {
+        return (false, format!("找不到 {CLI_EXE}（应与本程序同目录安装）"));
+    };
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(["peer", "dial", node])
+        .creation_flags(CREATE_NO_WINDOW);
+    if let Some(local) = state_dir.and_then(|d| d.parent()).and_then(|d| d.parent()) {
+        cmd.env("LOCALAPPDATA", local);
+    }
+    match cmd.output() {
+        Ok(out) => {
+            let ok = out.status.success();
+            let text = String::from_utf8_lossy(if ok { &out.stdout } else { &out.stderr });
+            let line = text
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(str::trim)
+                .unwrap_or(if ok { "dial finished" } else { "dial failed" });
+            (ok, truncate_for_balloon(line))
+        }
+        Err(e) => (
+            false,
+            truncate_for_balloon(&format!("无法启动 {CLI_EXE}: {e}")),
+        ),
+    }
+}
+
+/// 气泡正文上限（`szInfo` 为 256 宽字符，含 NUL 留余量）。
+#[cfg(any(windows, test))]
+fn truncate_for_balloon(text: &str) -> String {
+    if text.chars().count() <= 250 {
+        text.to_string()
+    } else {
+        let cut: String = text.chars().take(250).collect();
+        format!("{cut}…")
+    }
+}
+
+/// 结果气泡：成功 → 信息图标；失败 → 错误图标（结果与 CLI 输出同源）。
+#[cfg(windows)]
+fn show_balloon(nid: &mut NOTIFYICONDATAW, outcome: &(bool, String)) {
+    let (ok, text) = outcome;
+    let info = wide_z(text);
+    let title = wide_z(if *ok {
+        "直连拨号成功"
+    } else {
+        "直连拨号失败"
+    });
+    for i in 0..256 {
+        nid.szInfo[i] = info.get(i).copied().unwrap_or(0);
+    }
+    for i in 0..64 {
+        nid.szInfoTitle[i] = title.get(i).copied().unwrap_or(0);
+    }
+    nid.dwInfoFlags = if *ok { NIIF_INFO } else { NIIF_ERROR };
+    nid.uFlags |= NIF_INFO;
+    unsafe {
+        Shell_NotifyIconW(NIM_MODIFY, nid);
+    }
+}
+
+/// `meshlet-cli.exe` 路径：本进程可执行文件的兄弟（install.ps1 把
+/// `meshlet-{agent,cli,tray-host}.exe` 装到同一目录）。
+#[cfg(windows)]
+fn cli_exe_path() -> Option<std::path::PathBuf> {
+    let mut buf = [0u16; 260];
+    let len =
+        unsafe { GetModuleFileNameW(std::ptr::null_mut(), buf.as_mut_ptr(), buf.len() as u32) }
+            as usize;
+    if len == 0 || len >= buf.len() {
+        return None;
+    }
+    let exe = std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len]));
+    exe.parent().map(|dir| dir.join(CLI_EXE))
 }
 
 #[cfg(test)]
@@ -940,5 +1213,93 @@ mod tests {
         std::fs::write(base.join("agent.toml"), "server_url = \"\"\n").unwrap();
         assert!(panel_url(&state).is_none());
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    // ── ①②④ 菜单数据（状态首行 / 直连节点 / 连接节点…）─────────────────
+
+    #[test]
+    fn status_line_reads_tooltip_from_status_json() {
+        let state = temp_state_dir("status-line");
+        std::fs::create_dir_all(state.join("tray")).unwrap();
+        // 无文件 → 兜底 "Meshlet"。
+        assert_eq!(status_line_text(Some(&state)), "Meshlet");
+        assert_eq!(status_line_text(None), "Meshlet");
+        std::fs::write(
+            state.join("tray").join("status.json"),
+            r#"{"state":"Meshlet online","tooltip":"Meshlet「office」 10.240.0.5：在线：…"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            status_line_text(Some(&state)),
+            "Meshlet「office」 10.240.0.5：在线：…"
+        );
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    #[test]
+    fn mode_label_maps_known_modes_and_keeps_unknowns() {
+        assert_eq!(mode_label("p2p_direct"), "直连");
+        assert_eq!(mode_label("direct_pending"), "拨号中");
+        assert_eq!(mode_label("hub_relay"), "中继");
+        // 未知模式原样展示（不吞数据）。
+        assert_eq!(mode_label("something_new"), "something_new");
+    }
+
+    #[test]
+    fn split_peer_views_partitions_direct_and_relay() {
+        let peers = vec![
+            DirectPeerView::sample("a", "10.240.0.2", "p2p_direct", Some(12)),
+            DirectPeerView::sample("b", "10.240.0.3", "direct_pending", None),
+            DirectPeerView::sample("", "10.240.0.4", "hub_relay", None),
+        ];
+        let (direct, relay) = split_peer_views(&peers);
+        assert_eq!(direct.len(), 2);
+        assert_eq!(relay.len(), 1);
+        // ②「直连节点」行 = IP/模式/RTT；RTT 未测 → "--"。
+        assert_eq!(direct[0].menu_label(), "10.240.0.2 · 直连 · 12 ms");
+        assert_eq!(direct[1].menu_label(), "10.240.0.3 · 拨号中 · --");
+        // ④「连接节点…」行 = IP + 名称；无名候选以 IP 代名。
+        assert_eq!(relay[0].dial_menu_label(), "10.240.0.4  10.240.0.4");
+    }
+
+    #[test]
+    fn direct_peer_views_load_from_state_dir_or_default_empty() {
+        let state = temp_state_dir("direct-peers");
+        // 缺失 → 空表（子菜单显示「（无）」）。
+        assert!(load_local_direct_peers(Some(&state)).is_empty());
+        assert!(load_local_direct_peers(None).is_empty());
+        // 损坏 → 空表，不 panic。
+        std::fs::write(state.join("direct-peers.json"), "not json").unwrap();
+        assert!(load_local_direct_peers(Some(&state)).is_empty());
+        // 正常读取：字段与 meshlet-network::dial::DirectPeerView 一致。
+        std::fs::write(
+            state.join("direct-peers.json"),
+            r#"[{"name":"peer-b","virtual_ipv4":"10.240.0.3","public_key":"abc==","mode":"hub_relay","rtt_ms":null,"endpoint":"","last_handshake_at":null}]"#,
+        )
+        .unwrap();
+        let peers = load_local_direct_peers(Some(&state));
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].name, "peer-b");
+        assert_eq!(peers[0].mode, "hub_relay");
+        // 旧服务端缺省字段（name/mode/rtt 缺席）也能读（serde default）。
+        std::fs::write(
+            state.join("direct-peers.json"),
+            r#"[{"virtual_ipv4":"10.240.0.3","public_key":"abc=="}]"#,
+        )
+        .unwrap();
+        let peers = load_local_direct_peers(Some(&state));
+        assert_eq!(peers[0].mode, "");
+        assert_eq!(peers[0].rtt_ms, None);
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    #[test]
+    fn truncate_for_balloon_caps_long_output() {
+        let short = "ok: direct link established (p2p_direct)";
+        assert_eq!(truncate_for_balloon(short), short);
+        let long: String = "字".repeat(400);
+        let cut = truncate_for_balloon(&long);
+        assert!(cut.chars().count() <= 251);
+        assert!(cut.ends_with('…'));
     }
 }

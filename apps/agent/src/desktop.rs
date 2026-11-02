@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn notify_call_reuses_shared_tray_copy() {
-        let status = TrayStatus::new(TrayState::TunnelDrift, Some("laptop"), "mesh0");
+        let status = TrayStatus::new(TrayState::TunnelDrift, Some("laptop"), None, "mesh0");
         let call = notify_call(&status);
         assert_eq!(call.app_name, "Meshlet");
         assert_eq!(call.summary, "Meshlet tunnel drift");
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn status_notifier_properties_expose_both_shared_pixmaps() {
-        let status = TrayStatus::new(TrayState::Offline, None, "mesh0");
+        let status = TrayStatus::new(TrayState::Offline, None, None, "mesh0");
         let properties = status_notifier_properties(&status, [IconSize::Px16, IconSize::Px24]);
         assert_eq!(properties.category, "Communications");
         assert_eq!(properties.id, "meshlet-agent");

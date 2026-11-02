@@ -207,8 +207,8 @@ impl Agent {
                 self.apply_publish(None);
                 tracing::info!("registration pending approval: heartbeat sent, plan withheld");
                 // 待审批 = 隧道尚未建立：按「已断开」呈现（`PresenceState::Offline`
-                // 的对位），不用「在线」误导。
-                self.publish_tray(TrayState::Offline);
+                // 的对位），不用「在线」误导。无计划 → 虚拟 IP 未知（`None`）。
+                self.publish_tray(TrayState::Offline, None);
                 return Ok(());
             }
             Err(e) => return Err(e),
@@ -228,11 +228,11 @@ impl Agent {
         // 下一轮拉候选时数据已就位；直连失败只记日志，不影响数据面循环。
         self.reconcile_direct(&plan);
         // 托盘态：reason × 控制通道 × 隧道握手（映射依据见 [`crate::tray`]）。
-        self.publish_tray(TrayState::derive(
-            decision.reason,
-            control_ok,
-            self.last_handshake().is_some(),
-        ));
+        // 虚拟 IP 与 `info` 命令同一链路：取计划隧道地址（`plan.tunnel.address`）。
+        self.publish_tray(
+            TrayState::derive(decision.reason, control_ok, self.last_handshake().is_some()),
+            Some(plan.tunnel.address),
+        );
         self.maybe_self_update();
         Ok(())
     }
@@ -370,10 +370,11 @@ impl Agent {
     /// 托盘状态落盘（用户 2026-10-16：「运行时需要显示对应的 icon 的吧」「系统托盘
     /// icon 最好能体现状态变化」）。headless / CI 下 [`TraySink::publish`] no-op
     /// （不写文件、不 panic），失败同样只记日志——托盘永不影响数据面循环。
-    pub fn publish_tray(&self, state: TrayState) {
+    pub fn publish_tray(&self, state: TrayState, virtual_ip: Option<std::net::Ipv4Addr>) {
         let status = TrayStatus::new(
             state,
             self.device_name.as_deref(),
+            virtual_ip,
             &self.dataplane.interface,
         );
         if let Err(e) = self.tray.publish(&status) {

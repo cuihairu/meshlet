@@ -203,11 +203,23 @@ pub struct TrayStatus {
 }
 
 impl TrayStatus {
-    /// 带设备名与网络接口的 tooltip（tooltip 是文本等价物，不能只靠颜色）。
-    pub fn new(state: TrayState, device_name: Option<&str>, interface: &str) -> Self {
-        let who = device_name
+    /// 带设备名、**本机虚拟 IP** 与网络接口的 tooltip（tooltip 是文本等价物，
+    /// 不能只靠颜色）。`virtual_ip` 来自计划隧道地址（`plan.tunnel.address`，
+    /// 与 `info` 命令同一链路）——用户要求托盘 tooltip / 菜单首行
+    /// = 设备名 + 虚拟 IPv4 + 状态。待审批（无计划）时为 `None`。
+    pub fn new(
+        state: TrayState,
+        device_name: Option<&str>,
+        virtual_ip: Option<std::net::Ipv4Addr>,
+        interface: &str,
+    ) -> Self {
+        let mut who = device_name
             .map(|n| format!("「{n}」"))
             .unwrap_or_else(|| format!("接口 {interface}"));
+        if let Some(ip) = virtual_ip {
+            who.push(' ');
+            who.push_str(&ip.to_string());
+        }
         Self {
             tooltip: format!("Meshlet{who}：{}", state.tooltip()),
             state,
@@ -559,8 +571,14 @@ mod tests {
         for state in states() {
             assert!(!state.accessible_name().is_empty());
             assert!(!state.tooltip().is_empty());
-            let status = TrayStatus::new(state, Some("office-laptop"), "meshlet0");
+            let status = TrayStatus::new(
+                state,
+                Some("office-laptop"),
+                Some("10.240.0.5".parse().unwrap()),
+                "meshlet0",
+            );
             assert!(status.tooltip.contains("office-laptop"));
+            assert!(status.tooltip.contains("10.240.0.5"));
             assert_eq!(status.accessible_name, state.accessible_name());
         }
     }
@@ -580,6 +598,36 @@ mod tests {
                 assert_ne!(states[i].accessible_name(), states[j].accessible_name());
             }
         }
+    }
+
+    /// ① 用户要求：托盘 tooltip / 菜单首行 = 设备名 + 虚拟 IPv4 + 状态。
+    /// 虚拟 IP 从计划隧道地址注入（`plan.tunnel.address`，与 `info` 同一链路）。
+    #[test]
+    fn tooltip_carries_device_name_and_virtual_ip() {
+        let status = TrayStatus::new(
+            TrayState::Online,
+            Some("office-laptop"),
+            Some("10.240.0.5".parse().unwrap()),
+            "meshlet0",
+        );
+        assert!(status
+            .tooltip
+            .starts_with("Meshlet「office-laptop」 10.240.0.5："));
+        assert!(status.tooltip.contains("在线"));
+        // 无设备名：回退接口名；无 IP（待审批）：不出现空占位。
+        let no_name = TrayStatus::new(TrayState::Offline, None, None, "mesh0");
+        assert!(no_name.tooltip.starts_with("Meshlet接口 mesh0："));
+        assert!(!no_name.tooltip.contains("： "));
+        // 无设备名但有 IP。
+        let ip_only = TrayStatus::new(
+            TrayState::TunnelOnly,
+            None,
+            Some("10.240.0.5".parse().unwrap()),
+            "mesh0",
+        );
+        assert!(ip_only
+            .tooltip
+            .starts_with("Meshlet接口 mesh0 10.240.0.5："));
     }
 
     #[test]
@@ -707,7 +755,10 @@ mod tests {
         assert!(!env.has_desktop_session());
 
         let write = sink
-            .publish_with(&TrayStatus::new(TrayState::Online, None, "meshlet0"), &env)
+            .publish_with(
+                &TrayStatus::new(TrayState::Online, None, None, "meshlet0"),
+                &env,
+            )
             .expect("headless publish must not error");
         assert_eq!(write, TrayWrite::Skipped);
         assert!(
@@ -729,7 +780,7 @@ mod tests {
         };
         assert!(env.has_desktop_session());
 
-        let first = TrayStatus::new(TrayState::Online, Some("laptop"), "meshlet0");
+        let first = TrayStatus::new(TrayState::Online, Some("laptop"), None, "meshlet0");
         assert_eq!(
             sink.publish_with(&first, &env).expect("desktop publish"),
             TrayWrite::Written
@@ -741,7 +792,7 @@ mod tests {
         );
 
         // 状态变化 = 换图。
-        let second = TrayStatus::new(TrayState::Offline, Some("laptop"), "meshlet0");
+        let second = TrayStatus::new(TrayState::Offline, Some("laptop"), None, "meshlet0");
         assert_eq!(
             sink.publish_with(&second, &env).expect("state change"),
             TrayWrite::Written

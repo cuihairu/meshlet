@@ -32,7 +32,7 @@ mod tests {
     #[test]
     fn disabled_configuration_is_reported_without_desktop_io() {
         let mut client = DesktopClient;
-        let status = TrayStatus::new(TrayState::Offline, None, "mesh0");
+        let status = TrayStatus::new(TrayState::Offline, None, None, "mesh0");
 
         assert_eq!(
             client.publish(&status, &EnvProbe::default(), false, false),
@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn enabled_configuration_reports_headless_not_published() {
         let mut client = DesktopClient;
-        let status = TrayStatus::new(TrayState::Online, None, "mesh0");
+        let status = TrayStatus::new(TrayState::Online, None, None, "mesh0");
 
         assert_eq!(
             client.publish(&status, &EnvProbe::default(), true, true),
