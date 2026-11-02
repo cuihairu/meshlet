@@ -8,18 +8,51 @@
 #[cfg(windows)]
 use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, POINT, RECT, WPARAM,
+};
 #[cfg(windows)]
 use windows_sys::Win32::Graphics::Gdi::*;
 #[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+#[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
+use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+#[cfg(windows)]
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NOTIFYICONDATAW,
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+/// 右键菜单命令 ID（`TPM_RETURNCMD` 下 `TrackPopupMenuEx` 的返回值）。
+#[cfg(windows)]
+const CMD_QUIT: usize = 1;
+#[cfg(windows)]
+const CMD_OPEN_PANEL: usize = 2;
+/// 「连接状态」展示项（禁用态，文本随 `status.json` 的 state 更新）。
+#[cfg(windows)]
+const CMD_STATUS: usize = 3;
+/// 托盘回调之外的第二内部消息：agent 进程已死，托盘随之退出（④）。
+#[cfg(windows)]
+const WM_TRAY_EXIT: u32 = WM_APP + 2;
+/// agent 可执行名（`install.ps1` 装到 `%LOCALAPPDATA%\meshlet` 的二进制）。
+#[cfg(any(windows, test))]
+const AGENT_EXE: &str = "meshlet-agent.exe";
+/// agent 进程探测轮询间隔。
+#[cfg(windows)]
+const AGENT_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+/// agent 首次现身前的宽限轮数（~30s）：`tray_dir` 已存在说明 agent 至少写过
+/// 一次状态，进程枚举仍未命中则大概率已死，托盘不留孤儿图标。
+#[cfg(windows)]
+const FIRST_SIGHT_POLLS: u32 = 15;
+/// agent 死后（已见过）持续缺席的轮数（~6s）→ 托盘退出。
+#[cfg(windows)]
+const GONE_POLLS: u32 = 3;
 
 /// 全局状态，供窗口过程访问。
 #[cfg(windows)]
@@ -30,6 +63,9 @@ static G_NID: AtomicPtr<NOTIFYICONDATAW> = AtomicPtr::new(std::ptr::null_mut());
 static G_MENU: AtomicIsize = AtomicIsize::new(0);
 #[cfg(windows)]
 static G_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// agent 状态目录（「打开面板」据此定位 agent.toml / config.toml）。
+#[cfg(windows)]
+static G_STATE_DIR: std::sync::OnceLock<&'static std::path::Path> = std::sync::OnceLock::new();
 
 #[cfg(windows)]
 fn main() {
@@ -48,6 +84,9 @@ fn main() {
     while !tray_dir.exists() {
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
+
+    // 「打开面板」需要 agent 配置文件（`{state_dir}/..` 下）里的 server_url。
+    let _ = G_STATE_DIR.set(Box::leak(state_dir.into_boxed_path()));
 
     unsafe {
         let class_name: Vec<u16> = "MeshletTrayHost\0".encode_utf16().collect();
@@ -102,13 +141,28 @@ fn main() {
         eprintln!("meshlet-tray-host: NIM_ADD = {ok}");
 
         let hmenu = CreatePopupMenu();
+        // 连接状态（禁用展示项）：文本随 status.json 的 state 更新，见 update_tray。
+        let status_text: Vec<u16> = "Meshlet\0".encode_utf16().collect();
+        AppendMenuW(
+            hmenu,
+            MF_STRING | MF_GRAYED,
+            CMD_STATUS,
+            status_text.as_ptr(),
+        );
+        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
+        let panel_text: Vec<u16> = "打开面板\0".encode_utf16().collect();
+        AppendMenuW(hmenu, MF_STRING, CMD_OPEN_PANEL, panel_text.as_ptr());
+        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
         let exit_text: Vec<u16> = "退出\0".encode_utf16().collect();
-        AppendMenuW(hmenu, MF_STRING, 1, exit_text.as_ptr());
+        AppendMenuW(hmenu, MF_STRING, CMD_QUIT, exit_text.as_ptr());
         G_NID.store(&mut nid as *mut _, Ordering::SeqCst);
         G_MENU.store(hmenu as isize, Ordering::SeqCst);
 
         // 启动时立即读取当前状态并应用图标
         update_tray(&status_path, &mut nid);
+
+        // ④ agent 进程联动：agent 退出 → 托盘消失（watchdog 轮询进程名）。
+        spawn_agent_watchdog(hwnd);
 
         // 文件监听放独立线程，主循环专心处理消息
         let watch_path = status_path.clone();
@@ -120,11 +174,11 @@ fn main() {
                 }
                 if let Ok(meta) = std::fs::metadata(&watch_path) {
                     if let Ok(mtime) = meta.modified() {
-                        if last_mtime.map_or(true, |old| mtime > old) {
+                        if last_mtime.is_none_or(|old| mtime > old) {
                             last_mtime = Some(mtime);
                             let nid_ptr = G_NID.load(Ordering::SeqCst);
                             if !nid_ptr.is_null() {
-                                update_tray(&watch_path, unsafe { &mut *nid_ptr });
+                                update_tray(&watch_path, &mut *nid_ptr);
                             }
                         }
                     }
@@ -359,6 +413,10 @@ fn update_tray(status_path: &std::path::Path, nid: &mut NOTIFYICONDATAW) {
         let tooltip = status["tooltip"].as_str().unwrap_or("Meshlet");
         eprintln!("meshlet-tray-host: tooltip={tooltip}");
 
+        // 菜单「连接状态」展示项：随 state（accessible_name）同步，禁用态。
+        let state = status["state"].as_str().unwrap_or("Meshlet");
+        set_status_item(state);
+
         let tip_wide: Vec<u16> = tooltip.encode_utf16().collect();
         for i in 0..127 {
             nid.szTip[i] = tip_wide.get(i).copied().unwrap_or(0);
@@ -378,6 +436,177 @@ fn update_tray(status_path: &std::path::Path, nid: &mut NOTIFYICONDATAW) {
             Shell_NotifyIconW(NIM_MODIFY, nid);
         }
     }
+}
+
+/// ④ agent 进程联动：轮询 `meshlet-agent.exe`。已见过 agent 后持续缺席
+/// （~6s）→ 托盘退出；从未见过但 `tray_dir` 已存在（agent 写过状态后即死）
+/// → ~30s 宽限后退出，不留无主托盘。
+#[cfg(windows)]
+fn spawn_agent_watchdog(hwnd: HWND) {
+    // HWND 是裸指针（!Send），闭包须捕获 isize 才能在独立线程发送。
+    let hwnd_raw = hwnd as isize;
+    std::thread::spawn(move || {
+        let mut seen = false;
+        let mut gone_polls = 0u32;
+        let mut first_sight_polls = 0u32;
+        loop {
+            if G_EXIT.load(Ordering::SeqCst) {
+                return;
+            }
+            if agent_alive() {
+                seen = true;
+                gone_polls = 0;
+            } else if seen {
+                gone_polls += 1;
+                if gone_polls >= GONE_POLLS {
+                    unsafe {
+                        PostMessageW(hwnd_raw as HWND, WM_TRAY_EXIT, 0, 0);
+                    }
+                    return;
+                }
+            } else {
+                first_sight_polls += 1;
+                if first_sight_polls >= FIRST_SIGHT_POLLS {
+                    unsafe {
+                        PostMessageW(hwnd_raw as HWND, WM_TRAY_EXIT, 0, 0);
+                    }
+                    return;
+                }
+            }
+            std::thread::sleep(AGENT_POLL);
+        }
+    });
+}
+
+/// 按名字找 agent 进程 PID（Toolhelp32 快照；不打开进程句柄，跨特权可用）。
+#[cfg(windows)]
+fn agent_pid() -> Option<u32> {
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = None;
+        if Process32FirstW(snap, &mut entry) != 0 {
+            loop {
+                if exe_name_matches(&entry.szExeFile) {
+                    found = Some(entry.th32ProcessID);
+                    break;
+                }
+                if Process32NextW(snap, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+        found
+    }
+}
+
+#[cfg(windows)]
+fn agent_alive() -> bool {
+    agent_pid().is_some()
+}
+
+/// `szExeFile`（`[u16; 260]`，NUL 结尾）是否等于 [`AGENT_EXE`]（大小写不敏感）。
+#[cfg(any(windows, test))]
+fn exe_name_matches(name: &[u16]) -> bool {
+    let want: Vec<u16> = AGENT_EXE.encode_utf16().collect();
+    let actual_len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    actual_len == want.len()
+        && name[..actual_len]
+            .iter()
+            .zip(want.iter())
+            .all(|(a, b)| ascii_lower(*a) == ascii_lower(*b))
+}
+
+/// ASCII 大写转小写（进程名/文件名均为 ASCII）；非字母原样返回。
+#[cfg(any(windows, test))]
+fn ascii_lower(c: u16) -> u16 {
+    if (b'A' as u16..=b'Z' as u16).contains(&c) {
+        c + 32
+    } else {
+        c
+    }
+}
+
+/// 「退出」停止 agent：按名找 PID → `TerminateProcess`。best-effort：权限不足
+/// 或进程已死只记日志，托盘仍会退出（D4：退出仅停 agent，不删持久隧道）。
+#[cfg(windows)]
+fn terminate_agent() {
+    let Some(pid) = agent_pid() else {
+        eprintln!("meshlet-tray-host: no agent process to stop");
+        return;
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if handle.is_null() {
+            eprintln!(
+                "meshlet-tray-host: OpenProcess({pid}) failed: {}",
+                std::io::Error::last_os_error()
+            );
+            return;
+        }
+        eprintln!("meshlet-tray-host: stopping agent pid={pid}");
+        TerminateProcess(handle, 0);
+        CloseHandle(handle);
+    }
+}
+
+/// 「打开面板」：默认浏览器打开面板 URL（server 根路径托管的控制台）。
+#[cfg(windows)]
+fn open_panel(hwnd: HWND) {
+    let Some(state_dir) = G_STATE_DIR.get() else {
+        eprintln!("meshlet-tray-host: state dir unknown, cannot open panel");
+        return;
+    };
+    let Some(url) = panel_url(state_dir) else {
+        eprintln!("meshlet-tray-host: no panel URL (server_url missing from agent.toml)");
+        return;
+    };
+    let op: Vec<u16> = "open\0".encode_utf16().collect();
+    let wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        ShellExecuteW(
+            hwnd,
+            op.as_ptr(),
+            wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+/// 面板 URL：agent 配置文件（`{state_dir}/..`）的 `server_url`。控制台由
+/// server 根路径托管（`router_with_console` 的 `ServeDir` 兜底），故
+/// `server_url` 即面板入口。本地 API/面板（ADR-013）尚未实现，无法提供
+/// 本地面板 URL。兼容旧部署的 `config.toml` 文件名。
+#[cfg(any(windows, test))]
+fn panel_url(state_dir: &std::path::Path) -> Option<String> {
+    let parent = state_dir.parent()?;
+    for name in ["agent.toml", "config.toml"] {
+        let Ok(text) = std::fs::read_to_string(parent.join(name)) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim() == "server_url" {
+                    let value = v.trim().trim_matches('"');
+                    if !value.is_empty() {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(not(windows))]
@@ -409,21 +638,74 @@ unsafe extern "system" fn tray_wnd_proc(
                 pt.y,
                 hwnd,
                 std::ptr::null(),
-            );
+            ) as usize;
             eprintln!("meshlet-tray-host: menu cmd={cmd}");
-            if cmd == 1 {
-                let nid_ptr = G_NID.load(Ordering::SeqCst) as *mut NOTIFYICONDATAW;
-                if !nid_ptr.is_null() {
-                    Shell_NotifyIconW(NIM_DELETE, &*nid_ptr);
+            match cmd {
+                // 退出：停止当前用户会话 agent（best-effort，D4：不删持久隧道），
+                // 再清托盘；若 agent 已死则仅清托盘（④ 的 watchdog 也会触发）。
+                CMD_QUIT => {
+                    terminate_agent();
+                    do_exit();
                 }
-                G_EXIT.store(true, Ordering::SeqCst);
-                DestroyMenu(hmenu);
-                DestroyWindow(hwnd);
+                // 打开面板：浏览器打开 server_url（server 根路径托管控制台）。
+                CMD_OPEN_PANEL => open_panel(hwnd),
+                _ => {}
             }
         }
         return 0;
     }
+    // ④ watchdog：agent 进程已死，托盘随之退出。
+    if msg == WM_TRAY_EXIT {
+        eprintln!("meshlet-tray-host: agent process gone, exiting tray");
+        do_exit();
+        return 0;
+    }
     DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+/// 清托盘并退出消息循环（幂等：G_EXIT 已置位则直接返回）。
+#[cfg(windows)]
+fn do_exit() {
+    if G_EXIT.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let nid_ptr = G_NID.load(Ordering::SeqCst) as *mut NOTIFYICONDATAW;
+    if !nid_ptr.is_null() {
+        unsafe {
+            Shell_NotifyIconW(NIM_DELETE, &*nid_ptr);
+        }
+    }
+    let hmenu = G_MENU.load(Ordering::SeqCst) as HMENU;
+    if !hmenu.is_null() {
+        unsafe {
+            DestroyMenu(hmenu);
+        }
+    }
+    let hwnd = G_HWND.load(Ordering::SeqCst) as HWND;
+    if !hwnd.is_null() {
+        unsafe {
+            DestroyWindow(hwnd);
+        }
+    }
+}
+
+/// 更新菜单「连接状态」展示项文本（禁用态）。
+#[cfg(windows)]
+fn set_status_item(state: &str) {
+    let wide: Vec<u16> = state.encode_utf16().chain(std::iter::once(0)).collect();
+    let hmenu = G_MENU.load(Ordering::SeqCst) as HMENU;
+    if hmenu.is_null() {
+        return;
+    }
+    unsafe {
+        ModifyMenuW(
+            hmenu,
+            CMD_STATUS as u32,
+            MF_BYCOMMAND | MF_STRING | MF_GRAYED,
+            CMD_STATUS,
+            wide.as_ptr(),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -573,5 +855,90 @@ mod tests {
         std::fs::write(dir.join("status.json"), r#"{"icon_24":"icon-24.png"}"#).unwrap();
         assert!(load_status_icon(&dir.join("status.json")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── agent 进程名匹配（④ watchdog / 退出）─────────────────────────────
+
+    #[test]
+    fn exe_name_matches_agent_binary_case_insensitively() {
+        let want: Vec<u16> = "Meshlet-Agent.Exe".encode_utf16().collect();
+        assert!(exe_name_matches(&want));
+        let exact: Vec<u16> = "meshlet-agent.exe\0".encode_utf16().collect();
+        assert!(exe_name_matches(&exact));
+    }
+
+    #[test]
+    fn exe_name_matches_rejects_other_names() {
+        let other: Vec<u16> = "meshlet-tray-host.exe".encode_utf16().collect();
+        assert!(!exe_name_matches(&other));
+        // 前缀不匹配：不能把 meshlet-agent 误认为别的（或反之）。
+        let prefix: Vec<u16> = "meshlet-agent".encode_utf16().collect();
+        assert!(!exe_name_matches(&prefix));
+        // 全 NUL / 空名。
+        let empty = [0u16; 260];
+        assert!(!exe_name_matches(&empty));
+    }
+
+    // ── 面板 URL（打开面板）───────────────────────────────────────────────
+
+    /// 建一个 `<base>/state` 结构（与 `install.ps1` 的
+    /// `%LOCALAPPDATA%\meshlet\{agent.toml,state}` 同形），返回 state 目录。
+    fn temp_state_dir(tag: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "meshlet-tray-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let state = base.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        state
+    }
+
+    #[test]
+    fn panel_url_reads_server_url_from_agent_toml() {
+        let state = temp_state_dir("panel-agent");
+        let base = state.parent().unwrap();
+        std::fs::write(
+            base.join("agent.toml"),
+            "server_url = \"https://meshlet.example.com\"\nstate_dir = \"./state\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            panel_url(&state).as_deref(),
+            Some("https://meshlet.example.com")
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn panel_url_falls_back_to_config_toml() {
+        // 旧部署（2026-10-31 真机）把配置写成 config.toml；面板入口仍要工作。
+        let state = temp_state_dir("panel-config");
+        let base = state.parent().unwrap();
+        std::fs::write(
+            base.join("config.toml"),
+            "server_url = \"https://old.example.com\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            panel_url(&state).as_deref(),
+            Some("https://old.example.com")
+        );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn panel_url_missing_config_is_none() {
+        let state = temp_state_dir("panel-none");
+        let base = state.parent().unwrap();
+        // 无 agent.toml / config.toml。
+        assert!(panel_url(&state).is_none());
+        // server_url 为空 → None（不返回空字符串打开默认页）。
+        std::fs::write(base.join("agent.toml"), "server_url = \"\"\n").unwrap();
+        assert!(panel_url(&state).is_none());
+        let _ = std::fs::remove_dir_all(base);
     }
 }
