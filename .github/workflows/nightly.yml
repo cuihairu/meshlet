@@ -79,8 +79,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           key: nightly-windows-msvc
-      - name: Build Windows agent and cli
-        run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin meshlet-agent --bin meshlet-cli
+      - name: Build Windows agent, cli and tray host
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin meshlet-agent --bin meshlet-cli --bin meshlet-tray-host
       - name: Package Windows zip
         shell: pwsh
         run: scripts/package-windows-zip.ps1 -Target x86_64-pc-windows-msvc

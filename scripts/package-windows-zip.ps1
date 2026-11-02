@@ -1,7 +1,8 @@
 <#
-Package the Windows agent and CLI binaries into the nightly zip asset.
-The Windows build only produces the agent and CLI (the server stays Linux-only);
-the zip contains meshlet-agent.exe, meshlet-cli.exe, LICENSE and BUILD_INFO.
+Package the Windows agent, CLI and tray host binaries into the nightly zip asset.
+The Windows build only produces the agent, CLI and tray host (the server stays
+Linux-only); the zip contains meshlet-agent.exe, meshlet-cli.exe,
+meshlet-tray-host.exe, LICENSE and BUILD_INFO.
 #>
 param([Parameter(Mandatory = $true)][string]$Target)
 
@@ -10,7 +11,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $binroot = Join-Path $root "target\$Target\release"
 $dist = Join-Path $root 'dist'
 
-foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe') {
+foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray-host.exe') {
     if (-not (Test-Path (Join-Path $binroot $name))) {
         throw "missing built binary: $(Join-Path $binroot $name)"
     }
@@ -23,6 +24,7 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 
 Copy-Item (Join-Path $binroot 'meshlet-agent.exe') $stage
 Copy-Item (Join-Path $binroot 'meshlet-cli.exe') $stage
+Copy-Item (Join-Path $binroot 'meshlet-tray-host.exe') $stage
 Copy-Item (Join-Path $root 'LICENSE') $stage
 
 $commit = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { (git rev-parse HEAD) }
