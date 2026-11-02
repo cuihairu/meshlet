@@ -125,8 +125,7 @@ mod tests {
 
     #[test]
     fn groups_are_stable_keys() {
-        let groups: std::collections::BTreeSet<_> =
-            COMMANDS.iter().map(|c| c.group).collect();
+        let groups: std::collections::BTreeSet<_> = COMMANDS.iter().map(|c| c.group).collect();
         for g in [
             GROUP_CONNECTION,
             GROUP_DIAGNOSTICS,

@@ -55,7 +55,10 @@ fn main() {
 fn print_usage() {
     // R-TRAY-1：帮助文本由命令目录生成（单一事实源），与托盘「命令」区
     // 同源——新增命令自动出现在两处，`--help` 与目录不可能漂移。
-    print!("{}", meshlet_commands::usage_text(env!("CARGO_PKG_VERSION")));
+    print!(
+        "{}",
+        meshlet_commands::usage_text(env!("CARGO_PKG_VERSION"))
+    );
 }
 
 fn state_dir() -> PathBuf {
@@ -76,8 +79,7 @@ fn local_appdata() -> PathBuf {
     std::env::var("LOCALAPPDATA")
         .map(PathBuf::from)
         .or_else(|_| {
-            std::env::var("USERPROFILE")
-                .map(|h| PathBuf::from(h).join("AppData").join("Local"))
+            std::env::var("USERPROFILE").map(|h| PathBuf::from(h).join("AppData").join("Local"))
         })
         .unwrap_or_else(|_| PathBuf::from("C:/Users/Public/AppData/Local"))
 }
@@ -563,7 +565,11 @@ mod tests {
         let help = meshlet_commands::usage_text(env!("CARGO_PKG_VERSION"));
         // ① 目录每条命令都出现在 --help 输出里（名称+用途）。
         for c in meshlet_commands::COMMANDS {
-            assert!(help.contains(c.name), "catalog '{}' missing from help", c.name);
+            assert!(
+                help.contains(c.name),
+                "catalog '{}' missing from help",
+                c.name
+            );
             assert!(help.contains(c.summary), "summary of '{}' missing", c.name);
         }
         // ② 目录顶层命令集合与 main() 实际分发的命令集合一致（不遗漏、
@@ -599,7 +605,9 @@ mod tests {
         let cfg = super::config_path_from_local(local);
         assert_eq!(
             cfg,
-            std::path::Path::new(local).join("meshlet").join("agent.toml")
+            std::path::Path::new(local)
+                .join("meshlet")
+                .join("agent.toml")
         );
     }
 

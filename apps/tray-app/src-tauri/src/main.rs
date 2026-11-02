@@ -456,7 +456,12 @@ mod path_convention_tests {
                         private_key_file = \"C:\\\\keys\\\\priv.key\"\n\
                         hub_endpoint = \"1.2.3.4:51820\"\n\
                         poll_interval_secs = 30\n";
-        let rebuilt = rebuild_config(existing, "https://new.example.com", "new-name", "5.6.7.8:51820");
+        let rebuilt = rebuild_config(
+            existing,
+            "https://new.example.com",
+            "new-name",
+            "5.6.7.8:51820",
+        );
         assert!(rebuilt.contains("server_url = \"https://new.example.com\""));
         assert!(rebuilt.contains("device_name = \"new-name\""));
         assert!(rebuilt.contains("hub_endpoint = \"5.6.7.8:51820\""));
