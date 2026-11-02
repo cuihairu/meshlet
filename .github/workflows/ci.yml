@@ -41,6 +41,26 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2.9.3
 
+      # 76ddfbc 把 apps/tray-app/src-tauri（Tauri v2，依赖 glib/webkit）加进
+      # workspace 后，ubuntu 腿的 clippy/test 需要 GTK+WebKit 系统库才能编译
+      # （glib-sys 经 pkg-config 找 glib-2.0，缺失即 build script 失败）。
+      # 仅在 Linux 装：windows-latest 用 WebView2，不需要这些。
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libglib2.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libxdo-dev \
+            pkg-config \
+            build-essential
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

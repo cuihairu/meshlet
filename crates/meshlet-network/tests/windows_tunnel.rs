@@ -86,7 +86,9 @@ fn conf_write_round_trips_and_overwrite_is_idempotent() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// 计划层渲染经 exec 写盘闭环：文件即渲染文本，隧道名/密钥行原样保留。
+/// 计划层渲染经 exec 写盘闭环：文件即渲染文本；隧道名由 .conf 文件名派生
+/// （conf_file_name 断言），conf 内不再有 Name 键（ADR-008 移除），密钥行
+/// 原样保留。
 #[test]
 fn plan_renders_through_write_path_unchanged() {
     let path = probe_conf_path();
@@ -94,7 +96,7 @@ fn plan_renders_through_write_path_unchanged() {
     let conf = render_wireguard_conf(&config);
     write_tunnel_conf(&path, &conf).unwrap();
     let on_disk = std::fs::read_to_string(&path).unwrap();
-    assert!(on_disk.contains(&format!("Name = {PROBE_TUNNEL}\n")));
+    assert!(!on_disk.contains("Name = "));
     assert!(on_disk.contains("PrivateKey = PROBE-PRIVATE-KEY-BASE64==\n"));
     assert!(on_disk.contains("AllowedIPs = 10.240.0.1/32\n"));
     assert_eq!(on_disk, conf);
