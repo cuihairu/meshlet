@@ -1,0 +1,24 @@
+/*
+ * Brand color scheme B (amber copper).
+ *
+ * The README badge and favicon (`logo-copper.svg`) both claim the
+ * "B amber copper" variant with primary #C97B2E. Override the default
+ * VitePress indigo brand variables so the rendered site matches that
+ * variant instead of contradicting it.
+ */
+
+:root {
+  /* Light mode: primary amber copper from logo-copper.svg. */
+  --vp-c-brand-1: #c97b2e;
+  --vp-c-brand-2: #b26a24;
+  --vp-c-brand-3: #9c5c1c;
+  --vp-c-brand-soft: rgba(201, 123, 46, 0.16);
+}
+
+.dark {
+  /* Dark mode: lighten the copper family for contrast on dark surfaces. */
+  --vp-c-brand-1: #e39b55;
+  --vp-c-brand-2: #e39b55;
+  --vp-c-brand-3: #e39b55;
+  --vp-c-brand-soft: rgba(227, 155, 85, 0.16);
+}

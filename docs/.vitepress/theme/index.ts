@@ -3,6 +3,7 @@ import { watch, nextTick, onMounted } from 'vue'
 import { useRoute } from 'vitepress'
 import DefaultTheme from 'vitepress/theme'
 import { renderAllMermaid } from './mermaidClient'
+import './custom.css'
 
 export default {
   extends: DefaultTheme,
