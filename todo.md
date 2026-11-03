@@ -288,7 +288,7 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
 
 > 定位：把控制面已有的「配置下发+应用回执」模式泛化为**通用任务通道**，让多机并发开发（或任何运维任务）有自然的「派→收→跑→报→人确认」闭环，替代人肉 SSH。与 §14 通用任务系统同源，落地为最小闭环先行。
 
-- [ ] `MT-001 [P1]` 任务模型与状态机：`Task{id(uuid/幂等键), target_node, payload(cmd/workdir/timeout), state: assigned→acked→running→done|failed, retry_limit, result_ref}`；复用 §14 F-1602 状态模型与审计要求。验收：状态机单元测试。
+- [x] `MT-001 [P1]` 任务模型与状态机。【代码已落 a91987e：crates/meshlet-domain/src/task.rs——`TaskId`(幂等键 newtype)/`TaskPayload{cmd,workdir,timeout_secs}`/`Task{state,retry_limit,result_ref}`、线性状态机 `TaskState::transition(Assigned→Acked→Running→Done|Failed)` 纯函数（对齐 on_probe 惯例，乱序/终态事件一律 `TaskError::IllegalTransition` 拒绝不静默）、`TaskAction::operation()` 审计用操作名（沿用 windows_cleanup 审计惯例）、`Task::apply/record_result`、serde 小写变体名与 as_str 契约一致。retry_limit 为数据、重派决策归 MT-005，状态机不内建重试。验收已过：meshlet-domain 170 passed（新增 9 个 task:: 测试——new_task_starts_assigned_with_no_result / success_lifecycle_walks_the_full_chain / failure_lifecycle_ends_in_failed / terminal_states_reject_every_event / out_of_order_events_are_rejected / apply_leaves_state_untouched_on_illegal_event / audit_operation_names_are_stable / record_result_fills_result_ref / task_serializes_for_dispatch_round_trip 共 9 个全绿，clippy -D warnings 绿、fmt --check 绿、workspace check 绿】
 - [ ] `MT-002 [P1]` 下发与回执：server 经既有配置下发通道派任务（task id 为幂等键，断线重连补派不重复执行）；agent 收到即回 **ack**，运行中心跳，结束回传 exit code + 日志尾部。验收：断线补派幂等集成测试（对齐 F-2030 流量补报模式）。
 - [ ] `MT-003 [P1]` 用户确认交互：console 节点页任务队列面板（assigned/running/done 分列、一键「确认完成/驳回重跑」）+ CLI `meshlet task assign/ls/confirm/retry`。**确认是用户侧动作**，agent 不得自判 done。验收：面板+CLI 各一交互测试。
 - [ ] `MT-004 [P2]` 节点侧通知：任务到达时 agent 托盘气泡（复用 tray 模块）+ 点击打开该任务详情。验收：托盘通知触发测试。
