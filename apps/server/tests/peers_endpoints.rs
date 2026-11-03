@@ -374,6 +374,70 @@ async fn public_observation_yields_public_candidate_after_lan() {
 }
 
 #[tokio::test]
+async fn device_list_exposes_observed_and_public_endpoints() {
+    let (ctx, _a_token) = bootstrap("edge-endpoints", "pub-edge-endpoints").await;
+    let (b_id, b_token) = enroll(&ctx, "peer-endpoints", "pub-peer-endpoints").await;
+    // B 公网观测：observed 与 public 都是 `观测ip:wg监听端口`（P2P-⑤）。
+    assert_eq!(
+        heartbeat(
+            &ctx.app,
+            &b_token,
+            &["192.168.1.51"],
+            51820,
+            "203.0.113.7:40001"
+        )
+        .await,
+        StatusCode::OK
+    );
+    let list = admin_get(
+        &ctx.app,
+        &ctx.cookie,
+        &format!("/api/v1/networks/{}/devices", ctx.network_id),
+    )
+    .await;
+    let b = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == b_id)
+        .expect("peer in device list");
+    assert_eq!(b["observed_endpoint"], "203.0.113.7:51820");
+    assert_eq!(b["public_endpoint"], "203.0.113.7:51820");
+}
+
+#[tokio::test]
+async fn device_list_keeps_observed_endpoint_but_omits_public_when_private() {
+    let (ctx, _a_token) = bootstrap("edge-endpoints-priv", "pub-edge-endpoints-priv").await;
+    let (b_id, b_token) = enroll(&ctx, "peer-endpoints-priv", "pub-peer-endpoints-priv").await;
+    // B 同内网：observed（原始观测）保留，public 缺（与候选同口径不标公网）。
+    assert_eq!(
+        heartbeat(
+            &ctx.app,
+            &b_token,
+            &["192.168.1.51"],
+            51820,
+            "192.168.1.11:40001"
+        )
+        .await,
+        StatusCode::OK
+    );
+    let list = admin_get(
+        &ctx.app,
+        &ctx.cookie,
+        &format!("/api/v1/networks/{}/devices", ctx.network_id),
+    )
+    .await;
+    let b = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == b_id)
+        .unwrap();
+    assert_eq!(b["observed_endpoint"], "192.168.1.11:51820");
+    assert_eq!(b["public_endpoint"], serde_json::Value::Null);
+}
+
+#[tokio::test]
 async fn device_without_report_is_excluded() {
     let (ctx, a_token) = bootstrap("edge-noreport", "pub-edge-noreport").await;
     let (_, b_token) = enroll(&ctx, "peer-noreport", "pub-peer-noreport").await;

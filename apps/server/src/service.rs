@@ -74,6 +74,14 @@ pub struct DeviceView {
     /// §12.3 P2P 链路状态上报：本设备对各对端的直连链路（direct /
     /// direct_pending）。空 = 全中继或未上报；控制台据此展示 P2P/中继。
     pub direct_links: Vec<DirectLinkStatus>,
+    /// P2P-⑤：hub 观测的源 endpoint，格式 `observed_ip:listen_port`（心跳源
+    /// 地址拼接 agent 上报的 wg 监听端口）。`None` = 未观测到心跳或 agent 未
+    /// 上报端口。不做私网过滤——这是原始观测。
+    pub observed_endpoint: Option<String>,
+    /// 公网候选 endpoint（观测地址非私网时才有；与 agent 拨号候选同源，
+    /// 拓扑图/节点下钻复用）。`None` = 无观测/未上报或 hub 与 agent 同内网
+    /// （观测地址非公网，标公网会误导打洞）。
+    pub public_endpoint: Option<String>,
     /// R-DIAG 网络诊断三快照（路由表/接口/wg 读数）；`None` = 尚无上报或
     /// 采集失败。控制台诊断页据此展示。
     pub diagnostics: Option<NetworkDiagnostics>,
@@ -1641,16 +1649,14 @@ pub fn list_devices(state: &MeshState, network_id: &str) -> Result<Vec<DeviceVie
         .iter()
         .filter(|d| d.network_id.to_string() == network_id)
         .map(|d| {
-            let direct_links = state
-                .direct_states
-                .get(&d.id)
-                .map(|s| s.links.clone())
-                .unwrap_or_default();
+            let direct = state.direct_states.get(&d.id);
+            let direct_links = direct.map(|s| s.links.clone()).unwrap_or_default();
             let diagnostics = state.diagnostics.get(&d.id).cloned();
             to_device_view(
                 d,
                 &now,
                 &state.presence_thresholds,
+                direct,
                 direct_links,
                 diagnostics,
             )
@@ -2632,10 +2638,17 @@ fn to_device_view(
     d: &Device,
     now: &Timestamp,
     thresholds: &meshlet_domain::PresenceThresholds,
+    direct: Option<&DeviceDirectState>,
     direct_links: Vec<DirectLinkStatus>,
     diagnostics: Option<NetworkDiagnostics>,
 ) -> DeviceView {
     let presence = evaluate_presence(d, now, thresholds);
+    let observed_endpoint = direct
+        .and_then(|s| s.observed_endpoint())
+        .map(|(ip, port)| format!("{ip}:{port}"));
+    let public_endpoint = direct
+        .and_then(|s| s.public_endpoint())
+        .map(|c| format!("{}:{}", c.ip, c.port));
     DeviceView {
         id: d.id.to_string(),
         network_id: d.network_id.to_string(),
@@ -2656,6 +2669,8 @@ fn to_device_view(
         presence_source: presence.source.as_str().to_string(),
         dataplane_evidence: d.dataplane_evidence.clone(),
         direct_links,
+        observed_endpoint,
+        public_endpoint,
         diagnostics,
     }
 }
