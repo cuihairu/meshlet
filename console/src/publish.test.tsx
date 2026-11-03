@@ -25,6 +25,8 @@ const device: api.Device = {
   approved_at: '2026-01-01T00:00:00Z',
   direct_links: [],
   diagnostics: null,
+  observed_endpoint: null,
+  public_endpoint: null,
 };
 
 const published: api.PublishForward = {

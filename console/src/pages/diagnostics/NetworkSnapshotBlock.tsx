@@ -38,6 +38,22 @@ export function NetworkSnapshotBlock({ networkId }: { networkId: string }) {
                 ) : null}
               </h3>
 
+              {/* P2P-⑤: hub-observed endpoints for this device (node drill-down). */}
+              {device.observed_endpoint || device.public_endpoint ? (
+                <p className="muted mono snapshot-endpoints">
+                  {[
+                    device.observed_endpoint
+                      ? t('devices.endpointObserved', { ep: device.observed_endpoint })
+                      : null,
+                    device.public_endpoint
+                      ? t('devices.endpointPublic', { ep: device.public_endpoint })
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+              ) : null}
+
               <h4>{t('diagnostics.snapshotsRoutes')}</h4>
               {snap.route_table.length === 0 ? (
                 <p className="muted">{t('diagnostics.snapshotsEmpty')}</p>

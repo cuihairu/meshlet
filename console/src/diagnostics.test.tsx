@@ -20,6 +20,8 @@ const device = (over: Partial<api.Device>): api.Device => ({
   approved_at: '2026-01-01T00:00:00Z',
   direct_links: [],
   diagnostics: null,
+  observed_endpoint: null,
+  public_endpoint: null,
   ...over,
 });
 
@@ -111,5 +113,19 @@ describe('NetworkSnapshotBlock', () => {
     vi.spyOn(api.api, 'listDevices').mockResolvedValue([device({ diagnostics: null })]);
     render(<NetworkSnapshotBlock networkId="net-1" />);
     expect(await screen.findByText(/no device reported a network snapshot/)).toBeTruthy();
+  });
+
+  it('renders hub-observed endpoints under the device head (P2P-⑤)', async () => {
+    vi.spyOn(api.api, 'listDevices').mockResolvedValue([
+      device({
+        diagnostics: snap,
+        observed_endpoint: '203.0.113.7:51820',
+        public_endpoint: '203.0.113.7:51820',
+      }),
+    ]);
+    render(<NetworkSnapshotBlock networkId="net-1" />);
+
+    expect(await screen.findByText(/observed 203\.0\.113\.7:51820/)).toBeTruthy();
+    expect(screen.getByText(/public 203\.0\.113\.7:51820/)).toBeTruthy();
   });
 });

@@ -19,6 +19,9 @@ const hub: api.Device = {
   approved_at: '2026-01-01T00:00:00Z',
   direct_links: [],
   diagnostics: null,
+  // P2P-⑤: hub 公网观测该设备 → observed 与 public 同值。
+  observed_endpoint: '203.0.113.7:51820',
+  public_endpoint: '203.0.113.7:51820',
 };
 
 const edge: api.Device = {
@@ -60,6 +63,9 @@ const edge: api.Device = {
     },
   ],
   diagnostics: null,
+  // P2P-⑤: hub 同内网观测 → observed 保留，public 缺。
+  observed_endpoint: '192.168.1.11:51820',
+  public_endpoint: null,
 };
 
 afterEach(() => {
@@ -90,5 +96,17 @@ describe('DevicesSection direct links', () => {
     expect(screen.getByText(/111B↑ 2\.0K↓/)).toBeTruthy();
     // pending 对端无端点/流量 → 「暂无端点或流量」占位。
     expect(screen.getByText(/no endpoint or traffic yet/)).toBeTruthy();
+  });
+
+  it('renders hub-observed and public endpoints per device (P2P-⑤)', async () => {
+    vi.spyOn(api.api, 'listDevices').mockResolvedValue([edge, hub]);
+    render(<DevicesSection networkId="net-1" />);
+
+    // hub 行：观测与公网同值（公网观测）。
+    expect(await screen.findByText(/observed 203\.0\.113\.7:51820/)).toBeTruthy();
+    expect(screen.getByText(/public 203\.0\.113\.7:51820/)).toBeTruthy();
+    // edge 行：同内网观测 → 有 observed、无 public（不标公网误导打洞）。
+    expect(screen.getByText(/observed 192\.168\.1\.11:51820/)).toBeTruthy();
+    expect(screen.queryByText(/public 192\.168\.1\.11:51820/)).toBeNull();
   });
 });

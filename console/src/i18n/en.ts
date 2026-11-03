@@ -196,6 +196,11 @@ export const en = {
   'devices.directAge': 'last direct handshake {secs}s ago',
   'devices.directAgeUnknown': 'no direct handshake yet',
   'devices.directDetailNone': 'no endpoint or traffic yet',
+  'devices.colEndpoints': 'Endpoints',
+  'devices.endpointsTitle': 'hub-observed and public endpoints (P2P-⑤)',
+  'devices.endpointObserved': 'observed {ep}',
+  'devices.endpointPublic': 'public {ep}',
+  'devices.endpointsNone': 'no observed endpoints',
 
   'tasks.title': 'Task queue',
   'tasks.none': 'No tasks yet.',

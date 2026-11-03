@@ -167,6 +167,36 @@ export function DevicesSection({
       },
     },
     {
+      // P2P-⑤：hub 观测的源端点（原始观测，不做私网过滤）与公网候选端点。
+      // 两者都由服务端从心跳源地址 + agent 上报的 wg 监听端口合成。
+      title: t('devices.colEndpoints'),
+      key: 'endpoints',
+      render: (_, d) => {
+        const obs = d.observed_endpoint;
+        const pub = d.public_endpoint;
+        if (!obs && !pub) {
+          return (
+            <span className="muted" title={t('devices.endpointsTitle')}>
+              {t('devices.endpointsNone')}
+            </span>
+          );
+        }
+        const rows = [
+          obs ? { cls: 'observed', label: t('devices.endpointObserved', { ep: obs }), value: obs } : null,
+          pub ? { cls: 'public', label: t('devices.endpointPublic', { ep: pub }), value: pub } : null,
+        ].filter(Boolean) as { cls: string; label: string; value: string }[];
+        return (
+          <div className="endpoint-cell" title={t('devices.endpointsTitle')}>
+            {rows.map((r) => (
+              <div key={r.cls} className={`muted mono endpoint-${r.cls}`}>
+                {r.label}
+              </div>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
       title: t('devices.colFingerprint'),
       key: 'fingerprint',
       render: (_, d) => <code className="fingerprint">{d.fingerprint.slice(0, 16)}…</code>,

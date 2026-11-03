@@ -129,6 +129,10 @@ export interface Device {
   direct_links: DirectLink[];
   /** R-DIAG network diagnostics snapshots (routes/interfaces/wg); null = none reported. */
   diagnostics: NetworkDiagnostics | null;
+  /** Hub-observed source endpoint `observed_ip:listen_port`; null = no heartbeat observed or agent never reported its port. */
+  observed_endpoint: string | null;
+  /** Public candidate endpoint (present only when the observed address is not private); null = no observation / same LAN. */
+  public_endpoint: string | null;
 }
 
 export interface InviteCreated {

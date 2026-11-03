@@ -194,6 +194,11 @@ export const zh: Dict = {
   'devices.directAge': '最近直连握手 {secs} 秒前',
   'devices.directAgeUnknown': '尚无直连握手',
   'devices.directDetailNone': '暂无端点或流量',
+  'devices.colEndpoints': '端点',
+  'devices.endpointsTitle': 'hub 观测与公网端点（P2P-⑤）',
+  'devices.endpointObserved': '观测 {ep}',
+  'devices.endpointPublic': '公网 {ep}',
+  'devices.endpointsNone': '无观测端点',
 
   'tasks.title': '任务队列',
   'tasks.none': '暂无任务。',
