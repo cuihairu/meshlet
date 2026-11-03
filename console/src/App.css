@@ -501,4 +501,31 @@ td code, .token-box code { border: none; background: transparent; }
   .network-picker { min-width: 0; flex: 1; }
   .topbar { flex-wrap: wrap; }
   .user { font-size: 0.8125rem; }
+
+  /* Touch targets: mobile needs ≥44px (WCAG 2.5.5 best practice; 24px is the
+     hard floor). antd's compact size-small controls default to ~32px, so grow
+     buttons, inputs, selects and table action cells on narrow screens. */
+  .ant-btn {
+    min-height: 44px;
+    padding-inline: var(--space-4);
+  }
+  .ant-btn-sm {
+    min-height: 44px;
+    padding-inline: var(--space-4);
+    font-size: 0.9rem;
+  }
+  .ant-input,
+  .ant-input-affix-wrapper,
+  .ant-select-selector {
+    min-height: 44px;
+  }
+  .ant-table-tbody .ant-btn {
+    min-height: 44px;
+  }
+  .ant-table-cell {
+    padding-block: var(--space-2) !important;
+  }
+  .direct-peer {
+    padding-block: var(--space-2);
+  }
 }
