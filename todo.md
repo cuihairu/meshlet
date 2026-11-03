@@ -282,3 +282,13 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
 ## 漏洞扫描遗留（2026-11-03 全舰队扫描，源 scratch/vuln-scan-*.md）
 
 - [ ] VULN-MESHLET-001 [BLOCKED·上游无修复·中危 5.9·RUSTSEC-2023-0071] rsa 0.9.10（sqlx-mysql 引入）：patched 为空，等上游发布或换库；不勾，验收：上游出 patched 或换库后 cargo audit 该 ID 清零
+
+## 任务分配与确认通道（用户令 2026-11-03：meshlet 组网已通，任务分配/确认交互不自然）
+
+> 定位：把控制面已有的「配置下发+应用回执」模式泛化为**通用任务通道**，让多机并发开发（或任何运维任务）有自然的「派→收→跑→报→人确认」闭环，替代人肉 SSH。与 §14 通用任务系统同源，落地为最小闭环先行。
+
+- [ ] `MT-001 [P1]` 任务模型与状态机：`Task{id(uuid/幂等键), target_node, payload(cmd/workdir/timeout), state: assigned→acked→running→done|failed, retry_limit, result_ref}`；复用 §14 F-1602 状态模型与审计要求。验收：状态机单元测试。
+- [ ] `MT-002 [P1]` 下发与回执：server 经既有配置下发通道派任务（task id 为幂等键，断线重连补派不重复执行）；agent 收到即回 **ack**，运行中心跳，结束回传 exit code + 日志尾部。验收：断线补派幂等集成测试（对齐 F-2030 流量补报模式）。
+- [ ] `MT-003 [P1]` 用户确认交互：console 节点页任务队列面板（assigned/running/done 分列、一键「确认完成/驳回重跑」）+ CLI `meshlet task assign/ls/confirm/retry`。**确认是用户侧动作**，agent 不得自判 done。验收：面板+CLI 各一交互测试。
+- [ ] `MT-004 [P2]` 节点侧通知：任务到达时 agent 托盘气泡（复用 tray 模块）+ 点击打开该任务详情。验收：托盘通知触发测试。
+- [ ] `MT-005 [P2]` 稳定性语义：任务超时自动回收重派、重试上限、每任务独立 worktree/容器隔离、按节点标签（role/capability）路由派单。验收：超时回收与标签路由单测。
