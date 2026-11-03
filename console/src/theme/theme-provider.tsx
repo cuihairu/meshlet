@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { ThemeContext, type Theme } from './theme-context';
+import { applyCssTokens } from './tokens';
 
 const STORAGE_KEY = 'meshlet-theme';
 
@@ -15,9 +16,11 @@ function initialTheme(): Theme {
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(initialTheme);
 
-  // Drive the CSS variable set: html[data-theme='light'] overrides the tokens.
-  useEffect(() => {
+  // Apply the token CSS variables before paint so there is no theme flash;
+  // applyCssTokens is the single source of truth for the color values.
+  useLayoutEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+    applyCssTokens(theme);
   }, [theme]);
 
   const setTheme = useCallback((next: Theme) => {

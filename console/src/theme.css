@@ -1,37 +1,15 @@
 /* ============================================================================
-   meshlet console — design tokens (single source of truth)
-   Central color / spacing / type scale. Component rules live in App.css and
-   consume these custom properties. Brand accent stays the green from 918542b
-   (#22c55e); status-pill styles are load-bearing and never renamed.
+   meshlet console — design tokens
+   The color / type-scale values are the single source of truth in
+   theme/tokens.ts; ThemeProvider injects them as CSS custom properties on
+   <html>. This file only holds the structural scale that is NOT duplicated in
+   the antd theme: fonts, spacing, shadows and color-scheme. Keep the two in
+   sync by editing theme/tokens.ts, never hardcoding colors here again.
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
 
 :root {
-  color-scheme: dark;
-
-  /* surfaces */
-  --bg: #0f172a;
-  --surface: #1e293b;
-  --surface-2: #272f42;
-  --border: #334155;
-  --border-strong: #475569;
-
-  /* text */
-  --text: #e2e8f0;
-  --text-strong: #f8fafc;
-  --muted-c: #94a3b8;
-
-  /* brand + semantics (AA on their fills) */
-  --accent: #22c55e;
-  --accent-rgb: 34 197 94;
-  --accent-strong: #4ade80;
-  --on-accent: #0f172a;
-  --info: #60a5fa;
-  --warn: #f59e0b;
-  --danger: #f87171;
-  --danger-strong: #ef4444;
-
   /* type */
   --font: 'Fira Sans', Inter, 'Helvetica Neue', 'Segoe UI', system-ui,
     -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -51,32 +29,4 @@
 
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.35);
-}
-
-/* Light palette — same design direction, WCAG-compliant on light fills.
-   Applied via html[data-theme='light'] (set by ThemeProvider). */
-html[data-theme='light'] {
-  color-scheme: light;
-
-  --bg: #ffffff;
-  --surface: #f8fafc;
-  --surface-2: #eef2f7;
-  --border: #cbd5e1;
-  --border-strong: #94a3b8;
-
-  --text: #1e293b;
-  --text-strong: #0f172a;
-  --muted-c: #475569;
-
-  --accent: #16a34a;
-  --accent-rgb: 22 163 74;
-  --accent-strong: #15803d;
-  --on-accent: #ffffff;
-  --info: #2563eb;
-  --warn: #b45309;
-  --danger: #dc2626;
-  --danger-strong: #dc2626;
-
-  --shadow-1: 0 1px 2px rgb(15 23 42 / 0.08);
-  --shadow-2: 0 8px 24px rgb(15 23 42 / 0.1);
 }
