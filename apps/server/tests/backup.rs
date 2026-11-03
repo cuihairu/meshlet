@@ -361,11 +361,11 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
         c.pool.close().await;
     }
 
-    // 备份文件独立可打开：25 表 + 13 个迁移齐全；内容停留在备份时刻
+    // 备份文件独立可打开：26 表 + 15 个迁移齐全；内容停留在备份时刻
     // （路由 1 条、route_seq=1），不随活动库后续变更回写。
     let (tables, migrations, routes, seq) = inspect_backup(&backup_path).await;
-    assert_eq!(tables, 25, "schema complete in backup");
-    assert_eq!(migrations, 14, "migrations 001-014 recorded in backup");
+    assert_eq!(tables, 26, "schema complete in backup");
+    assert_eq!(migrations, 15, "migrations 001-015 recorded in backup");
     assert_eq!(routes, 1, "backup frozen at snapshot moment");
     assert_eq!(seq.as_deref(), Some("1"));
 
@@ -1062,6 +1062,12 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .execute(&pool)
         .await
         .unwrap();
+    // 015_tasks：v8 快照没有 tasks 表，恢复到 v8 必须回退到 v8 形状，
+    // 否则重跑 015 会撞「table tasks already exists」。
+    sqlx::query("DROP TABLE tasks")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 9")
         .execute(&pool)
         .await
@@ -1093,7 +1099,7 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
     let default_segments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments")
         .fetch_one(&pool)
         .await

@@ -1,6 +1,6 @@
 # migrations
 
-SQLx migrations 落库目录。当前版本：`014_user_totp.sql`。
+SQLx migrations 落库目录。当前版本：`015_tasks.sql`。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -18,6 +18,7 @@ SQLx migrations 落库目录。当前版本：`014_user_totp.sql`。
 | 012_publish | R-06 服务发布：`publish_forwards`、`publish_http_routes`、`publish_probes`、`publish_dns_records`（四类期望配置对象）+ `publish_probe_reports`（探针健康镜像，每探针一条） |
 | 013_publish_tls_passthrough | M1 更名：`publish_http_routes.tls_termination` → `tls_passthrough`（该列从来是 SNI 嗅探 + 字节直通，不做 TLS 终结；仅改列名，语义与取值不变） |
 | 014_user_totp | 控制台 TOTP 二次认证：`users` 增 `totp_secret`（base32，服务端唯一持有）与 `totp_enabled`（0/1，激活后登录需第二步） |
+| 015_tasks | MT-002 通用任务通道：`tasks`（id 幂等键 / 目标设备 / cmd+workdir+timeout / 状态 / retry_limit / result_ref / exit_code / log_tail / 时间戳）+ `idx_tasks_target_state` |
 
 ## 应用方式
 

@@ -30,6 +30,7 @@ pub mod revision;
 pub mod segment;
 pub mod service;
 pub mod store;
+pub mod task;
 pub mod telemetry;
 
 use axum::extract::State;
@@ -940,6 +941,7 @@ pub fn router(state: SharedAppState) -> Router {
         .merge(metrics::routes())
         .merge(revision::routes())
         .merge(publish::routes())
+        .merge(task::console_routes())
         .merge(segment::routes())
         .route("/api/v1/system/status", get(status_handler))
         .route("/api/v1/update-manifest", get(update_manifest_handler))
@@ -1040,6 +1042,13 @@ pub fn router(state: SharedAppState) -> Router {
         .route(
             "/api/v1/agent/device/peers/endpoints",
             get(agent::agent_peers_endpoints_handler),
+        )
+        // MT-002 任务通道：agent 侧拉取/确认/回执（AuthorizedAgent 认证）。
+        .route("/api/v1/agent/tasks/pending", get(task::pending_handler))
+        .route("/api/v1/agent/tasks/{id}/ack", post(task::ack_handler))
+        .route(
+            "/api/v1/agent/tasks/{id}/result",
+            post(task::result_handler),
         )
         .route(
             "/api/v1/networks/{network_id}/peers/endpoints",

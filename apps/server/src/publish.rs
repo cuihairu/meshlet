@@ -447,7 +447,7 @@ fn to_dns_record_view(
 // ---------------------------------------------------------------------------
 
 /// 设备校验与 create_route 同口径：属于本网络且 Active。
-fn device_in_network(
+pub(crate) fn device_in_network(
     state: &MeshState,
     network_id: &str,
     device_id: &str,

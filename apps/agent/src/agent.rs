@@ -66,6 +66,11 @@ pub struct Agent {
     direct_ledger: std::path::PathBuf,
     /// 上次直连探测时刻（30s 节流；`None` = 未探测过，首轮即探）。
     last_direct_probe: Option<Instant>,
+    /// MT-002 任务通道：已执行任务账本（`{state_dir}/tasks.json`，断线补派
+    /// 据此补报、绝不重跑）。
+    task_ledger: crate::tasks::TaskLedger,
+    /// 任务账本持久化文件路径。
+    task_ledger_path: std::path::PathBuf,
 }
 
 /// 发布运行时（R-06）：一个单 worker 的 tokio runtime 承载
@@ -164,6 +169,8 @@ impl Agent {
             direct_ledger: direct_ledger_path(&config.state_dir),
             direct: DirectManager::load(&direct_ledger_path(&config.state_dir)),
             last_direct_probe: None,
+            task_ledger_path: task_ledger_path(&config.state_dir),
+            task_ledger: crate::tasks::TaskLedger::load(&task_ledger_path(&config.state_dir)),
         }
     }
 
@@ -227,6 +234,9 @@ impl Agent {
         // §12：心跳（带本机直连候选）之后探直连——服务端先看到本机端点，
         // 下一轮拉候选时数据已就位；直连失败只记日志，不影响数据面循环。
         self.reconcile_direct(&plan);
+        // MT-002：任务通道（下发与回执）与数据面循环相互独立——任务失败只
+        // 记日志，绝不打断隧道/路由/心跳；拉取失败同样只记日志，下轮重试。
+        self.process_tasks();
         // 托盘态：reason × 控制通道 × 隧道握手（映射依据见 [`crate::tray`]）。
         // 虚拟 IP 与 `info` 命令同一链路：取计划隧道地址（`plan.tunnel.address`）。
         self.publish_tray(
@@ -256,6 +266,19 @@ impl Agent {
         }
         self.pending_receipts
             .push_back(PendingReceipt { plan, error });
+    }
+
+    /// MT-002 任务通道：拉取本设备待办并逐个 ack→执行→回执。失败只记日志
+    /// （下轮重试），绝不打断数据面循环。
+    fn process_tasks(&mut self) {
+        if let Err(e) = crate::tasks::process_pending(
+            &self.server_url,
+            &self.token,
+            &mut self.task_ledger,
+            &self.task_ledger_path,
+        ) {
+            tracing::warn!(error = %e, "task processing deferred to next tick");
+        }
     }
 
     fn maybe_self_update(&mut self) {
@@ -894,6 +917,11 @@ impl Agent {
 /// 直连 keep set 持久化路径（与 `applied.json` 同目录；§12 重启恢复）。
 fn direct_ledger_path(state_dir: &str) -> std::path::PathBuf {
     Path::new(state_dir).join("direct.json")
+}
+
+/// MT-002 任务账本路径（`{state_dir}/tasks.json`）。
+fn task_ledger_path(state_dir: &str) -> std::path::PathBuf {
+    Path::new(state_dir).join("tasks.json")
 }
 
 /// §12：本设备可路由网段 = hub peer 的 AllowedIPs 中**包含本设备 overlay

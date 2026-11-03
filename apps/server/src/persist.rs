@@ -31,7 +31,7 @@ use meshlet_domain::{
     SegmentId, TranslationMode,
 };
 use sqlx::sqlite::SqliteConnection;
-use sqlx::{ConnectOptions, Executor, SqlitePool};
+use sqlx::{ConnectOptions, Executor, Row, SqlitePool};
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::time::Duration;
@@ -1114,6 +1114,134 @@ pub async fn save_invite(pool: &SqlitePool, i: &Invite) -> Result<(), sqlx::Erro
     Ok(())
 }
 
+/// 任务记录原子落库（assign / ack / result 共用）：`INSERT ... ON CONFLICT`
+/// 幂等刷新状态列；`task_seq` 仅在生成过新序列时落 `mesh_meta`；审计「不留痕
+/// 不放行」同纪律——审计写失败即整体回滚（500，可重试）。
+pub async fn commit_task(
+    pool: &SqlitePool,
+    r: &crate::task::TaskRecord,
+    task_seq: Option<u64>,
+    audit: Option<&AuditDraft<'_>>,
+) -> Result<(), sqlx::Error> {
+    let (exit_code, log_tail) = r
+        .result
+        .as_ref()
+        .map(|res| (Some(res.exit_code), Some(res.log_tail.as_str())))
+        .unwrap_or((None, None));
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO tasks
+           (id, network_id, target_device_id, cmd, workdir, timeout_secs,
+            state, retry_limit, result_ref, exit_code, log_tail, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+           state = excluded.state,
+           result_ref = excluded.result_ref,
+           exit_code = excluded.exit_code,
+           log_tail = excluded.log_tail,
+           updated_at = excluded.updated_at",
+    )
+    .bind(r.task.id.to_string())
+    .bind(r.network_id.to_string())
+    .bind(r.task.target_node.to_string())
+    .bind(&r.task.payload.cmd)
+    .bind(&r.task.payload.workdir)
+    .bind(r.task.payload.timeout_secs.map(|s| s as i64))
+    .bind(r.task.state.as_str())
+    .bind(r.task.retry_limit as i64)
+    .bind(r.result_ref())
+    .bind(exit_code)
+    .bind(log_tail)
+    .bind(&r.created_at)
+    .bind(&r.updated_at)
+    .execute(&mut *tx)
+    .await?;
+    if let Some(seq) = task_seq {
+        save_seq_tx(&mut tx, "task_seq", seq).await?;
+    }
+    if let Some(audit) = audit {
+        insert_audit_tx(&mut tx, audit).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 从 DB 恢复任务队列（MT-002 重启恢复）：`tasks` 行 + `mesh_meta.task_seq`。
+pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, network_id, target_device_id, cmd, workdir, timeout_secs,
+                state, retry_limit, result_ref, exit_code, log_tail,
+                created_at, updated_at
+         FROM tasks ORDER BY created_at",
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        let id: String = row.get("id");
+        let network_id: String = row.get("network_id");
+        let target: String = row.get("target_device_id");
+        let cmd: String = row.get("cmd");
+        let workdir: Option<String> = row.get("workdir");
+        let timeout_secs: Option<i64> = row.get("timeout_secs");
+        let state_str: String = row.get("state");
+        let retry_limit: i64 = row.get("retry_limit");
+        let result_ref: Option<String> = row.get("result_ref");
+        let exit_code: Option<i64> = row.get("exit_code");
+        let log_tail: Option<String> = row.get("log_tail");
+        let created_at: String = row.get("created_at");
+        let updated_at: String = row.get("updated_at");
+
+        let task_state = match state_str.as_str() {
+            "assigned" => meshlet_domain::TaskState::Assigned,
+            "acked" => meshlet_domain::TaskState::Acked,
+            "running" => meshlet_domain::TaskState::Running,
+            "done" => meshlet_domain::TaskState::Done,
+            "failed" => meshlet_domain::TaskState::Failed,
+            _ => continue, // 未知状态行（不应发生）；跳过避免启动失败
+        };
+        let mut task = meshlet_domain::Task::new(
+            meshlet_domain::TaskId(id.clone()),
+            meshlet_domain::DeviceId(target),
+            meshlet_domain::TaskPayload {
+                cmd,
+                workdir,
+                timeout_secs: timeout_secs.map(|s| s as u64),
+            },
+            retry_limit as u32,
+        );
+        task.state = task_state;
+        if let Some(r) = result_ref {
+            task.record_result(r);
+        }
+        let result = match (exit_code, log_tail) {
+            (Some(code), Some(tail)) => Some(crate::task::TaskResult {
+                exit_code: code as i32,
+                log_tail: tail,
+            }),
+            _ => None,
+        };
+        state.tasks.insert(
+            id,
+            crate::task::TaskRecord {
+                task,
+                network_id: meshlet_domain::NetworkId(network_id),
+                result,
+                created_at,
+                updated_at,
+            },
+        );
+    }
+    // 任务 id 序列（`task-{seq}`）从 mesh_meta 恢复，重启不归零、不重号。
+    if let Ok(seq) =
+        sqlx::query_scalar::<_, i64>("SELECT value FROM mesh_meta WHERE key = 'task_seq'")
+            .fetch_one(pool)
+            .await
+    {
+        state.set_task_seq(seq as u64);
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 启动重建（§17.3）
 // ---------------------------------------------------------------------------
@@ -1575,6 +1703,8 @@ pub async fn load(
 
     // 服务发布对象（R-06）：四张表 + mesh_meta.publish_seq + 健康证据镜像。
     crate::publish::persist::load(pool, &mut state).await?;
+    // 任务队列（MT-002）：恢复任务 + mesh_meta.task_seq（断线补派不丢、不重复）。
+    load_tasks(pool, &mut state).await?;
 
     Ok(BootState {
         summary: MeshStatePersistedView {

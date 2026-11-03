@@ -24,6 +24,7 @@ pub mod direct;
 pub mod reconcile;
 pub mod self_update;
 pub mod server;
+pub mod tasks;
 pub mod tray;
 
 pub use agent::{read_private_key, Agent};

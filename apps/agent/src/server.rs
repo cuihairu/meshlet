@@ -48,6 +48,14 @@ pub fn fetch_peer_endpoints(server_url: &str, token: &str) -> Result<Vec<PeerEnd
 /// Public control-plane response reader for endpoints that deliberately have
 /// no device bearer credential (for example the release update manifest).
 pub(crate) fn read_public(response: Result<ureq::Response, ureq::Error>) -> Result<String, String> {
+    read_response(response)
+}
+
+/// 响应读取（非 2xx → 分类错误）：agent 侧 HTTP 端点共用，含任务通道
+/// （`crate::tasks`）。
+pub(crate) fn read_response(
+    response: Result<ureq::Response, ureq::Error>,
+) -> Result<String, String> {
     read(response)
 }
 

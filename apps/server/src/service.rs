@@ -509,6 +509,12 @@ pub struct MeshState {
     /// R-DIAG 网络诊断三快照（**内存态**，同 `direct_states` 纪律）：每轮心跳
     /// 重报，不落库——持久化只添陈旧风险。`None` 上报（采集失败）即移除。
     pub(crate) diagnostics: BTreeMap<DeviceId, NetworkDiagnostics>,
+    /// 任务（MT-002：派发→ack→运行→结果回执，id 为幂等键）。与配置修订同
+    /// 纪律落库（重启恢复任务队列，断线补派不丢、不重复）。
+    pub(crate) tasks: HashMap<String, crate::task::TaskRecord>,
+    /// 任务 id 序列（`task-{seq}`，持久化到 `mesh_meta.task_seq`，已删 id
+    /// 不复用；显式幂等 id 不占序列）。
+    task_seq: u64,
 }
 
 impl MeshState {
@@ -533,6 +539,8 @@ impl MeshState {
             registration_seq: 0,
             direct_states: BTreeMap::new(),
             diagnostics: BTreeMap::new(),
+            tasks: HashMap::new(),
+            task_seq: 0,
         }
     }
 
@@ -574,6 +582,15 @@ impl MeshState {
     /// 当前发布对象 id 序列（持久化到 `mesh_meta`，重启不归零、不重号）。
     pub(crate) fn publish_seq(&self) -> u64 {
         self.publish_seq
+    }
+
+    /// 当前任务 id 序列（持久化到 `mesh_meta.task_seq`，重启不归零、不重号）。
+    pub(crate) fn task_seq(&self) -> u64 {
+        self.task_seq
+    }
+
+    pub(crate) fn set_task_seq(&mut self, seq: u64) {
+        self.task_seq = seq;
     }
 
     pub(crate) fn set_publish_seq(&mut self, seq: u64) {
