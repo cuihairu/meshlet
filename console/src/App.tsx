@@ -194,14 +194,18 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
   };
 
   return (
-    <Form className="auth" layout="vertical" onFinish={submit}>
-      <h1>
-        {step === 'code'
-          ? t('auth.verifyCode')
-          : mode === 'login'
-            ? t('auth.signIn')
-            : t('auth.createFirstAdmin')}
-      </h1>
+    <div className="auth-wrap">
+      <span className="brand auth-brand" aria-hidden="true">
+        meshlet
+      </span>
+      <Form className="auth" layout="vertical" onFinish={submit}>
+        <h1>
+          {step === 'code'
+            ? t('auth.verifyCode')
+            : mode === 'login'
+              ? t('auth.signIn')
+              : t('auth.createFirstAdmin')}
+        </h1>
       {step === 'code' && <p className="muted">{t('auth.codeHint')}</p>}
       {mode === 'bootstrap' && step === 'credentials' && (
         <p className="muted">{t('auth.noAdminHint')}</p>
@@ -264,7 +268,8 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
             ? t('auth.firstRun')
             : t('auth.backToSignIn')}
       </Button>
-    </Form>
+      </Form>
+    </div>
   );
 }
 

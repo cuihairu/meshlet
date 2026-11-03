@@ -153,9 +153,27 @@ a { color: var(--info); }
 
 /* ----------------------------------------------------------------- auth */
 
+.auth-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.auth-wrap .auth-brand {
+  font-size: 1.6rem;
+}
+
+.auth-wrap .auth-brand::before {
+  width: 14px;
+  height: 14px;
+  box-shadow: 0 0 18px rgb(var(--accent-rgb) / 0.35);
+}
+
 .auth {
   max-width: 24rem;
-  margin: clamp(2rem, 12vh, 6rem) auto 0;
+  width: 100%;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
