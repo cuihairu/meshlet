@@ -4,8 +4,9 @@ import { useNetwork } from '../../network-context';
 import { AliasesSection } from './AliasesSection';
 import { DevicesSection } from './DevicesSection';
 import { HostForwardsSection } from './HostForwardsSection';
+import { TasksSection } from './TasksSection';
 
-/** /devices — enrolled devices, alias mappings, host forwarding. */
+/** /devices — enrolled devices, alias mappings, host forwarding, task queue. */
 export function DevicesPage() {
   const { selectedNetwork, refresh } = useNetwork();
   const { t } = useLanguage();
@@ -17,6 +18,7 @@ export function DevicesPage() {
       <DevicesSection networkId={id} onChanged={refresh} />
       <AliasesSection networkId={id} onChanged={refresh} />
       <HostForwardsSection networkId={id} onChanged={refresh} />
+      <TasksSection networkId={id} onChanged={refresh} />
     </div>
   );
 }

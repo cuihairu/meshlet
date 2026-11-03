@@ -282,6 +282,39 @@ export interface HostForward {
   apply_status: string;
 }
 
+/** MT-002/MT-003 task channel: server dispatch → agent ack/run/report; user confirm/retry. */
+export interface Task {
+  id: string;
+  network_id: string;
+  target_device_id: string;
+  cmd: string;
+  workdir: string | null;
+  timeout_secs: number | null;
+  /** assigned | acked | running | done | failed. */
+  state: string;
+  retry_limit: number;
+  result_ref: string | null;
+  exit_code: number | null;
+  log_tail: string | null;
+  /** User-side confirmation timestamp; the agent never sets this ("agent 不得自判 done"). */
+  confirmed_at: string | null;
+  /** User-side rejection timestamp → a rerun generation was dispatched. */
+  rejected_at: string | null;
+  /** Parent task id for rerun generations (`{root}-r{n}`); null for the first generation. */
+  parent_task_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskAssignInput {
+  target_device_id: string;
+  cmd: string;
+  workdir?: string;
+  timeout_secs?: number;
+  /** Idempotency key; omitted → server generates `task-{seq}`. */
+  id?: string;
+}
+
 /** One of the 13 network diagnostics checks (§12.7). */
 export interface DiagnosticCheck {
   id: string;
@@ -470,6 +503,17 @@ export const api = {
     request<Network>('POST', '/networks', { name, overlay_cidr }),
   listDevices: (networkId: string) =>
     request<Device[]>('GET', `/networks/${networkId}/devices`),
+  // --- MT-002/MT-003 task queue (dispatch + user confirm/retry) ---
+  listTasks: (networkId: string) =>
+    request<Task[]>('GET', `/networks/${networkId}/tasks`),
+  createTask: (networkId: string, input: TaskAssignInput) =>
+    request<Task>('POST', `/networks/${networkId}/tasks`, input),
+  /** User-side confirmation: only a `done` task can be confirmed (idempotent). */
+  confirmTask: (networkId: string, taskId: string) =>
+    request<Task>('POST', `/networks/${networkId}/tasks/${taskId}/confirm`, {}),
+  /** User-side rejection → server dispatches a rerun generation (`{root}-r{n}`). */
+  retryTask: (networkId: string, taskId: string) =>
+    request<Task>('POST', `/networks/${networkId}/tasks/${taskId}/retry`, {}),
   createInvite: (networkId: string, maxUses: number) =>
     request<InviteCreated>('POST', `/networks/${networkId}/invites`, { max_uses: maxUses }),
   revokeInvite: (networkId: string, inviteId: string) =>

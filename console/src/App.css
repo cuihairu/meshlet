@@ -299,6 +299,17 @@ tr.state-unknown td { color: var(--muted-c); }
   font-family: var(--mono, monospace);
 }
 
+/* MT-003 task queue: dispatch row + per-state group tables. */
+.task-dispatch {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.task-group h3 {
+  margin: 16px 0 8px;
+}
+
 /* R-DIAG-2: per-peer direct link block in the devices table — mode tag on
    the first line, raw readings (endpoint · RTT · traffic) on the second. */
 .direct-peer {
