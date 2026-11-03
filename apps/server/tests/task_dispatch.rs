@@ -257,6 +257,47 @@ async fn result(
     (res.status(), res_body(res).await)
 }
 
+/// 控制台列取网络任务。
+async fn task_list(ctx: &Ctx) -> (StatusCode, serde_json::Value) {
+    let res = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/networks/{}/tasks", ctx.network_id))
+                .header("cookie", &ctx.cookie)
+                .header("x-requested-with", "XMLHttpRequest")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    (res.status(), res_body(res).await)
+}
+
+/// 控制台确认完成（`POST .../tasks/{id}/confirm`）。
+async fn confirm(ctx: &Ctx, id: &str) -> (StatusCode, serde_json::Value) {
+    admin(
+        &ctx.app,
+        &ctx.cookie,
+        &format!("/api/v1/networks/{}/tasks/{id}/confirm", ctx.network_id),
+        serde_json::json!({}),
+    )
+    .await
+}
+
+/// 控制台驳回重跑（`POST .../tasks/{id}/retry`）。
+async fn retry(ctx: &Ctx, id: &str) -> (StatusCode, serde_json::Value) {
+    admin(
+        &ctx.app,
+        &ctx.cookie,
+        &format!("/api/v1/networks/{}/tasks/{id}/retry", ctx.network_id),
+        serde_json::json!({}),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn dispatch_lifecycle_and_redispatch_idempotency() {
     let (ctx, device_id, token) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
@@ -386,6 +427,115 @@ async fn dispatch_rejects_unknown_or_inactive_target() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+/// MT-003 用户确认交互：确认是用户侧动作（agent 端点无确认能力），
+/// 确认仅 done 可做且幂等；驳回重跑置 rejected_at 并派发新一代
+/// `{root}-r{n}`（新 id 才能触发 agent 重跑），运行中不可驳回。
+#[tokio::test]
+async fn user_confirm_and_retry_lifecycle() {
+    let (ctx, device_id, token) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+
+    // 1. 派发 → agent 全程 → done。
+    let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
+    assert_eq!(st, StatusCode::CREATED, "{task}");
+    let id = task["id"].as_str().unwrap().to_string();
+    assert_eq!(ack(&ctx.app, &token, &id).await, StatusCode::OK);
+    let (st, done) = result(&ctx.app, &token, &id, 0).await;
+    assert_eq!(st, StatusCode::OK, "{done}");
+    assert_eq!(done["state"], "done");
+
+    // 2. 运行中不可确认：新派任务（assigned）→ confirm 409。
+    let (st, running) = assign(&ctx, &device_id, "echo again", None).await;
+    assert_eq!(st, StatusCode::CREATED, "{running}");
+    let running_id = running["id"].as_str().unwrap().to_string();
+    let (st, body) = confirm(&ctx, &running_id).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+
+    // 3. 确认完成：200，confirmed_at 落，状态仍 done（确认不改执行状态）。
+    let (st, confirmed) = confirm(&ctx, &id).await;
+    assert_eq!(st, StatusCode::OK, "{confirmed}");
+    assert_eq!(confirmed["state"], "done");
+    assert!(confirmed["confirmed_at"].as_str().is_some());
+    assert!(confirmed["rejected_at"].is_null());
+
+    // 4. 重复确认幂等：200，confirmed_at 不变。
+    let (st, again) = confirm(&ctx, &id).await;
+    assert_eq!(st, StatusCode::OK, "{again}");
+    assert_eq!(again["confirmed_at"], confirmed["confirmed_at"]);
+
+    // 5. 驳回重跑：201 新代 `{root}-r1`，原任务置 rejected_at，
+    //    新任务 assigned（agent 会重新拉到 → 重跑）。
+    let (st, rerun) = retry(&ctx, &id).await;
+    assert_eq!(st, StatusCode::CREATED, "{rerun}");
+    let r1 = rerun["id"].as_str().unwrap().to_string();
+    assert_eq!(r1, format!("{id}-r1"));
+    assert_eq!(rerun["state"], "assigned");
+    assert_eq!(rerun["parent_task_id"], id);
+    assert_eq!(rerun["cmd"], "echo hi");
+    let (st, rejected) = confirm(&ctx, &id).await; // 原任务仍未 done 确认态变化不影响
+    assert_eq!(st, StatusCode::OK, "{rejected}");
+    assert!(rejected["rejected_at"].as_str().is_some());
+
+    // 5b. 重入防护：r1 在途（assigned）时再驳回原任务 → 409（防双击重复下发）。
+    let (st, dup) = retry(&ctx, &id).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{dup}");
+
+    // 6. agent 拉到新代（重跑真实下发，与未确认的运行中任务同列）；
+    //    完成后可再次驳回 → `-r2`。
+    let pend = pending(&ctx.app, &token).await;
+    let pend_ids: Vec<&str> = pend
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert!(pend_ids.contains(&r1.as_str()), "{pend}");
+    assert!(pend_ids.contains(&running_id.as_str()), "{pend}");
+    assert_eq!(ack(&ctx.app, &token, &r1).await, StatusCode::OK);
+    let (st, r1done) = result(&ctx.app, &token, &r1, 0).await;
+    assert_eq!(st, StatusCode::OK, "{r1done}");
+    let (st, rerun2) = retry(&ctx, &r1).await;
+    assert_eq!(st, StatusCode::CREATED, "{rerun2}");
+    assert_eq!(rerun2["id"], format!("{id}-r2"));
+    assert_eq!(rerun2["parent_task_id"], r1);
+
+    // 7. 列取：4 条（原任务 + 运行中 + r1 + r2），含确认/驳回/父链字段。
+    let (st, list) = task_list(&ctx).await;
+    assert_eq!(st, StatusCode::OK, "{list}");
+    let arr = list.as_array().unwrap();
+    assert_eq!(arr.len(), 4);
+    let orig = arr.iter().find(|t| t["id"] == id).expect("orig task");
+    assert!(orig["confirmed_at"].as_str().is_some());
+    assert!(orig["rejected_at"].as_str().is_some());
+    let r2 = arr
+        .iter()
+        .find(|t| t["id"] == format!("{id}-r2"))
+        .expect("r2 task");
+    assert_eq!(r2["parent_task_id"], r1);
+    assert!(r2["confirmed_at"].is_null());
+    assert!(r2["rejected_at"].is_null());
+}
+
+/// 列取需认证（未登录 401）。
+#[tokio::test]
+async fn task_list_requires_authentication() {
+    let (ctx, device_id, _token) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+    let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
+    assert_eq!(st, StatusCode::CREATED, "{task}");
+    let res = ctx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/networks/{}/tasks", ctx.network_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

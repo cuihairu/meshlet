@@ -1,6 +1,6 @@
 # migrations
 
-SQLx migrations 落库目录。当前版本：`015_tasks.sql`。
+SQLx migrations 落库目录。当前版本：`016_tasks_confirm.sql`。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -19,6 +19,7 @@ SQLx migrations 落库目录。当前版本：`015_tasks.sql`。
 | 013_publish_tls_passthrough | M1 更名：`publish_http_routes.tls_termination` → `tls_passthrough`（该列从来是 SNI 嗅探 + 字节直通，不做 TLS 终结；仅改列名，语义与取值不变） |
 | 014_user_totp | 控制台 TOTP 二次认证：`users` 增 `totp_secret`（base32，服务端唯一持有）与 `totp_enabled`（0/1，激活后登录需第二步） |
 | 015_tasks | MT-002 通用任务通道：`tasks`（id 幂等键 / 目标设备 / cmd+workdir+timeout / 状态 / retry_limit / result_ref / exit_code / log_tail / 时间戳）+ `idx_tasks_target_state` |
+| 016_tasks_confirm | MT-003 用户确认交互：`tasks` 增 `confirmed_at` / `rejected_at`（用户侧确认/驳回时刻，agent 端点无确认能力）+ `parent_task_id`（重跑新代指向被驳回任务） |
 
 ## 应用方式
 

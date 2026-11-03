@@ -93,6 +93,7 @@ impl From<&ServiceError> for ErrorCategory {
             | ServiceError::SegmentNotFound(_)
             | ServiceError::SegmentGrantNotFound(_)
             | ServiceError::RevisionNotFound(_)
+            | ServiceError::TaskNotFound(_)
             | ServiceError::DiagnosticsNotRun(_)
             | ServiceError::BootstrapTokenNotFound(_)
             | ServiceError::InvalidInviteToken => ErrorCategory::NotFound,

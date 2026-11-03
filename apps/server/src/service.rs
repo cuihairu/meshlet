@@ -352,6 +352,9 @@ pub enum ServiceError {
     SegmentNotFound(String),
     #[error("segment grant {0} not found")]
     SegmentGrantNotFound(String),
+    /// 任务不存在（MT-003 确认/驳回/列取的资源缺失）。
+    #[error("task {0} not found")]
+    TaskNotFound(String),
     /// 诊断从未运行过（§12.7：GET 返回最近一次运行，没有就是没有，不现算
     /// 也不假称有）。消息点名 POST 触发方式。
     #[error("{0}")]
@@ -393,6 +396,7 @@ impl ServiceError {
             | ServiceError::SegmentNotFound(_)
             | ServiceError::SegmentGrantNotFound(_)
             | ServiceError::RevisionNotFound(_)
+            | ServiceError::TaskNotFound(_)
             | ServiceError::DiagnosticsNotRun(_) => {
                 ErrorResponse::new(meshlet_api_types::ErrorCode::NotFound, self.to_string())
             }

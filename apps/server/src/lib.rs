@@ -1081,6 +1081,7 @@ impl IntoResponse for service::ServiceError {
             | service::ServiceError::SegmentNotFound(_)
             | service::ServiceError::SegmentGrantNotFound(_)
             | service::ServiceError::RevisionNotFound(_)
+            | service::ServiceError::TaskNotFound(_)
             | service::ServiceError::DiagnosticsNotRun(_)
             | service::ServiceError::InvalidInviteToken => StatusCode::NOT_FOUND,
             service::ServiceError::InvalidBootstrapToken => StatusCode::UNAUTHORIZED,

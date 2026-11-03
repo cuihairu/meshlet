@@ -1132,13 +1132,17 @@ pub async fn commit_task(
     sqlx::query(
         "INSERT INTO tasks
            (id, network_id, target_device_id, cmd, workdir, timeout_secs,
-            state, retry_limit, result_ref, exit_code, log_tail, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            state, retry_limit, result_ref, exit_code, log_tail,
+            confirmed_at, rejected_at, parent_task_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            state = excluded.state,
            result_ref = excluded.result_ref,
            exit_code = excluded.exit_code,
            log_tail = excluded.log_tail,
+           confirmed_at = excluded.confirmed_at,
+           rejected_at = excluded.rejected_at,
+           parent_task_id = excluded.parent_task_id,
            updated_at = excluded.updated_at",
     )
     .bind(r.task.id.to_string())
@@ -1152,6 +1156,9 @@ pub async fn commit_task(
     .bind(r.result_ref())
     .bind(exit_code)
     .bind(log_tail)
+    .bind(&r.confirmed_at)
+    .bind(&r.rejected_at)
+    .bind(&r.parent_task_id)
     .bind(&r.created_at)
     .bind(&r.updated_at)
     .execute(&mut *tx)
@@ -1171,6 +1178,7 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
     let rows = sqlx::query(
         "SELECT id, network_id, target_device_id, cmd, workdir, timeout_secs,
                 state, retry_limit, result_ref, exit_code, log_tail,
+                confirmed_at, rejected_at, parent_task_id,
                 created_at, updated_at
          FROM tasks ORDER BY created_at",
     )
@@ -1188,6 +1196,9 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
         let result_ref: Option<String> = row.get("result_ref");
         let exit_code: Option<i64> = row.get("exit_code");
         let log_tail: Option<String> = row.get("log_tail");
+        let confirmed_at: Option<String> = row.get("confirmed_at");
+        let rejected_at: Option<String> = row.get("rejected_at");
+        let parent_task_id: Option<String> = row.get("parent_task_id");
         let created_at: String = row.get("created_at");
         let updated_at: String = row.get("updated_at");
 
@@ -1226,6 +1237,9 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
                 task,
                 network_id: meshlet_domain::NetworkId(network_id),
                 result,
+                confirmed_at,
+                rejected_at,
+                parent_task_id,
                 created_at,
                 updated_at,
             },
