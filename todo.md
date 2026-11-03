@@ -227,7 +227,7 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
 
 - [x] CONSOLE-REDESIGN [P1] console 视觉重设计（antd v6 + i18n 英/中 + 深浅主题切换 + 全宽响应式 + 分页）+ dev VPS 部署（新 UI + server 含 2FA migration 014）。验收：build/test/lint 绿、dev 机公网可见新 UI。【4 commit 逐段绿后即推：2a7375c（infra：antd 6.6.8+icons+LanguageProvider/LanguageSwitch/ThemeProvider+ConfigProvider locale/算法，i18n en/zh 字典编译期键对齐+interpolate，i18n.test 7 例，3 既有测试零改动）、2a7375c 同批 access 页迁移、f75391d devices 页、b50fe9a diagnostics 页（PublishSection 4 antd Form+Select，tests 改 combobox 交互+findByText）、948db6e 全宽布局+排版（.app 去 1140px 居中，断点 1024/720，Fira Sans/Code，body 16px/1.6，Tag 状态映射，revisions/devices 等长表分页）。每段 console `pnpm build`+17 测试+lint 绿。dev 部署（2026-10-31）：新 server 二进制+dist 入位（旧物备份 /root/meshlet-backup/2026-10-31/），服务 active、migration 13/14 已应用（users 表 totp_secret/totp_enabled 在），公网 https://meshlet.cuihairu.site/ 200、资产 index-r29h7YCt.js/index-C7qitfh7.css 与本地 dist 一致。无版本号，发布红线未触发。未含 P2P agent 侧（属②③④）】
 
-- [ ] AUDIT-FIX · P2/P3 impeccable 审计待修 8 项（docs/review/2026-10-31-ui-audit-impeccable.md #7-#14）
+- [x] AUDIT-FIX · P2/P3 impeccable 审计待修 8 项（docs/review/2026-10-31-ui-audit-impeccable.md #7-#14）。【8 项全修：每项 console `pnpm build`+`pnpm test`+`pnpm lint` 全绿后单 commit + push（禁攒批、每次 push 前 pull --rebase）。commit：#7 2356fa3（页面 h1+标题层级）、#8 1df7169（NoNetworkSelected i18n）、#9 1f2fbc3（登录品牌标识）、#10 6863f08（网络选择持久化+自动选首个）、#11 5313ef6（Name 列单行省略）、#12 c300722（token 单一事实源 tokens.ts+CSS 变量注入）、#13 9511c16（conflict 卡去 4px 侧边+⚠ 图标）、#14 6276cda（窄屏触控目标≥44px）。验收：console 28 测试全过（新增 network-provider.test.tsx 3 例）、build+lint 绿；审计文档待修清单各条已标修复 commit。P1 #5/#6 按令未动。】
 
 ## meshlet P2P 节点直连（2026-10-31 起，任务书 meshlet-p2p.md；分域层/hub/agent 三层，分批 ①-④）
 

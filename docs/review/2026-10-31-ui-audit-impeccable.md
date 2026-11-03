@@ -70,45 +70,53 @@
 
 ### P2
 
-#### 7. 标题层级从 h3 起跳，无 h1/h2 — **待修**
+#### 7. 标题层级从 h3 起跳，无 h1/h2 — **已修**
+- **修复 commit**：`2356fa3`（每路由页加 `<h1>` 页面标题，区块升为 `<h2>`，子块 h3/h4 连贯）。
 - **现象**：各路由页区块标题直接是 `<h3>`，无页面级 `<h1>`/`<h2>`；屏幕阅读器拿不到文档结构。
 - **定位**：`console/src/pages/devices/DevicesSection.tsx:181`（`<h3>`），`access`/`diagnostics`/`networks` 各区块同。
 - **修复建议**：每路由页加 `<h1>`（路由标题），区块用 `<h2>`，子块保留 h3；层级连贯。
 
-#### 8. `NoNetworkSelected` 硬编码英文，未走 i18n — **待修**
+#### 8. `NoNetworkSelected` 硬编码英文，未走 i18n — **已修**
+- **修复 commit**：`1df7169`（文案提取至 `i18n/en.ts` `shell.noNetworkSelected` + `zh.ts` 对应键，组件走 `useLanguage().t`）。
 - **现象**：死胡同空态文案 "Select a network in the top bar." 硬编码；中文环境显示英文。
 - **定位**：`console/src/components/NoNetworkSelected.tsx`。
 - **修复建议**：提取到 `i18n/en.ts` + `zh.ts`。
 
-#### 9. 登录页无品牌标识 — **待修**
+#### 9. 登录页无品牌标识 — **已修**
+- **修复 commit**：`1f2fbc3`（认证卡上方加 `.brand` 字标 `.auth-brand`，居中排版）。
 - **现象**：未登录时 topbar（含品牌）隐藏，登录卡仅 "Sign in"，无品牌字标；首印象弱。
 - **定位**：`console/src/App.tsx`（auth 状态隐藏 topbar）。
 - **修复建议**：认证卡上方加品牌字标（复用 `.brand` 标记）。
 
-#### 10. 网络选择不持久化、不自动选首个 — **待修**
+#### 10. 网络选择不持久化、不自动选首个 — **已修**
+- **修复 commit**：`6863f08`（`NetworkProvider` 用 `meshlet-network` localStorage 持久化；加载时无有效选中则自动选第一个；删除网络回退首个）。
 - **现象**：4 域中 3 个在没手动选网络时落空态死胡同；刷新即丢。
 - **定位**：`console/src/App.tsx`（network selection state，`theme/network-picker`）。
 - **修复建议**：选中网络 localStorage 持久化 + 加载时自动选第一个。
 
-#### 11. 设备 Name 列换行 — **待修**
+#### 11. 设备 Name 列换行 — **已修**
+- **修复 commit**：`5313ef6`（Name 列 `width:180` + `.cell-ellipsis` 单行省略，完整值 title 悬停）。
 - **现象**：`gateway-1` 折成两行，列过窄。
 - **定位**：`console/src/pages/devices/DevicesSection.tsx:58`（`colName` 列）。
 - **修复建议**：列设 `width` + ellipsis（或 min-width）。
 
-#### 12. antd theme 与 theme.css 双 token 源 — **待修**
+#### 12. antd theme 与 theme.css 双 token 源 — **已修**
+- **修复 commit**：`c300722`（单一事实源 `theme/tokens.ts`；`ThemeProvider` 注入 CSS 变量，`antdThemeConfig` 读同一模块，`theme.css` 仅留结构刻度）。
 - **现象**：`console/src/theme/antd-theme.ts` 重复 `theme.css` 的 token 值，单一事实源被打破；改一处漏另一处。
 - **定位**：`console/src/theme/antd-theme.ts` vs `console/src/theme.css`。
 - **修复建议**：单一来源（TS 模块导出 token → CSS 变量注入，或构建时生成）。
 
 ### P3
 
-#### 13. `.conflict` 卡片左侧 4px 强调边（AI-slop tell）— **待修**
+#### 13. `.conflict` 卡片左侧 4px 强调边（AI-slop tell）— **已修**
+- **修复 commit**：`9511c16`（去掉 `border-left: 4px`，统一 1px 边框，加 `⚠` 图标表达严重度）。
 - **现象**：`border-left: 4px solid var(--danger-strong)` 是检测器的 "side-tab accent border" 信号，AI 设计模板痕迹。
 - **定位**：`console/src/App.css:266`。
 - **修复建议**：统一 1px 边框 + 图标表达严重度。
 - **截图**：`2026-10-31-ui-audit-impeccable/shots/dark-networks-homelab-detail.jpg`（冲突卡片）。
 
-#### 14. 移动端触控目标偏小 — **待修**
+#### 14. 移动端触控目标偏小 — **已修**
+- **修复 commit**：`6276cda`（720px 断点下 antd 按钮/输入/选择/表格操作行 `min-height:44px`，行内 padding 放大）。
 - **现象**：触控目标约 32px（低于 44px 最佳；过 WCAG 2.5.8 24px 下限）；移动端操作热区不足。
 - **定位**：`console/src/App.css`（表格/表单控件），窄屏放大按钮/行内操作区。
 - **修复建议**：窄屏下放大 tap 目标。
@@ -127,9 +135,9 @@
 
 ## 待修清单
 
-- **P1 品牌约束（待决，2）**：#5 激活导航文字对比（App.css:143）、#6 主按钮文字对比（antd-theme.ts:26）。
-- **P2（6）**：#7 标题层级、#8 i18n 硬编码、#9 登录品牌、#10 网络持久化、#11 Name 列换行、#12 双 token 源。
-- **P3（2）**：#13 侧边框 AI-slop tell、#14 触控目标偏小。
+- **P1 品牌约束（待决，2）**：#5 激活导航文字对比（App.css:143）、#6 主按钮文字对比（antd-theme.ts:26）。本轮禁止改动，留用户决策。
+- **P2（6，已修）**：#7 标题层级 `2356fa3`、#8 i18n 硬编码 `1df7169`、#9 登录品牌 `1f2fbc3`、#10 网络持久化 `6863f08`、#11 Name 列换行 `5313ef6`、#12 双 token 源 `c300722`。
+- **P3（2，已修）**：#13 侧边框 AI-slop tell `9511c16`、#14 触控目标偏小 `6276cda`。
 
 ## impeccable 审计评分（修复后状态）
 
