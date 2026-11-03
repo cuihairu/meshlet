@@ -19,6 +19,7 @@ pub mod peer_routes;
 pub mod presence;
 pub mod qr;
 pub mod segments;
+pub mod task;
 pub mod tokens;
 pub mod totp;
 
@@ -56,6 +57,9 @@ pub use presence::{
 pub use segments::{
     default_segment_id, validate_device_segment, Segment, SegmentError, SegmentGrant,
     SegmentGrantBuilder, SegmentGrantStatus, SegmentStatus,
+};
+pub use task::{
+    Task, TaskAction, TaskError, TaskEvent, TaskId, TaskOutcome, TaskPayload, TaskState,
 };
 
 #[cfg(test)]
