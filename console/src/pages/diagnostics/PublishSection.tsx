@@ -679,10 +679,13 @@ export function PublishSection({
 
       {conflict && (
         <div className="conflict" role="alert">
+          <span className="conflict-icon" aria-hidden="true">⚠</span>
+          <div>
           <p>
             <strong>{t('publish.conflictTitle')}</strong>
           </p>
           <p>{conflict}</p>
+          </div>
         </div>
       )}
       {devices.length === 0 && (

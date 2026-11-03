@@ -161,10 +161,13 @@ export function HostForwardsSection({
       )}
       {conflict && (
         <div className="conflict" role="alert">
+          <span className="conflict-icon" aria-hidden="true">⚠</span>
+          <div>
           <p>
             <strong>{t('forwards.conflictTitle')}</strong>
           </p>
           <p>{conflict}</p>
+          </div>
         </div>
       )}
       <Form layout="inline" onFinish={submit} className="create-form">

@@ -398,15 +398,28 @@ tr.state-unknown td { color: var(--muted-c); }
 
 /* §8.3: a rejected create is never silent — the conflict card explains
    what happened and what to do instead. */
+/* §8.3: a rejected create is never silent — the conflict card explains
+   what happened and what to do instead. Uniform 1px border (no side-tab
+   accent bar — that was an AI-slop tell); the danger icon conveys severity. */
 .conflict {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
   padding: var(--space-4);
   border: 1px solid var(--danger-strong);
-  border-left: 4px solid var(--danger-strong);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--danger-strong) 8%, var(--surface));
   margin: var(--space-3) 0;
   font-size: 0.875rem;
 }
+
+.conflict > .conflict-icon {
+  flex: none;
+  font-size: 1.1rem;
+  line-height: 1.4;
+}
+
+.conflict > div { min-width: 0; }
 
 .conflict p { margin: var(--space-1) 0; }
 

@@ -193,10 +193,13 @@ export function AliasesSection({
       {confirming && <p className="muted">{t('aliases.deleteHint')}</p>}
       {conflict && (
         <div className="conflict" role="alert">
+          <span className="conflict-icon" aria-hidden="true">⚠</span>
+          <div>
           <p>
             <strong>{t('aliases.conflictTitle')}</strong>
           </p>
           <p>{conflict}</p>
+          </div>
         </div>
       )}
       <Form layout="inline" onFinish={submit} className="create-form">
