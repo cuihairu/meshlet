@@ -18,6 +18,7 @@ export const en = {
   'shell.networkLoading': 'loading…',
   'shell.signOut': 'Sign out',
   'shell.consoleDomains': 'console domains',
+  'shell.noNetworkSelected': 'Select a network in the top bar.',
   'auth.signIn': 'Sign in',
   'auth.createFirstAdmin': 'Create first admin',
   'auth.noAdminHint': 'No admin exists yet. This form is available only once.',

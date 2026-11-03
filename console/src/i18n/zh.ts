@@ -19,6 +19,7 @@ export const zh: Dict = {
   'shell.networkLoading': '加载中…',
   'shell.signOut': '退出登录',
   'shell.consoleDomains': '控制台域名',
+  'shell.noNetworkSelected': '请在顶部栏选择一个网络。',
   'auth.signIn': '登录',
   'auth.createFirstAdmin': '创建首个管理员',
   'auth.noAdminHint': '尚无管理员。此表单仅可用一次。',
