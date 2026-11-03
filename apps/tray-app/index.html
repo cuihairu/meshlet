@@ -43,7 +43,11 @@
     }
     .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #80868c; }
     .status-dot.online { background: #22c55e; }
+    /* 四档状态点（与托盘/弹层同语义）：disconnected/down→灰、
+       error/failed→红、tunnel_only→铜（品牌琥珀 #C97B2E） */
+    .status-dot.degraded { background: #c97b2e; }
     .status-dot.error { background: #ef4444; }
+    .status-dot.offline { background: #80868c; }
 
     .kv { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
     .kv .k { color: #80868c; min-width: 130px; }
@@ -350,14 +354,37 @@
     applyAnim(localStorage.getItem('meshlet-anim') !== 'off');
 
     // Tab 切换
-    for (const btn of document.querySelectorAll('.tab')) {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.zone').forEach(z => z.classList.remove('active'));
-        btn.classList.add('active');
-        document.getElementById('zone-' + btn.dataset.zone).classList.add('active');
-      });
+    function activateTab(zone) {
+      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.zone').forEach(z => z.classList.remove('active'));
+      const btn = document.querySelector('.tab[data-zone="' + zone + '"]');
+      if (btn) btn.classList.add('active');
+      const zoneEl = document.getElementById('zone-' + zone);
+      if (zoneEl) zoneEl.classList.add('active');
     }
+    for (const btn of document.querySelectorAll('.tab')) {
+      btn.addEventListener('click', () => activateTab(btn.dataset.zone));
+    }
+
+    // 深链定位：托盘菜单「诊断/路由表/对等节点」与状态弹层快捷入口经
+    // Rust eval 调到这里（zone 由 main.rs GOTO_ZONES 白名单校验）。
+    // 锚点先切 Tab 再滚动到对应小节。
+    const ZONE_ANCHORS = {
+      routes: ['diag', 'lblRoutes'],
+      ifaces: ['diag', 'lblIfaces'],
+      wg: ['diag', 'lblWg'],
+      peers: ['conn', 'peersTitle'],
+    };
+    window.__gotoZone = function (zone) {
+      if (ZONE_ANCHORS[zone]) {
+        const [tab, anchorId] = ZONE_ANCHORS[zone];
+        activateTab(tab);
+        const anchor = document.getElementById(anchorId);
+        if (anchor) anchor.scrollIntoView({ block: 'start' });
+      } else {
+        activateTab(zone);
+      }
+    };
 
     if (!invoke) {
       document.getElementById('statusText').textContent = t.ipcMissing;
@@ -393,10 +420,23 @@
         const text = document.getElementById('statusText');
         text.textContent = status.tooltip || status.state || t.statusUnknown;
         const s = (status.state || '').toLowerCase();
-        if (['online','connected','ready','up','ok'].includes(s)) {
-          document.getElementById('statusDot').className = 'status-dot online';
-        } else if (['error','failed','disconnected','down'].includes(s)) {
-          document.getElementById('statusDot').className = 'status-dot error';
+        // 四档状态点，与托盘图标/状态弹层同语义（main.rs state_tier）：
+        // 真实生产者是 agent accessible_name() 全称句（"Meshlet online" /
+        // "Meshlet tunnel only" / "Meshlet tunnel drift" / "Meshlet offline"），
+        // 小写化后按子串匹配；顺序：降级 → 异常 → 在线，其余灰色离线。
+        // snake_case（online/tunnel_only/error…）继续兼容防回归。
+        const dot = document.getElementById('statusDot');
+        if (s.includes('tunnel only') || s.includes('tunnel_only') ||
+            s.includes('tunnel drift') || s.includes('tunnel_drift') ||
+            s.includes('degraded')) {
+          dot.className = 'status-dot degraded';
+        } else if (s.includes('error') || s.includes('failed')) {
+          dot.className = 'status-dot error';
+        } else if (s.includes('online') ||
+                   ['connected', 'ready', 'up', 'ok'].includes(s)) {
+          dot.className = 'status-dot online';
+        } else {
+          dot.className = 'status-dot offline';
         }
       } catch (e) {
         document.getElementById('statusText').textContent = t.statusError;
@@ -570,6 +610,11 @@
 
     function onLang(value) {
       localStorage.setItem('meshlet-lang', value);
+      // 托盘菜单文案跟随：托盘侧取不到 localStorage（i18n 真实存储），
+      // 经命令写镜像文件并即时重建菜单；失败不阻塞语言切换。
+      if (invoke) {
+        invoke('set_tray_lang', { lang: value }).catch(() => {});
+      }
       location.reload();
     }
 
@@ -586,6 +631,12 @@
     loadPeers();
     loadDiag();
     loadCommands();
+
+    // 启动取件（双通道第二条）：新建窗口还在加载时，Rust eval 的定位 JS
+    // 会落在 __gotoZone 定义之前——挂起的 zone 在脚本初始化末尾取走并应用。
+    if (invoke) {
+      invoke('take_pending_goto').then(z => { if (z) window.__gotoZone(z); }).catch(() => {});
+    }
   </script>
 </body>
 </html>

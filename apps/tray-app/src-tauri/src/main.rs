@@ -1,9 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
-    Manager,
+    {Manager, PhysicalPosition, Position},
 };
 
 #[tauri::command]
@@ -290,6 +290,372 @@ fn open_log_dir() -> Result<(), String> {
     }
 }
 
+// ── 状态分档（纯函数，可测）────────────────────────────────────────────
+/// 四档状态分类：agent 写入 status.json 的一切 `state` 字符串统一归档。
+/// 真实生产者值是 `accessible_name()` 全称句（见 `state_tier` 注释）；
+/// 与 `apps/agent/src/tray.rs` 的 [`TrayState`] 四态对位：tunnel only/drift →
+/// 降级（隧道通、控制通道断）；error/failed → 异常；offline/未知 → 离线。
+/// `degraded` 后端暂不产出，此处先行对位（agent 后续补分档即自动生效）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    Online,
+    Degraded,
+    Error,
+    Offline,
+}
+
+fn state_tier(state: &str) -> Tier {
+    // 真实生产者是 agent 写出的 `accessible_name()`（apps/agent/src/tray.rs:106）
+    // 全称句："Meshlet online" / "Meshlet tunnel only" / "Meshlet tunnel drift" /
+    // "Meshlet offline"。故按**小写化后的子串**匹配（不区分大小写），而不是
+    // snake_case 精确等值——后者对真实输入恒 miss，四档恒落 Offline。
+    // 判定顺序固定：先降级（tunnel only/drift/degraded），再异常（error/
+    // failed），再在线（online；"offline" 不含 "online" 子串，天然互斥），
+    // 其余一律 Offline。snake_case（online/tunnel_only/degraded/error…）
+    // 继续兼容，防 agent 侧未来增写字段。
+    let s = state.to_lowercase();
+    if s.contains("tunnel only")
+        || s.contains("tunnel_only")
+        || s.contains("tunnel drift")
+        || s.contains("tunnel_drift")
+        || s.contains("degraded")
+    {
+        return Tier::Degraded;
+    }
+    if s.contains("error") || s.contains("failed") {
+        return Tier::Error;
+    }
+    // "up"/"ok" 等短词只做全等匹配：子串匹配会误吞 "setup"/"lookup" 类值。
+    if s.contains("online") || s == "connected" || s == "ready" || s == "up" || s == "ok" {
+        return Tier::Online;
+    }
+    Tier::Offline
+}
+
+/// 状态 → 托盘图标文件名。16px 变体手工像素级微调过（内孔不被抗锯齿残渣
+/// 填塞，见 `icons/gen_icons.py`），Windows 托盘 100% DPI 原生 16px 直接
+/// 1:1 渲染；32px 为兜底（高 DPI 或 16px 文件缺失时）。
+fn icon_for_state(state: &str) -> (&'static str, &'static str) {
+    match state_tier(state) {
+        Tier::Online => ("icon-online-16.png", "icon-online.png"),
+        Tier::Degraded => ("icon-degraded-16.png", "icon-degraded.png"),
+        Tier::Error => ("icon-error-16.png", "icon-error.png"),
+        Tier::Offline => ("icon-offline-16.png", "icon-offline.png"),
+    }
+}
+
+/// 档位的中文/英文短标签（菜单摘要行、弹层头部共用口径）。
+fn tier_label(tier: Tier, lang: &str) -> &'static str {
+    match (tier, lang) {
+        (Tier::Online, "en") => "Online",
+        (Tier::Degraded, "en") => "Degraded",
+        (Tier::Error, "en") => "Error",
+        (Tier::Offline, "en") => "Offline",
+        (Tier::Online, _) => "在线",
+        (Tier::Degraded, _) => "降级",
+        (Tier::Error, _) => "异常",
+        (Tier::Offline, _) => "离线",
+    }
+}
+
+// ── 托盘菜单文案（纯表，可测）──────────────────────────────────────────
+/// 托盘菜单文案。跟随设置窗的 i18n：设置窗切换语言时经 `set_tray_lang`
+/// 命令把语言写入 `{state}/tray/lang` 并即时重建菜单；托盘启动时读同一
+/// 文件。托盘侧（Rust）取不到 webview 的 localStorage（设置窗真实的
+/// i18n 存储），文件镜像即「跟随」机制；文件缺失时默认中文。
+struct MenuTexts {
+    popup: &'static str,
+    diag: &'static str,
+    routes: &'static str,
+    peers: &'static str,
+    show: &'static str,
+    logs: &'static str,
+    log_open: &'static str,
+    quit: &'static str,
+}
+
+fn menu_texts(lang: &str) -> MenuTexts {
+    if lang == "en" {
+        MenuTexts {
+            popup: "Status panel",
+            diag: "Diagnostics",
+            routes: "Route table",
+            peers: "Peers",
+            show: "Open Settings",
+            logs: "Logs",
+            log_open: "Open log directory",
+            quit: "Quit Meshlet",
+        }
+    } else {
+        MenuTexts {
+            popup: "状态面板",
+            diag: "诊断",
+            routes: "路由表",
+            peers: "对等节点",
+            show: "打开设置",
+            logs: "日志",
+            log_open: "打开日志目录",
+            quit: "退出 Meshlet",
+        }
+    }
+}
+
+/// 菜单首行状态摘要（disabled 行）：`Meshlet · 在线 · 直连 3/4`。直连计数
+/// 仅在确实读到 peers 时附加（wg.exe 缺失/无隧道时不画 0/0）。
+fn summary_line(tier: Tier, online: usize, total: usize, lang: &str) -> String {
+    let label = tier_label(tier, lang);
+    if total > 0 {
+        if lang == "en" {
+            format!("Meshlet · {label} · {online}/{total} peers")
+        } else {
+            format!("Meshlet · {label} · 直连 {online}/{total}")
+        }
+    } else {
+        format!("Meshlet · {label}")
+    }
+}
+
+/// get_peers 结果 → (在线数, 总数)。`connected` 由 main.rs get_peers 按握手
+/// 新鲜度（<180s）判定，此处只汇总。
+fn peers_summary(peers: &[serde_json::Value]) -> (usize, usize) {
+    let online = peers
+        .iter()
+        .filter(|p| p["connected"].as_bool().unwrap_or(false))
+        .count();
+    (online, peers.len())
+}
+
+// ── 托盘语言持久化（跟随设置窗 i18n 的镜像文件）───────────────────────
+/// 纯路径构造（可测）：`<local>/meshlet/state/tray/lang`。
+fn tray_lang_path_from(local: &str) -> String {
+    std::path::Path::new(local)
+        .join("meshlet")
+        .join("state")
+        .join("tray")
+        .join("lang")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// 当前托盘语言：读设置窗写出的镜像文件；缺失/非法时默认中文
+/// （托盘侧取不到设置窗 webview 的 localStorage，见 `menu_texts` 注释）。
+fn read_tray_lang() -> String {
+    let path = tray_lang_path_from(
+        &std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:/Users/Public".into()),
+    );
+    match std::fs::read_to_string(path) {
+        Ok(s) if s.trim() == "en" => "en".into(),
+        _ => "zh".into(),
+    }
+}
+
+fn write_tray_lang(lang: &str) -> Result<(), String> {
+    let path = tray_lang_path_from(&meshlet_state_dir());
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, lang).map_err(|e| e.to_string())
+}
+
+// ── 设置窗定位（深链，纯函数可测）──────────────────────────────────────
+/// `__gotoZone` 接受的定位目标白名单：4 个 Tab + 诊断区锚点 + 连接区 Peers。
+const GOTO_ZONES: &[&str] = &[
+    "conn", "diag", "cmd", "gen", "routes", "ifaces", "wg", "peers",
+];
+
+/// 定位 JS（可测）：带白名单校验，`zone` 来自菜单/弹层调用方，绝不拼接进
+/// 未校验的字符串（防 JS 注入）。
+fn goto_zone_js(zone: &str) -> Option<String> {
+    if !GOTO_ZONES.contains(&zone) {
+        return None;
+    }
+    let quoted = serde_json::to_string(zone).unwrap_or_else(|_| "\"\"".into());
+    Some(format!("window.__gotoZone && window.__gotoZone({quoted})"))
+}
+
+/// 新建设置窗还在加载时，eval 的定位 JS 会落在 `__gotoZone` 定义之前：
+/// 先把 zone 挂起到这里，设置窗脚本初始化时经 `take_pending_goto` 取走，
+/// 双通道（eval + 启动取件）保证新旧窗口都能定位。
+static PENDING_GOTO: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn set_pending_goto(zone: &str) {
+    *PENDING_GOTO.lock().unwrap() = Some(zone.to_string());
+}
+
+#[tauri::command]
+fn take_pending_goto() -> Option<String> {
+    PENDING_GOTO.lock().unwrap().take()
+}
+
+/// 打开（或聚焦）设置窗并定位到 zone。菜单「诊断/路由表/对等节点」与
+/// 弹层快捷入口共用此入口。
+fn open_settings_at_zone(app: &tauri::AppHandle, zone: &str) {
+    set_pending_goto(zone);
+    open_settings_window(app);
+    if let Some(window) = app.get_webview_window("settings") {
+        if let Some(js) = goto_zone_js(zone) {
+            if window.eval(&js).is_ok() {
+                // eval 已送达存活窗口：挂起件已消费，立即清空。否则窗口
+                // reload 时脚本重新经 take_pending_goto 取件，会把一次旧
+                // 定位重放到新加载页（跳到用户并未点的那一区）。
+                *PENDING_GOTO.lock().unwrap() = None;
+            }
+        }
+    }
+}
+
+/// 弹层快捷入口命令：打开设置窗并定位，弹层自身随即收起。
+#[tauri::command]
+fn open_settings_at(app: tauri::AppHandle, zone: String) -> Result<(), String> {
+    if goto_zone_js(&zone).is_none() {
+        return Err(format!("unknown zone: {zone}"));
+    }
+    open_settings_at_zone(&app, &zone);
+    if let Some(w) = app.get_webview_window("popup") {
+        let _ = w.hide();
+    }
+    Ok(())
+}
+
+// ── 托盘语言切换命令（设置窗语言变更时回调）───────────────────────────
+#[tauri::command]
+fn set_tray_lang(app: tauri::AppHandle, lang: String) -> Result<(), String> {
+    set_tray_lang_impl(&app, &lang)
+}
+
+fn set_tray_lang_impl(app: &tauri::AppHandle, lang: &str) -> Result<(), String> {
+    if lang != "zh" && lang != "en" {
+        return Err(format!("unsupported lang: {lang}"));
+    }
+    write_tray_lang(lang)?;
+    let menu = build_tray_menu(app).map_err(|e| e.to_string())?;
+    if let Some(tray) = app.tray_by_id("meshlet-tray") {
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    }
+    // 摘要行文本随语言重建；同步托管句柄供轮询线程 set_text。
+    let summary = build_summary_item(app).map_err(|e| e.to_string())?;
+    if let Some(slot) =
+        app.try_state::<std::sync::Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>()
+    {
+        *slot.lock().unwrap() = Some(summary);
+    }
+    Ok(())
+}
+
+/// 菜单首行摘要的当前文案（状态 + 直连计数，语言跟随托盘语言）。
+fn tray_summary_text() -> String {
+    let status = get_status();
+    let state = status["state"].as_str().unwrap_or("unknown");
+    let peers = get_peers();
+    let (online, total) = peers_summary(&peers);
+    summary_line(state_tier(state), online, total, &read_tray_lang())
+}
+
+fn build_summary_item(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::MenuItem<tauri::Wry>> {
+    let text = tray_summary_text();
+    MenuItem::with_id(app, "status_summary", text, false, None::<&str>)
+}
+
+/// 托盘菜单（双平台共用结构，按各自惯例呈现）：
+/// [disabled 状态摘要] │ 状态面板 │ 诊断/路由表/对等节点 │ 打开设置+日志子菜单 │ 退出。
+/// 快捷键统一写 `CmdOrCtrl`（Tauri accelerator 按平台显示 Ctrl+D / ⌘D）。
+fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let t = menu_texts(&read_tray_lang());
+    let summary = build_summary_item(app)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let popup = MenuItem::with_id(app, "popup", t.popup, true, Some("CmdOrCtrl+I"))?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let diag = MenuItem::with_id(app, "diag", t.diag, true, Some("CmdOrCtrl+D"))?;
+    let routes = MenuItem::with_id(app, "routes", t.routes, true, Some("CmdOrCtrl+R"))?;
+    let peers = MenuItem::with_id(app, "peers", t.peers, true, Some("CmdOrCtrl+P"))?;
+    let sep3 = PredefinedMenuItem::separator(app)?;
+    let show = MenuItem::with_id(app, "show", t.show, true, Some("CmdOrCtrl+S"))?;
+    let log_open = MenuItem::with_id(app, "logdir", t.log_open, true, None::<&str>)?;
+    let logs = Submenu::with_id_and_items(app, "logs", t.logs, true, &[&log_open])?;
+    let sep4 = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", t.quit, true, None::<&str>)?;
+    Menu::with_items(
+        app,
+        &[
+            &summary, &sep1, &popup, &sep2, &diag, &routes, &peers, &sep3, &show, &logs, &sep4,
+            &quit,
+        ],
+    )
+}
+
+// ── 状态弹层窗口 ───────────────────────────────────────────────────────
+/// 弹层定位（纯函数，可测）：Windows 贴任务栏右下（任务栏 ≈48px + 余量），
+/// macOS 贴菜单栏右上（菜单栏 ≈25px + 余量）。全部乘 scale（物理像素）。
+fn popup_origin(
+    mon_w: i32,
+    mon_h: i32,
+    win_w: i32,
+    win_h: i32,
+    scale: f64,
+    macos: bool,
+) -> (i32, i32) {
+    let margin_x = (if macos { 8.0 } else { 16.0 } * scale).round() as i32;
+    let x = (mon_w - win_w - margin_x).max(0);
+    let y = if macos {
+        (34.0 * scale).round() as i32
+    } else {
+        (mon_h - win_h - (72.0 * scale).round() as i32).max(0)
+    };
+    (x, y)
+}
+
+/// 把弹层摆到托盘附近：Windows 右下角（托盘所在的任务栏上方）、macOS
+/// 菜单栏下方右侧。
+fn position_popup(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    let Some(monitor) = app.primary_monitor().ok().flatten() else {
+        return;
+    };
+    let size = window
+        .outer_size()
+        .unwrap_or(tauri::PhysicalSize::new(320, 480));
+    let (x, y) = popup_origin(
+        monitor.size().width as i32,
+        monitor.size().height as i32,
+        size.width as i32,
+        size.height as i32,
+        monitor.scale_factor(),
+        cfg!(target_os = "macos"),
+    );
+    let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+}
+
+/// 程序化创建弹层窗口（隐藏），随后展示并聚焦。失焦自动隐藏在
+/// `run` 事件的 `WindowEvent::Focused(false)` 里处理。
+fn toggle_popup_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("popup") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            return;
+        }
+        position_popup(app, &window);
+        reveal_window(&window);
+        return;
+    }
+    if let Err(e) =
+        tauri::WebviewWindowBuilder::new(app, "popup", tauri::WebviewUrl::App("popup.html".into()))
+            .title("Meshlet")
+            .inner_size(320.0, 480.0)
+            .resizable(false)
+            .decorations(false)
+            .visible(false)
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .build()
+    {
+        eprintln!("meshlet-tray: build popup window failed: {e}");
+        return;
+    }
+    if let Some(window) = app.get_webview_window("popup") {
+        position_popup(app, &window);
+        reveal_window(&window);
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -300,13 +666,20 @@ fn main() {
             get_commands,
             get_diag,
             set_autostart,
-            open_log_dir
+            open_log_dir,
+            set_tray_lang,
+            take_pending_goto,
+            open_settings_at
         ])
         .setup(|app| {
-            // 托盘菜单
-            let show = MenuItem::with_id(app, "show", "打开设置", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            // 托盘菜单（分组重设计）：状态摘要(disabled) │ 状态面板 │
+            // 诊断/路由表/对等节点 │ 打开设置+日志子菜单 │ 退出
+            let menu = build_tray_menu(app.handle())?;
+
+            // 托管摘要行句柄：轮询线程每 3s set_text 刷新状态/直连计数。
+            app.manage(std::sync::Mutex::new(Some(build_summary_item(
+                app.handle(),
+            )?)));
 
             let _tray = TrayIconBuilder::with_id("meshlet-tray")
                 .icon(app.default_window_icon().unwrap().clone())
@@ -319,6 +692,17 @@ fn main() {
                     }
                     "show" => {
                         open_settings_window(app);
+                    }
+                    "popup" => {
+                        toggle_popup_window(app);
+                    }
+                    "diag" | "routes" | "peers" => {
+                        open_settings_at_zone(app, event.id.as_ref());
+                    }
+                    "logdir" => {
+                        if let Err(e) = open_log_dir() {
+                            eprintln!("meshlet-tray: open log dir failed: {e}");
+                        }
                     }
                     _ => {}
                 })
@@ -343,32 +727,47 @@ fn main() {
                 })
                 .build(app)?;
 
-            // 状态轮询：更新 tooltip
+            // 状态轮询：更新 tooltip / 图标 / 菜单摘要行，并把状态推给弹层
+            // （弹层不自带轮询，与主循环共用同一时钟）。
             let app_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 let status = get_status();
                 let tooltip = status["tooltip"].as_str().unwrap_or("Meshlet");
                 if let Some(tray) = app_handle.tray_by_id("meshlet-tray") {
                     let _ = tray.set_tooltip(Some(tooltip));
-                    // 根据状态换图标（从 exe 同级 Resources 目录加载）
+                    // 根据状态换图标（从 exe 同级 Resources 目录加载；首选
+                    // 16px 微调变体，缺失时回落 32px 原图）。
                     let state = status["state"].as_str().unwrap_or("unknown");
-                    let icon_name = match state {
-                        "online" | "connected" | "ready" | "up" | "ok" => "icon-online.png",
-                        // agent 实际产出 tunnel_only（隧道通、控制通道断）= 降级；
-                        // 其余降级信号待 agent 后续补充分档
-                        "degraded" | "tunnel_only" => "icon-degraded.png",
-                        "error" | "failed" => "icon-error.png",
-                        "disconnected" | "down" => "icon-offline.png",
-                        _ => "icon-offline.png",
-                    };
+                    let (icon_preferred, icon_fallback) = icon_for_state(state);
                     if let Ok(exe) = std::env::current_exe() {
                         if let Some(dir) = exe.parent().and_then(|d| d.parent()) {
-                            let icon_path = dir.join("Resources").join(icon_name);
-                            if let Ok(bytes) = std::fs::read(&icon_path) {
+                            let resources = dir.join("Resources");
+                            let icon_bytes = std::fs::read(resources.join(icon_preferred))
+                                .or_else(|_| std::fs::read(resources.join(icon_fallback)));
+                            if let Ok(bytes) = icon_bytes {
                                 if let Ok(icon) = tauri::image::Image::from_bytes(&bytes) {
                                     let _ = tray.set_icon(Some(icon));
                                 }
                             }
+                        }
+                    }
+                }
+                // 菜单首行状态摘要（disabled）每轮刷新：状态档位 + 直连计数。
+                let summary_text = tray_summary_text();
+                if let Some(slot) = app_handle
+                    .try_state::<std::sync::Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>()
+                {
+                    if let Some(summary) = slot.lock().unwrap().as_ref() {
+                        let _ = summary.set_text(&summary_text);
+                    }
+                }
+                // 弹层可见时推送状态（共用车轮）；隐藏时不打扰。
+                if let Some(popup) = app_handle.get_webview_window("popup") {
+                    if popup.is_visible().unwrap_or(false) {
+                        if let Ok(json) = serde_json::to_string(&status) {
+                            let _ = popup.eval(&format!(
+                                "window.__meshletRefresh && window.__meshletRefresh({json})"
+                            ));
                         }
                     }
                 }
@@ -380,30 +779,36 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while running meshlet-tray")
         .run(|app_handle, event| {
-            // 拦截设置窗口的关闭请求：隐藏而非退出应用
-            if let tauri::RunEvent::WindowEvent {
-                label,
-                event: tauri::WindowEvent::CloseRequested { api, .. },
-                ..
-            } = event
-            {
-                if label == "settings" {
-                    api.prevent_close();
-                    if let Some(w) = app_handle.get_webview_window("settings") {
-                        let _ = w.hide();
+            // 拦截窗口关闭请求：隐藏而非退出应用；弹层另在失焦时自动隐藏。
+            if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        if label == "settings" || label == "popup" {
+                            api.prevent_close();
+                            if let Some(w) = app_handle.get_webview_window(&label) {
+                                let _ = w.hide();
+                            }
+                        }
                     }
+                    // 弹层失焦自动隐藏（点外部即收起，托盘弹层惯例）。
+                    tauri::WindowEvent::Focused(false) if label == "popup" => {
+                        if let Some(w) = app_handle.get_webview_window("popup") {
+                            let _ = w.hide();
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
 }
 
-/// 把已存在的设置窗口带回前台：先还原（最小化态）→ 显示 → 聚焦。
-/// 顺序不可省 unminimize：tao 的 `show()` 最终是 `ShowWindow(SW_SHOW)`
+/// 把窗口带回前台：先还原（最小化态）→ 显示 → 聚焦。设置窗与状态弹层
+/// 共用。顺序不可省 unminimize：tao 的 `show()` 最终是 `ShowWindow(SW_SHOW)`
 /// （tao-0.37.2 window_state.rs:458-468），不会还原最小化窗口；而 tao 的
 /// `set_focus()` 守卫 `is_visible && !is_minimized && !is_foreground`
 /// （tao-0.37.2 window.rs:139-150）在最小化时是 no-op——只 show+focus 时
 /// 最小化的窗口原封不动留在任务栏，用户看就是「点打开设置没反应」。
-fn reveal_settings_window(window: &tauri::WebviewWindow) {
+fn reveal_window(window: &tauri::WebviewWindow) {
     if window.is_minimized().unwrap_or(false) {
         let _ = window.unminimize();
     }
@@ -415,7 +820,7 @@ fn reveal_settings_window(window: &tauri::WebviewWindow) {
 /// 始终把窗口带到前台。
 fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
-        reveal_settings_window(&window);
+        reveal_window(&window);
         return;
     }
     build_settings_window(app);
@@ -439,7 +844,7 @@ fn toggle_settings_window(app: &tauri::AppHandle) {
         if settings_toggle_should_hide(visible, minimized) {
             let _ = window.hide();
         } else {
-            reveal_settings_window(&window);
+            reveal_window(&window);
         }
         return;
     }
@@ -636,5 +1041,201 @@ mod path_convention_tests {
         // 隐藏（关闭被拦截为 hide）→ 不隐藏，走还原路径（reveal）。
         assert!(!settings_toggle_should_hide(false, false));
         assert!(!settings_toggle_should_hide(false, true));
+    }
+
+    // ── 四档状态分档（与 agent TrayState 对位）──────────────────────────
+    #[test]
+    fn state_tier_maps_real_producer_strings() {
+        // 真实生产者：agent tray.rs:106 accessible_name() 写入 status.json
+        // 的 `state` 全称句。四正例必须各归其档（B1 回归：旧 snake_case
+        // 精确匹配对真实输入恒 miss，全部误落 Offline）。
+        assert_eq!(state_tier("Meshlet online"), Tier::Online);
+        assert_eq!(state_tier("Meshlet tunnel only"), Tier::Degraded);
+        assert_eq!(state_tier("Meshlet tunnel drift"), Tier::Degraded);
+        assert_eq!(state_tier("Meshlet offline"), Tier::Offline);
+        // 不区分大小写（生产者若改首字母大小写也不破档）。
+        assert_eq!(state_tier("meshlet ONLINE"), Tier::Online);
+        assert_eq!(state_tier("MESHLET TUNNEL ONLY"), Tier::Degraded);
+        // 反例：offline 不得被误判为 Online（"offline" 不含 "online"）。
+        assert_ne!(state_tier("Meshlet offline"), Tier::Online);
+        // 反例：tunnel only/drift 必须先于 online 判定，不得漏成 Online。
+        assert_ne!(state_tier("Meshlet tunnel only"), Tier::Online);
+        assert_ne!(state_tier("Meshlet tunnel drift"), Tier::Online);
+    }
+
+    #[test]
+    fn state_tier_maps_agent_states() {
+        // snake_case 兼容层：agent 旧字段（online/tunnel_only/error…）与
+        // 状态机其它合法迁移产物，保留用例防未来回归到另一格式。
+        assert_eq!(state_tier("online"), Tier::Online);
+        assert_eq!(state_tier("tunnel_only"), Tier::Degraded); // 隧道通、控制通道断
+        assert_eq!(state_tier("tunnel_drift"), Tier::Degraded);
+        assert_eq!(state_tier("degraded"), Tier::Degraded); // agent 后续补分档即生效
+        assert_eq!(state_tier("error"), Tier::Error);
+        assert_eq!(state_tier("failed"), Tier::Error);
+        assert_eq!(state_tier("disconnected"), Tier::Offline);
+        assert_eq!(state_tier("down"), Tier::Offline);
+        assert_eq!(state_tier("unknown"), Tier::Offline);
+        assert_eq!(state_tier(""), Tier::Offline);
+        // 反例：短词全等匹配不误吞子串（"up" ⊂ "setup" 类值）。
+        assert_eq!(state_tier("setup"), Tier::Offline);
+        assert_eq!(state_tier("lookok"), Tier::Offline);
+    }
+
+    #[test]
+    fn icon_for_state_prefers_16px_variant() {
+        // 每档都指向手工微调的 16px 变体 + 32px 兜底，一一对应仓内文件。
+        assert_eq!(
+            icon_for_state("Meshlet online"),
+            ("icon-online-16.png", "icon-online.png")
+        );
+        assert_eq!(
+            icon_for_state("Meshlet tunnel only"),
+            ("icon-degraded-16.png", "icon-degraded.png")
+        );
+        assert_eq!(
+            icon_for_state("Meshlet tunnel drift"),
+            ("icon-degraded-16.png", "icon-degraded.png")
+        );
+        assert_eq!(
+            icon_for_state("failed"),
+            ("icon-error-16.png", "icon-error.png")
+        );
+        assert_eq!(
+            icon_for_state("Meshlet offline"),
+            ("icon-offline-16.png", "icon-offline.png")
+        );
+    }
+
+    // ── 菜单摘要行 ─────────────────────────────────────────────────────
+    #[test]
+    fn summary_line_appends_peer_counts_only_when_known() {
+        // 读到 peers 才附加计数；wg.exe 缺失时不画 0/0。
+        assert_eq!(
+            summary_line(Tier::Online, 3, 4, "zh"),
+            "Meshlet · 在线 · 直连 3/4"
+        );
+        assert_eq!(summary_line(Tier::Offline, 0, 0, "zh"), "Meshlet · 离线");
+        assert_eq!(
+            summary_line(Tier::Degraded, 1, 4, "en"),
+            "Meshlet · Degraded · 1/4 peers"
+        );
+    }
+
+    #[test]
+    fn peers_summary_counts_connected() {
+        let peers = vec![
+            serde_json::json!({"connected": true}),
+            serde_json::json!({"connected": false}),
+            serde_json::json!({"connected": true}),
+            serde_json::json!({}), // 缺字段按未连接
+        ];
+        assert_eq!(peers_summary(&peers), (2, 4));
+        assert_eq!(peers_summary(&[]), (0, 0));
+    }
+
+    // ── 菜单文案 i18n ──────────────────────────────────────────────────
+    #[test]
+    fn menu_texts_zh_and_en_cover_same_items() {
+        // 中英两表必须覆盖同一组键（新增菜单项漏译会在启动时直接暴露为
+        // 编译期字段，这里保证非空且成对）。
+        let zh = menu_texts("zh");
+        let en = menu_texts("en");
+        for (a, b) in [
+            (zh.popup, en.popup),
+            (zh.diag, en.diag),
+            (zh.routes, en.routes),
+            (zh.peers, en.peers),
+            (zh.show, en.show),
+            (zh.logs, en.logs),
+            (zh.log_open, en.log_open),
+            (zh.quit, en.quit),
+        ] {
+            assert!(!a.is_empty() && !b.is_empty());
+            assert_ne!(a, b);
+        }
+    }
+
+    #[test]
+    fn tier_label_defaults_to_zh_for_unknown_lang() {
+        assert_eq!(tier_label(Tier::Online, "zh"), "在线");
+        assert_eq!(tier_label(Tier::Online, "en"), "Online");
+        assert_eq!(tier_label(Tier::Online, "fr"), "在线"); // 未知语言回落中文
+    }
+
+    // ── 弹层定位 ───────────────────────────────────────────────────────
+    #[test]
+    fn popup_origin_windows_bottom_right_above_taskbar() {
+        // 1920x1080 @100%：右下角，任务栏（≈48px）+ 余量 24px。
+        let (x, y) = popup_origin(1920, 1080, 320, 480, 1.0, false);
+        assert_eq!(x, 1920 - 320 - 16);
+        assert_eq!(y, 1080 - 480 - 72);
+    }
+
+    #[test]
+    fn popup_origin_macos_below_menu_bar() {
+        let (x, y) = popup_origin(2560, 1440, 320, 480, 2.0, true);
+        assert_eq!(x, 2560 - 320 - 16); // 8 * 2
+        assert_eq!(y, 68); // 34 * 2（Retina 物理像素）
+    }
+
+    #[test]
+    fn popup_origin_clamps_into_screen() {
+        // 弹层比屏幕还高时不越界（钳到 0）。
+        let (x, y) = popup_origin(640, 480, 320, 480, 1.0, false);
+        assert_eq!((x, y), (304, 0));
+    }
+
+    #[test]
+    fn popup_origin_clamps_negative_origin_to_zero() {
+        // 负坐标输入（屏幕小于窗口 / 极小显示器）双向钳到 0：x = 200-320-16
+        // 与 y = 480-480-72 均为负，.max(0) 必须生效，绝不允许把弹层摆到
+        // 屏幕外（负坐标会落到不可见的第二屏区域）。
+        let (x, y) = popup_origin(200, 480, 320, 480, 1.0, false);
+        assert_eq!((x, y), (0, 0));
+        // 2x 缩放下 margin 放大后同样钳住。
+        let (x, y) = popup_origin(300, 400, 320, 480, 2.0, false);
+        assert_eq!((x, y), (0, 0));
+    }
+
+    // ── 设置窗定位（深链）──────────────────────────────────────────────
+    #[test]
+    fn goto_zone_js_quotes_whitelisted_zones() {
+        let js = goto_zone_js("routes").unwrap();
+        assert_eq!(js, "window.__gotoZone && window.__gotoZone(\"routes\")");
+        assert!(goto_zone_js("peers").is_some());
+        assert!(goto_zone_js("conn").is_some());
+    }
+
+    #[test]
+    fn goto_zone_js_rejects_non_whitelisted_zones() {
+        // 菜单/弹层之外的一切来源必须被白名单挡住（防 JS 注入）。
+        assert!(goto_zone_js("").is_none());
+        assert!(goto_zone_js("diag'); alert(1); ('").is_none());
+        assert!(goto_zone_js("__proto__").is_none());
+    }
+
+    // ── 托盘语言持久化路径 ─────────────────────────────────────────────
+    #[test]
+    fn tray_lang_path_matches_state_dir_convention() {
+        let got = tray_lang_path_from(r"C:\Users\bob\AppData\Local");
+        assert!(got.contains("meshlet"));
+        assert!(got.contains("state"));
+        assert!(got.contains("tray"));
+        assert!(got.ends_with("lang"));
+    }
+
+    #[test]
+    fn tray_lang_mirror_defaults_to_chinese() {
+        // 默认中文：托盘侧取不到设置窗 localStorage（真实 i18n 存储），
+        // 语言镜像文件缺失/内容非法时回落中文，不猜测系统语言。
+        // （read_tray_lang 的文件读取依赖宿主状态目录，此处只测回落语义：
+        // zh 之外只认 en，其余一律按 zh。）
+        let zh = menu_texts("zh");
+        let en = menu_texts("en");
+        assert_eq!(zh.quit, "退出 Meshlet");
+        assert_eq!(en.quit, "Quit Meshlet");
+        assert_eq!(tier_label(Tier::Degraded, "zh"), "降级");
+        assert_eq!(tier_label(Tier::Degraded, "en"), "Degraded");
     }
 }

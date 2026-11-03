@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Meshlet</title>
+  <style>
+    /* 令牌与设置窗（index.html）一致：底 #16213e/#1a1a2e/#2a2a4a、
+       文字 #80868c/#e0e0e0、强调 #4e8fa6；四档状态色与托盘图标同源
+       （icon-online #326072 / degraded #c97b2e / error #ef4444 / offline #676d72）。 */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { border-radius: 10px; overflow: hidden; }
+    body {
+      font-family: "Segoe UI", "PingFang SC", system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-size: 13px;
+      border: 1px solid #2a2a4a;
+    }
+    /* ── 头部：四档状态色带 + 状态短名 + 最后更新 ── */
+    .hd { border-top: 4px solid #676d72; padding: 12px 14px 10px; background: #16213e; }
+    .hd.online { border-top-color: #326072; }
+    .hd.degraded { border-top-color: #c97b2e; }
+    .hd.error { border-top-color: #ef4444; }
+    .hd.offline { border-top-color: #676d72; }
+    .hd .row { display: flex; align-items: baseline; gap: 8px; }
+    .hd .st { font-size: 15px; font-weight: 700; color: #676d72; }
+    .hd.online .st { color: #4e8fa6; }
+    .hd.degraded .st { color: #c97b2e; }
+    .hd.error .st { color: #ef4444; }
+    .hd.offline .st { color: #80868c; }
+    .hd .sten { font-size: 12px; color: #80868c; }
+    .hd .upd { margin-left: auto; font-size: 11.5px; color: #80868c; text-align: right; }
+    .hd .tip { margin-top: 6px; font-size: 12px; color: #80868c; line-height: 1.5; }
+    .bd { padding: 4px 14px 12px; }
+    .sec { font-size: 11.5px; color: #80868c; font-weight: 700; margin: 12px 0 5px; letter-spacing: .04em; text-transform: uppercase; }
+    .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; }
+    .kv .k { color: #80868c; flex: none; }
+    .kv .v { color: #e0e0e0; font-family: Consolas, monospace; font-size: 12px; text-align: right; word-break: break-all; }
+    .peerbar { height: 7px; background: #2a2a4a; border-radius: 4px; overflow: hidden; display: flex; margin: 6px 0 4px; }
+    .peerbar i { display: block; height: 100%; }
+    .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
+    .chip {
+      padding: 5px 11px; background: #16213e; border: 1px solid #2a2a4a;
+      border-radius: 6px; font-size: 12.5px; color: #e0e0e0; cursor: pointer;
+    }
+    .chip:hover { border-color: #4e8fa6; color: #4e8fa6; }
+    .chip .ce { color: #80868c; font-size: 11.5px; margin-left: 4px; }
+    .ft { padding: 9px 14px 12px; display: flex; gap: 8px; border-top: 1px solid #2a2a4a; background: #16213e; }
+    .btn {
+      flex: 1; padding: 7px 0; border: none; border-radius: 6px;
+      font-size: 12.5px; cursor: pointer; text-align: center;
+    }
+    .btn-primary { background: #4e8fa6; color: #fff; }
+    .btn-primary:hover { background: #5a9fb8; }
+    .btn-secondary { background: #2a2a4a; color: #e0e0e0; }
+    .btn-secondary:hover { background: #3a3a5a; }
+    .muted { color: #80868c; }
+  </style>
+</head>
+<body>
+  <div class="hd" id="hd">
+    <div class="row">
+      <span class="st" id="stLabel">—</span>
+      <span class="sten" id="stLabelEn"></span>
+      <span class="upd" id="upd">—</span>
+    </div>
+    <div class="tip" id="tip"></div>
+  </div>
+  <div class="bd">
+    <div class="sec" id="secConn">Connection</div>
+    <div class="kv"><span class="k" id="kServer">Server URL</span><span class="v" id="vServer">—</span></div>
+    <div class="kv"><span class="k" id="kDevice">Device</span><span class="v" id="vDevice">—</span></div>
+    <div class="kv"><span class="k" id="kHub">Hub endpoint</span><span class="v" id="vHub">—</span></div>
+    <div class="kv"><span class="k" id="kTunnel">Tunnel</span><span class="v" id="vTunnel">—</span></div>
+    <div class="kv"><span class="k">Overlay IP</span><span class="v" id="vOverlayIp">—</span></div>
+
+    <div class="sec" id="secPeers">Peers</div>
+    <div class="kv"><span class="k" id="kOnline">Online</span><span class="v" id="vPeers">—</span></div>
+    <div class="peerbar"><i id="barOn" style="background:#4e8fa6;width:0%"></i><i id="barOff" style="background:#676d72;width:0%"></i></div>
+    <div class="kv"><span class="k" id="kHandshake">Last handshake</span><span class="v" id="vHandshake">—</span></div>
+    <div class="kv"><span class="k" id="kTraffic">Traffic</span><span class="v" id="vTraffic">—</span></div>
+
+    <div class="sec" id="secLinks">Quick links</div>
+    <div class="chips">
+      <span class="chip" onclick="goto('diag')"><span id="cDiag">诊断</span><span class="ce" id="ceDiag">Diagnostics</span></span>
+      <span class="chip" onclick="goto('routes')"><span id="cRoutes">路由表</span><span class="ce" id="ceRoutes">Routes</span></span>
+      <span class="chip" onclick="goto('ifaces')"><span id="cIfaces">接口</span><span class="ce" id="ceIfaces">Interfaces</span></span>
+      <span class="chip" onclick="goto('wg')"><span id="cWg">WG 对端</span><span class="ce" id="ceWg">WG peers</span></span>
+      <span class="chip" onclick="goto('peers')"><span id="cPeers">对等节点</span><span class="ce" id="cePeers">Peers</span></span>
+    </div>
+  </div>
+  <div class="ft">
+    <button class="btn btn-primary" id="btnSettings" onclick="goto('conn')">打开设置</button>
+    <button class="btn btn-secondary" id="btnLogs" onclick="openLogs()">日志目录</button>
+  </div>
+
+  <script type="module">
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+
+    // i18n：与设置窗同一 localStorage 键（meshlet-lang），同源窗口共享存储；
+    // 缺省跟随 navigator.language。
+    const i18n = {
+      en: {
+        secsAgo: s => `${s}s ago`, minsAgo: m => `${m}min ago`, never: 'never',
+        lastUpdate: 'Updated', noPeers: 'no peers',
+        tiers: { online: 'Online', degraded: 'Degraded', error: 'Error', offline: 'Offline' },
+        unknownState: 'Unknown',
+        secConn: 'Connection', secPeers: 'Peers', secLinks: 'Quick links',
+        server: 'Server URL', device: 'Device', hub: 'Hub endpoint', tunnel: 'Tunnel',
+        online: 'Online', handshake: 'Last handshake', traffic: 'Traffic',
+        tunnelUp: 'up (interface present)', tunnelDown: 'down (no interface)',
+        diag: 'Diagnostics', routes: 'Routes', ifaces: 'Interfaces',
+        wg: 'WG peers', peers: 'Peers', settings: 'Open Settings', logs: 'Logs',
+      },
+      zh: {
+        secsAgo: s => `${s} 秒前`, minsAgo: m => `${m} 分钟前`, never: '从未',
+        lastUpdate: '最后更新', noPeers: '暂无直连节点',
+        tiers: { online: '在线', degraded: '降级', error: '异常', offline: '离线' },
+        unknownState: '未知',
+        secConn: '连接', secPeers: '对等节点', secLinks: '快捷入口',
+        server: '服务器地址', device: '设备名称', hub: 'Hub 端点', tunnel: '隧道状态',
+        online: '在线', handshake: '最近握手', traffic: '累计收发',
+        tunnelUp: 'up（接口在位）', tunnelDown: 'down（无接口）',
+        diag: '诊断', routes: '路由表', ifaces: '接口', wg: 'WG 对端',
+        peers: '对等节点', settings: '打开设置', logs: '日志目录',
+      },
+    };
+    const savedLang = localStorage.getItem('meshlet-lang');
+    const lang = savedLang || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+    const t = i18n[lang];
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+
+    // 静态文案
+    document.getElementById('secConn').textContent = t.secConn;
+    document.getElementById('secPeers').textContent = t.secPeers;
+    document.getElementById('secLinks').textContent = t.secLinks;
+    document.getElementById('kServer').textContent = t.server;
+    document.getElementById('kDevice').textContent = t.device;
+    document.getElementById('kHub').textContent = t.hub;
+    document.getElementById('kTunnel').textContent = t.tunnel;
+    document.getElementById('kOnline').textContent = t.online;
+    document.getElementById('kHandshake').textContent = t.handshake;
+    document.getElementById('kTraffic').textContent = t.traffic;
+    for (const [id, key] of [['cDiag','diag'],['cRoutes','routes'],['cIfaces','ifaces'],
+        ['cWg','wg'],['cPeers','peers']]) {
+      document.getElementById(id).textContent = t[key];
+    }
+    // 英文副标签（.ce）恒为英文，与主标签构成中英并列
+    for (const [id, key] of [['ceDiag','diag'],['ceRoutes','routes'],['ceIfaces','ifaces'],
+        ['ceWg','wg'],['cePeers','peers']]) {
+      document.getElementById(id).textContent = i18n.en[key];
+    }
+    document.getElementById('btnSettings').textContent = t.settings;
+    document.getElementById('btnLogs').textContent = t.logs;
+
+    // ── 状态分档（口径与 main.rs state_tier 完全一致）──────────────────
+    // 真实生产者是 agent accessible_name() 全称句（"Meshlet online" 等），
+    // 小写化后按子串匹配；判定顺序固定：降级 → 异常 → 在线 → 离线。
+    // snake_case（online/tunnel_only/error…）继续兼容防回归。
+    function tierOf(state) {
+      const s = String(state || '').toLowerCase();
+      if (s.includes('tunnel only') || s.includes('tunnel_only') ||
+          s.includes('tunnel drift') || s.includes('tunnel_drift') ||
+          s.includes('degraded')) return 'degraded';
+      if (s.includes('error') || s.includes('failed')) return 'error';
+      if (s.includes('online') || ['connected', 'ready', 'up', 'ok'].includes(s)) return 'online';
+      return 'offline';
+    }
+
+    function fmtBytes(n) {
+      if (n == null) return '—';
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+      return (n / 1073741824).toFixed(2) + ' GB';
+    }
+
+    // status.updated_at（RFC3339，agent 写出）→ 相对时间
+    function fmtUpdated(rfc3339) {
+      if (!rfc3339) return '—';
+      const secs = Math.max(0, Math.round((Date.now() - new Date(rfc3339).getTime()) / 1000));
+      if (secs < 3600) return `${t.lastUpdate} ${t.secsAgo(secs)}`;
+      return `${t.lastUpdate} ${t.minsAgo(Math.round(secs / 60))}`;
+    }
+
+    function renderHeader(status) {
+      const tier = tierOf(status.state);
+      const hd = document.getElementById('hd');
+      hd.className = 'hd ' + tier;
+      document.getElementById('stLabel').textContent = t.tiers[tier];
+      document.getElementById('stLabelEn').textContent = i18n.en.tiers[tier];
+      document.getElementById('tip').textContent = status.tooltip || '';
+      document.getElementById('upd').textContent = fmtUpdated(status.updated_at);
+    }
+
+    // 隧道状态 / Overlay IP：与设置窗 renderConnFromDiag 同口径
+    //（get_diag interfaces 实测字段 name/ipv4/prefix/state），不臆测字段。
+    function renderDiag(diag) {
+      const wgIf = (diag.interfaces || []).find(i => /meshlet|wg/i.test(i.name) && i.ipv4);
+      document.getElementById('vOverlayIp').textContent =
+        wgIf ? (wgIf.ipv4 + (wgIf.prefix != null ? '/' + wgIf.prefix : '')) : '—';
+      const wgUp = (diag.interfaces || []).some(i => /meshlet|wg/i.test(i.name) && i.state === 'up');
+      document.getElementById('vTunnel').textContent = wgUp ? t.tunnelUp : t.tunnelDown;
+    }
+
+    // 对等节点：get_peers 实测字段 connected/last_handshake/rx_bytes/tx_bytes
+    function renderPeers(peers) {
+      const total = peers.length;
+      const online = peers.filter(p => p.connected).length;
+      if (total === 0) {
+        document.getElementById('vPeers').innerHTML = `<span class="muted">${t.noPeers}</span>`;
+      } else {
+        document.getElementById('vPeers').textContent = `${online} / ${total}`;
+      }
+      const onPct = total ? Math.round((online / total) * 100) : 0;
+      document.getElementById('barOn').style.width = onPct + '%';
+      document.getElementById('barOff').style.width = (100 - onPct) + '%';
+      const rx = peers.reduce((a, p) => a + (p.rx_bytes || 0), 0);
+      const tx = peers.reduce((a, p) => a + (p.tx_bytes || 0), 0);
+      document.getElementById('vTraffic').textContent = `↓${fmtBytes(rx)} ↑${fmtBytes(tx)}`;
+      // 最近一次握手：peer 的 last_handshake 是「N 秒前」字符串（main.rs 生成），
+      // 取数值最小（最新）的一个；解析不出就如实显示第一条。
+      let best = null;
+      for (const p of peers) {
+        const m = /(\d+)/.exec(p.last_handshake || '');
+        if (m && (best === null || Number(m[1]) < best)) best = Number(m[1]);
+      }
+      document.getElementById('vHandshake').textContent =
+        best !== null ? t.secsAgo(best) : (peers[0]?.last_handshake || t.never);
+    }
+
+    async function refresh(status) {
+      if (!invoke) return;
+      renderHeader(status);
+      // 配置（只读展示）与数据面读数并行取；取不到如实留 '—'。
+      invoke('get_config').then(cfg => {
+        document.getElementById('vServer').textContent = cfg.server_url || '—';
+        document.getElementById('vDevice').textContent = cfg.device_name || '—';
+        document.getElementById('vHub').textContent = cfg.hub_endpoint || '—';
+      }).catch(() => {});
+      invoke('get_diag').then(renderDiag).catch(() => {
+        document.getElementById('vOverlayIp').textContent = '—';
+        document.getElementById('vTunnel').textContent = '—';
+      });
+      invoke('get_peers').then(renderPeers).catch(() => {
+        document.getElementById('vPeers').innerHTML = `<span class="muted">${t.noPeers}</span>`;
+        document.getElementById('vTraffic').textContent = '—';
+        document.getElementById('vHandshake').textContent = '—';
+      });
+    }
+
+    // 主循环推送入口：Rust 轮询线程每 3s eval 调用（弹层可见时），
+    // 与托盘 tooltip/图标/菜单摘要共用同一时钟，弹层不自带轮询。
+    window.__meshletRefresh = function (status) {
+      refresh(status);
+    };
+
+    // 首次打开先自取一次（推送时钟下一拍才到）。
+    if (invoke) {
+      invoke('get_status').then(refresh).catch(() => {});
+    } else {
+      document.getElementById('tip').textContent = 'Tauri IPC unavailable';
+    }
+
+    // 快捷入口 → 打开设置窗并定位（Rust open_settings_at 白名单校验 zone）
+    window.goto = function (zone) {
+      if (!invoke) return;
+      invoke('open_settings_at', { zone }).catch(() => {});
+    };
+    window.openLogs = function () {
+      if (!invoke) return;
+      invoke('open_log_dir').catch(() => {});
+    };
+  </script>
+</body>
+</html>
