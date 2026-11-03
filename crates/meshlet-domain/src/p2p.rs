@@ -164,11 +164,42 @@ pub struct DeviceDirectState {
     pub links: Vec<DirectLinkStatus>,
 }
 
+impl DeviceDirectState {
+    /// hub 观测 endpoint（P2P-⑤）：`observed_ip:listen_port`，即观测源地址 +
+    /// agent 上报的 wg 监听端口。二者任一缺失则 `None`。**不做**私网过滤——
+    /// 这是原始观测；公网判定见 [DeviceDirectState::public_endpoint]。
+    pub fn observed_endpoint(&self) -> Option<(Ipv4Addr, u16)> {
+        let report = self.report.as_ref()?;
+        Some((self.observed_ip?, report.listen_port))
+    }
+
+    /// 公网 endpoint：观测地址非私网时才有（与 agent 拨号候选同源，
+    /// [public_candidate] 同一口径）。`None` = 无观测、未上报或观测地址非公网。
+    pub fn public_endpoint(&self) -> Option<EndpointCandidate> {
+        let report = self.report.as_ref()?;
+        public_candidate(self.observed_ip, report.listen_port)
+    }
+}
+
+/// 公网候选：hub 观测源地址**非私网**时才与 wg 监听端口合成（hub 与 agent
+/// 同内网时观测地址就是 LAN 地址，再标成 public 只会误导打洞）。`None` =
+/// 无观测或观测地址非公网。
+pub fn public_candidate(
+    observed_ip: Option<Ipv4Addr>,
+    listen_port: u16,
+) -> Option<EndpointCandidate> {
+    let ip = observed_ip?;
+    if !is_private_ip(ip) && !ip.is_loopback() && !ip.is_unspecified() {
+        Some(EndpointCandidate::public(ip, listen_port))
+    } else {
+        None
+    }
+}
+
 /// 把「hub 观测源地址 + agent 上报」合并成候选 endpoint 列表（纯函数）：
 /// - LAN 候选 = 上报地址中 RFC1918 的每一个（端口统一 `listen_port`），
 ///   丢弃未指定 / 回环 / 非私网地址；
-/// - 公网候选 = 观测源地址**非私网**时才构造（hub 与 agent 同内网时源
-///   地址就是 LAN 地址，再标成 public 只会误导打洞）；
+/// - 公网候选 = [public_candidate]（观测源地址非私网时才构造）；
 /// - 结果按 (ip, port) 确定性排序去重。
 pub fn endpoint_candidates(
     observed_ip: Option<Ipv4Addr>,
@@ -184,10 +215,8 @@ pub fn endpoint_candidates(
     lan.sort_by_key(|c| (c.ip, c.port));
     lan.dedup();
     let mut out = lan;
-    if let Some(ip) = observed_ip {
-        if !is_private_ip(ip) && !ip.is_loopback() && !ip.is_unspecified() {
-            out.push(EndpointCandidate::public(ip, report.listen_port));
-        }
+    if let Some(c) = public_candidate(observed_ip, report.listen_port) {
+        out.push(c);
     }
     out
 }
@@ -610,6 +639,54 @@ mod tests {
             cands,
             vec![lan("192.168.1.10", 51820), lan("192.168.1.20", 51820)]
         );
+    }
+
+    #[test]
+    fn observed_endpoint_pairs_observed_ip_with_wg_listen_port() {
+        let state = DeviceDirectState {
+            observed_ip: Some("203.0.113.7".parse().unwrap()),
+            report: Some(report(51821, &["192.168.1.10"])),
+            links: Vec::new(),
+        };
+        assert_eq!(
+            state.observed_endpoint(),
+            Some(("203.0.113.7".parse().unwrap(), 51821))
+        );
+        assert_eq!(state.public_endpoint(), Some(public("203.0.113.7", 51821)));
+    }
+
+    #[test]
+    fn observed_endpoint_requires_both_observation_and_report() {
+        let no_report = DeviceDirectState {
+            observed_ip: Some("203.0.113.7".parse().unwrap()),
+            report: None,
+            links: Vec::new(),
+        };
+        assert_eq!(no_report.observed_endpoint(), None);
+        assert_eq!(no_report.public_endpoint(), None);
+        let no_observation = DeviceDirectState {
+            observed_ip: None,
+            report: Some(report(51821, &["192.168.1.10"])),
+            links: Vec::new(),
+        };
+        assert_eq!(no_observation.observed_endpoint(), None);
+        assert_eq!(no_observation.public_endpoint(), None);
+    }
+
+    #[test]
+    fn private_observation_has_no_public_endpoint_but_keeps_observed() {
+        // hub 与 agent 同内网：观测地址私网 → 观测端点仍在（原始观测），
+        // 公网端点缺（与 endpoint_candidates 同一口径，标 public 会误导）。
+        let state = DeviceDirectState {
+            observed_ip: Some("192.168.1.10".parse().unwrap()),
+            report: Some(report(51821, &["192.168.1.10"])),
+            links: Vec::new(),
+        };
+        assert_eq!(
+            state.observed_endpoint(),
+            Some(("192.168.1.10".parse().unwrap(), 51821))
+        );
+        assert_eq!(state.public_endpoint(), None);
     }
 
     // --------------------------------------------- 分发聚合（hub）--------
