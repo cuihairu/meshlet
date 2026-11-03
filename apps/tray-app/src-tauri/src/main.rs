@@ -765,7 +765,7 @@ fn main() {
                 if let Some(popup) = app_handle.get_webview_window("popup") {
                     if popup.is_visible().unwrap_or(false) {
                         if let Ok(json) = serde_json::to_string(&status) {
-                            let _ = popup.eval(&format!(
+                            let _ = popup.eval(format!(
                                 "window.__meshletRefresh && window.__meshletRefresh({json})"
                             ));
                         }
