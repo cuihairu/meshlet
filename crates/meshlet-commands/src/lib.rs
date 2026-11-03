@@ -79,6 +79,30 @@ pub const COMMANDS: &[CommandSpec] = &[
         args: &[],
     },
     CommandSpec {
+        name: "task assign",
+        group: GROUP_CONFIG,
+        summary: "Dispatch a task to a device (needs --network/--node/--cmd)",
+        args: &[],
+    },
+    CommandSpec {
+        name: "task ls",
+        group: GROUP_CONFIG,
+        summary: "List tasks in a network (--network)",
+        args: &[],
+    },
+    CommandSpec {
+        name: "task confirm",
+        group: GROUP_CONFIG,
+        summary: "Confirm a done task (user-side, --network <id>)",
+        args: &[],
+    },
+    CommandSpec {
+        name: "task retry",
+        group: GROUP_CONFIG,
+        summary: "Reject and rerun a task (--network <id>)",
+        args: &[],
+    },
+    CommandSpec {
         name: "version",
         group: GROUP_SERVICE,
         summary: "Show version",

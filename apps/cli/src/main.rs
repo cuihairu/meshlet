@@ -7,6 +7,10 @@
 //!   meshlet peer dial <node> 强制对目标节点发起直连拨号（名称/IP）
 //!   meshlet agent diag       网络诊断快照（路由表/接口清单/wg 读数）
 //!   meshlet agent diag --peers   在快照后追加直连 peers 表
+//!   meshlet task ls          任务队列（--network <id>）
+//!   meshlet task assign      下发任务（--network/--node/--cmd）
+//!   meshlet task confirm <id>    确认完成（用户侧动作）
+//!   meshlet task retry <id>      驳回重跑（新代任务）
 //!   meshlet networks         子网/路由列表
 //!   meshlet config           显示配置
 //!   meshlet version          版本号
@@ -50,6 +54,27 @@ fn main() {
         return;
     }
 
+    // `meshlet task <sub>`（MT-003）：控制台任务队列的 CLI 面。
+    if cmd == "task" {
+        let sub = args.get(1).map(|s| s.as_str()).unwrap_or("");
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        match sub {
+            "assign" => cmd_task_assign(&rest),
+            "ls" | "list" => cmd_task_ls(&rest),
+            "confirm" => cmd_task_confirm(&rest),
+            "retry" => cmd_task_retry(&rest),
+            // `meshlet task` / `--help`：任务域用法（比全局帮助更聚焦）。
+            "help" | "--help" | "-h" | "" => print_task_usage(),
+            other => {
+                eprintln!("error: unknown task subcommand '{other}'");
+                eprintln!();
+                print_task_usage();
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     match cmd {
         "info" => cmd_info(),
         "status" => cmd_status(),
@@ -75,6 +100,23 @@ fn print_usage() {
     print!(
         "{}",
         meshlet_commands::usage_text(env!("CARGO_PKG_VERSION"))
+    );
+}
+
+/// `meshlet task` 域内用法（子命令 + 必选参数速查）。
+fn print_task_usage() {
+    print!(
+        "meshlet task <subcommand> [options]\n\
+         \n\
+         subcommands:\n\
+         \x20 assign   --network <id> --node <device-id> --cmd <command>\n\
+         \x20          [--workdir <dir>] [--timeout <secs>] [--id <id>]\n\
+         \x20 ls       --network <id>\n\
+         \x20 confirm  --network <id> <task-id>\n\
+         \x20 retry    --network <id> <task-id>\n\
+         \n\
+         server/token: --server <url> / --token <mlt_...> >\n\
+         MESHLET_SERVER / MESHLET_TOKEN > agent.toml. `meshlet --help` for all commands.\n"
     );
 }
 
@@ -315,6 +357,292 @@ fn dial_node(state: &std::path::Path, views: Option<Vec<DirectPeerView>>, node: 
 /// 拨号请求 ID：Unix 毫秒 + 本进程号（跨进程唯一性足够）。
 fn dial_request_id() -> String {
     format!("{}-{}", dial::now_millis(), std::process::id())
+}
+
+// ── meshlet task（MT-003：控制台任务队列的 CLI 面）───────────────────
+//
+// 任务 API 是管理面（Bearer `mlt_` API Token + `x-requested-with` CSRF 头）。
+// 服务器地址与 Token 解析顺序：`--server`/`--token` 标志 > 环境变量
+// （MESHLET_SERVER / MESHLET_TOKEN）> agent.toml（server_url / api_token）。
+
+/// 任务子命令错误退出。
+fn task_fail(msg: &str) -> ! {
+    eprintln!("error: {msg}");
+    std::process::exit(1);
+}
+
+/// 解析 `--flag value` 与位置参数（纯函数，可测）。
+fn parse_flags(args: &[String]) -> (std::collections::HashMap<String, String>, Vec<String>) {
+    let mut flags = std::collections::HashMap::new();
+    let mut pos = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if let Some(key) = a.strip_prefix("--") {
+            // `--flag value`：下一 token 不以 `--` 开头即视为值；否则裸开关。
+            if let Some(v) = args.get(i + 1) {
+                if !v.starts_with("--") {
+                    flags.insert(key.to_string(), v.clone());
+                    i += 2;
+                    continue;
+                }
+            }
+            flags.insert(key.to_string(), String::new());
+            i += 1;
+        } else {
+            pos.push(a.clone());
+            i += 1;
+        }
+    }
+    (flags, pos)
+}
+
+/// 服务器地址：`--server` > `MESHLET_SERVER` > 配置 `server_url`。
+fn task_server(flags: &std::collections::HashMap<String, String>) -> String {
+    if let Some(s) = flags.get("server").filter(|s| !s.is_empty()) {
+        return s.clone();
+    }
+    if let Ok(s) = std::env::var("MESHLET_SERVER") {
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    read_config()
+        .get("server_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// API Token：`--token` > `MESHLET_TOKEN` > 配置 `api_token`。
+fn task_token(flags: &std::collections::HashMap<String, String>) -> String {
+    if let Some(t) = flags.get("token").filter(|t| !t.is_empty()) {
+        return t.clone();
+    }
+    if let Ok(t) = std::env::var("MESHLET_TOKEN") {
+        if !t.is_empty() {
+            return t;
+        }
+    }
+    read_config()
+        .get("api_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 任务 API 调用（Bearer + CSRF 头）。`body=None` 为 GET。返回 JSON。
+fn task_request(
+    method: &str,
+    server: &str,
+    token: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    if server.is_empty() {
+        return Err(
+            "no server: pass --server <url>, set MESHLET_SERVER, or set server_url in agent.toml"
+                .into(),
+        );
+    }
+    if token.is_empty() {
+        return Err(
+            "no API token: pass --token <mlt_...>, set MESHLET_TOKEN, or set api_token in agent.toml"
+                .into(),
+        );
+    }
+    let url = format!("{}/api/v1{}", server.trim_end_matches('/'), path);
+    let agent = ureq::AgentBuilder::new().build();
+    let req = agent
+        .request(method, &url)
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("x-requested-with", "XMLHttpRequest")
+        .set("content-type", "application/json");
+    let payload = body.map(|b| b.to_string()).unwrap_or_default();
+    match req.send_string(&payload) {
+        Ok(r) => {
+            let text = r.into_string().unwrap_or_default();
+            serde_json::from_str(&text).map_err(|e| format!("bad response: {e}"))
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let text = r.into_string().unwrap_or_default();
+            Err(format!("HTTP {code}: {text}"))
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `meshlet task assign --network <id> --node <device-id> --cmd <cmd>`
+/// [--workdir <dir>] [--timeout <secs>] [--id <id>]。
+fn cmd_task_assign(args: &[String]) {
+    let (flags, _pos) = parse_flags(args);
+    let server = task_server(&flags);
+    let token = task_token(&flags);
+    let network = flags.get("network").cloned().unwrap_or_default();
+    let node = flags.get("node").cloned().unwrap_or_default();
+    let cmd = flags.get("cmd").cloned().unwrap_or_default();
+    if network.is_empty() || node.is_empty() || cmd.is_empty() {
+        task_fail("task assign requires --network <id>, --node <device-id>, --cmd <command>");
+    }
+    let mut body = serde_json::json!({ "target_device_id": node, "cmd": cmd });
+    if let Some(w) = flags.get("workdir").filter(|w| !w.is_empty()) {
+        body["workdir"] = serde_json::json!(w);
+    }
+    // `--timeout` 必须是秒数；非法值不静默丢（否则用默认超时跑，行为悄悄变）。
+    if let Some(raw) = flags.get("timeout") {
+        match raw.parse::<u64>() {
+            Ok(t) => {
+                body["timeout_secs"] = serde_json::json!(t);
+            }
+            Err(_) => task_fail(&format!(
+                "task assign: --timeout expects seconds, got '{raw}'"
+            )),
+        }
+    }
+    if let Some(id) = flags.get("id").filter(|id| !id.is_empty()) {
+        body["id"] = serde_json::json!(id);
+    }
+    match task_request(
+        "POST",
+        &server,
+        &token,
+        &format!("/networks/{network}/tasks"),
+        Some(body),
+    ) {
+        Ok(v) => {
+            println!("assigned: {}", v["id"].as_str().unwrap_or("?"));
+            print!("{}", format_task_view(&v));
+        }
+        Err(e) => task_fail(&e),
+    }
+}
+
+/// `meshlet task ls --network <id>`。
+fn cmd_task_ls(args: &[String]) {
+    let (flags, _pos) = parse_flags(args);
+    let server = task_server(&flags);
+    let token = task_token(&flags);
+    let network = flags.get("network").cloned().unwrap_or_default();
+    if network.is_empty() {
+        task_fail("task ls requires --network <id>");
+    }
+    match task_request(
+        "GET",
+        &server,
+        &token,
+        &format!("/networks/{network}/tasks"),
+        None,
+    ) {
+        Ok(arr) => print!("{}", format_task_list(&arr)),
+        Err(e) => task_fail(&e),
+    }
+}
+
+/// `meshlet task confirm <task-id> --network <id>`（用户侧确认完成）。
+fn cmd_task_confirm(args: &[String]) {
+    let (flags, pos) = parse_flags(args);
+    let server = task_server(&flags);
+    let token = task_token(&flags);
+    let network = flags.get("network").cloned().unwrap_or_default();
+    let id = pos.first().cloned().unwrap_or_default();
+    if network.is_empty() || id.is_empty() {
+        task_fail("task confirm <task-id> requires --network <id>");
+    }
+    match task_request(
+        "POST",
+        &server,
+        &token,
+        &format!("/networks/{network}/tasks/{id}/confirm"),
+        Some(serde_json::json!({})),
+    ) {
+        Ok(v) => {
+            println!("confirmed: {}", v["id"].as_str().unwrap_or("?"));
+            print!("{}", format_task_view(&v));
+        }
+        Err(e) => task_fail(&e),
+    }
+}
+
+/// `meshlet task retry <task-id> --network <id>`（驳回重跑，新代任务）。
+fn cmd_task_retry(args: &[String]) {
+    let (flags, pos) = parse_flags(args);
+    let server = task_server(&flags);
+    let token = task_token(&flags);
+    let network = flags.get("network").cloned().unwrap_or_default();
+    let id = pos.first().cloned().unwrap_or_default();
+    if network.is_empty() || id.is_empty() {
+        task_fail("task retry <task-id> requires --network <id>");
+    }
+    match task_request(
+        "POST",
+        &server,
+        &token,
+        &format!("/networks/{network}/tasks/{id}/retry"),
+        Some(serde_json::json!({})),
+    ) {
+        Ok(v) => {
+            println!(
+                "retried: {} (rerun dispatched)",
+                v["id"].as_str().unwrap_or("?")
+            );
+            print!("{}", format_task_view(&v));
+        }
+        Err(e) => task_fail(&e),
+    }
+}
+
+/// 任务列表渲染（纯函数，可测）。
+fn format_task_list(arr: &serde_json::Value) -> String {
+    let rows = match arr.as_array() {
+        Some(r) if !r.is_empty() => r,
+        _ => return "(no tasks)\n".to_string(),
+    };
+    let mut out = format!(
+        "{:<16} {:<10} {:<16} {:<12} {:<10} {:<10}  {}\n",
+        "ID", "STATE", "TARGET", "CMD", "CONFIRMED", "REJECTED", "PARENT"
+    );
+    for t in rows {
+        out.push_str(&format!(
+            "{:<16} {:<10} {:<16} {:<12} {:<10} {:<10}  {}\n",
+            t["id"].as_str().unwrap_or("?"),
+            t["state"].as_str().unwrap_or("?"),
+            t["target_device_id"].as_str().unwrap_or("?"),
+            cmd_short(t["cmd"].as_str().unwrap_or("?")),
+            t["confirmed_at"].as_str().map(|_| "yes").unwrap_or("—"),
+            t["rejected_at"].as_str().map(|_| "yes").unwrap_or("—"),
+            t["parent_task_id"].as_str().unwrap_or("—"),
+        ));
+    }
+    out
+}
+
+/// 命令摘要（列宽 `{:&<12}` 内截断：11 字符 + 省略号 = 12 列，纯函数）。
+fn cmd_short(cmd: &str) -> String {
+    let count = cmd.chars().count();
+    if count > 12 {
+        let c: String = cmd.chars().take(11).collect();
+        format!("{c}…")
+    } else {
+        cmd.to_string()
+    }
+}
+
+/// 单任务视图（纯函数，可测）。
+fn format_task_view(v: &serde_json::Value) -> String {
+    format!(
+        "  id={} state={} target={} confirmed={} rejected={} parent={}\n  cmd={} exit_code={}\n",
+        v["id"].as_str().unwrap_or("?"),
+        v["state"].as_str().unwrap_or("?"),
+        v["target_device_id"].as_str().unwrap_or("?"),
+        v["confirmed_at"].as_str().map(|_| "yes").unwrap_or("—"),
+        v["rejected_at"].as_str().map(|_| "yes").unwrap_or("—"),
+        v["parent_task_id"].as_str().unwrap_or("—"),
+        v["cmd"].as_str().unwrap_or("?"),
+        v["exit_code"]
+            .as_i64()
+            .map(|c| c.to_string())
+            .unwrap_or("—".into()),
+    )
 }
 
 /// 构造诊断后端：默认 `wg0`，若本机存在实际 wg 接口则用其名（配置常改
@@ -701,6 +1029,9 @@ fn format_bytes(n: u64) -> String {
 mod tests {
     use super::peer_mode;
 
+    /// 微型 mock 服务器记录：每个请求的 (method, path, authorization, csrf)。
+    type MockLog = Vec<(String, String, String, String)>;
+
     #[test]
     fn usage_works() {
         // 确保 version 命令不 panic
@@ -728,7 +1059,8 @@ mod tests {
             .map(|c| c.name.split(' ').next().unwrap())
             .collect();
         let dispatched = std::collections::BTreeSet::from([
-            "info", "status", "peers", "peer", "agent", "networks", "config", "version", "help",
+            "info", "status", "peers", "peer", "agent", "task", "networks", "config", "version",
+            "help",
         ]);
         assert_eq!(catalog_top, dispatched, "catalog and dispatch disagree");
         // ③ agent/peer 子命令同样覆盖（diag/dial 在目录，分发只认它们）。
@@ -855,5 +1187,273 @@ mod tests {
         assert!(text.contains("peer-b"));
         assert!(text.contains("10.240.0.3"));
         assert!(text.contains("hub_relay"));
+    }
+
+    // ── MT-003：`meshlet task` 解析与渲染 ───────────────────────────
+
+    #[test]
+    fn parse_flags_extracts_values_and_positionals() {
+        let args: Vec<String> = [
+            "task-1",
+            "--network",
+            "net-1",
+            "--cmd",
+            "echo hi",
+            "--timeout",
+            "30",
+            "--verbose",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let (flags, pos) = super::parse_flags(&args);
+        assert_eq!(pos, vec!["task-1".to_string()]);
+        assert_eq!(flags.get("network").map(|s| s.as_str()), Some("net-1"));
+        assert_eq!(flags.get("cmd").map(|s| s.as_str()), Some("echo hi"));
+        assert_eq!(flags.get("timeout").map(|s| s.as_str()), Some("30"));
+        assert_eq!(flags.get("verbose").map(|s| s.as_str()), Some(""));
+        // flag 后随的非 `--` token 是它的值；末尾裸开关值为空。
+        let (flags2, pos2) = super::parse_flags(&[
+            "--x".to_string(),
+            "task-2".to_string(),
+            "--bare".to_string(),
+        ]);
+        assert_eq!(flags2.get("x").map(|s| s.as_str()), Some("task-2"));
+        assert_eq!(flags2.get("bare").map(|s| s.as_str()), Some(""));
+        assert!(pos2.is_empty());
+        // 位置参数在前、flag 在后（实际用法 `task confirm <id> --network <id>`）。
+        let (flags3, pos3) = super::parse_flags(&[
+            "task-9".to_string(),
+            "--network".to_string(),
+            "net-2".to_string(),
+        ]);
+        assert_eq!(pos3, vec!["task-9".to_string()]);
+        assert_eq!(flags3.get("network").map(|s| s.as_str()), Some("net-2"));
+    }
+
+    #[test]
+    fn task_list_renders_columns_with_confirmation_marks() {
+        let arr = serde_json::json!([
+            {
+                "id": "task-1", "state": "done", "target_device_id": "dev-1",
+                "cmd": "echo hi", "confirmed_at": "t", "rejected_at": null,
+                "parent_task_id": null,
+            },
+            {
+                "id": "task-1-r1", "state": "assigned", "target_device_id": "dev-1",
+                "cmd": "echo a very long command that truncates", "confirmed_at": null,
+                "rejected_at": null, "parent_task_id": "task-1",
+            },
+        ]);
+        let text = super::format_task_list(&arr);
+        assert!(text.contains("ID"));
+        assert!(text.contains("task-1"));
+        assert!(text.contains("task-1-r1"));
+        assert!(text.contains("yes")); // confirmed 标记
+        assert!(text.contains("…")); // cmd 截断
+        assert!(text.contains("PARENT")); // 父链列
+        assert!(text.contains("task-1")); // r1 行的父链指向原任务
+                                          // 空列表 → 明确空态。
+        assert_eq!(
+            super::format_task_list(&serde_json::json!([])),
+            "(no tasks)\n"
+        );
+    }
+
+    /// MT-003 验收「CLI 交互测试」：真实 socket + 真实 ureq 客户端 + 真实
+    /// JSON 解析/渲染。起微型 HTTP 服务器按路径应答，验证 CLI 任务客户端
+    /// 发出正确方法/路径/Bearer/CSRF 头并正确解析响应。
+    #[test]
+    fn task_cli_interacts_with_live_server() {
+        let mut routes = std::collections::HashMap::new();
+        routes.insert(
+            "/api/v1/networks/net-1/tasks".to_string(),
+            (
+                200,
+                serde_json::json!([
+                    {
+                        "id": "task-1", "network_id": "net-1", "target_device_id": "dev-1",
+                        "cmd": "echo hi", "workdir": null, "timeout_secs": null,
+                        "state": "done", "retry_limit": 0, "result_ref": "task-1",
+                        "exit_code": 0, "log_tail": "hi", "confirmed_at": null,
+                        "rejected_at": null, "parent_task_id": null,
+                        "created_at": "t", "updated_at": "t",
+                    }
+                ]),
+            ),
+        );
+        routes.insert(
+            "/api/v1/networks/net-1/tasks/task-1/confirm".to_string(),
+            (
+                200,
+                serde_json::json!({
+                    "id": "task-1", "network_id": "net-1", "target_device_id": "dev-1",
+                    "cmd": "echo hi", "workdir": null, "timeout_secs": null,
+                    "state": "done", "retry_limit": 0, "result_ref": "task-1",
+                    "exit_code": 0, "log_tail": "hi", "confirmed_at": "t",
+                    "rejected_at": null, "parent_task_id": null,
+                    "created_at": "t", "updated_at": "t",
+                }),
+            ),
+        );
+        routes.insert(
+            "/api/v1/networks/net-1/tasks/task-1/retry".to_string(),
+            (
+                201,
+                serde_json::json!({
+                    "id": "task-1-r1", "network_id": "net-1", "target_device_id": "dev-1",
+                    "cmd": "echo hi", "workdir": null, "timeout_secs": null,
+                    "state": "assigned", "retry_limit": 0, "result_ref": null,
+                    "exit_code": null, "log_tail": null, "confirmed_at": null,
+                    "rejected_at": null, "parent_task_id": "task-1",
+                    "created_at": "t", "updated_at": "t",
+                }),
+            ),
+        );
+        let (base, handle) = spawn_mock(routes, 3);
+
+        // ls：GET 拉队列。
+        let list =
+            super::task_request("GET", &base, "mlt_secret", "/networks/net-1/tasks", None).unwrap();
+        let rendered = super::format_task_list(&list);
+        assert!(rendered.contains("task-1"));
+
+        // confirm：POST + 空 JSON 体。
+        let confirmed = super::task_request(
+            "POST",
+            &base,
+            "mlt_secret",
+            "/networks/net-1/tasks/task-1/confirm",
+            Some(serde_json::json!({})),
+        )
+        .unwrap();
+        assert_eq!(confirmed["confirmed_at"], "t");
+
+        // retry：POST 返回新代（parent 链）。
+        let rerun = super::task_request(
+            "POST",
+            &base,
+            "mlt_secret",
+            "/networks/net-1/tasks/task-1/retry",
+            Some(serde_json::json!({})),
+        )
+        .unwrap();
+        assert_eq!(rerun["id"], "task-1-r1");
+        assert_eq!(rerun["parent_task_id"], "task-1");
+
+        // 服务器记录：方法/路径/Bearer/CSRF 头全部符合管理面约定（服务端
+        // 对写操作硬性要求 x-requested-with，丢头会 403——回归必须被看见）。
+        let log = handle.join().unwrap();
+        assert_eq!(log.len(), 3);
+        assert_eq!(
+            log[0],
+            (
+                "GET".into(),
+                "/api/v1/networks/net-1/tasks".into(),
+                "Bearer mlt_secret".into(),
+                "XMLHttpRequest".into()
+            )
+        );
+        assert_eq!(log[0].3, "XMLHttpRequest");
+        assert_eq!(log[1].0, "POST");
+        assert!(log[1].1.contains("/confirm"));
+        assert_eq!(log[1].2, "Bearer mlt_secret");
+        assert_eq!(log[1].3, "XMLHttpRequest");
+        assert_eq!(log[2].0, "POST");
+        assert!(log[2].1.contains("/retry"));
+        assert_eq!(log[2].3, "XMLHttpRequest");
+    }
+
+    /// 微型 HTTP 服务器（测试）：按路径应答脚本，记录 (method, path, auth)。
+    /// 处理 `requests` 个连接后退出。返回 (base_url, join_handle)。
+    fn spawn_mock(
+        routes: std::collections::HashMap<String, (u16, serde_json::Value)>,
+        requests: usize,
+    ) -> (String, std::thread::JoinHandle<MockLog>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut log = Vec::new();
+            for stream in listener.incoming().take(requests) {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                // 读请求头（\r\n\r\n 结束）。
+                let header_end;
+                loop {
+                    let n = stream.read(&mut tmp).unwrap();
+                    if n == 0 {
+                        return log;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = pos + 4;
+                        break;
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                let mut lines = head.lines();
+                let request_line = lines.next().unwrap_or("").to_string();
+                let mut auth = String::new();
+                let mut csrf = String::new();
+                for l in lines {
+                    if l.to_ascii_lowercase().starts_with("authorization:") {
+                        auth = l
+                            .split_once(':')
+                            .map(|(_, v)| v)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                    }
+                    if l.to_ascii_lowercase().starts_with("x-requested-with:") {
+                        csrf = l
+                            .split_once(':')
+                            .map(|(_, v)| v)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                    }
+                }
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+                let clen = head
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split_once(':').map(|(_, v)| v))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                while buf.len() < header_end + clen {
+                    let n = stream.read(&mut tmp).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                log.push((method, path.clone(), auth.clone(), csrf.clone()));
+                let (status, body) = routes
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or((404, serde_json::json!({ "error": "not found" })));
+                let body_str = serde_json::to_string(&body).unwrap();
+                let reason = match status {
+                    200 => "OK",
+                    201 => "Created",
+                    404 => "Not Found",
+                    _ => "X",
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body_str}",
+                    body_str.len()
+                );
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+            log
+        });
+        (base, handle)
     }
 }
