@@ -20,6 +20,21 @@ pub struct DesktopClient {
 }
 
 impl DesktopClient {
+    /// 会话总线连接（惰性建立）。失败 `None`（非致命，调用方降级）。
+    #[cfg(target_os = "linux")]
+    fn ensure_session(&mut self) -> Option<zbus::Connection> {
+        if self.connection.is_none() {
+            match block_on(async { connection::Builder::session()?.build().await }) {
+                Ok(connection) => self.connection = Some(connection),
+                Err(error) => {
+                    tracing::debug!(error = %error, "desktop session bus unavailable");
+                    return None;
+                }
+            }
+        }
+        self.connection.clone()
+    }
+
     #[cfg(target_os = "linux")]
     pub fn publish(
         &mut self,
@@ -34,20 +49,12 @@ impl DesktopClient {
         if !env.has_desktop_session() {
             return DesktopPublish::Headless;
         }
-        if self.connection.is_none() {
-            match block_on(async { connection::Builder::session()?.build().await }) {
-                Ok(connection) => self.connection = Some(connection),
-                Err(error) => {
-                    tracing::debug!(error = %error, "desktop session bus unavailable");
-                    return DesktopPublish::NoBus;
-                }
-            }
-        }
-        let Some(connection) = self.connection.clone() else {
+        let Some(connection) = self.ensure_session() else {
             return DesktopPublish::NoBus;
         };
         if notifications_enabled {
-            if let Err(error) = Self::notify(&connection, status) {
+            let call = notify_call(status);
+            if let Err(error) = Self::notify(&connection, &call) {
                 tracing::debug!(error = %error, "desktop notification unavailable");
                 return DesktopPublish::NoBus;
             }
@@ -56,6 +63,25 @@ impl DesktopClient {
             self.publish_status_notifier(&connection, status)
         } else {
             DesktopPublish::Published
+        }
+    }
+
+    /// MT-004：任务到达托盘气泡。复用 notify 契约与连接；无桌面/无总线一律
+    /// 降级非致命（agent 循环不得因通知失败退避）。
+    #[cfg(target_os = "linux")]
+    pub fn notify_task(&mut self, call: &NotifyCall, env: &EnvProbe) -> DesktopPublish {
+        if !env.has_desktop_session() {
+            return DesktopPublish::Headless;
+        }
+        let Some(connection) = self.ensure_session() else {
+            return DesktopPublish::NoBus;
+        };
+        match Self::notify(&connection, call) {
+            Ok(()) => DesktopPublish::Published,
+            Err(error) => {
+                tracing::debug!(error = %error, "desktop notification unavailable");
+                DesktopPublish::NoBus
+            }
         }
     }
 
@@ -74,8 +100,7 @@ impl DesktopClient {
     }
 
     #[cfg(target_os = "linux")]
-    fn notify(connection: &zbus::Connection, status: &TrayStatus) -> zbus::Result<()> {
-        let call = notify_call(status);
+    fn notify(connection: &zbus::Connection, call: &NotifyCall) -> zbus::Result<()> {
         block_on(async {
             connection
                 .call_method(
@@ -90,7 +115,7 @@ impl DesktopClient {
                         call.summary,
                         call.body.clone(),
                         call.actions.clone(),
-                        notify_hints(&call),
+                        notify_hints(call),
                         call.expire_timeout_ms,
                     ),
                 )

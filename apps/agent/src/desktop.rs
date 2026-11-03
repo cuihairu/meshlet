@@ -46,6 +46,11 @@ pub struct NotifyCall {
 
 pub const NOTIFICATION_ID: u32 = 0;
 
+/// 任务到达通知的「打开详情」动作键（DBus 动作对 key/label 的前半）。
+pub const TASK_ACTION_OPEN: &str = "open";
+/// 任务到达通知摘要。任务 id/命令是动态内容，放 body；摘要保持静态。
+pub const TASK_ARRIVED_SUMMARY: &str = "Task arrived";
+
 pub fn notify_call(status: &TrayStatus) -> NotifyCall {
     NotifyCall {
         app_name: "Meshlet",
@@ -54,6 +59,23 @@ pub fn notify_call(status: &TrayStatus) -> NotifyCall {
         summary: status.state.accessible_name(),
         body: status.tooltip.clone(),
         actions: Vec::new(),
+        expire_timeout_ms: 5_000,
+        desktop_entry: Some("meshlet-agent"),
+    }
+}
+
+/// 任务到达的托盘气泡（MT-004，复用 notify 契约）：摘要「Task arrived」，
+/// body 带任务 id 与命令，动作「open/Open task」指向打开任务详情。点击路由
+/// （ActionInvoked → 详情）是桌面宿主侧真实交互；见 MT1104——Windows 真机
+/// 验收 BLOCKED，此处只落代码面（纯构造 + 触发测试）。
+pub fn task_notify_call(task_id: &str, cmd: &str) -> NotifyCall {
+    NotifyCall {
+        app_name: "Meshlet",
+        replaces_id: NOTIFICATION_ID,
+        app_icon: "meshlet-status",
+        summary: TASK_ARRIVED_SUMMARY,
+        body: format!("{task_id}: {cmd}"),
+        actions: vec![TASK_ACTION_OPEN, "Open task"],
         expire_timeout_ms: 5_000,
         desktop_entry: Some("meshlet-agent"),
     }
@@ -158,6 +180,18 @@ mod tests {
         assert_eq!(call.app_name, "Meshlet");
         assert_eq!(call.summary, "Meshlet tunnel drift");
         assert_eq!(call.body, status.tooltip);
+        assert_eq!(call.expire_timeout_ms, 5_000);
+        assert_eq!(call.desktop_entry, Some("meshlet-agent"));
+    }
+
+    #[test]
+    fn task_arrival_call_names_id_cmd_and_open_action() {
+        let call = task_notify_call("task-1", "echo hi");
+        assert_eq!(call.summary, TASK_ARRIVED_SUMMARY);
+        assert!(call.body.contains("task-1"));
+        assert!(call.body.contains("echo hi"));
+        assert_eq!(call.actions, vec![TASK_ACTION_OPEN, "Open task"]);
+        assert_eq!(call.replaces_id, NOTIFICATION_ID);
         assert_eq!(call.expire_timeout_ms, 5_000);
         assert_eq!(call.desktop_entry, Some("meshlet-agent"));
     }

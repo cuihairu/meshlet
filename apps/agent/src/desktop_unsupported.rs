@@ -3,7 +3,7 @@
 //! Shared tray state remains supported; desktop I/O is refused instead of pretending
 //! that a D-Bus notification or StatusNotifierItem was published.
 
-use crate::desktop::DesktopPublish;
+use crate::desktop::{DesktopPublish, NotifyCall};
 use crate::tray::{EnvProbe, TrayStatus};
 
 #[derive(Default)]
@@ -20,6 +20,11 @@ impl DesktopClient {
         if !notifications_enabled && !status_notifier_enabled {
             return DesktopPublish::Disabled;
         }
+        DesktopPublish::Headless
+    }
+
+    /// MT-004：非 Linux 无桌面通知（ADT-008 Windows 数据面后端落地前）。
+    pub fn notify_task(&mut self, _call: &NotifyCall, _env: &EnvProbe) -> DesktopPublish {
         DesktopPublish::Headless
     }
 }

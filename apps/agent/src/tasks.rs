@@ -168,6 +168,8 @@ pub fn report_result(
 }
 
 /// 处理一个任务：账本已有 → 补报；否则 ack → 跑 → 落账本 → 回执。
+/// `on_arrival` 在 ack 成功后、执行前触发一次（MT-004：任务到达即托盘气泡；
+/// 断线补派的 ReReport 不是到达，不触发）。
 /// `Err` 表示本轮跳过（网络失败，下轮重试）；回执失败已在内部记日志并落账本，
 /// 不返回 `Err`（账本已记录，下轮补报，不触发外层退避）。
 pub fn process_one(
@@ -176,6 +178,7 @@ pub fn process_one(
     ledger: &mut TaskLedger,
     ledger_path: &Path,
     task: &Task,
+    on_arrival: &mut dyn FnMut(&Task),
 ) -> Result<(), String> {
     let id = task.id.to_string();
     match decide(ledger, task) {
@@ -187,6 +190,7 @@ pub fn process_one(
         Decide::Execute => {
             // ack 失败本轮不跑：保证服务端状态机顺序（assigned → acked → ...）。
             ack_task(server_url, token, &id)?;
+            on_arrival(task);
             let result = run_task(&task.payload);
             // 先落账本再回执：崩溃在间隙 → 重连补报不重跑。
             ledger.record(id.clone(), result.clone());
@@ -203,16 +207,17 @@ pub fn process_one(
 }
 
 /// 处理本设备全部待办。拉取失败 `Err`（下轮重试）；单任务失败只记日志，
-/// 不影响其余任务与数据面循环。
+/// 不影响其余任务与数据面循环。`on_arrival` 对每个新到达任务触发一次。
 pub fn process_pending(
     server_url: &str,
     token: &str,
     ledger: &mut TaskLedger,
     ledger_path: &Path,
+    on_arrival: &mut dyn FnMut(&Task),
 ) -> Result<(), String> {
     let pending = fetch_pending(server_url, token)?;
     for task in &pending {
-        if let Err(e) = process_one(server_url, token, ledger, ledger_path, task) {
+        if let Err(e) = process_one(server_url, token, ledger, ledger_path, task, on_arrival) {
             tracing::warn!(task = %task.id, error = %e, "task processing deferred to next tick");
         }
     }
@@ -515,5 +520,122 @@ mod tests {
             assert_eq!(result.exit_code, SPAWN_FAIL_EXIT);
             assert!(result.log_tail.contains("spawn failed"));
         }
+    }
+
+    /// 微型 HTTP mock（按路径应答脚本）。处理 `requests` 个连接后退出；
+    /// 返回 (base_url, join_handle)。
+    fn spawn_mock(
+        routes: std::collections::HashMap<String, (u16, String)>,
+        requests: usize,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(requests) {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let header_end;
+                loop {
+                    let n = stream.read(&mut tmp).unwrap();
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = pos + 4;
+                        break;
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+                let path = head.lines().next().unwrap_or("").split_whitespace().nth(1);
+                let clen = head
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split_once(':').map(|(_, v)| v))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                while buf.len() < header_end + clen {
+                    let n = stream.read(&mut tmp).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                let (status, body) = path
+                    .and_then(|p| routes.get(p).cloned())
+                    .unwrap_or((404, "{}".to_string()));
+                let reason = if status == 200 { "OK" } else { "Error" };
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.flush();
+            }
+        });
+        (base, handle)
+    }
+
+    /// MT-004 验收「托盘通知触发测试」：真实 socket + 真实 ureq。新到达任务
+    /// ack 成功后 `on_arrival` 恰好触发一次（到达=ack 后、执行前）；账本已有
+    /// 的补派任务不是到达，不触发。
+    #[test]
+    fn arrival_callback_fires_once_for_new_tasks_only() {
+        let pending_body = serde_json::json!([{
+            "id": "task-1", "target_node": "dev-1",
+            "payload": { "cmd": "echo hi", "workdir": null, "timeout_secs": null },
+            "state": "assigned", "retry_limit": 0, "result_ref": null,
+        }])
+        .to_string();
+        let mut routes = std::collections::HashMap::new();
+        routes.insert(
+            "/api/v1/agent/tasks/pending".to_string(),
+            (200, pending_body),
+        );
+        routes.insert(
+            "/api/v1/agent/tasks/task-1/ack".to_string(),
+            (200, "{}".to_string()),
+        );
+        routes.insert(
+            "/api/v1/agent/tasks/task-1/result".to_string(),
+            (200, "{}".to_string()),
+        );
+        let dir = std::env::temp_dir().join(format!("meshlet-task-arrival-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger_path = dir.join("tasks.json");
+
+        // 第一轮：新任务 → 触发一次。
+        let (base, handle) = spawn_mock(routes.clone(), 3);
+        let mut ledger = TaskLedger::default();
+        let mut arrived: Vec<String> = Vec::new();
+        let mut on_arrival = |t: &Task| arrived.push(t.id.to_string());
+        process_pending(&base, "tok", &mut ledger, &ledger_path, &mut on_arrival).unwrap();
+        handle.join().unwrap();
+        assert_eq!(
+            arrived,
+            vec!["task-1".to_string()],
+            "new task must trigger arrival exactly once"
+        );
+
+        // 第二轮（补派同一任务）：账本已有 → 只补报（pending + result，无 ack），
+        // 不再触发。
+        let (base, handle) = spawn_mock(routes, 2);
+        let mut arrived_again: Vec<String> = Vec::new();
+        let mut on_arrival = |t: &Task| arrived_again.push(t.id.to_string());
+        process_pending(&base, "tok", &mut ledger, &ledger_path, &mut on_arrival).unwrap();
+        handle.join().unwrap();
+        assert!(
+            arrived_again.is_empty(),
+            "re-dispatched (already executed) task must not re-trigger arrival"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -271,11 +271,30 @@ impl Agent {
     /// MT-002 任务通道：拉取本设备待办并逐个 ack→执行→回执。失败只记日志
     /// （下轮重试），绝不打断数据面循环。
     fn process_tasks(&mut self) {
+        // MT-004：任务到达（ack 后）触发托盘气泡。通知是尽力而为：与状态气泡
+        // 一致尊重 `tray.notifications`（默认关），并在独立线程发送——D-Bus
+        // 连接/调用可能阻塞（通知守护不响应），绝不拖住任务执行与数据面循环。
+        let notify_enabled = self.desktop_config.notifications;
+        let mut on_arrival = |task: &meshlet_domain::Task| {
+            if !notify_enabled {
+                return;
+            }
+            let call = crate::desktop::task_notify_call(&task.id.to_string(), &task.payload.cmd);
+            std::thread::spawn(move || {
+                let env = crate::tray::EnvProbe::from_env();
+                let mut client = DesktopClient::default();
+                let result = client.notify_task(&call, &env);
+                if !matches!(result, DesktopPublish::Published) {
+                    tracing::debug!(result = ?result, "task arrival not shown");
+                }
+            });
+        };
         if let Err(e) = crate::tasks::process_pending(
             &self.server_url,
             &self.token,
             &mut self.task_ledger,
             &self.task_ledger_path,
+            &mut on_arrival,
         ) {
             tracing::warn!(error = %e, "task processing deferred to next tick");
         }
