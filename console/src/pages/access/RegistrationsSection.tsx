@@ -149,7 +149,7 @@ export function RegistrationsSection({
 
   return (
     <div>
-      <h3>{t('registrations.title')}</h3>
+      <h2>{t('registrations.title')}</h2>
       <p className="muted">{t('registrations.intro')}</p>
       {registrations === null ? (
         <p className="muted">{t('app.loading')}</p>

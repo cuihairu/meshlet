@@ -193,7 +193,7 @@ export function RevisionsSection({ networkId }: { networkId: string }) {
 
   return (
     <div>
-      <h3>{t('revisions.title')}</h3>
+      <h2>{t('revisions.title')}</h2>
       <p className="muted">{t('revisions.intro')}</p>
       {revisions === null ? (
         <p className="muted">{t('app.loading')}</p>

@@ -132,7 +132,7 @@ export function BootstrapTokensSection({ networkId }: { networkId: string }) {
 
   return (
     <div>
-      <h3>{t('bootstrap.title')}</h3>
+      <h2>{t('bootstrap.title')}</h2>
       <p className="muted">{t('bootstrap.intro')}</p>
       {created && (
         <div className="token-box">

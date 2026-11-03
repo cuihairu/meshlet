@@ -140,7 +140,7 @@ export function HostForwardsSection({
 
   return (
     <div>
-      <h3>{t('forwards.title')}</h3>
+      <h2>{t('forwards.title')}</h2>
       <p className="muted">
         {t('forwards.intro1')}
         <code>/32</code>

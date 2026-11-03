@@ -411,10 +411,10 @@ export function PublishSection({
 
   return (
     <div>
-      <h3>{t('publish.title')}</h3>
+      <h2>{t('publish.title')}</h2>
       <p className="muted">{t('publish.intro')}</p>
 
-      <h4>{t('publish.forwardTitle')}</h4>
+      <h3>{t('publish.forwardTitle')}</h3>
       {forwards === null ? (
         <p className="muted">{t('app.loading')}</p>
       ) : forwards.length === 0 ? (
@@ -483,7 +483,7 @@ export function PublishSection({
         </Form.Item>
       </Form>
 
-      <h4>{t('publish.routeTitle')}</h4>
+      <h3>{t('publish.routeTitle')}</h3>
       {routes === null ? (
         <p className="muted">{t('app.loading')}</p>
       ) : routes.length === 0 ? (
@@ -553,7 +553,7 @@ export function PublishSection({
         </Form.Item>
       </Form>
 
-      <h4>{t('publish.probeTitle')}</h4>
+      <h3>{t('publish.probeTitle')}</h3>
       {probes === null ? (
         <p className="muted">{t('app.loading')}</p>
       ) : probes.length === 0 ? (
@@ -619,7 +619,7 @@ export function PublishSection({
         </Form.Item>
       </Form>
 
-      <h4>{t('publish.dnsTitle')}</h4>
+      <h3>{t('publish.dnsTitle')}</h3>
       {dns === null ? (
         <p className="muted">{t('app.loading')}</p>
       ) : dns.length === 0 ? (

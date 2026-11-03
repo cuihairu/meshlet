@@ -196,21 +196,36 @@ a { color: var(--info); }
   border-bottom: 1px solid var(--border);
 }
 
-h3 {
+/* Section titles inside a routed page: h2 under the page h1. The accent bar
+   marks a section; sub-blocks use h3/h4 without repeating the bar. */
+h2 {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: 0.95rem;
+  font-size: 1.05rem;
   text-transform: none;
 }
 
-h3::before {
+h2::before {
   content: '';
   width: 3px;
   height: 1em;
   border-radius: 2px;
   background: var(--accent);
   flex: none;
+}
+
+h3 {
+  font-size: 0.95rem;
+  text-transform: none;
+}
+
+/* Page-level title (route heading) — the document's h1. */
+.panel > h1 {
+  font-size: 1.35rem;
+  margin: 0;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
 }
 
 /* ------------------------------------------------------------- tables */
@@ -275,7 +290,7 @@ tr.state-unknown td { color: var(--muted-c); }
   margin-top: var(--space-5);
 }
 
-.direct-peers-block h3 {
+.direct-peers-block h2 {
   margin-bottom: var(--space-2);
 }
 
@@ -303,7 +318,7 @@ tr.state-unknown td { color: var(--muted-c); }
   margin-top: var(--space-5);
 }
 
-.snapshots-block h3 {
+.snapshots-block h2 {
   margin-bottom: var(--space-2);
 }
 
@@ -328,7 +343,7 @@ tr.state-unknown td { color: var(--muted-c); }
   font-size: 0.9rem;
 }
 
-.snapshot h5 {
+.snapshot h4 {
   margin: var(--space-1) 0 0;
   color: var(--muted-c);
   font-size: 0.78rem;

@@ -63,12 +63,12 @@ export function DiagnosticsSection({ networkId }: { networkId: string }) {
 
   return (
     <div>
-      <h3>
+      <h2>
         {t('diagnostics.title')}{' '}
         <Button onClick={run} loading={busy}>
           {t('diagnostics.run')}
         </Button>
-      </h3>
+      </h2>
       <p className="muted">
         {t('diagnostics.intro1')}
         <strong>{t('diagnostics.unavailable')}</strong>
@@ -91,7 +91,7 @@ export function DiagnosticsSection({ networkId }: { networkId: string }) {
             if (items.length === 0) return null;
             return (
               <div key={layer} className="diag-layer">
-                <h4>{LAYER_KEY[layer] ? t(LAYER_KEY[layer]) : layer}</h4>
+                <h3>{LAYER_KEY[layer] ? t(LAYER_KEY[layer]) : layer}</h3>
                 <ul className="diag-list">
                   {items.map((c) => (
                     <li key={c.id}>

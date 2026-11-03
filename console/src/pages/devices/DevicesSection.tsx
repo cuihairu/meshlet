@@ -196,7 +196,7 @@ export function DevicesSection({
 
   return (
     <div>
-      <h3>{t('devices.title')}</h3>
+      <h2>{t('devices.title')}</h2>
       {devices === null ? (
         <p className="muted">{t('app.loading')}</p>
       ) : devices.length === 0 ? (

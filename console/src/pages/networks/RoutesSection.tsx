@@ -130,7 +130,7 @@ export function RoutesSection({
 
   return (
     <div>
-      <h3>{t('routes.title')}</h3>
+      <h2>{t('routes.title')}</h2>
       <p className="muted">
         {t('routes.intro1')}
         <code>{overlayCidr}</code>

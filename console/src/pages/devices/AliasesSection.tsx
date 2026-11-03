@@ -171,7 +171,7 @@ export function AliasesSection({
 
   return (
     <div>
-      <h3>{t('aliases.title')}</h3>
+      <h2>{t('aliases.title')}</h2>
       <p className="muted">
         {t('aliases.intro1')}
         <strong>{t('aliases.gatewayKernel')}</strong>

@@ -37,7 +37,7 @@ export function InvitesSection({ networkId }: { networkId: string }) {
 
   return (
     <div>
-      <h3>{t('invites.title')}</h3>
+      <h2>{t('invites.title')}</h2>
       <p className="muted">{t('invites.intro')}</p>
       {created && (
         <div className="token-box">

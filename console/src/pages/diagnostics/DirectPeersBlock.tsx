@@ -21,7 +21,7 @@ export function DirectPeersBlock({ networkId }: { networkId: string }) {
 
   return (
     <div className="direct-peers-block">
-      <h3>{t('diagnostics.directPeersTitle')}</h3>
+      <h2>{t('diagnostics.directPeersTitle')}</h2>
       {links.length === 0 ? (
         <p className="muted">{t('diagnostics.directPeersNone')}</p>
       ) : (

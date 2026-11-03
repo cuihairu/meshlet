@@ -159,7 +159,7 @@ export function SegmentGrantsSection({
 
   return (
     <div>
-      <h3>{t('segments.title')}</h3>
+      <h2>{t('segments.title')}</h2>
       <p className="muted">{t('segments.intro')}</p>
       {segments === null || grants === null ? (
         <p className="muted">{t('app.loading')}</p>

@@ -21,7 +21,7 @@ export function NetworkSnapshotBlock({ networkId }: { networkId: string }) {
 
   return (
     <div className="snapshots-block">
-      <h3>{t('diagnostics.snapshotsTitle')}</h3>
+      <h2>{t('diagnostics.snapshotsTitle')}</h2>
       {withSnap.length === 0 ? (
         <p className="muted">{t('diagnostics.snapshotsNone')}</p>
       ) : (
@@ -29,23 +29,23 @@ export function NetworkSnapshotBlock({ networkId }: { networkId: string }) {
           const snap = device.diagnostics!;
           return (
             <section className="snapshot" key={device.id}>
-              <h4 className="snapshot-head">
+              <h3 className="snapshot-head">
                 {device.name}
                 {snap.collected_at ? (
                   <span className="muted">
                     {t('diagnostics.snapshotsCollectedAt')} {formatTime(snap.collected_at)}
                   </span>
                 ) : null}
-              </h4>
+              </h3>
 
-              <h5>{t('diagnostics.snapshotsRoutes')}</h5>
+              <h4>{t('diagnostics.snapshotsRoutes')}</h4>
               {snap.route_table.length === 0 ? (
                 <p className="muted">{t('diagnostics.snapshotsEmpty')}</p>
               ) : (
                 <pre className="snapshot-pre mono">{snap.route_table.join('\n')}</pre>
               )}
 
-              <h5>{t('diagnostics.snapshotsInterfaces')}</h5>
+              <h4>{t('diagnostics.snapshotsInterfaces')}</h4>
               {snap.interfaces.length === 0 ? (
                 <p className="muted">{t('diagnostics.snapshotsEmpty')}</p>
               ) : (
@@ -74,7 +74,7 @@ export function NetworkSnapshotBlock({ networkId }: { networkId: string }) {
                 </table>
               )}
 
-              <h5>{t('diagnostics.snapshotsWg')}</h5>
+              <h4>{t('diagnostics.snapshotsWg')}</h4>
               {snap.wg.length === 0 ? (
                 <p className="muted">{t('diagnostics.snapshotsEmpty')}</p>
               ) : (
