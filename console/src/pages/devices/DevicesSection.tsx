@@ -55,7 +55,16 @@ export function DevicesSection({
   };
 
   const columns: TableProps<import('../../api').Device>['columns'] = [
-    { title: t('devices.colName'), key: 'name', render: (_, d) => d.name },
+    {
+      title: t('devices.colName'),
+      key: 'name',
+      width: 180,
+      render: (_, d) => (
+        <span className="cell-ellipsis" title={d.name}>
+          {d.name}
+        </span>
+      ),
+    },
     {
       title: t('devices.colVirtualIp'),
       key: 'virtual_ipv4',

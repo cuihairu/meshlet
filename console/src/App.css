@@ -251,6 +251,15 @@ h3 {
 /* antd Table: let the console font/color drive density instead of antd's own.
    Row hover and dead-row dimming are the only load-bearing table rules. */
 .ant-table { font-size: 0.875rem; }
+
+/* Single-line cell: long identifiers (device names) truncate with ellipsis
+   instead of wrapping into a tall stack; the full value stays on hover. */
+.cell-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ant-table-tbody > tr { transition: background 120ms ease; }
 .ant-table-tbody > tr:hover > td {
   background: color-mix(in srgb, var(--surface-2) 60%, transparent) !important;
