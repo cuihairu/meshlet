@@ -353,9 +353,13 @@ fn main() {
                     // 根据状态换图标（从 exe 同级 Resources 目录加载）
                     let state = status["state"].as_str().unwrap_or("unknown");
                     let icon_name = match state {
-                        "online" | "connected" | "ready" | "up" | "ok" => "icon-teal.png",
-                        "error" | "failed" | "disconnected" | "down" => "icon-copper.png",
-                        _ => "icon-gray.png",
+                        "online" | "connected" | "ready" | "up" | "ok" => "icon-online.png",
+                        // agent 实际产出 tunnel_only（隧道通、控制通道断）= 降级；
+                        // 其余降级信号待 agent 后续补充分档
+                        "degraded" | "tunnel_only" => "icon-degraded.png",
+                        "error" | "failed" => "icon-error.png",
+                        "disconnected" | "down" => "icon-offline.png",
+                        _ => "icon-offline.png",
                     };
                     if let Ok(exe) = std::env::current_exe() {
                         if let Some(dir) = exe.parent().and_then(|d| d.parent()) {
