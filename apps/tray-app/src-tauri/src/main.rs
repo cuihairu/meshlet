@@ -393,18 +393,36 @@ fn main() {
         });
 }
 
+/// 把已存在的设置窗口带回前台：先还原（最小化态）→ 显示 → 聚焦。
+/// 顺序不可省 unminimize：tao 的 `show()` 最终是 `ShowWindow(SW_SHOW)`
+/// （tao-0.37.2 window_state.rs:458-468），不会还原最小化窗口；而 tao 的
+/// `set_focus()` 守卫 `is_visible && !is_minimized && !is_foreground`
+/// （tao-0.37.2 window.rs:139-150）在最小化时是 no-op——只 show+focus 时
+/// 最小化的窗口原封不动留在任务栏，用户看就是「点打开设置没反应」。
+fn reveal_settings_window(window: &tauri::WebviewWindow) {
+    if window.is_minimized().unwrap_or(false) {
+        let _ = window.unminimize();
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
 /// 显示（或聚焦）设置面板——供右键菜单「打开设置」项使用，行为不变：
 /// 始终把窗口带到前台。
 fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
-        // 关闭（CloseRequested）已被拦截为 hide()，窗口的 VISIBLE 标志未置时
-        // tao 的 set_focus 是 no-op，必须先 show() 再聚焦，否则再次点击托盘
-        // 图标不会把隐藏的设置窗口带回前台。
-        let _ = window.show();
-        let _ = window.set_focus();
+        reveal_settings_window(&window);
         return;
     }
     build_settings_window(app);
+}
+
+/// 托盘左键单击是否应隐藏面板（纯判定，可测）：仅当窗口可见且**未**最小化
+/// 才算「正在使用」→ 隐藏。最小化窗口的 `is_visible()` 仍为 true（WS_VISIBLE
+/// 未清），若据它隐藏，单击托盘会把最小化窗口继续藏进任务栏，永远还原不了；
+/// Windows 托盘惯例是单击还原最小化窗口。
+fn settings_toggle_should_hide(is_visible: bool, is_minimized: bool) -> bool {
+    is_visible && !is_minimized
 }
 
 /// 切换设置面板显隐——托盘图标左键单击路径。可见则隐藏，否则显示并聚焦。
@@ -412,11 +430,12 @@ fn open_settings_window(app: &tauri::AppHandle) {
 /// 这是 Windows 托盘的主流交互约定。
 fn toggle_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
-        if window.is_visible().unwrap_or(false) {
+        let visible = window.is_visible().unwrap_or(false);
+        let minimized = window.is_minimized().unwrap_or(false);
+        if settings_toggle_should_hide(visible, minimized) {
             let _ = window.hide();
         } else {
-            let _ = window.show();
-            let _ = window.set_focus();
+            reveal_settings_window(&window);
         }
         return;
     }
@@ -424,7 +443,9 @@ fn toggle_settings_window(app: &tauri::AppHandle) {
 }
 
 fn build_settings_window(app: &tauri::AppHandle) {
-    let _ = tauri::WebviewWindowBuilder::new(
+    // 创建失败不再静默吞掉：窗口创建竞态/WebView 故障时至少留一条诊断线
+    //（此前 `let _ =` 让「点打开设置没反应」无迹可查）。
+    if let Err(e) = tauri::WebviewWindowBuilder::new(
         app,
         "settings",
         tauri::WebviewUrl::App("index.html".into()),
@@ -433,7 +454,10 @@ fn build_settings_window(app: &tauri::AppHandle) {
     .inner_size(760.0, 600.0)
     .min_inner_size(600.0, 480.0)
     .resizable(true)
-    .build();
+    .build()
+    {
+        eprintln!("meshlet-tray: build settings window failed: {e}");
+    }
 }
 
 /// 托盘左键激活的合并窗口。Windows 上一次物理双击会发出 Click → DoubleClick
@@ -587,5 +611,26 @@ mod path_convention_tests {
             Some(t0),
             t0 + std::time::Duration::from_millis(160)
         )); // 抬起 → 吞
+    }
+
+    #[test]
+    fn toggle_hides_only_visible_unminimized_window() {
+        // 可见且未最小化（正在使用）→ 托盘单击隐藏（切换语义不变）。
+        assert!(settings_toggle_should_hide(true, false));
+    }
+
+    #[test]
+    fn toggle_does_not_hide_minimized_window() {
+        // 回归（右键「打开设置」无响应同族）：最小化窗口的 is_visible() 仍为
+        // true（WS_VISIBLE 未清），旧代码据此 hide()，单击托盘把窗口越藏越深，
+        // 永远还原不了。最小化必须按「待还原」处理而不是隐藏。
+        assert!(!settings_toggle_should_hide(true, true));
+    }
+
+    #[test]
+    fn toggle_reveals_hidden_window() {
+        // 隐藏（关闭被拦截为 hide）→ 不隐藏，走还原路径（reveal）。
+        assert!(!settings_toggle_should_hide(false, false));
+        assert!(!settings_toggle_should_hide(false, true));
     }
 }
