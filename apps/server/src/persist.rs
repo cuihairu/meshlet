@@ -697,6 +697,30 @@ pub async fn update_device_status(pool: &SqlitePool, d: &Device) -> Result<(), s
     Ok(())
 }
 
+/// 落库设备标签 + 审计（同一事务，「不留痕不放行」）。标签不记修订——
+/// 它是路由元数据，不是网络配置。
+pub async fn commit_device_labels(
+    pool: &SqlitePool,
+    device: &Device,
+    audit: &AuditDraft<'_>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let json = serde_json::to_string(&device.labels).map_err(|e| {
+        sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            e.to_string(),
+        ))
+    })?;
+    sqlx::query("UPDATE devices SET labels = ? WHERE id = ?")
+        .bind(json)
+        .bind(device.id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    insert_audit_tx(&mut tx, audit).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// 回写在线证据时间戳 + 数据面实测证据（心跳路径，§14.1/§7.5）。
 pub async fn update_device_presence(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -1134,8 +1158,9 @@ pub async fn commit_task(
         "INSERT INTO tasks
            (id, network_id, target_device_id, cmd, workdir, timeout_secs,
             state, retry_limit, result_ref, exit_code, log_tail,
-            confirmed_at, rejected_at, parent_task_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            confirmed_at, rejected_at, parent_task_id, created_at, updated_at,
+            required_labels)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            state = excluded.state,
            result_ref = excluded.result_ref,
@@ -1144,7 +1169,8 @@ pub async fn commit_task(
            confirmed_at = excluded.confirmed_at,
            rejected_at = excluded.rejected_at,
            parent_task_id = excluded.parent_task_id,
-           updated_at = excluded.updated_at",
+           updated_at = excluded.updated_at,
+           required_labels = excluded.required_labels",
     )
     .bind(r.task.id.to_string())
     .bind(r.network_id.to_string())
@@ -1162,6 +1188,14 @@ pub async fn commit_task(
     .bind(&r.parent_task_id)
     .bind(&r.created_at)
     .bind(&r.updated_at)
+    .bind(
+        serde_json::to_string(&r.task.payload.required_labels).map_err(|e| {
+            sqlx::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            ))
+        })?,
+    )
     .execute(&mut *tx)
     .await?;
     if let Some(seq) = task_seq {
@@ -1180,7 +1214,7 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
         "SELECT id, network_id, target_device_id, cmd, workdir, timeout_secs,
                 state, retry_limit, result_ref, exit_code, log_tail,
                 confirmed_at, rejected_at, parent_task_id,
-                created_at, updated_at
+                created_at, updated_at, required_labels
          FROM tasks ORDER BY created_at",
     )
     .fetch_all(pool)
@@ -1202,6 +1236,9 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
         let parent_task_id: Option<String> = row.get("parent_task_id");
         let created_at: String = row.get("created_at");
         let updated_at: String = row.get("updated_at");
+        let labels_raw: String = row.get("required_labels");
+        let required_labels: BTreeMap<String, String> =
+            serde_json::from_str(&labels_raw).map_err(|e| corrupt("task required_labels", e))?;
 
         let task_state = match state_str.as_str() {
             "assigned" => meshlet_domain::TaskState::Assigned,
@@ -1218,7 +1255,7 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
                 cmd,
                 workdir,
                 timeout_secs: timeout_secs.map(|s| s as u64),
-                required_labels: Default::default(),
+                required_labels,
             },
             retry_limit as u32,
         );
@@ -1403,11 +1440,12 @@ pub async fn load(
             Option<String>,
             Option<String>,
             Option<String>,
+            String,
         ),
     >(
         "SELECT id, network_id, name, virtual_ipv4, public_key, platform, status,
                 last_seen_at, last_handshake_at, last_report_at, dataplane_evidence,
-                created_at, approved_at, revoked_at, segment_id
+                created_at, approved_at, revoked_at, segment_id, labels
          FROM devices ORDER BY created_at, id",
     )
     .fetch_all(pool)
@@ -1440,7 +1478,7 @@ pub async fn load(
                 row.14
                     .ok_or_else(|| corrupt("device segment_id", "NULL after migration"))?,
             ),
-            labels: BTreeMap::new(),
+            labels: serde_json::from_str(&row.15).map_err(|e| corrupt("device labels", e))?,
         };
         state
             .restore_device(device)
@@ -2492,6 +2530,61 @@ mod tests {
             .unwrap();
         assert_eq!(restored.segment_id, custom_segment);
         assert_eq!(boot.summary.segments, 2);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn device_labels_survive_database_reload() {
+        // MT-005：标签经 commit_device_labels 落库，重启 load 后逐字恢复。
+        let pool = crate::store::connect("sqlite::memory:").await.unwrap();
+        let network_id = NetworkId("net-1".into());
+        let network = Network::new(
+            network_id.clone(),
+            "home",
+            "10.240.0.0/16".parse().unwrap(),
+            "2026-10-17T00:00:00Z".into(),
+        );
+        insert_network(&pool, &network).await.unwrap();
+        let mut device = Device {
+            id: DeviceId("dev-1".into()),
+            network_id: network_id.clone(),
+            name: "worker".into(),
+            virtual_ipv4: "10.240.0.2".parse().unwrap(),
+            public_key: "public-key".into(),
+            platform: Platform::Linux,
+            status: DeviceStatus::Active,
+            last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
+            dataplane_evidence: None,
+            created_at: "2026-10-17T00:00:00Z".into(),
+            approved_at: None,
+            revoked_at: None,
+            segment_id: meshlet_domain::default_segment_id(&network_id),
+            labels: BTreeMap::new(),
+        };
+        insert_device(&pool, &device).await.unwrap();
+        device.labels.insert("role".into(), "worker".into());
+        device.labels.insert("cap".into(), "gpu".into());
+        let audit = AuditDraft {
+            actor_id: Some("user-1"),
+            action: "device.labels_set",
+            target_type: "device",
+            target_id: "dev-1",
+            detail: None,
+        };
+        commit_device_labels(&pool, &device, &audit).await.unwrap();
+
+        let boot = load(&pool, meshlet_domain::PresenceThresholds::default())
+            .await
+            .unwrap();
+        let restored = boot
+            .mesh
+            .registry
+            .find_by_id(&DeviceId("dev-1".into()))
+            .unwrap();
+        assert_eq!(restored.labels["role"], "worker");
+        assert_eq!(restored.labels["cap"], "gpu");
         pool.close().await;
     }
 

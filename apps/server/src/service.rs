@@ -85,6 +85,8 @@ pub struct DeviceView {
     /// R-DIAG 网络诊断三快照（路由表/接口/wg 读数）；`None` = 尚无上报或
     /// 采集失败。控制台诊断页据此展示。
     pub diagnostics: Option<NetworkDiagnostics>,
+    /// MT-005 节点标签（操作员分配；任务标签路由的匹配依据）。空 = 未打标。
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +202,14 @@ pub struct EnrollRequest {
     pub device_name: String,
     pub public_key: String,
     pub platform: String,
+}
+
+/// MT-005 设备标签更新（操作员 PATCH/POST 语义：整体替换）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetDeviceLabelsRequest {
+    /// 新标签集（空对象 = 清空全部标签）。
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1666,6 +1676,34 @@ pub fn list_devices(state: &MeshState, network_id: &str) -> Result<Vec<DeviceVie
         .collect())
 }
 
+/// 单设备视图（MT-005 标签更新后回读；与 [list_devices] 同源渲染）。
+pub fn device_view(
+    state: &MeshState,
+    network_id: &str,
+    device_id: &str,
+) -> Result<DeviceView, ServiceError> {
+    state.network(network_id)?;
+    let d = state
+        .registry
+        .find_by_id(&DeviceId(device_id.to_string()))
+        .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
+    if d.network_id.to_string() != network_id {
+        return Err(ServiceError::DeviceNotFound(device_id.to_string()));
+    }
+    let now: Timestamp = now();
+    let direct = state.direct_states.get(&d.id);
+    let direct_links = direct.map(|s| s.links.clone()).unwrap_or_default();
+    let diagnostics = state.diagnostics.get(&d.id).cloned();
+    Ok(to_device_view(
+        d,
+        &now,
+        &state.presence_thresholds,
+        direct,
+        direct_links,
+        diagnostics,
+    ))
+}
+
 /// 数据面证据量规快照（§17.2 指标 1/2/3/7 的数据源）：抓取时从 `MeshState`
 /// **现算**，不存静态值。调用方持 mesh 锁；渲染（字符串拼接）在锁外做。
 ///
@@ -2570,6 +2608,27 @@ pub fn revoke_device(
     })
 }
 
+/// 设置设备标签（MT-005）：整体替换（PUT 语义）。标签是路由元数据，
+/// 不进期望配置——不记修订、不触发 backend 应用；落库由调用方经
+/// [crate::persist::commit_device_labels] 完成。设备必须归属该网络。
+pub fn set_device_labels(
+    state: &mut MeshState,
+    network_id: &str,
+    device_id: &str,
+    labels: BTreeMap<String, String>,
+) -> Result<Device, ServiceError> {
+    state.network(network_id)?;
+    let device = state
+        .registry
+        .find_by_id_mut(&DeviceId(device_id.to_string()))
+        .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
+    if device.network_id.to_string() != network_id {
+        return Err(ServiceError::DeviceNotFound(device_id.to_string()));
+    }
+    device.labels = labels;
+    Ok(device.clone())
+}
+
 /// 网络当前修订引用（网络视图语义复用：无修订时 0/`none`）。
 pub(crate) fn current_revision_ref(state: &MeshState, network_id: &str) -> (u64, String) {
     state
@@ -2674,6 +2733,7 @@ fn to_device_view(
         observed_endpoint,
         public_endpoint,
         diagnostics,
+        labels: d.labels.clone(),
     }
 }
 

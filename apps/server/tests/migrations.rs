@@ -415,6 +415,23 @@ async fn migrations_are_idempotent_across_reopens() {
 }
 
 #[tokio::test]
+async fn migration_017_adds_labels_and_task_required_labels_columns() {
+    // 017 只加列不新表：devices.labels（节点标签，路由依据）与
+    // tasks.required_labels（任务负载的标签约束，重启后 payload 保留）。
+    let pool = db().await;
+    let device_cols = columns(&pool, "devices").await;
+    assert!(
+        device_cols.contains(&"labels".to_string()),
+        "devices must have labels column: {device_cols:?}"
+    );
+    let task_cols = columns(&pool, "tasks").await;
+    assert!(
+        task_cols.contains(&"required_labels".to_string()),
+        "tasks must have required_labels column: {task_cols:?}"
+    );
+}
+
+#[tokio::test]
 async fn api_tokens_store_digest_only_with_scopes() {
     let pool = db().await;
     let cols = columns(&pool, "api_tokens").await;

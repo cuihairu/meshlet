@@ -365,7 +365,7 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
     // （路由 1 条、route_seq=1），不随活动库后续变更回写。
     let (tables, migrations, routes, seq) = inspect_backup(&backup_path).await;
     assert_eq!(tables, 26, "schema complete in backup");
-    assert_eq!(migrations, 16, "migrations 001-016 recorded in backup");
+    assert_eq!(migrations, 17, "migrations 001-017 recorded in backup");
     assert_eq!(routes, 1, "backup frozen at snapshot moment");
     assert_eq!(seq.as_deref(), Some("1"));
 
@@ -1069,6 +1069,12 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .execute(&pool)
         .await
         .unwrap();
+    // 017_device_labels：v8 快照没有 devices.labels 列（tasks 已删，
+    // required_labels 随之消失），回退列否则重跑 017 撞「duplicate column」。
+    sqlx::query("ALTER TABLE devices DROP COLUMN labels")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM _sqlx_migrations WHERE version >= 9")
         .execute(&pool)
         .await
@@ -1100,7 +1106,7 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 16);
+    assert_eq!(version, 17);
     let default_segments: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM segments")
         .fetch_one(&pool)
         .await

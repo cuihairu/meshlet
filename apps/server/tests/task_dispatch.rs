@@ -572,3 +572,101 @@ async fn agent_endpoints_require_valid_token() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
+
+/// MT-005 标签路由（端到端）：操作员给设备打标 → 按标签自动选点派单 →
+/// 显式目标与标签不符拒绝 → 无匹配设备拒绝。
+#[tokio::test]
+async fn label_routed_dispatch_and_labels_endpoint() {
+    let (ctx, worker_id, worker_token) = bootstrap("worker", "pub-edge-aaaa-0001").await;
+    let (builder_id, builder_token) = enroll(&ctx, "builder", "pub-edge-aaaa-0002").await;
+
+    // 操作员打标：worker → role=builder；builder → 无标。
+    let (st, body) = admin(
+        &ctx.app,
+        &ctx.cookie,
+        &format!(
+            "/api/v1/networks/{}/devices/{worker_id}/labels",
+            ctx.network_id
+        ),
+        serde_json::json!({ "labels": { "role": "builder", "cap": "gpu" } }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["labels"]["role"], "builder");
+    assert_eq!(body["labels"]["cap"], "gpu");
+
+    // 按标签自动选点（无 target）：命中唯一 role=builder 的 worker。
+    let (st, task) = assign_labeled(&ctx, None, "echo build", None, builder_lbl()).await;
+    assert_eq!(st, StatusCode::CREATED, "{task}");
+    assert_eq!(task["target_device_id"], worker_id);
+
+    // 显式指定 builder（无标）却要求 role=builder → 409。
+    let (st, body) = assign_labeled(
+        &ctx,
+        Some(&builder_id),
+        "echo build",
+        Some("task-mismatch"),
+        builder_lbl(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+
+    // 无匹配设备（要求 role=worker，没人打）→ 409。
+    let (st, body) = assign_labeled(
+        &ctx,
+        None,
+        "echo build",
+        Some("task-nomatch"),
+        serde_json::json!({ "role": "worker" }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+
+    // worker 的 agent 能拉到自动选点的任务。
+    let pend = pending(&ctx.app, &worker_token).await;
+    let ids: Vec<&str> = pend
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"task-1"), "{pend:?}");
+
+    // builder（无标）的 agent 拉不到任何任务。
+    let pend_builder = pending(&ctx.app, &builder_token).await;
+    assert!(
+        pend_builder.as_array().unwrap().is_empty(),
+        "{pend_builder:?}"
+    );
+}
+
+fn builder_lbl() -> serde_json::Value {
+    serde_json::json!({ "role": "builder" })
+}
+
+/// 带标签要求的派单：`target` None = 省略 target_device_id（自动选点）。
+async fn assign_labeled(
+    ctx: &Ctx,
+    target: Option<&str>,
+    cmd: &str,
+    id: Option<&str>,
+    required_labels: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let mut body = serde_json::json!({
+        "cmd": cmd,
+        "required_labels": required_labels,
+    });
+    if let Some(t) = target {
+        body["target_device_id"] = serde_json::json!(t);
+    }
+    if let Some(i) = id {
+        body["id"] = serde_json::json!(i);
+    }
+    admin(
+        &ctx.app,
+        &ctx.cookie,
+        &format!("/api/v1/networks/{}/tasks", ctx.network_id),
+        body,
+    )
+    .await
+}

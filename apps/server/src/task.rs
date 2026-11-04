@@ -20,7 +20,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use meshlet_domain::{
-    DeviceId, NetworkId, Task, TaskAction, TaskEvent, TaskId, TaskOutcome, TaskPayload, TaskState,
+    Device, DeviceId, NetworkId, Task, TaskAction, TaskEvent, TaskId, TaskOutcome, TaskPayload,
+    TaskState,
 };
 
 use crate::agent::{AgentApiError, AuthorizedAgent};
@@ -70,8 +71,10 @@ impl TaskRecord {
 pub struct AssignTaskRequest {
     /// 幂等键；缺省时服务端生成 `task-{seq}`。显式传已有 id 则幂等返回已有任务。
     pub id: Option<String>,
-    /// 目标设备。
-    pub target_device_id: String,
+    /// 目标设备（MT-005 标签路由）：`None`/空 = 按 `required_labels` 自动选点
+    /// （无标签要求 = 任意 Active 设备）；`Some` = 显式指定，须命中标签。
+    #[serde(default)]
+    pub target_device_id: Option<String>,
     /// 要执行的命令。
     pub cmd: String,
     /// 工作目录。
@@ -80,6 +83,10 @@ pub struct AssignTaskRequest {
     pub timeout_secs: Option<u64>,
     /// 重试上限。
     pub retry_limit: Option<u32>,
+    /// 标签路由要求（MT-005）：`(key, value)` 逐对命中目标节点标签才可派发；
+    /// 缺省 = 无标签约束。
+    #[serde(default)]
+    pub required_labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// 控制台/结果视图（含状态与执行结果）。
@@ -143,10 +150,11 @@ pub(crate) fn assign(
     network_id: &str,
     req: &AssignTaskRequest,
 ) -> Result<(TaskRecord, Option<u64>, bool), ServiceError> {
-    // 目标设备必须归属该网络且为 Active（与发布对象同一纪律）。
-    let _device = crate::publish::device_in_network(state, network_id, &req.target_device_id)?;
+    // 标签路由要求（MT-005）：缺省 = 无约束。
+    let required = req.required_labels.clone().unwrap_or_default();
 
-    // 幂等键：同 id 已存在（无论状态）→ 原样返回，不重复建、不重置状态。
+    // 幂等键优先：同 id 已存在（无论状态）→ 原样返回，不重复建、不重置
+    // 状态（重发同一派发请求不得因标签/设备状态漂移而改判）。
     let (id, new_seq) = match &req.id {
         Some(id) => {
             if let Some(existing) = state.tasks.get(id) {
@@ -161,15 +169,45 @@ pub(crate) fn assign(
         }
     };
 
+    // 目标设备（MT-005 标签路由）：显式指定须命中标签要求；缺省按标签
+    // 自动选点（无标签要求 = 任意 Active 设备）。
+    let target_id = match req.target_device_id.as_deref() {
+        Some(id) if !id.is_empty() => {
+            let device = crate::publish::device_in_network(state, network_id, id)?;
+            if !device.matches_labels(&required) {
+                return Err(ServiceError::Conflict(format!(
+                    "device {id} does not match required labels {required:?}"
+                )));
+            }
+            id.to_string()
+        }
+        _ => {
+            let candidates: Vec<Device> = state
+                .registry
+                .devices()
+                .iter()
+                .filter(|d| d.network_id.to_string() == network_id)
+                .cloned()
+                .collect();
+            let picked =
+                meshlet_domain::select_by_labels(&candidates, &required).ok_or_else(|| {
+                    ServiceError::Conflict(format!(
+                    "no active device in network {network_id} matches required labels {required:?}"
+                ))
+                })?;
+            picked.id.to_string()
+        }
+    };
+
     let payload = TaskPayload {
         cmd: req.cmd.clone(),
         workdir: req.workdir.clone(),
         timeout_secs: req.timeout_secs,
-        required_labels: Default::default(),
+        required_labels: required.clone(),
     };
     let task = Task::new(
         id,
-        DeviceId(req.target_device_id.clone()),
+        DeviceId(target_id),
         payload,
         req.retry_limit.unwrap_or(0),
     );
@@ -835,6 +873,7 @@ pub(crate) fn list(state: &MeshState) -> Vec<TaskView> {
 mod tests {
     use super::*;
     use meshlet_domain::PresenceThresholds;
+    use std::collections::BTreeMap;
 
     /// `now_unix - age` 的 RFC3339 时间戳（回收窗口测试用）。
     fn ts(now_unix: i64, age: u64) -> String {
@@ -1177,5 +1216,141 @@ mod tests {
         let events = recover_stuck_tasks(&mut st, now + 300, &policy());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].reclaimed, "task-1");
+    }
+
+    // ---- MT-005 标签路由派单（assign） ----
+
+    /// 建一个网络 + 两个 Active 设备，返回 (state, network_id, device_ids)。
+    fn mesh_with_devices() -> (MeshState, String, Vec<String>) {
+        use crate::service::{
+            create_invite, create_network, enroll, CreateInviteRequest, CreateNetworkRequest,
+            EnrollRequest,
+        };
+        let mut st = state();
+        let net = create_network(
+            &mut st,
+            CreateNetworkRequest {
+                name: "10.240.0.0/16".into(),
+                overlay_cidr: "10.240.0.0/16".into(),
+            },
+        )
+        .unwrap();
+        let invite = create_invite(
+            &mut st,
+            &net.id,
+            CreateInviteRequest {
+                expires_at: None,
+                max_uses: Some(2),
+            },
+        )
+        .unwrap();
+        let mut ids = Vec::new();
+        for i in 0..2 {
+            let resp = enroll(
+                &mut st,
+                EnrollRequest {
+                    invite_token: invite.token.clone(),
+                    device_name: format!("dev-{i}"),
+                    public_key: format!("key-{i}"),
+                    platform: "linux".into(),
+                },
+            )
+            .unwrap();
+            ids.push(resp.device_id);
+        }
+        (st, net.id, ids)
+    }
+
+    fn labels(kv: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn assign_req(
+        target: Option<&str>,
+        required: std::collections::BTreeMap<String, String>,
+    ) -> AssignTaskRequest {
+        AssignTaskRequest {
+            id: None,
+            target_device_id: target.map(|s| s.to_string()),
+            cmd: "echo hi".into(),
+            workdir: None,
+            timeout_secs: None,
+            retry_limit: Some(0),
+            required_labels: Some(required),
+        }
+    }
+
+    #[test]
+    fn assign_without_target_selects_device_matching_labels() {
+        let (mut st, net, ids) = mesh_with_devices();
+        // dev-0 打 role=builder；dev-1 不打。
+        crate::service::set_device_labels(&mut st, &net, &ids[0], labels(&[("role", "builder")]))
+            .unwrap();
+        let (rec, _seq, created) = assign(
+            &mut st,
+            &net,
+            &assign_req(None, labels(&[("role", "builder")])),
+        )
+        .unwrap();
+        assert!(created);
+        // 只可能命中 dev-0（唯一 role=builder）。
+        assert_eq!(rec.task.target_node.to_string(), ids[0]);
+        assert_eq!(rec.task.payload.required_labels["role"], "builder");
+    }
+
+    #[test]
+    fn assign_without_labels_picks_first_active_device_by_id() {
+        let (mut st, net, ids) = mesh_with_devices();
+        let (rec, _seq, _) = assign(&mut st, &net, &assign_req(None, BTreeMap::new())).unwrap();
+        assert_eq!(rec.task.target_node.to_string(), ids[0]);
+    }
+
+    #[test]
+    fn assign_with_target_not_matching_labels_is_rejected() {
+        let (mut st, net, ids) = mesh_with_devices();
+        crate::service::set_device_labels(&mut st, &net, &ids[0], labels(&[("role", "worker")]))
+            .unwrap();
+        let err = assign(
+            &mut st,
+            &net,
+            &assign_req(Some(&ids[1]), labels(&[("role", "worker")])),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ServiceError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn assign_with_target_matching_labels_succeeds() {
+        let (mut st, net, ids) = mesh_with_devices();
+        crate::service::set_device_labels(&mut st, &net, &ids[0], labels(&[("role", "worker")]))
+            .unwrap();
+        let (rec, _seq, _) = assign(
+            &mut st,
+            &net,
+            &assign_req(Some(&ids[0]), labels(&[("role", "worker")])),
+        )
+        .unwrap();
+        assert_eq!(rec.task.target_node.to_string(), ids[0]);
+    }
+
+    #[test]
+    fn assign_without_target_and_no_matching_device_is_rejected() {
+        let (mut st, net, _ids) = mesh_with_devices();
+        // 无人打 role=builder。
+        let err = assign(
+            &mut st,
+            &net,
+            &assign_req(None, labels(&[("role", "builder")])),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ServiceError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
     }
 }
