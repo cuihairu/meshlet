@@ -16,7 +16,7 @@
 //! 边界：任务在 agent 主循环内联执行（同步 tick），长任务会暂时挡住心跳——
 //! MT-005 再引入并发排程/超时重派；本版只保证「执行 + 幂等 + 回执」。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -27,7 +27,8 @@ use meshlet_domain::{Task, TaskPayload};
 
 use crate::server;
 
-/// 账本容量上限：超出剔除最旧（task id 按 `task-{seq}` 递增，字典序=时间序）。
+/// 账本容量上限：超出剔除最旧（按**真实执行完成序**淘汰，绝不按 task id
+/// 字典序——`task-10` < `task-2` 且重派 id `task-1-r2` 更乱序，字典序≠时间序）。
 const LEDGER_CAP: usize = 512;
 /// 命令输出尾部保留字节数（超出丢弃头部，保留最近段）。
 const TAIL_BYTES: usize = 4096;
@@ -51,6 +52,18 @@ pub struct TaskResult {
 #[derive(Debug, Default)]
 pub struct TaskLedger {
     entries: BTreeMap<String, TaskResult>,
+    /// 真实执行完成序（FIFO）：淘汰按队头（最早完成），与 id 拼写无关。
+    /// 持久化在 [`LedgerFile`]，重启后仍按真实时间序淘汰。
+    order: VecDeque<String>,
+}
+
+/// 账本持久化格式：entries + 插入序。旧版只存裸 `BTreeMap`（不记插入序），
+/// [`TaskLedger::load`] 回退解析并按其字典序重建（旧数据最佳努力；新记录
+/// 继续按真实插入序淘汰）。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct LedgerFile {
+    entries: BTreeMap<String, TaskResult>,
+    order: Vec<String>,
 }
 
 impl TaskLedger {
@@ -59,12 +72,23 @@ impl TaskLedger {
     pub fn load(path: &Path) -> Self {
         match std::fs::read(path) {
             Ok(bytes) => {
-                let entries = serde_json::from_slice::<BTreeMap<String, TaskResult>>(&bytes)
+                let (entries, order) = serde_json::from_slice::<LedgerFile>(&bytes)
+                    .map(|f| (f.entries, f.order))
+                    .or_else(|_| {
+                        serde_json::from_slice::<BTreeMap<String, TaskResult>>(&bytes)
+                            .map(|m| {
+                                let order: Vec<String> = m.keys().cloned().collect();
+                                (m, order)
+                            })
+                    })
                     .unwrap_or_else(|e| {
                         tracing::warn!(path = %path.display(), error = %e, "task ledger corrupt; starting empty");
-                        BTreeMap::new()
+                        (BTreeMap::new(), Vec::new())
                     });
-                Self { entries }
+                Self {
+                    entries,
+                    order: order.into(),
+                }
             }
             Err(_) => Self::default(),
         }
@@ -72,7 +96,11 @@ impl TaskLedger {
 
     /// 落盘（先建父目录；失败显式报出，由调用方决定）。
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec(&self.entries).unwrap_or_default();
+        let file = LedgerFile {
+            entries: self.entries.clone(),
+            order: self.order.iter().cloned().collect(),
+        };
+        let bytes = serde_json::to_vec(&file).unwrap_or_default();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -89,12 +117,22 @@ impl TaskLedger {
         self.entries.get(id)
     }
 
-    /// 记录一次执行结果；超出容量剔除最旧（`task-{seq}` 字典序最小=最早）。
+    /// 记录一次执行结果；超出容量剔除**最早完成**（真实插入序，与 id
+    /// 拼写无关）。重复记录同一 id 只更新结果，不改变其淘汰位置。
     pub fn record(&mut self, id: String, result: TaskResult) {
-        self.entries.insert(id.clone(), result);
-        if self.entries.len() > LEDGER_CAP {
-            if let Some(oldest) = self.entries.keys().next().cloned() {
-                self.entries.remove(&oldest);
+        self.record_with_cap(id, result, LEDGER_CAP);
+    }
+
+    /// [record] 的容量参数化实现（测试直接以小容量验证淘汰序）。
+    fn record_with_cap(&mut self, id: String, result: TaskResult, cap: usize) {
+        if self.entries.insert(id.clone(), result).is_none() {
+            self.order.push_back(id);
+        }
+        while self.entries.len() > cap {
+            if let Some(oldest) = self.order.pop_front() {
+                if self.entries.remove(&oldest).is_some() {
+                    break;
+                }
             }
         }
     }
@@ -477,6 +515,57 @@ mod tests {
         // 最旧的被剔除，最新的保留。
         assert!(!ledger.has("task-0"));
         assert!(ledger.has(&format!("task-{}", LEDGER_CAP + 9)));
+    }
+
+    #[test]
+    fn ledger_evicts_by_real_time_order_not_id_lexicographic() {
+        let mut ledger = TaskLedger::default();
+        let res = || TaskResult {
+            exit_code: 0,
+            log_tail: String::new(),
+        };
+        // 乱序 id：先记录 task-2，再记录 task-10（字典序 task-10 < task-2），
+        // 再记录重派 id task-1-r2（前缀也乱序）。容量 2，按**真实插入序**
+        // 淘汰最早完成的 task-2；若按字典序会错误淘汰 task-1-r2 / task-10。
+        ledger.record_with_cap("task-2".into(), res(), 2);
+        ledger.record_with_cap("task-10".into(), res(), 2);
+        ledger.record_with_cap("task-1-r2".into(), res(), 2);
+        assert_eq!(ledger.entries.len(), 2);
+        assert!(
+            !ledger.has("task-2"),
+            "earliest-completed task-2 must be evicted"
+        );
+        assert!(ledger.has("task-10"));
+        assert!(ledger.has("task-1-r2"));
+        // 再插入一条 → 淘汰次早的 task-10（仍按插入序）。
+        ledger.record_with_cap("task-3".into(), res(), 2);
+        assert!(
+            !ledger.has("task-10"),
+            "next-oldest task-10 must be evicted"
+        );
+        assert!(ledger.has("task-1-r2"));
+        assert!(ledger.has("task-3"));
+    }
+
+    #[test]
+    fn ledger_persists_insertion_order_across_reload() {
+        let dir = std::env::temp_dir().join(format!("meshlet-task-order-{}", std::process::id()));
+        let path = dir.join("tasks.json");
+        let mut ledger = TaskLedger::default();
+        let res = || TaskResult {
+            exit_code: 0,
+            log_tail: String::new(),
+        };
+        ledger.record("task-2".into(), res());
+        ledger.record("task-10".into(), res());
+        ledger.save(&path).expect("save");
+        let mut loaded = TaskLedger::load(&path);
+        // 重载后按持久化的插入序淘汰：先入的 task-2 先出（不是字典序最小）。
+        loaded.record_with_cap("task-1-r2".into(), res(), 2);
+        assert!(!loaded.has("task-2"));
+        assert!(loaded.has("task-10"));
+        assert!(loaded.has("task-1-r2"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
