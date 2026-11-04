@@ -11,11 +11,18 @@ Solid lines carry business data: console traffic, desired plans and receipts, hu
 
 **Control plane, on the hub host.** `meshlet-server` serves the console and the agent HTTP/TLS API, and owns authentication, bootstrap tokens, approval, the planner, revisions and the audit log. It persists everything in one `meshlet.db` SQLite file (0600, single file). The server also owns the hub's `wg0` and rebuilds that tunnel from the database on boot.
 
-**Kernel dataplane.** The `10.240.0.0/16` WireGuard overlay on UDP 51820, MTU 1420. There is no device-to-device P2P today: every device pair relays through the hub.
+**Kernel dataplane.** The `10.240.0.0/16` WireGuard overlay on UDP 51820, MTU 1420. The hub relay
+is always on — device pairs relay through the hub by default; when direct connect is enabled, the
+agent promotes same-LAN peers or dialed candidates (`decide_direct_path` in
+`crates/meshlet-domain/src/p2p.rs`: SameLan/HolePunch) to direct `/32` peers via
+`apps/agent/src/direct.rs`, and falls back to the hub relay through a hysteresis gate when a
+direct link degrades.
 
 **Devices.** One `meshlet-agent` binary per host. It polls the desired plan, applies it with `ip`, `wg`, iptables or nftables, posts the receipt and a heartbeat, and keeps a local ledger (`applied.json`) for drift read-back. A gateway agent additionally publishes LAN routes with owner and metric, does SNAT/DNAT on the device, and runs service publishing for forwarding, HTTP and DNS.
 
-**`meshlet-cli`** is a skeleton and has no commands yet.
+**`meshlet-cli`** ships info, status, peers, peer dial, agent diag, networks, config and task
+assign/ls/confirm/retry commands (single source of truth: the command catalog in
+`crates/meshlet-commands`; reconciliation tests pin `--help`, the catalog and dispatch together).
 
 ## Source of truth
 

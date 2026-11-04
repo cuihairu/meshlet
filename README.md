@@ -14,13 +14,13 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > isolation, device apply receipts, hub recovery, last-good-plan rollback, Direct LAN SNAT and
 > service permissions, with local Linux kernel and unprivileged service regression evidence.
 > Windows backend modules are implemented and real-machine verified for routes, firewall, service
-> control and uninstall cleanup; a Windows agent+CLI zip and `install.ps1` now ship in the nightly
-> release, while the agent's live data-plane wiring, tray host and real-machine installer acceptance
-> remain pending (R-05). Long-run soak acceptance also remains pending. See [TODO](todo.md).
+> control and uninstall cleanup; a Windows agent+CLI+tray-host zip and `install.ps1` now ship in the
+> nightly release, while the agent's live data-plane wiring and real-machine installer/tray-host
+> acceptance remain pending (R-05, AGENT-WIN). Long-run soak acceptance also remains pending. See [TODO](todo.md).
 
 ## Nightly builds and one-command installation
 
-The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly) and an immutable dated release. The release carries Linux x86_64 / ARM64 static tar archives, per-component `deb` and `rpm` packages (`meshlet-server` / `meshlet-agent` / `meshlet-cli`), a Windows agent+CLI zip, and the `install.sh` / `install.ps1` installers.
+The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly) and an immutable dated release. The release carries Linux x86_64 / ARM64 static tar archives, per-component `deb` and `rpm` packages (`meshlet-server` / `meshlet-agent` / `meshlet-cli`), a Windows agent+CLI+tray-host zip, and the `install.sh` / `install.ps1` installers.
 **Install the server on your VPS:**
 
 ```bash
@@ -99,15 +99,20 @@ Windows is a data-plane target gated behind real-machine acceptance
   real-machine acceptance. A Windows agent registers and reports status, but applying a
   tunnel/routes/NAT plan is rejected with an explicit error — nothing pretends to succeed.
 - **No MSI, and real-machine install acceptance is pending.** The nightly release publishes a
-  Windows agent+CLI zip (`meshlet-nightly-windows-x86_64.zip`) and an `install.ps1` installer
+  Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`) and an `install.ps1` installer
   ([install below](#install-the-agent-on-windows)); there is no MSI, and the installer has not yet
   been accepted on a real machine (AGENT-WIN-2).
-- **No tray icon.** The agent writes four-state status PNGs (`TraySink`); a desktop shell must
-  host them. Linux panels have hosts; Windows has none yet.
+- **A Windows tray host ships, real-machine acceptance pending.** `apps/tray-host`
+  (`meshlet-tray-host.exe`, a thin Win32 `Shell_NotifyIcon` host) consumes the agent's four-state
+  status PNGs (`TraySink`) and is included in the nightly zip; `install.ps1` does not install or
+  register it yet, and real-machine walkthroughs (icon switching, menus) are tracked as
+  AGENT-WIN-2/3. On Linux the agent writes the same status PNGs and sends D-Bus desktop
+  notifications; there is no panel host binary in the repository for either platform's desktop
+  shell to consume beyond what ships here.
 
 ### Install the agent on Windows
 
-The nightly release publishes a Windows agent+CLI zip and `install.ps1`. Install (PowerShell, no
+The nightly release publishes a Windows agent+CLI+tray-host zip and `install.ps1`. Install (PowerShell, no
 elevation needed — the agent runs in the user session, not as a machine service):
 
 ```powershell
@@ -120,8 +125,9 @@ The installer verifies the zip's SHA-256 against the release `SHA256SUMS`, insta
 user PATH, generates an agent key and config once, and registers a hidden HKCU Run autostart entry.
 Re-run it to upgrade — the existing `agent.toml` and key are preserved, so device credentials
 survive. Offline/staged installs use `$env:MESHLET_INSTALL_ARCHIVE` and
-`$env:MESHLET_INSTALL_SHA256SUMS`. The current build is a **background agent without a tray icon**
-(tray host is pending work), and data-plane apply on Windows is still rejected until real-machine
+`$env:MESHLET_INSTALL_SHA256SUMS`. The installer sets up a **background agent without a tray
+icon** — the tray-host binary ships in the zip but `install.ps1` does not install it yet — and
+data-plane apply on Windows is still rejected until real-machine
 acceptance passes — see below.
 
 ### Build and run the agent on Windows (from source)
@@ -164,7 +170,7 @@ Approve the device in the console, then apply the network's current revision. **
 Windows is currently rejected** (backend placeholder) until R-05 acceptance; the control plane
 (registration, heartbeats, status) works. A machine that only has the
 `WireGuardTunnel$…` service (e.g. set up by hand) does **not** have the agent running — check for
-`meshlet-agent.exe` in the process list. Real-machine installer acceptance and the tray host are
+`meshlet-agent.exe` in the process list. Real-machine installer and tray-host acceptance are
 tracked as pending work — see [TODO](todo.md).
 
 ## What it is
@@ -176,7 +182,7 @@ Run the meshlet server on a VPS with a public IPv4 address, install agents on yo
 - Alias prefixes for overlapping LAN subnets (e.g. two `192.168.1.0/24`)
 - Web console for networks, devices, routes and diagnostics
 
-Connection strategy: the hub is always on — devices first connect through the hub and exchange peer info, then upgrade to P2P direct; NAT hole punching is the **core goal** (in active development) to maximize direct success, with hub relay as the always-available fallback so links never drop.
+Connection strategy: the hub is always on — devices first connect through the hub and exchange peer info, then upgrade to P2P direct (same-LAN links or hole-punch dialing to hub-observed public endpoints, `apps/agent/src/direct.rs`); wide cross-NAT punch scenarios still need real-machine acceptance. Hub relay is the always-available fallback so links never drop.
 
 Not in scope for v1: public relay networks, L2 bridging, internet exit VPN.
 
@@ -203,7 +209,7 @@ The current implementation is not fully accepted for deployment. See the
 [P0 fixes and nightly implementation record](docs/implementation/fixes-and-nightly-2026-10-17.md)
 for local Linux evidence. ARM64 builds, the first nightly publication on the default branch,
 empty-VPS installation and real-device walkthroughs remain pending; on Windows the data-plane
-wiring (R-05), the installer package and the tray host remain pending — see
+wiring (R-05) and real-machine installer/tray-host acceptance remain pending — see
 [Windows support](#windows-support).
 The current checklist at the top of [TODO](todo.md) records these limits.
 

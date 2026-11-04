@@ -12,13 +12,13 @@
 > 已实现控制面、WireGuard hub/agent、LAN 路由与 Alias NAT、React 控制台、认证、审计、备份和设备审批。
 > 本轮补充单实例多网络隔离、设备应用回执、hub 恢复、成功计划回滚、Direct LAN SNAT 和正式服务权限，
 > 已有 Linux 真实内核与非 root 服务回归证据。Windows 后端模块已实现并完成路由、防火墙、服务控制
-> 与卸载清理的真机验收；nightly 现已附带 Windows agent+CLI zip 与 `install.ps1`，而 agent 数据面接线、
-> 托盘宿主与安装包真机验收仍待完成（R-05）。空 VPS 安装和真实设备
+> 与卸载清理的真机验收；nightly 现已附带 Windows agent+CLI+tray-host zip 与 `install.ps1`，而 agent 数据面接线
+> 与安装包/托盘真机验收仍待完成（R-05、AGENT-WIN）。空 VPS 安装和真实设备
 > 走查也仍待完成。每日构建与一键安装见下节，当前验收范围见 [TODO](todo.md)。
 
 ## 每日构建与一键安装
 
-[每日构建](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) 每天北京时间 **03:17** 触发，也可在 Actions 中手动运行。全部检查与 Linux 内核数据面测试通过后，发布 [nightly 预发布版本](https://github.com/cuihairu/meshlet/releases/tag/nightly)，同时保留带日期的不可变版本。发布包含 Linux x86_64 / ARM64 静态 tar 归档、按组件拆分的 `deb`/`rpm` 包（`meshlet-server` / `meshlet-agent` / `meshlet-cli`）、Windows agent+CLI zip，以及 `install.sh` / `install.ps1` 一键安装脚本。
+[每日构建](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) 每天北京时间 **03:17** 触发，也可在 Actions 中手动运行。全部检查与 Linux 内核数据面测试通过后，发布 [nightly 预发布版本](https://github.com/cuihairu/meshlet/releases/tag/nightly)，同时保留带日期的不可变版本。发布包含 Linux x86_64 / ARM64 静态 tar 归档、按组件拆分的 `deb`/`rpm` 包（`meshlet-server` / `meshlet-agent` / `meshlet-cli`）、Windows agent+CLI+tray-host zip，以及 `install.sh` / `install.ps1` 一键安装脚本。
 **在 VPS 安装服务端：**
 
 ```bash
@@ -83,19 +83,19 @@ Windows 是数据面目标平台，受真机验收门禁（[R-05](docs/implement
 **Windows 上仍未就绪：**
 
 - **agent 活动数据面后端未接线。** Windows 的 `SystemBackend` 仍是显式 `unsupported` 占位，直到隧道生命周期、提权执行层与开机恢复通过真机验收。Windows agent 可注册、上报状态，但应用隧道/路由/NAT 计划被显式拒绝——没有任何假装成功。
-- **无 MSI，且安装包真机验收未做。** nightly 已附带 Windows agent+CLI zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）；尚无 MSI，安装脚本也未经真机验收（AGENT-WIN-2）。
-- **无托盘图标。** agent 只写四态状态 PNG（`TraySink`），需桌面壳消费宿主。Linux 面板有宿主；Windows 目前没有任何宿主。
+- **无 MSI，且安装包真机验收未做。** nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）；尚无 MSI，安装脚本也未经真机验收（AGENT-WIN-2）。
+- **Windows 托盘宿主已随包发布，真机验收待做。** `apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`），已随 nightly zip 发布；`install.ps1` 尚不安装/注册它，图标换图与菜单的真机走查按 AGENT-WIN-2/3 跟踪。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知；仓库内没有面向任一平台桌面壳的面板宿主二进制。
 
 ### 在 Windows 安装 agent
 
-nightly 发布 Windows agent+CLI zip 与 `install.ps1`。安装（PowerShell，无需管理员——agent 运行在用户会话，不是机器服务）：
+nightly 发布 Windows agent+CLI+tray-host zip 与 `install.ps1`。安装（PowerShell，无需管理员——agent 运行在用户会话，不是机器服务）：
 
 ```powershell
 Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/install.ps1 -OutFile install.ps1
 pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken '控制台里的TOKEN' -DeviceName 'home-windows'
 ```
 
-安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` 装进 `%LOCALAPPDATA%\meshlet`，把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。当前版本是**无托盘图标的后台 agent**（托盘宿主待做），且 Windows 上数据面 apply 在真机验收通过前仍被拒绝——见下文。
+安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` 装进 `%LOCALAPPDATA%\meshlet`，把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器装的是**无托盘图标的后台 agent**（tray-host 二进制随 zip 发布，但脚本不安装它），且 Windows 上数据面 apply 在真机验收通过前仍被拒绝——见下文。
 
 ### 在 Windows 从源码构建并运行 agent
 
@@ -130,7 +130,7 @@ poll_interval_secs = 30
 meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 ```
 
-在控制台批准设备，再应用该网络的当前修订。**Windows 上数据面 apply 当前会被拒绝**（后端占位）直到 R-05 验收；控制面（注册、心跳、状态）可用。机器上只有 `WireGuardTunnel$…` 服务（如手工搭建）并**不**等于装了 agent——请在进程列表确认 `meshlet-agent.exe`。安装包真机验收与托盘宿主作为待办跟踪——见 [TODO](todo.md)。
+在控制台批准设备，再应用该网络的当前修订。**Windows 上数据面 apply 当前会被拒绝**（后端占位）直到 R-05 验收；控制面（注册、心跳、状态）可用。机器上只有 `WireGuardTunnel$…` 服务（如手工搭建）并**不**等于装了 agent——请在进程列表确认 `meshlet-agent.exe`。安装包与托盘宿主的真机验收作为待办跟踪——见 [TODO](todo.md)。
 
 ## 产品定义
 
@@ -141,7 +141,7 @@ meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 - 用 Alias 前缀解决重叠网段（例如两个 `192.168.1.0/24`）
 - Web 控制台管理网络、设备、路由与诊断
 
-连接策略：hub 常在——设备先经 hub 互知，再升级 P2P 直连；NAT 打洞是**核心目标**（开发中）以最大化直连成功率，hub 中继始终兜底、连接不断。
+连接策略：hub 常在——设备先经 hub 互知，再升级 P2P 直连（同 LAN 直连，或向 hub 观测到的公网端点打洞拨号，见 `apps/agent/src/direct.rs`）；跨 NAT 广域打洞场景仍待真机验收。hub 中继始终兜底、连接不断。
 
 第一版不做：公共中继网络、二层桥接、全局出口 VPN。
 
@@ -164,7 +164,7 @@ meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 
 本轮架构修复及 Linux 回归记录见 [P0 修复与 nightly 实施记录](docs/implementation/fixes-and-nightly-2026-10-17.md)。
 整体部署验收仍未完成：ARM64 构建、默认分支首次 nightly 发布、空 VPS 一键安装和真实设备走查保持
-待验证；Windows 侧数据面接线（R-05）、安装包真机验收与托盘宿主仍待完成——见 [Windows 支持](#windows-支持)。
+待验证；Windows 侧数据面接线（R-05）与安装包/托盘真机验收仍待完成——见 [Windows 支持](#windows-支持)。
 当前工作以 [TODO](todo.md) 顶部清单为准，本地测试不替代真实部署验收。
 
 ## 本地测试口径

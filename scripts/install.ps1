@@ -17,8 +17,9 @@ needed; the agent runs in the user session, not as a machine service):
   agent.key                            generated once, then preserved
   state\                               agent state directory
 
-Autostart: an HKCU Run entry starts the agent hidden at logon. There is no
-tray icon yet (the tray host is pending work), and data-plane apply is
+Autostart: an HKCU Run entry starts the agent hidden at logon. The nightly
+zip also carries meshlet-tray-host.exe (a Windows tray host), but this script
+does not install or register it; data-plane apply is
 rejected until real-machine acceptance passes — the agent registers with the
 hub, heartbeats and reports status only.
 #>
@@ -161,7 +162,7 @@ if ($pathParts -notcontains $installDir) {
     Write-Host "Added $installDir to the user PATH (new terminals pick it up)."
 }
 
-# --- Autostart (HKCU Run, hidden; no tray icon yet) ---
+# --- Autostart (HKCU Run, hidden; tray host ships in the zip but is not installed here) ---
 $agentExe = Join-Path $installDir 'meshlet-agent.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $cmd = "powershell -NoProfile -WindowStyle Hidden -Command `"& '$agentExe' '$configPath'`""
@@ -184,5 +185,5 @@ Write-Host "Configuration: $configPath"
 if ($NoStart) { Write-Host 'Autostart disabled (-NoStart); the agent was not started.' }
 else { Write-Host 'Autostart registered for the current user (runs hidden at logon).' }
 Write-Host 'Approve this device in the console, then apply the network revision.'
-Write-Host 'Note: background agent only - no tray icon yet, and data-plane apply is'
-Write-Host 'rejected on Windows until real-machine acceptance passes (see README).'
+Write-Host 'Note: background agent only - tray host ships in the zip but is not installed here,'
+Write-Host 'and data-plane apply is rejected on Windows until real-machine acceptance passes (see README).'

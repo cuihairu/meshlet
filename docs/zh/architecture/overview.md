@@ -11,11 +11,11 @@
 
 **控制平面，跑在 hub 主机上。** `meshlet-server` 提供控制台与 agent 的 HTTP/TLS API，负责认证、自举 Token、审批、规划器、版本与审计。全部状态落进一个 `meshlet.db` SQLite 文件（0600，单文件）。server 进程自己也持有 hub 的 `wg0`，并在启动时从数据库重建这条隧道。
 
-**内核数据面。** `10.240.0.0/16` WireGuard overlay，UDP 51820，MTU 1420。今天没有设备间直连 P2P：所有设备两两流量都经 hub 中转。
+**内核数据面。** `10.240.0.0/16` WireGuard overlay，UDP 51820，MTU 1420。hub 兜底常在：设备默认经 hub 中转；开启直连后，agent 按 `apps/agent/src/direct.rs`（Promote）把同 LAN 对端或经拨号（`crates/meshlet-domain/src/p2p.rs` 的 `decide_direct_path`：SameLan/HolePunch）可达的对端升级为直连 `/32` peer，链路劣化按迟滞闸回退 hub 中继。
 
 **设备。** 每台一个 `meshlet-agent` 二进制。它拉取期望计划，用 `ip`、`wg`、iptables 或 nftables 应用，回传回执与心跳，并保留本地账本（`applied.json`）做漂移读回校验。网关 agent 额外发布 LAN 路由（带 owner 与 metric）、在设备上做 SNAT/DNAT，并运行服务发布（转发、HTTP、DNS）。
 
-**`meshlet-cli`** 目前只是骨架，尚无子命令。
+**`meshlet-cli`** 提供 info、status、peers、peer dial、agent diag、networks、config 与 task assign/ls/confirm/retry 等子命令（命令目录单一事实源：`crates/meshlet-commands`，CLI `--help` 与分发由对账测试钉死一致）。
 
 ## 以源码为准
 

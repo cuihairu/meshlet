@@ -13,7 +13,8 @@
 - **Agent API 与管理 API 认证边界清晰分离**（§13.7）。
 
 
-> **契约 ↔ 实现对账（2026-10-15）**：本表与 [openapi.yaml](/api/openapi.yaml) 已与 `apps/server` 注册的 33 条路由逐一对齐——规格先行的端点（网络/设备详情与更新删除、 `rotate-key`、逐网络 `status`、路由 `PATCH`）从未实现且不在第一版验收（§22）内， 已从机器契约移除，避免代码生成出 404 客户端；重复的 `diagnostics` 路径块已去重（保留与实现一致的一份：`POST` 返回 `200` + 报告，非 `202`）。
+> **契约 ↔ 实现对账（2026-10-15，增量注记 2026-11-05）**：本表与 [openapi.yaml](/api/openapi.yaml) 曾与 `apps/server` 当时的 33 条路由逐一对齐——规格先行的端点（网络/设备详情与更新删除、 `rotate-key`、逐网络 `status`、路由 `PATCH`）从未实现且不在第一版验收（§22）内， 已从机器契约移除，避免代码生成出 404 客户端；重复的 `diagnostics` 路径块已去重（保留与实现一致的一份：`POST` 返回 `200` + 报告，非 `202`）。
+> **2026-11-05 增量注记（文档一致性审计）**：其后新增的端点组——2FA（`/auth/2fa/*`）、服务发布（`/networks/{id}/publish/*`、`/publish/routes/check`、agent `/agent/publish-health`）、任务派发（`/networks/{id}/tasks*`、agent `/agent/tasks/pending|{id}/ack|{id}/result`）、设备标签（`/devices/{id}/labels`）、对端端点（`/networks/{id}/peers/endpoints`、agent `/agent/device/peers/endpoints`）、自更新清单（`/update-manifest`）——已实现但**尚未逐条写入本表与 openapi.yaml**（见文末「增量端点对账」节）；机器契约在这些路径补全前不作为代码生成依据。
 
 ## 统一错误响应
 
@@ -289,3 +290,32 @@ agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
 设备计划携带 `desired_revision`、网络独立 `hub_port` 和设备专属 `desired_config_hash`。设备哈希包含实际隧道、MTU、公钥与 NAT 等完整计划，区别于网络修订簿记哈希。hub 未应用当前版本时，计划端点返回 503；hub 成功后下发候选计划，不以资源 Pending 状态过滤所需配置，避免等待 ACK 的循环依赖。设备读回确认后调用 `/agent/device/applied`，仅当前版本且哈希一致的回执可更新状态。全部相关 Active 设备确认后，路由与 Alias 才转 Applied。
 
 旧 Pending/Applied 修订的 apply 请求返回 409，未知修订仍为 404。失败应用的回滚恢复上次成功计划，随后重新等待设备回执。
+
+## 增量端点对账（2026-11-05 审计补充，源码取证）
+
+以下端点已在 `apps/server` 实现并注册，但尚未逐条并入上方主表与 openapi.yaml（方法/路径均取自路由注册处）：
+
+| 方法 | 路径 | 用途 | 源码证据 |
+|---|---|---|---|
+| GET | `/api/v1/auth/2fa/status` | 查询当前用户 2FA 状态 | apps/server/src/lib.rs:1001-1003 |
+| POST | `/api/v1/auth/2fa/enroll` | 开始 TOTP 注册（返回 secret） | apps/server/src/lib.rs（auth 路由段） |
+| POST | `/api/v1/auth/2fa/activate` | 携验证码激活 2FA | apps/server/src/lib.rs（auth 路由段） |
+| POST | `/api/v1/auth/2fa/disable` | 关闭 2FA | apps/server/src/lib.rs（auth 路由段） |
+| GET/POST/PUT/DELETE | `/api/v1/networks/{id}/publish/forwards[/{forward_id}]` | L4 转发 CRUD | apps/server/src/publish.rs:33-37 |
+| GET/POST/PUT/DELETE | `/api/v1/networks/{id}/publish/http-routes[/{route_id}]` | HTTP 发布路由 CRUD | apps/server/src/publish.rs:41-45 |
+| GET/POST/PUT/DELETE | `/api/v1/networks/{id}/publish/probes[/{probe_id}]` | 发布健康探针 CRUD | apps/server/src/publish.rs:49-53 |
+| GET/POST/PUT/DELETE | `/api/v1/networks/{id}/publish/dns-records[/{record_id}]` | 内部 DNS 记录 CRUD | apps/server/src/publish.rs:57-62 |
+| POST | `/api/v1/publish/routes/check` | 发布路由冲突预检 | apps/server/src/lib.rs（publish 路由段） |
+| POST | `/api/v1/agent/publish-health` | agent 批量上报发布探针结果 | apps/server/src/publish.rs:64 |
+| GET/POST | `/api/v1/networks/{id}/tasks` | 任务列表 / 派发（幂等键） | apps/server/src/task.rs:695 |
+| POST | `/api/v1/networks/{id}/tasks/{task_id}/confirm` | 用户确认完成 | apps/server/src/task.rs:699 |
+| POST | `/api/v1/networks/{id}/tasks/{task_id}/retry` | 驳回重跑（生成 `-r{n}` 新代） | apps/server/src/task.rs:703 |
+| GET | `/api/v1/agent/tasks/pending` | agent 拉取待办任务 | apps/server/src/lib.rs:1095 |
+| POST | `/api/v1/agent/tasks/{id}/ack` | agent 确认接单 | apps/server/src/lib.rs:1096 |
+| POST | `/api/v1/agent/tasks/{id}/result` | agent 回传执行结果 | apps/server/src/lib.rs（agent tasks 路由段） |
+| POST | `/api/v1/networks/{id}/devices/{device_id}/labels` | 设置设备标签（按标签路由派单） | apps/server/src/lib.rs:1057-1059 |
+| GET | `/api/v1/networks/{id}/peers/endpoints` | 设备凭证拉取对端候选端点 | apps/server/src/lib.rs:1090-1092 |
+| GET | `/api/v1/agent/device/peers/endpoints` | agent 上报自身候选端点 | apps/server/src/lib.rs:1101-1103 |
+| GET | `/api/v1/update-manifest` | agent 自更新清单 | apps/server/src/lib.rs:991 |
+
+openapi.yaml 的 `info.description` 已同步标注：上述路径补全前，机器契约不作为代码生成依据。

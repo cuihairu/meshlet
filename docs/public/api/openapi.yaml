@@ -7,6 +7,14 @@ info:
     docs/architecture/api-contract.md. Status codes and error codes follow the
     unified error structure. Config-mutating responses carry revision_id and
     apply_status (ADR-009).
+    KNOWN GAP (2026-11-05 audit): endpoints added after 2026-10-15 - 2FA
+    (/auth/2fa/*), service publishing (/networks/{id}/publish/*,
+    /publish/routes/check, /agent/publish-health), task dispatch
+    (/networks/{id}/tasks*, /agent/tasks/*), device labels, peer endpoint
+    exchange and /update-manifest - are implemented in apps/server but NOT yet
+    specified here; see the addendum table in
+    docs/zh/architecture/api-contract.md. Do not generate clients from this
+    file until those paths are added.
 servers:
   - url: /api/v1
 security:

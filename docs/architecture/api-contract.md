@@ -8,6 +8,8 @@ This page summarizes the versioned HTTP API. JSON endpoints use `/api/v1`; manag
 - **Networks and devices:** create networks, issue invitations or bootstrap tokens, enroll devices, and inspect registrations and device status.
 - **Configuration:** manage LAN routes, Alias mappings, segments, and one-way segment grants; inspect revisions, apply or roll back eligible revisions, and read per-device desired plans.
 - **Operations:** read audit events and metrics, run diagnostics, and create or restore database backups.
+- **Service publishing:** manage L4 forwards, HTTP routes, health probes and internal DNS records per device, plus host port forwards, with agent health reports (`apps/server/src/publish.rs`).
+- **Task dispatch:** assign one-shot tasks to devices, track their assigned→acked→running→done/failed state machine, and confirm or retry completed runs; device labels (`.../devices/{id}/labels`) route assignment (`apps/server/src/task.rs`).
 
 ## Enrollment and data plane
 
