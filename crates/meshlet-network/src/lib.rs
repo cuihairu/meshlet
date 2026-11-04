@@ -136,9 +136,33 @@ pub struct DevicePlan {
     pub desired_config_hash: String,
 }
 
-/// 隧道 MTU 缺省值（WireGuard 默认）：计划未显式配置时的有效计划值，
-/// 也是大包探测的默认尺寸来源（1420 − 28 = 1392）。
+/// 隧道 MTU 缺省值（WireGuard 默认）：计划未显式配置时的有效计划值，也是
+/// 大包探测的尺寸来源之一（1420 − 28 = 1392）。
 pub const DEFAULT_TUNNEL_MTU: u32 = 1420;
+
+/// WireGuard 隧道对底层网络的 IPv4 封装开销（字节）：外层 IPv4 头 20B +
+/// UDP 头 8B + WireGuard 数据通道头/标签 52B ≈ 80B（IPv6 外层为 80B + 20B，
+/// 取更保守的 80B 与 WireGuard 文档惯例一致）。
+pub const WG_TUNNEL_OVERHEAD_BYTES: u32 = 80;
+
+/// 由底层接口 MTU 推导隧道 MTU（lane/dataplane-speed）：`underlay − 80`，
+/// 下限 1280（IPv6 最小 MTU，低于它 IPv6-in-tunnel 与常见 TLS 路径直接断，
+/// 与 meshlet-config 的 `MIN_TUNNEL_MTU` 同源）。
+///
+/// - 底层 1500（标准以太网）→ 1420，与 [`DEFAULT_TUNNEL_MTU`] 相同——默认
+///   行为不变，**不是保守值**，是 1500 底层的正确值；
+/// - 底层 9000（jumbo）→ 8920，实测（netns 基线，见 docs/guide/performance）
+///   单流吞吐 1.5 → 8.5 Gbps；
+/// - 底层 1492（PPPoE）→ 1412，比默认 1420 更贴合真路径。
+///
+/// 这是**推导辅助**，不是自动下发：服务端 `tunnel_mtu` 计划仍是唯一内核
+/// 权威（漂移纠回按计划执行）。agent 只把它用于大包探测载荷（§7.5 证据），
+/// 运维据此在服务端配置里钉一个显式 `tunnel_mtu`。
+pub fn derive_tunnel_mtu(underlay_mtu: u32) -> u32 {
+    underlay_mtu
+        .saturating_sub(WG_TUNNEL_OVERHEAD_BYTES)
+        .max(1280)
+}
 
 /// 应用结果：**applied=false 时必须携带错误说明**，不得假装成功（§10.3）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -509,6 +533,15 @@ pub trait NetworkBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derived_tunnel_mtu_tracks_the_underlay_with_floor() {
+        assert_eq!(derive_tunnel_mtu(1500), 1420); // 以太网：默认值 = 正确值
+        assert_eq!(derive_tunnel_mtu(9000), 8920); // jumbo underlay
+        assert_eq!(derive_tunnel_mtu(1492), 1412); // PPPoE
+        assert_eq!(derive_tunnel_mtu(1300), 1280); // 下限钳制
+        assert_eq!(derive_tunnel_mtu(0), 1280); // 读数异常也不产生 0/回绕
+    }
 
     /// 证明 trait 可实现、可泛型分发（§15.1 概念接口落地）。
     struct DummyBackend;

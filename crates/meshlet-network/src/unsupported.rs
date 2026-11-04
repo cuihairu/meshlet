@@ -175,6 +175,12 @@ impl UnsupportedBackend {
     pub fn mtu_probe_sync(&self, _target: Ipv4Addr, _payload: u32) -> bool {
         false
     }
+
+    /// 默认路由底层 MTU 在本平台无读数来源：`None` = 「读数不可得」，调用方
+    /// 回退默认探测尺寸（§7.5 不臆测）。
+    pub fn underlay_path_mtu_sync(&self) -> Option<u32> {
+        None
+    }
 }
 
 impl NetworkBackend for UnsupportedBackend {

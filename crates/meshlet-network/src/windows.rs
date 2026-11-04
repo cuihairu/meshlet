@@ -582,6 +582,14 @@ impl WindowsNetworkBackend {
             .unwrap_or(false)
     }
 
+    /// 默认路由底层 MTU 在 Windows 暂无读数实现：`None` = 「读数不可得」，
+    /// 探测回退默认尺寸 1392（lane/dataplane-speed 仅落 Linux 读数；Windows
+    /// 侧以文档建议 `New-NetIPInterface`/`netsh` 手工核对，见
+    /// docs/guide/performance.md）。
+    pub fn underlay_path_mtu_sync(&self) -> Option<u32> {
+        None
+    }
+
     /// P2P 直连执行层（§12）Windows 尚未接线：显式拒绝，不假装直连成功。
     pub fn handshake_ages_sync(
         &self,

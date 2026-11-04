@@ -905,7 +905,11 @@ impl Agent {
                     .any(|signature| signature.contains("|snat_to_gateway_lan|"))
             }),
             mtu_probe_payload: plan.and_then(|p| {
-                let (target, payload) = probe_decision(p)?;
+                // 底层 MTU 只读一次（lane/dataplane-speed）：默认路由接口的
+                // MTU 让未钉计划时的探测载荷自适应 jumbo/PPPoE 底层；读不到
+                // 回退默认尺寸，不臆测。
+                let underlay = self.backend.underlay_path_mtu_sync();
+                let (target, payload) = probe_decision(p, underlay)?;
                 self.backend
                     .mtu_probe_sync(target, payload)
                     .then_some(payload)
@@ -979,15 +983,17 @@ pub fn read_private_key(dp: &DataplaneConfig) -> Result<Option<String>, String> 
 }
 
 /// 大包探测决策（纯逻辑）：目标 = hub 的 overlay 地址（自 ping 不经过隧道，
-/// 证据失真，跳过）；载荷 = 计划 MTU − 28B（IP 头 20B + ICMP 头 8B），
-/// 计划未配置 MTU 按默认 1420。hub 未知或载荷为 0 则不探测。
-fn probe_decision(plan: &DevicePlan) -> Option<(Ipv4Addr, u32)> {
+/// 证据失真，跳过）；载荷 = 有效 MTU − 28B（IP 头 20B + ICMP 头 8B）。hub
+/// 未知或载荷为 0 则不探测。计划未配置 MTU 时按底层接口 MTU 自适应
+/// （lane/dataplane-speed）：1500 以太网推导回 1420（行为不变），jumbo/PPPoE
+/// 底层推导出贴合真路径的载荷；底层读数不可得回退 WireGuard 默认。计划显式
+/// 钉 MTU 时计划优先——内核权威始终是服务端计划，自适应只作用于探测证据。
+fn probe_decision(plan: &DevicePlan, underlay_mtu: Option<u32>) -> Option<(Ipv4Addr, u32)> {
     let hub = plan.hub_address.filter(|h| *h != plan.tunnel.address)?;
-    let payload = plan
-        .tunnel
-        .mtu
-        .unwrap_or(DEFAULT_TUNNEL_MTU)
-        .saturating_sub(28);
+    let effective = plan.tunnel.mtu.unwrap_or_else(|| {
+        underlay_mtu.map_or(DEFAULT_TUNNEL_MTU, meshlet_network::derive_tunnel_mtu)
+    });
+    let payload = effective.saturating_sub(28);
     (payload > 0).then_some((hub, payload))
 }
 
@@ -1210,24 +1216,56 @@ mod tests {
     fn probe_decision_targets_the_hub_with_the_planned_payload() {
         let p = probe_plan(Some(1380), Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(
-            probe_decision(&p),
+            probe_decision(&p, None),
             Some(("10.240.0.1".parse().unwrap(), 1352))
         );
 
         // 计划未配置 MTU：按默认 1420 探测（1420 − 28 = 1392）。
         let p = probe_plan(None, Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(
-            probe_decision(&p),
+            probe_decision(&p, None),
             Some(("10.240.0.1".parse().unwrap(), 1392))
         );
 
         // hub 未知 / hub 就是自己（自 ping 不经过隧道）/ 载荷为 0：不探测。
         let p = probe_plan(Some(1380), None, "10.240.0.7");
-        assert_eq!(probe_decision(&p), None);
+        assert_eq!(probe_decision(&p, None), None);
         let p = probe_plan(Some(1380), Some("10.240.0.7"), "10.240.0.7");
-        assert_eq!(probe_decision(&p), None);
+        assert_eq!(probe_decision(&p, None), None);
         let p = probe_plan(Some(28), Some("10.240.0.1"), "10.240.0.7");
-        assert_eq!(probe_decision(&p), None);
+        assert_eq!(probe_decision(&p, None), None);
+    }
+
+    #[test]
+    fn probe_payload_adapts_to_the_underlay_when_plan_leaves_mtu_unset() {
+        // 计划钉 MTU：计划优先，底层读数不影响探测载荷。
+        let p = probe_plan(Some(1380), Some("10.240.0.1"), "10.240.0.7");
+        assert_eq!(
+            probe_decision(&p, Some(9000)),
+            Some(("10.240.0.1".parse().unwrap(), 1352))
+        );
+
+        // 计划未配置：按底层 MTU 推导。1500 以太网推导回 1420（默认行为
+        // 不变）；jumbo 9000 → 8920 − 28；PPPoE 1492 → 1412 − 28。
+        let p = probe_plan(None, Some("10.240.0.1"), "10.240.0.7");
+        assert_eq!(
+            probe_decision(&p, Some(1500)),
+            Some(("10.240.0.1".parse().unwrap(), 1392))
+        );
+        assert_eq!(
+            probe_decision(&p, Some(9000)),
+            Some(("10.240.0.1".parse().unwrap(), 8892))
+        );
+        assert_eq!(
+            probe_decision(&p, Some(1492)),
+            Some(("10.240.0.1".parse().unwrap(), 1384))
+        );
+
+        // 底层读数不可得：回退 WireGuard 默认（行为与旧版一致）。
+        assert_eq!(
+            probe_decision(&p, None),
+            Some(("10.240.0.1".parse().unwrap(), 1392))
+        );
     }
 
     #[test]

@@ -117,6 +117,20 @@ fn parse_link_mtu(link_show: &str) -> Option<u32> {
     None
 }
 
+/// 从 `ip -4 route show default` 解析默认路由出接口（首行形如
+/// `default via 10.0.0.1 dev ens18 proto dhcp ...`）。解析不出 `dev` 时返回
+/// `None`——调用方按「读数不可得」处理，不臆测接口名。
+fn parse_default_route_interface(route_show: &str) -> Option<String> {
+    let line = route_show.lines().next()?;
+    let mut tokens = line.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "dev" {
+            return tokens.next().map(str::to_string);
+        }
+    }
+    None
+}
+
 /// 从 `ip -4 -o addr show` 输出解析 `(接口, IPv4 地址)` 对（仅 `inet` 行）。
 /// 形如 `2: eth0    inet 192.168.1.50/24 ...`（`-o` 单行每地址一行）。
 fn parse_ip_octet_addrs(output: &str) -> Vec<(String, Ipv4Addr)> {
@@ -1129,6 +1143,16 @@ impl LinuxNetworkBackend {
         }
     }
 
+    /// 默认路由底层接口的 MTU（lane/dataplane-speed：大包探测载荷的自适应
+    /// 来源，配合 [`crate::derive_tunnel_mtu`]）。只读；默认路由、出接口或
+    /// MTU 任一读数不可得都返回 `None`，调用方回退默认探测尺寸，不臆测。
+    pub fn underlay_path_mtu_sync(&self) -> Option<u32> {
+        let route = self.run(&["ip", "-4", "route", "show", "default"]).ok()?;
+        let dev = parse_default_route_interface(&String::from_utf8_lossy(&route.stdout))?;
+        let link = self.run(&["ip", "link", "show", &dev]).ok()?;
+        parse_link_mtu(&String::from_utf8_lossy(&link.stdout))
+    }
+
     /// 同步隧道应用（[NetworkBackend::apply_tunnel] 的命令核心）。
     ///
     /// `keep_keys`：P2P 直连对端公钥集（§12）——计划重放时保留它们，不冲掉。
@@ -2003,6 +2027,22 @@ mod tests {
         assert!(
             LinuxNetworkBackend::meshlet_rule_deletion(":PREROUTING ACCEPT [0:0]", None).is_none()
         );
+    }
+
+    #[test]
+    fn parse_default_route_interface_reads_the_dev_token() {
+        assert_eq!(
+            parse_default_route_interface(
+                "default via 192.168.1.1 dev ens18 proto dhcp metric 100\n"
+            ),
+            Some("ens18".to_string())
+        );
+        assert_eq!(
+            parse_default_route_interface("default dev wg0 scope link\n"),
+            Some("wg0".to_string())
+        );
+        assert_eq!(parse_default_route_interface(""), None);
+        assert_eq!(parse_default_route_interface("unreachable default\n"), None);
     }
 
     #[test]
