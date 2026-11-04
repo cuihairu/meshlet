@@ -511,6 +511,7 @@ mod tests {
             approved_at: None,
             revoked_at: None,
             segment_id: SegmentId("seg-net-1".into()),
+            labels: BTreeMap::new(),
         }
     }
 

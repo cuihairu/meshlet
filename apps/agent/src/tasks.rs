@@ -375,6 +375,7 @@ mod tests {
             cmd: cmd.to_string(),
             workdir: None,
             timeout_secs: None,
+            required_labels: Default::default(),
         }
     }
 
@@ -477,6 +478,7 @@ mod tests {
                 cmd: "pwd".into(),
                 workdir: Some(dir.to_string_lossy().into_owned()),
                 timeout_secs: None,
+                required_labels: Default::default(),
             };
             let result = run_task(&p);
             assert_eq!(result.exit_code, 0);
@@ -495,6 +497,7 @@ mod tests {
                 cmd: "sleep 30".into(),
                 workdir: None,
                 timeout_secs: Some(1),
+                required_labels: Default::default(),
             };
             let start = Instant::now();
             let result = run_task(&p);
@@ -514,6 +517,7 @@ mod tests {
                 cmd: "exit 3".into(),
                 workdir: Some("/nonexistent".into()),
                 timeout_secs: None,
+                required_labels: Default::default(),
             };
             let result = run_task(&p);
             // 工作目录不存在 → 派生失败 → 127，失败可见。

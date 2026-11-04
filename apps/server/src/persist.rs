@@ -32,6 +32,7 @@ use meshlet_domain::{
 };
 use sqlx::sqlite::SqliteConnection;
 use sqlx::{ConnectOptions, Executor, Row, SqlitePool};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 use std::time::Duration;
@@ -1217,6 +1218,7 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
                 cmd,
                 workdir,
                 timeout_secs: timeout_secs.map(|s| s as u64),
+                required_labels: Default::default(),
             },
             retry_limit as u32,
         );
@@ -1438,6 +1440,7 @@ pub async fn load(
                 row.14
                     .ok_or_else(|| corrupt("device segment_id", "NULL after migration"))?,
             ),
+            labels: BTreeMap::new(),
         };
         state
             .restore_device(device)
@@ -2475,6 +2478,7 @@ mod tests {
             approved_at: None,
             segment_id: custom_segment.clone(),
             revoked_at: None,
+            labels: BTreeMap::new(),
         };
         insert_device(&pool, &device).await.unwrap();
 

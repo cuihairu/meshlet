@@ -4,7 +4,7 @@
 //! 时间戳以 ISO-8601 字符串承载（由应用层写入），保持领域层零时间库依赖。
 
 use crate::cidr::Ipv4Cidr;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// ISO-8601 时间戳（由应用层提供，如 `2026-10-14T08:00:00Z`）。
 pub type Timestamp = String;
@@ -115,6 +115,9 @@ pub struct Device {
     /// 设备唯一所属段（ADR-012）。恢复旧库时由 migrations 010/011 回填。
     pub segment_id: SegmentId,
     pub revoked_at: Option<Timestamp>,
+    /// 节点标签（role/capability 等，操作员分配；MT-005 标签路由的匹配
+    /// 依据）。空 = 未打标，匹配任意「无标签要求」的任务。
+    pub labels: BTreeMap<String, String>,
 }
 
 /// 待审批的设备注册申请（ZeroTier 式自举注册：设备持自举码自举 → 落此表 →
@@ -182,6 +185,13 @@ impl Device {
         self.status == DeviceStatus::Active
     }
 
+    /// 标签路由匹配（MT-005，纯函数）：任务的 `required_labels` 逐对
+    /// `(key, value)` 命中设备标签才放行。空要求 = 无约束（任何设备可接）；
+    /// 值不同视为不匹配（role=worker 不满足 role=builder）。
+    pub fn matches_labels(&self, required: &BTreeMap<String, String>) -> bool {
+        required.iter().all(|(k, v)| self.labels.get(k) == Some(v))
+    }
+
     /// 撤销设备（§11.5 第 1-2 步；Peer/路由清理属于配置应用层）。
     /// 重复撤销报错而不是静默成功。
     pub fn revoke(&mut self, at: Timestamp) -> Result<(), DeviceError> {
@@ -192,6 +202,22 @@ impl Device {
         self.revoked_at = Some(at);
         Ok(())
     }
+}
+
+/// 标签路由选点（MT-005，纯函数）：在候选设备里选第一个（id 确定性序）
+/// 满足标签要求的 Active 设备。空要求 = 无约束，选第一个 Active 设备；
+/// 无命中返回 `None`（调用方按无可派发处理）。
+pub fn select_by_labels<'a>(
+    devices: &'a [Device],
+    required: &BTreeMap<String, String>,
+) -> Option<&'a Device> {
+    let mut sorted: Vec<&Device> = devices
+        .iter()
+        .filter(|d| d.is_active())
+        .filter(|d| d.matches_labels(required))
+        .collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    sorted.into_iter().next()
 }
 
 /// 设备密钥记录（与 Device 分离，便于轮换与撤销，§5.5）。
@@ -611,6 +637,7 @@ mod tests {
             approved_at: None,
             revoked_at: None,
             segment_id: SegmentId("seg-net-1".into()),
+            labels: BTreeMap::new(),
         };
         assert!(d.is_active());
         d.revoke(T1.into()).unwrap();
@@ -761,6 +788,7 @@ mod tests {
             approved_at: None,
             revoked_at: None,
             segment_id: SegmentId("seg-net-1".into()),
+            labels: BTreeMap::new(),
         };
         let mut reg = DeviceRegistry::new();
         reg.add(mk("laptop", "10.240.0.2")).unwrap();
@@ -794,6 +822,7 @@ mod tests {
             approved_at: None,
             revoked_at: None,
             segment_id: SegmentId("seg-net-1".into()),
+            labels: BTreeMap::new(),
         };
         let mut reg = DeviceRegistry::new();
         let laptop = mk("laptop", "10.240.0.2");
@@ -808,5 +837,89 @@ mod tests {
             reg.find_by_id(&id).unwrap().last_report_at.as_deref(),
             Some(T0)
         );
+    }
+
+    // ---- MT-005 标签路由（纯函数） ----
+
+    fn device_with_labels(id: &str, labels: &[(&str, &str)], active: bool) -> Device {
+        Device {
+            id: DeviceId(id.into()),
+            network_id: NetworkId("net-1".into()),
+            name: id.into(),
+            virtual_ipv4: "10.240.0.2".parse::<Ipv4Addr>().unwrap(),
+            public_key: "pub".into(),
+            platform: Platform::Linux,
+            status: if active {
+                DeviceStatus::Active
+            } else {
+                DeviceStatus::Revoked
+            },
+            last_seen_at: None,
+            last_handshake_at: None,
+            last_report_at: None,
+            dataplane_evidence: None,
+            created_at: T0.into(),
+            approved_at: None,
+            revoked_at: active.then(|| T0.into()),
+            segment_id: SegmentId("seg-net-1".into()),
+            labels: labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn matches_labels_requires_every_required_pair() {
+        let d = device_with_labels("dev-1", &[("role", "worker"), ("cap", "gpu")], true);
+        let mut need = BTreeMap::new();
+        need.insert("role".to_string(), "worker".to_string());
+        need.insert("cap".to_string(), "gpu".to_string());
+        assert!(d.matches_labels(&need));
+    }
+
+    #[test]
+    fn matches_labels_rejects_missing_or_mismatched_pair() {
+        let d = device_with_labels("dev-1", &[("role", "worker")], true);
+        let mut missing = BTreeMap::new();
+        missing.insert("cap".to_string(), "gpu".to_string());
+        assert!(!d.matches_labels(&missing));
+        let mut mismatch = BTreeMap::new();
+        mismatch.insert("role".to_string(), "builder".to_string());
+        assert!(!d.matches_labels(&mismatch));
+    }
+
+    #[test]
+    fn matches_labels_empty_requirement_is_unconstrained() {
+        let d = device_with_labels("dev-1", &[("role", "worker")], true);
+        assert!(d.matches_labels(&BTreeMap::new()));
+    }
+
+    #[test]
+    fn select_by_labels_picks_first_active_by_id_and_skips_others() {
+        let devices = vec![
+            device_with_labels("dev-b", &[("role", "worker")], true),
+            device_with_labels("dev-a", &[("role", "worker")], true),
+            // 标签不符：不选。
+            device_with_labels("dev-c", &[("role", "builder")], true),
+            // 已撤销：不选。
+            device_with_labels("dev-d", &[("role", "worker")], false),
+        ];
+        let mut need = BTreeMap::new();
+        need.insert("role".to_string(), "worker".to_string());
+        let picked = select_by_labels(&devices, &need).expect("must select a device");
+        // id 确定性序：dev-a 先于 dev-b。
+        assert_eq!(picked.id, DeviceId("dev-a".into()));
+    }
+
+    #[test]
+    fn select_by_labels_no_hit_returns_none() {
+        let devices = vec![device_with_labels("dev-a", &[("role", "worker")], true)];
+        let mut need = BTreeMap::new();
+        need.insert("role".to_string(), "builder".to_string());
+        assert!(select_by_labels(&devices, &need).is_none());
+        // 空要求但全部已撤销：无 Active 可派。
+        let revoked = vec![device_with_labels("dev-a", &[("role", "worker")], false)];
+        assert!(select_by_labels(&revoked, &BTreeMap::new()).is_none());
     }
 }

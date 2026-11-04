@@ -1378,6 +1378,7 @@ pub fn approve_registration(
         segment_id: meshlet_domain::default_segment_id(&meshlet_domain::NetworkId(
             network_id.into(),
         )),
+        labels: BTreeMap::new(),
     };
     if let Err(e) = state.registry.add(device.clone()) {
         // 登记失败（例如 IPAM 分配到重复地址）则回收地址并把申请放回去。
@@ -1505,6 +1506,7 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         segment_id: meshlet_domain::default_segment_id(&meshlet_domain::NetworkId(
             network_id.clone(),
         )),
+        labels: BTreeMap::new(),
     };
     state.registry.add(device.clone())?;
     // 新设备改变期望配置：记录新修订（版本号网络内递增，§10.4）。

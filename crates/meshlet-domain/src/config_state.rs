@@ -439,6 +439,7 @@ mod tests {
         AliasMappingId, DesiredStateStatus, DeviceId, LanRouteId, ReturnPathMode, RouteMode,
         TranslationMode,
     };
+    use std::collections::BTreeMap;
 
     const T0: &str = "2026-10-14T08:00:00Z";
     const T1: &str = "2026-10-14T08:01:00Z";
@@ -1012,6 +1013,7 @@ mod tests {
             approved_at: None,
             segment_id: crate::SegmentId("seg-net-1".into()),
             revoked_at: None,
+            labels: BTreeMap::new(),
         }
     }
 

@@ -301,6 +301,7 @@ mod tests {
             approved_at: None,
             segment_id: meshlet_domain::SegmentId("seg-net-1".into()),
             revoked_at: None,
+            labels: Default::default(),
         }
     }
 

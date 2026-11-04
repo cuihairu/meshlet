@@ -39,6 +39,11 @@ pub struct TaskPayload {
     pub workdir: Option<String>,
     /// 超时（秒）；`None` 用 agent 默认超时。
     pub timeout_secs: Option<u64>,
+    /// 标签路由要求（MT-005）：`(key, value)` 逐对命中目标节点标签才可派发。
+    /// 服务端选点/校验用；agent 只执行不解释。`#[serde(default)]` 容忍旧
+    /// 服务端下发（未含该字段的任务 = 无标签约束）。
+    #[serde(default)]
+    pub required_labels: std::collections::BTreeMap<String, String>,
 }
 
 /// 任务状态（线性状态机 `assigned → acked → running → done | failed`）。
@@ -199,6 +204,7 @@ mod tests {
             cmd: "/usr/bin/true".into(),
             workdir: Some("/tmp".into()),
             timeout_secs: Some(30),
+            required_labels: Default::default(),
         }
     }
 

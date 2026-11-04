@@ -165,6 +165,7 @@ pub(crate) fn assign(
         cmd: req.cmd.clone(),
         workdir: req.workdir.clone(),
         timeout_secs: req.timeout_secs,
+        required_labels: Default::default(),
     };
     let task = Task::new(
         id,
@@ -860,6 +861,7 @@ mod tests {
                 cmd: "echo hi".into(),
                 workdir: None,
                 timeout_secs: spec.timeout_secs,
+                required_labels: Default::default(),
             },
             spec.retry_limit,
         );
