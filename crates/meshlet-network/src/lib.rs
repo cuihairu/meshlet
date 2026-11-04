@@ -35,6 +35,7 @@ pub mod diag;
 pub mod dial;
 pub mod keys;
 pub mod nat;
+pub mod probe;
 pub mod windows_cleanup;
 pub mod windows_console;
 pub mod windows_elevation;

@@ -227,7 +227,10 @@ fn chrono_now_iso() -> String {
 
 /// 从 `ping` 输出解析首个 RTT（毫秒）。支持 `time=12.3 ms` 与 `time<1 ms`
 ///（Linux iputils 的超小延迟表示）；无读数返回 `None`。
-pub(crate) fn parse_ping_rtt_ms(text: &str) -> Option<u128> {
+///
+/// `pub`（非 `pub(crate)`）：探测层（[`crate::probe`]）与 netns 集成测试
+/// （`tests/probe_netns.rs`）都直接复用本解析器。
+pub fn parse_ping_rtt_ms(text: &str) -> Option<u128> {
     let start = text.find("time")?;
     let rest = &text[start + 4..];
     let digit_start = rest.find(|c: char| c.is_ascii_digit())?;
@@ -236,6 +239,21 @@ pub(crate) fn parse_ping_rtt_ms(text: &str) -> Option<u128> {
         .find(|c: char| !c.is_ascii_digit() && c != '.')
         .unwrap_or(value.len());
     value[..end].parse::<f64>().ok().map(|v| v.round() as u128)
+}
+
+/// SEL-001 探测层传输：不经后端（无 sudo / netns 前缀）直接 `ping -c 1
+/// -W 1` 实测 ICMP RTT（毫秒）。agent 探测线程以本函数探测候选端点 IP
+///（候选是普通单播地址，从 agent 进程可达即可，无需经 wg 接口）。
+/// 超时 1s——探测是高频轻量操作，2s 的诊断级等待会拖慢探测线程。
+pub fn run_ping_rtt(target: Ipv4Addr) -> Option<u128> {
+    let out = Command::new("ping")
+        .args(["-c", "1", "-W", "1", &target.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+    parse_ping_rtt_ms(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// 解析 `wg show <if> dump` 的 peer 行为诊断读数（纯函数，Linux 本机可测）。

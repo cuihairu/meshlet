@@ -71,6 +71,10 @@ pub struct Agent {
     task_ledger: crate::tasks::TaskLedger,
     /// 任务账本持久化文件路径。
     task_ledger_path: std::path::PathBuf,
+    /// SEL-001 候选端点探测运行时：独立线程按 5s（可配）对每 peer 全部候选
+    /// 端点发 ICMP 探测，采集 RTT/丢包/抖动滑动窗口。候选集由
+    /// [`Agent::reconcile_direct`] 每 30s 刷新（零控制面负载）。
+    probe: crate::probe::ProbeRuntime,
 }
 
 /// 发布运行时（R-06）：一个单 worker 的 tokio runtime 承载
@@ -149,6 +153,9 @@ impl Agent {
         private_key: Option<String>,
         backend: SystemBackend,
     ) -> Self {
+        // 先起探测运行时再移动 config：字段初始化按书写顺序求值，`dataplane`
+        // 会在 struct 字面量里先被 move，探测运行时须在此之前读到 probe 配置。
+        let probe = crate::probe::ProbeRuntime::start(&config.dataplane.probe);
         Self {
             server_url: config.server_url,
             token: config.device_token.unwrap_or_default(),
@@ -171,6 +178,7 @@ impl Agent {
             last_direct_probe: None,
             task_ledger_path: task_ledger_path(&config.state_dir),
             task_ledger: crate::tasks::TaskLedger::load(&task_ledger_path(&config.state_dir)),
+            probe,
         }
     }
 
@@ -632,6 +640,8 @@ impl Agent {
     pub fn reconcile_direct(&mut self, plan: &DevicePlan) {
         let request = dial::load_request(Path::new(&self.state_dir));
         if !self.dataplane.direct_connect.enabled {
+            // 直连关 → 无候选可探：清空探测候选缓存（探测线程下一轮 no-op）。
+            self.probe.update_candidates(&[]);
             let updates = self.direct.demote_all();
             if !updates.is_empty() {
                 for update in &updates {
@@ -674,6 +684,8 @@ impl Agent {
                 return;
             }
         };
+        // SEL-001：候选集刷新（探测线程复用，不额外请求 server——零控制面负载）。
+        self.probe.update_candidates(&wanted);
         let Some(scope) = direct_scope(plan) else {
             tracing::warn!("direct probe: no routable scope in the plan; keeping hub relay");
             if let Some(req) = request {

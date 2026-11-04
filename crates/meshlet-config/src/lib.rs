@@ -230,6 +230,7 @@ struct RawDataplaneConfig {
     hub_endpoint: Option<String>,
     poll_interval_secs: Option<u64>,
     direct_connect: Option<RawDirectConnectConfig>,
+    probe: Option<RawProbeConfig>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -237,6 +238,14 @@ struct RawDataplaneConfig {
 struct RawDirectConnectConfig {
     enabled: Option<bool>,
     listen_port: Option<u16>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawProbeConfig {
+    enabled: Option<bool>,
+    interval_secs: Option<u64>,
+    window: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -338,6 +347,10 @@ pub struct DataplaneConfig {
     /// 联动放行 UDP 端口）落地前直连链路不完整，且开启会把数据面 wg 接口
     /// 绑定到固定监听端口，静默改变既有部署行为。
     pub direct_connect: DirectConnectConfig,
+    /// SEL-001 候选端点探测：对每 peer 全部候选端点发 ICMP 轻量探测，采集
+    /// RTT / 丢包 / 抖动滑动窗口。**默认关闭**（数据面子功能默认全关惯例）；
+    /// 开启且 `direct_connect.enabled` 且有候选端点时才真正发探测。
+    pub probe: ProbeConfig,
 }
 
 /// P2P 直连开关与 WireGuard 监听端口。
@@ -357,6 +370,29 @@ impl Default for DirectConnectConfig {
     }
 }
 
+/// SEL-001 候选端点探测配置（任务书：agent 周期，默认 5s，可配）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeConfig {
+    /// 是否开启候选端点探测。默认关；开启且 `direct_connect.enabled` 且对端
+    /// 有候选端点时才发探测（无候选 = 无目标，no-op）。
+    pub enabled: bool,
+    /// 探测周期（秒）：默认 5s（任务书）。下限 1。
+    pub interval_secs: u64,
+    /// 每目标滑动窗口容量（最近 N 次探测）：SEL-002 的评分/迟滞判定在窗口上
+    /// 做，过小会随单次抖动频繁翻转。默认 20。
+    pub window: usize,
+}
+
+impl Default for ProbeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_secs: 5,
+            window: 20,
+        }
+    }
+}
+
 impl Default for DataplaneConfig {
     fn default() -> Self {
         Self {
@@ -366,6 +402,7 @@ impl Default for DataplaneConfig {
             hub_endpoint: None,
             poll_interval_secs: 30,
             direct_connect: DirectConnectConfig::default(),
+            probe: ProbeConfig::default(),
         }
     }
 }
@@ -448,6 +485,24 @@ impl AgentConfig {
                 "dataplane.direct_connect.listen_port must be 1..=65535".into(),
             ));
         }
+        let raw_probe = dataplane.probe.unwrap_or_default();
+        let probe = ProbeConfig {
+            enabled: raw_probe.enabled.unwrap_or(default.dataplane.probe.enabled),
+            interval_secs: raw_probe
+                .interval_secs
+                .unwrap_or(default.dataplane.probe.interval_secs),
+            window: raw_probe.window.unwrap_or(default.dataplane.probe.window),
+        };
+        if probe.interval_secs < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.interval_secs must be at least 1".into(),
+            ));
+        }
+        if probe.window < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.window must be at least 1".into(),
+            ));
+        }
         Ok(Self {
             server_url,
             state_dir: raw.state_dir.unwrap_or(default.state_dir),
@@ -475,6 +530,7 @@ impl AgentConfig {
                     .filter(|s| !s.is_empty()),
                 poll_interval_secs,
                 direct_connect,
+                probe,
             },
         })
     }
@@ -799,6 +855,44 @@ listen_port = 20000
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
         let err = AgentConfig::from_toml("[dataplane.direct_connect]\nbogus = 1").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn agent_probe_defaults_off_5s_and_parses_section() {
+        // SEL-001：默认关（数据面子功能默认全关惯例），周期 5s（任务书），窗口 20。
+        let d = AgentConfig::default().dataplane.probe;
+        assert!(!d.enabled);
+        assert_eq!(d.interval_secs, 5);
+        assert_eq!(d.window, 20);
+        // 缺 [dataplane] 段同样取默认。
+        let d = AgentConfig::from_toml("").unwrap().dataplane.probe;
+        assert!(!d.enabled);
+        assert_eq!(d.interval_secs, 5);
+
+        let c = AgentConfig::from_toml(
+            r#"
+[dataplane.probe]
+enabled = true
+interval_secs = 2
+window = 8
+"#,
+        )
+        .unwrap();
+        assert!(c.dataplane.probe.enabled);
+        assert_eq!(c.dataplane.probe.interval_secs, 2);
+        assert_eq!(c.dataplane.probe.window, 8);
+    }
+
+    #[test]
+    fn agent_probe_rejects_zero_interval_and_window() {
+        let err = AgentConfig::from_toml("[dataplane.probe]\ninterval_secs = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err = AgentConfig::from_toml("[dataplane.probe]\nwindow = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err = AgentConfig::from_toml("[dataplane.probe]\nbogus = 1").unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
     }
 }
