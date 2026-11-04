@@ -33,7 +33,7 @@ Meshlet 是基于 Rust 的自托管私人虚拟网络工具（Self-hosted Privat
 - 区块链、代币、贡献积分、经济结算
 - 自研 WireGuard 替代协议
 - 复杂多跳中继
-- 自动 NAT 打洞、P2P 直连、动态中继切换
+- 自动 NAT 打洞（**核心目标，开发中**——见 docs/analysis/easytier-comparison.md；P2P 直连与回退切换已实现）
 - 通用远程桌面、远程执行、运维任务调度
 - 企业组织目录、复杂计费、多租户 SaaS
 - 全局互联网出口 VPN

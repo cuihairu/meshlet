@@ -176,7 +176,9 @@ Run the meshlet server on a VPS with a public IPv4 address, install agents on yo
 - Alias prefixes for overlapping LAN subnets (e.g. two `192.168.1.0/24`)
 - Web console for networks, devices, routes and diagnostics
 
-Not in scope for v1: public relay networks, NAT hole punching, L2 bridging, internet exit VPN.
+Connection strategy: the hub is always on — devices first connect through the hub and exchange peer info, then upgrade to P2P direct; NAT hole punching is the **core goal** (in active development) to maximize direct success, with hub relay as the always-available fallback so links never drop.
+
+Not in scope for v1: public relay networks, L2 bridging, internet exit VPN.
 
 ## Documentation
 

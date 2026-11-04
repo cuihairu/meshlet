@@ -10,7 +10,7 @@ Record peer count, each peer's AllowedIPs, relay throughput, round-trip time, MT
 
 ## Candidate changes
 
-Potential optimizations include narrowing peer routes, reducing unnecessary entries, improving relay capacity, and eventually adding direct peer paths. P2P traversal changes topology, firewall assumptions, and failure modes; it needs a prototype before it becomes a default.
+Potential optimizations include narrowing peer routes, reducing unnecessary entries, improving relay capacity, and eventually adding direct peer paths. P2P traversal changes topology, firewall assumptions, and failure modes; it is the project's core goal and in active development (lane/nat-punch), with the hub relay remaining the always-available fallback.
 
 ## Decision
 

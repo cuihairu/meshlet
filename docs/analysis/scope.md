@@ -10,7 +10,7 @@ Prefer a small, inspectable system; keep private keys on endpoint devices; make 
 
 ## First-version boundaries
 
-The first version centers on IPv4 Overlay connectivity through a VPS hub, device enrollment, LAN route publication, Alias mappings for overlapping prefixes, a management console, backups, and diagnostics. It does not claim a production-ready Windows client, mobile clients, peer-to-peer NAT traversal, multi-tenant identity, or application-level access control.
+The first version centers on IPv4 Overlay connectivity through a VPS hub, device enrollment, LAN route publication, Alias mappings for overlapping prefixes, a management console, backups, and diagnostics. It does not claim a production-ready Windows client, mobile clients, multi-tenant identity, or application-level access control. P2P direct connectivity is implemented, and peer-to-peer NAT traversal is the core goal and in active development (see `docs/analysis/easytier-comparison.md`).
 
 ## Deployment shape
 
