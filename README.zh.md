@@ -141,7 +141,7 @@ meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 - 用 Alias 前缀解决重叠网段（例如两个 `192.168.1.0/24`）
 - Web 控制台管理网络、设备、路由与诊断
 
-第一版不做：公共中继网络、P2P/NAT 打洞、二层桥接、全局出口 VPN。
+第一版不做：公共中继网络、NAT 打洞、二层桥接、全局出口 VPN。
 
 ## 文档
 
