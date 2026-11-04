@@ -146,6 +146,11 @@ pub const DEFAULT_TUNNEL_MTU: u32 = 1420;
 /// 取更保守的 80B 与 WireGuard 文档惯例一致）。
 pub const WG_TUNNEL_OVERHEAD_BYTES: u32 = 80;
 
+/// SEL-003 hub 兜底：hub peer 的 persistent-keepalive（秒）。hub 是中继的生命线，
+/// 掉 keepalive 会让 hub 端看不到本设备（NAT 映射过期），直连回退后无处可回。
+/// agent 在 reconcile 里对 hub peer 强制取 max(计划值, 此值)，保证「永不掉」。
+pub const HUB_KEEPALIVE_SECS: u32 = 25;
+
 /// 由底层接口 MTU 推导隧道 MTU（lane/dataplane-speed）：`underlay − 80`，
 /// 下限 1280（IPv6 最小 MTU，低于它 IPv6-in-tunnel 与常见 TLS 路径直接断，
 /// 与 meshlet-config 的 `MIN_TUNNEL_MTU` 同源）。

@@ -250,6 +250,8 @@ struct RawProbeConfig {
     /// `margin` 以百分比给出（30 = 30%）。默认 3 / 30%。
     switch_required: Option<usize>,
     switch_margin_percent: Option<f64>,
+    /// SEL-003 恢复门：直连劣化回中继后须连续 N 轮健康才切回（默认 3）。
+    recovery_required: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -390,6 +392,9 @@ pub struct ProbeConfig {
     pub switch_required: usize,
     /// SEL-002 迟滞裕量（0.0..=1.0；默认 0.30 = 30%）。
     pub switch_margin: f64,
+    /// SEL-003 恢复门：直连劣化回中继后须**连续** N 轮健康才允许切回（防抖）。
+    /// 默认 3。
+    pub recovery_required: usize,
 }
 
 impl Default for ProbeConfig {
@@ -400,6 +405,7 @@ impl Default for ProbeConfig {
             window: 20,
             switch_required: 3,
             switch_margin: 0.30,
+            recovery_required: 3,
         }
     }
 }
@@ -510,6 +516,9 @@ impl AgentConfig {
                 .switch_margin_percent
                 .map(|p| p / 100.0)
                 .unwrap_or(default.dataplane.probe.switch_margin),
+            recovery_required: raw_probe
+                .recovery_required
+                .unwrap_or(default.dataplane.probe.recovery_required),
         };
         if probe.interval_secs < 1 {
             return Err(ConfigError::InvalidDataPlane(
@@ -529,6 +538,11 @@ impl AgentConfig {
         if !(0.0..=1.0).contains(&probe.switch_margin) {
             return Err(ConfigError::InvalidDataPlane(
                 "dataplane.probe.switch_margin_percent must be 0..=100".into(),
+            ));
+        }
+        if probe.recovery_required < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.recovery_required must be at least 1".into(),
             ));
         }
         Ok(Self {
@@ -896,12 +910,15 @@ listen_port = 20000
         // SEL-002 迟滞默认：连续 3 采样、裕量 30%。
         assert_eq!(d.switch_required, 3);
         assert_eq!(d.switch_margin, 0.30);
+        // SEL-003 恢复门默认：连续 3 轮健康才切回。
+        assert_eq!(d.recovery_required, 3);
         // 缺 [dataplane] 段同样取默认。
         let d = AgentConfig::from_toml("").unwrap().dataplane.probe;
         assert!(!d.enabled);
         assert_eq!(d.interval_secs, 5);
         assert_eq!(d.switch_required, 3);
         assert_eq!(d.switch_margin, 0.30);
+        assert_eq!(d.recovery_required, 3);
 
         let c = AgentConfig::from_toml(
             r#"
@@ -911,6 +928,7 @@ interval_secs = 2
 window = 8
 switch_required = 5
 switch_margin_percent = 40
+recovery_required = 4
 "#,
         )
         .unwrap();
@@ -919,6 +937,7 @@ switch_margin_percent = 40
         assert_eq!(c.dataplane.probe.window, 8);
         assert_eq!(c.dataplane.probe.switch_required, 5);
         assert_eq!(c.dataplane.probe.switch_margin, 0.40);
+        assert_eq!(c.dataplane.probe.recovery_required, 4);
     }
 
     #[test]
@@ -934,6 +953,9 @@ switch_margin_percent = 40
 
         let err =
             AgentConfig::from_toml("[dataplane.probe]\nswitch_margin_percent = 101").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err = AgentConfig::from_toml("[dataplane.probe]\nrecovery_required = 0").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
         let err = AgentConfig::from_toml("[dataplane.probe]\nbogus = 1").unwrap_err();

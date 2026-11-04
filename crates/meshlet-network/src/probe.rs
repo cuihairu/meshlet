@@ -409,6 +409,79 @@ impl SwitchGate {
 }
 
 // ---------------------------------------------------------------------------
+// SEL-003 hub 兜底：直连劣化检测与恢复门（纯逻辑，无 IO）
+// ---------------------------------------------------------------------------
+
+/// 丢包尖峰阈值（SEL-003）：窗口丢包率 ≥ 此值视为「丢包尖峰」，立即回中继。
+pub const LOSS_SPIKE_THRESHOLD: f64 = 0.5;
+
+/// 直连路径劣化判定（SEL-003）：
+/// - 空窗口 → `false`（尚无读数，不武断回中继）；
+/// - 窗口丢包率 ≥ [`LOSS_SPIKE_THRESHOLD`]（丢包尖峰）→ `true`；
+/// - 最近一次探测超时（[`ProbeSample::Lost`]，超时）→ `true`；
+/// - 其余 → `false`。
+///
+/// 任一命中即「立即回中继」：劣化直连路径不再承载流量，hub peer 整段路由
+/// 自动接管（/32 直连 peer 移除后最长前缀匹配回落 hub）。恢复须经
+/// [`RecoveryGate`] 迟滞切回。
+pub fn is_degraded(window: &ProbeWindow) -> bool {
+    if window.is_empty() {
+        return false;
+    }
+    if window.loss_rate() >= LOSS_SPIKE_THRESHOLD {
+        return true;
+    }
+    matches!(window.samples().back(), Some(ProbeSample::Lost))
+}
+
+/// 恢复门（SEL-003）：直连劣化回中继后，须连续 `required` 轮健康才允许
+/// 按迟滞闸切回。纯状态机，无 IO。
+#[derive(Debug, Clone)]
+pub struct RecoveryGate {
+    required: usize,
+    /// 对端公钥 → 连续健康轮数。
+    streaks: BTreeMap<String, usize>,
+}
+
+impl RecoveryGate {
+    /// 新建恢复门。`required` 下限 1。
+    pub fn new(required: usize) -> Self {
+        Self {
+            required: required.max(1),
+            streaks: BTreeMap::new(),
+        }
+    }
+
+    pub fn required(&self) -> usize {
+        self.required
+    }
+
+    /// 记录一轮探测结果。`healthy` = 该对端直连路径本轮健康（非劣化）。
+    /// 返回 `true` 当且仅当该对端已连续 `required` 轮健康（允许切回）；
+    /// 不健康则清零计数（连续条件被打破）。
+    pub fn record(&mut self, peer: &str, healthy: bool) -> bool {
+        if !healthy {
+            self.streaks.remove(peer);
+            return false;
+        }
+        let streak = self.streaks.entry(peer.to_string()).or_insert(0);
+        *streak += 1;
+        *streak >= self.required
+    }
+
+    /// 对端当前是否已恢复（连续 `required` 轮健康）。
+    pub fn is_ready(&self, peer: &str) -> bool {
+        self.streaks.get(peer).is_some_and(|s| *s >= self.required)
+    }
+
+    /// 忘掉不在当前 peer 集合里的对端（下线/撤销后回收计数）。
+    pub fn retain(&mut self, peers: &[String]) {
+        let live: BTreeSet<&str> = peers.iter().map(|s| s.as_str()).collect();
+        self.streaks.retain(|k, _| live.contains(k.as_str()));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -770,5 +843,69 @@ mod tests {
         windows.insert(("dev-b".into(), c2), w2);
         let decision = gate.evaluate("dev-b", Some(c1), &windows).expect("switch");
         assert_eq!(decision.to, c2);
+    }
+
+    // -- SEL-003: is_degraded / RecoveryGate ----------------------------------
+
+    #[test]
+    fn degraded_detects_loss_spike_and_timeout() {
+        // 丢包尖峰（≥50% 丢包）→ 劣化。
+        let mut w = ProbeWindow::new(4);
+        w.record(ProbeSample::Rtt(10));
+        w.record(ProbeSample::Rtt(10));
+        w.record(ProbeSample::Lost);
+        w.record(ProbeSample::Lost);
+        assert!(is_degraded(&w), "50% loss is a spike");
+        // 最近一次超时（丢包 <50% 但末次 Lost）→ 劣化。
+        let mut t = ProbeWindow::new(4);
+        t.record(ProbeSample::Rtt(10));
+        t.record(ProbeSample::Rtt(10));
+        t.record(ProbeSample::Rtt(10));
+        t.record(ProbeSample::Lost);
+        assert!(is_degraded(&t), "latest timeout degrades");
+        // 健康：全 RTT、丢包率低、末次 Rtt → 不劣化。
+        let mut ok = ProbeWindow::new(4);
+        ok.record(ProbeSample::Rtt(10));
+        ok.record(ProbeSample::Rtt(12));
+        assert!(!is_degraded(&ok));
+        // 空窗口（尚无读数）→ 不武断回中继。
+        assert!(!is_degraded(&ProbeWindow::new(4)));
+    }
+
+    #[test]
+    fn recovery_gate_requires_consecutive_healthy_rounds() {
+        let mut gate = RecoveryGate::new(3);
+        // 不健康 → 计数清零，永不 ready。
+        assert!(!gate.record("peer-a", false));
+        assert!(!gate.is_ready("peer-a"));
+        // 连续 3 轮健康 → 第 3 轮 ready。
+        assert!(!gate.record("peer-a", true));
+        assert!(!gate.record("peer-a", true));
+        assert!(gate.record("peer-a", true));
+        assert!(gate.is_ready("peer-a"));
+        // 一轮不健康 → 计数清零，不再 ready。
+        assert!(!gate.record("peer-a", false));
+        assert!(!gate.is_ready("peer-a"));
+        // 再 2 轮健康仍未满 3。
+        assert!(!gate.record("peer-a", true));
+        assert!(!gate.record("peer-a", true));
+        assert!(!gate.is_ready("peer-a"));
+    }
+
+    #[test]
+    fn recovery_gate_retains_only_live_peers() {
+        let mut gate = RecoveryGate::new(2);
+        gate.record("peer-a", true);
+        gate.record("peer-b", true);
+        gate.record("peer-a", true);
+        gate.record("peer-b", true);
+        assert!(gate.is_ready("peer-a"));
+        assert!(gate.is_ready("peer-b"));
+        gate.retain(&["peer-a".to_string()]);
+        assert!(gate.is_ready("peer-a"));
+        assert!(
+            !gate.is_ready("peer-b"),
+            "removed peer's streak is reclaimed"
+        );
     }
 }

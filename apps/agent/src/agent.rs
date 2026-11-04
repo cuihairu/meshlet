@@ -18,6 +18,7 @@ use meshlet_domain::{
     DIRECT_PROBE_INTERVAL_SECS,
 };
 use meshlet_network::dial::{self, DirectDialRequest, DirectDialResult, DirectPeerView};
+use meshlet_network::probe::RecoveryGate;
 use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
 use meshlet_publish::{ProbeReport, PublishPlan, Publisher};
 
@@ -78,6 +79,8 @@ pub struct Agent {
     /// 端点发 ICMP 探测，采集 RTT/丢包/抖动滑动窗口。候选集由
     /// [`Agent::reconcile_direct`] 每 30s 刷新（零控制面负载）。
     probe: crate::probe::ProbeRuntime,
+    /// SEL-003 恢复门：直连劣化回中继后连续 N 轮健康才允许切回（防抖）。
+    recovery: RecoveryGate,
 }
 
 /// 发布运行时（R-06）：一个单 worker 的 tokio runtime 承载
@@ -159,6 +162,7 @@ impl Agent {
         // 先起探测运行时再移动 config：字段初始化按书写顺序求值，`dataplane`
         // 会在 struct 字面量里先被 move，探测运行时须在此之前读到 probe 配置。
         let probe = crate::probe::ProbeRuntime::start(&config.dataplane.probe);
+        let recovery_required = config.dataplane.probe.recovery_required;
         // 任务 worker 的参数提前取出（config 随后被逐字段 move，不能再借用）。
         let server_url = config.server_url.clone();
         let device_token = config.device_token.clone().unwrap_or_default();
@@ -213,6 +217,7 @@ impl Agent {
                 },
             ),
             probe,
+            recovery: RecoveryGate::new(recovery_required),
         }
     }
 
@@ -482,6 +487,9 @@ impl Agent {
         let direct_keys = self.direct.keep_keys();
         let mut local_plan = plan_with_hub_endpoint(plan, self.dataplane.hub_endpoint.as_deref());
         local_plan.tunnel.name = self.dataplane.interface.clone();
+        // SEL-003 hub 兜底：hub peer 的 keepalive 永不掉——计划里低于常量
+        // （或旧版计划缺省 `None`）都强制抬到 [meshlet_network::HUB_KEEPALIVE_SECS]。
+        enforce_hub_keepalive(&mut local_plan);
         // §12：直连开启时把 wg 接口绑定到配置的监听端口——直连对端按
         // `listen_port` 发包（`direct_report` 上报的正是它）。本地改写不影响
         // 期望哈希（与 hub_endpoint 兜底同一口径）。
@@ -716,12 +724,38 @@ impl Agent {
                 BTreeMap::new()
             }
         };
+        // SEL-003：从探测窗口推导各对端直连路径是否劣化（丢包尖峰/超时）。
+        let degraded = self.probe.degraded_map();
+        // SEL-003 恢复门：对处于直连状态的对端记录本轮健康度；回中继后连续
+        // N 轮健康才放行切回。健康 = 未劣化且握手年龄在健康窗口内。
+        let mut hold_relay = std::collections::BTreeSet::new();
+        for peer in &wanted {
+            let healthy = !degraded.get(&peer.public_key).copied().unwrap_or(false)
+                && handshake_ages
+                    .get(&peer.public_key)
+                    .is_none_or(|age| *age <= meshlet_domain::DIRECT_HEALTH_WINDOW_SECS);
+            let ready = self.recovery.record(&peer.public_key, healthy);
+            if !ready
+                && self
+                    .direct
+                    .status_of(&peer.public_key)
+                    .is_some_and(|p| p.state == PeerLinkState::Relay)
+            {
+                // 已回中继但尚未连续健康 N 轮：保持中继（防抖切回）。
+                hold_relay.insert(peer.public_key.clone());
+            }
+        }
+        // 回收不在候选集里的恢复计数。
+        let live_keys: Vec<String> = wanted.iter().map(|p| p.public_key.clone()).collect();
+        self.recovery.retain(&live_keys);
         let updates = self.direct.apply_plan(
             &wanted,
             &my_lan_subnets,
             scope,
             plan.tunnel.address,
             &handshake_ages,
+            &degraded,
+            &hold_relay,
         );
         if !updates.is_empty() {
             for update in &updates {
@@ -1139,6 +1173,18 @@ fn plan_with_hub_endpoint(plan: &DevicePlan, hub_endpoint: Option<&str>) -> Devi
         }
     }
     local
+}
+
+/// SEL-003 hub 兜底：hub peer（隧道配置第一个 peer，即服务端计划的 hub）的
+/// persistent-keepalive 强制 ≥ [meshlet_network::HUB_KEEPALIVE_SECS]，让 hub 永不
+/// 掉（NAT 映射常开，直连回退后随时可回）。计划显式给更高值则尊重。
+fn enforce_hub_keepalive(plan: &mut DevicePlan) {
+    if let Some(peer) = plan.tunnel.peers.first_mut() {
+        let floor = meshlet_network::HUB_KEEPALIVE_SECS;
+        if peer.persistent_keepalive_secs.unwrap_or(0) < floor {
+            peer.persistent_keepalive_secs = Some(floor);
+        }
+    }
 }
 
 /// `peer dial` 结果判定（纯函数，可测）：目标对端当前状态 → (ok, mode, message)。
@@ -1589,5 +1635,57 @@ mod tests {
         assert!(parse_endpoint_candidate("192.168.1.50").is_none());
         assert!(parse_endpoint_candidate("not-an-ip:51821").is_none());
         assert!(parse_endpoint_candidate("192.168.1.50:99999").is_none());
+    }
+
+    #[test]
+    fn enforce_hub_keepalive_raises_none_or_low_to_floor() {
+        use meshlet_network::PeerConfig;
+        use meshlet_network::TunnelConfig;
+        let mk = |ka: Option<u32>| DevicePlan {
+            desired_revision: 0,
+            hub_port: None,
+            tunnel: TunnelConfig {
+                name: "wg0".into(),
+                address: "10.240.0.7".parse().unwrap(),
+                address_prefix: 16,
+                listen_port: None,
+                peers: vec![PeerConfig {
+                    public_key: "hub-pub".into(),
+                    allowed_ips: vec![],
+                    endpoint: None,
+                    persistent_keepalive_secs: ka,
+                }],
+                mtu: None,
+                private_key: None,
+            },
+            routes: vec![],
+            nat_rules: vec![],
+            hub_address: None,
+            publish: None,
+            desired_config_hash: "h".into(),
+        };
+        // 旧版计划缺省 None → 抬到 floor。
+        let mut plan = mk(None);
+        enforce_hub_keepalive(&mut plan);
+        assert_eq!(
+            plan.tunnel.peers[0].persistent_keepalive_secs,
+            Some(meshlet_network::HUB_KEEPALIVE_SECS)
+        );
+        // 计划给低于 floor 的值 → 抬到 floor。
+        let mut plan = mk(Some(5));
+        enforce_hub_keepalive(&mut plan);
+        assert_eq!(
+            plan.tunnel.peers[0].persistent_keepalive_secs,
+            Some(meshlet_network::HUB_KEEPALIVE_SECS)
+        );
+        // 计划给更高值 → 尊重（永不掉）。
+        let mut plan = mk(Some(30));
+        enforce_hub_keepalive(&mut plan);
+        assert_eq!(plan.tunnel.peers[0].persistent_keepalive_secs, Some(30));
+        // 空 peer 列表 → no-op。
+        let mut plan = mk(None);
+        plan.tunnel.peers.clear();
+        enforce_hub_keepalive(&mut plan);
+        assert!(plan.tunnel.peers.is_empty());
     }
 }

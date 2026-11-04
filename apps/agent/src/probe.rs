@@ -21,8 +21,8 @@ use std::time::Duration;
 use meshlet_config::ProbeConfig;
 use meshlet_domain::{EndpointCandidate, PeerEndpoints};
 use meshlet_network::probe::{
-    default_transport, probe_round, ProbeTarget, ProbeTracker, ProbeWindow, SwitchDecision,
-    SwitchGate,
+    default_transport, is_degraded, probe_round, ProbeTarget, ProbeTracker, ProbeWindow,
+    SwitchDecision, SwitchGate,
 };
 
 /// 探测运行时：一个后台线程 + 候选缓存（reconcile 写 / 探测线程读）+
@@ -119,6 +119,20 @@ impl ProbeRuntime {
         lock(&self.gate).evaluate(peer, current, &snapshot)
     }
 
+    /// SEL-003：从窗口快照推导各对端是否劣化（丢包尖峰/超时）。
+    /// 公钥 → 劣化布尔。探测关 / 无窗口 → 空 map（不武断回中继）。
+    pub fn degraded_map(&self) -> BTreeMap<String, bool> {
+        let snapshot = self.snapshot();
+        let mut map = BTreeMap::new();
+        for ((peer, _), window) in &snapshot {
+            // 任一候选劣化即标记该对端（直连路径劣化）。
+            if is_degraded(window) {
+                map.insert(peer.clone(), true);
+            }
+        }
+        map
+    }
+
     /// 探测线程是否在跑（配置开关；关 = 冷启动零开销）。
     pub fn is_enabled(&self) -> bool {
         self.handle.is_some()
@@ -151,6 +165,7 @@ mod tests {
             window: 8,
             switch_required: 3,
             switch_margin: 0.30,
+            recovery_required: 3,
         }
     }
 
@@ -182,5 +197,34 @@ mod tests {
         let rt = ProbeRuntime::start(&config());
         // 无现路径（初始选择由 DirectManager 负责）→ 本闸不切。
         assert!(rt.evaluate_switch("dev-b", None).is_none());
+    }
+
+    #[test]
+    fn degraded_map_marks_peers_with_loss_spike_or_timeout() {
+        let rt = ProbeRuntime::start(&config());
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        let c2 = EndpointCandidate::lan("192.168.1.60".parse().unwrap(), 51821);
+        {
+            let mut tracker = lock(&rt.tracker);
+            // dev-b：健康（全 RTT）。dev-c：末次超时（劣化）。
+            for _ in 0..3 {
+                tracker.record("dev-b", c1, ProbeSample::Rtt(10));
+            }
+            tracker.record("dev-c", c2, ProbeSample::Rtt(10));
+            tracker.record("dev-c", c2, ProbeSample::Rtt(10));
+            tracker.record("dev-c", c2, ProbeSample::Lost);
+        }
+        let degraded = rt.degraded_map();
+        assert!(
+            !degraded.get("dev-b").copied().unwrap_or(false),
+            "dev-b healthy"
+        );
+        assert!(
+            degraded.get("dev-c").copied().unwrap_or(false),
+            "dev-c degraded"
+        );
+        // 空窗口 → 空 map。
+        let empty = ProbeRuntime::start(&config());
+        assert!(empty.degraded_map().is_empty());
     }
 }
