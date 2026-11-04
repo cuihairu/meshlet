@@ -133,6 +133,41 @@ impl ProbeRuntime {
         map
     }
 
+    /// SEL-004：汇总某对端全部候选端点的详情（端点/RTT/丢包/当前选中与原因）。
+    ///
+    /// `current_endpoint` = 当前已下发的直连 endpoint（`ip:port`；空 = 未选中）。
+    /// 每个候选一条，按 (ip, port) 排序（确定性）；`selected` 标记与现路径匹配
+    /// 的候选。探测关 / 无窗口 → 空列表（console 显示「无候选读数」）。
+    pub fn candidate_statuses(
+        &self,
+        peer: &str,
+        current_endpoint: &str,
+    ) -> Vec<meshlet_domain::DirectCandidateStatus> {
+        let snapshot = self.snapshot();
+        let mut out: Vec<meshlet_domain::DirectCandidateStatus> = snapshot
+            .iter()
+            .filter(|((p, _), _)| p == peer)
+            .map(|((_, c), w)| {
+                let endpoint = format!("{}:{}", c.ip, c.port);
+                let selected = endpoint == current_endpoint;
+                meshlet_domain::DirectCandidateStatus {
+                    endpoint: endpoint.clone(),
+                    kind: c.kind.as_str().to_string(),
+                    rtt_ms: w.rtt_ms(),
+                    loss_rate: w.loss_rate(),
+                    selected,
+                    reason: if selected {
+                        "current".into()
+                    } else {
+                        "backup".into()
+                    },
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.endpoint.cmp(&b.endpoint));
+        out
+    }
+
     /// 探测线程是否在跑（配置开关；关 = 冷启动零开销）。
     pub fn is_enabled(&self) -> bool {
         self.handle.is_some()
@@ -226,5 +261,40 @@ mod tests {
         // 空窗口 → 空 map。
         let empty = ProbeRuntime::start(&config());
         assert!(empty.degraded_map().is_empty());
+    }
+
+    #[test]
+    fn candidate_statuses_reports_all_candidates_with_selection() {
+        let rt = ProbeRuntime::start(&config());
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        let c2 = EndpointCandidate::lan("192.168.1.60".parse().unwrap(), 51821);
+        {
+            let mut tracker = lock(&rt.tracker);
+            tracker.record("dev-b", c1, ProbeSample::Rtt(10));
+            tracker.record("dev-b", c1, ProbeSample::Rtt(12));
+            tracker.record("dev-b", c2, ProbeSample::Rtt(40));
+            tracker.record("dev-b", c2, ProbeSample::Lost);
+        }
+        // 当前选中 c1：两个候选都列出，c1 标 selected。
+        let statuses = rt.candidate_statuses("dev-b", "192.168.1.50:51821");
+        assert_eq!(statuses.len(), 2);
+        let c1s = statuses
+            .iter()
+            .find(|c| c.endpoint == "192.168.1.50:51821")
+            .unwrap();
+        assert!(c1s.selected);
+        assert_eq!(c1s.reason, "current");
+        assert_eq!(c1s.rtt_ms, Some(11));
+        assert_eq!(c1s.loss_rate, 0.0);
+        let c2s = statuses
+            .iter()
+            .find(|c| c.endpoint == "192.168.1.60:51821")
+            .unwrap();
+        assert!(!c2s.selected);
+        assert_eq!(c2s.reason, "backup");
+        assert_eq!(c2s.rtt_ms, Some(40));
+        assert_eq!(c2s.loss_rate, 0.5);
+        // 其它 peer 候选不影响。
+        assert!(rt.candidate_statuses("dev-x", "").is_empty());
     }
 }

@@ -154,7 +154,7 @@ pub struct DirectEndpointReport {
 
 /// hub 记录的单设备直连状态：最近一次观测到的 agent 源地址 + 最近一次
 /// 上报。二者任一缺失则该设备暂无可用候选。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DeviceDirectState {
     /// 心跳 HTTP 请求的源地址（hub 观测；`None` = 尚未见过心跳）。
     pub observed_ip: Option<Ipv4Addr>,
@@ -437,7 +437,27 @@ fn default_connection_mode() -> String {
     "hub_relay".to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// SEL-004 单个直连候选端点的详情（console peer 详情展示）。
+///
+/// agent 从探测窗口（SEL-001）汇总，随 [DirectLinkStatus::candidates] 上报：
+/// 端点 / RTT / 丢包 / 是否当前选中 / 选中理由。纯数据载体，无 IO。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DirectCandidateStatus {
+    /// 候选端点（`ip:port`）。
+    pub endpoint: String,
+    /// 候选分类（`lan` / `public`，[EndpointKind::as_str]）。
+    pub kind: String,
+    /// 窗口内 RTT 中位数（毫秒）；`None` = 无 RTT 样本（全丢/未测）。
+    pub rtt_ms: Option<u64>,
+    /// 窗口内丢包率（0.0..=1.0）。
+    pub loss_rate: f64,
+    /// 是否当前选中的直连 endpoint。
+    pub selected: bool,
+    /// 选中理由（`current` = 现路径；`backup` = 未选中；劣化/切换理由另记）。
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DirectLinkStatus {
     /// 对端 wg 公钥（设备唯一标识）。
     pub public_key: String,
@@ -472,6 +492,10 @@ pub struct DirectLinkStatus {
     /// 累计发送字节（直连 wg peer 读数；中继为 0）。
     #[serde(default)]
     pub tx_bytes: u64,
+    /// SEL-004 全部候选端点详情（端点/RTT/丢包/当前选中与原因）。空 = 未上报
+    /// 或探测未启用；console peer 详情据此渲染。
+    #[serde(default)]
+    pub candidates: Vec<DirectCandidateStatus>,
 }
 
 #[cfg(test)]
@@ -1014,6 +1038,14 @@ mod tests {
             last_handshake_at: Some(1_700_000_000),
             rx_bytes: 1024,
             tx_bytes: 2048,
+            candidates: vec![DirectCandidateStatus {
+                endpoint: "192.168.1.2:51821".into(),
+                kind: "lan".into(),
+                rtt_ms: Some(7),
+                loss_rate: 0.0,
+                selected: true,
+                reason: "current".into(),
+            }],
         };
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(
@@ -1034,6 +1066,7 @@ mod tests {
             last_handshake_at: None,
             rx_bytes: 0,
             tx_bytes: 0,
+            candidates: vec![],
         };
         assert_eq!(
             serde_json::from_str::<DirectLinkStatus>(&serde_json::to_string(&pending).unwrap())

@@ -29,7 +29,7 @@ use meshlet_domain::{
 };
 
 /// 单个对端的直连管理状态（域层状态机状态 + 对端 overlay 地址）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DirectPeer {
     /// 对端 overlay 地址（AllowedIPs `/32` 来源；域层已保证在路由范围内）。
     pub virtual_ipv4: Ipv4Addr,
@@ -50,6 +50,9 @@ pub struct DirectPeer {
     pub rx_bytes: u64,
     /// 累计发送字节（wg 读数）。
     pub tx_bytes: u64,
+    /// SEL-004 候选端点详情（端点/RTT/丢包/当前选中与原因）；由 agent 探测
+    /// 周期填充（[DirectManager::record_candidates]）。
+    pub candidates: Vec<meshlet_domain::DirectCandidateStatus>,
 }
 
 /// 直连管理器：对端公钥 → 管理状态。跨周期持留（状态机要记住 pending 尝试次数）。
@@ -185,6 +188,7 @@ impl DirectManager {
                     last_handshake_at: None,
                     rx_bytes: 0,
                     tx_bytes: 0,
+                    candidates: vec![],
                 },
             );
         }
@@ -214,8 +218,23 @@ impl DirectManager {
                 last_handshake_at: peer.last_handshake_at,
                 rx_bytes: peer.rx_bytes,
                 tx_bytes: peer.tx_bytes,
+                candidates: peer.candidates.clone(),
             })
             .collect()
+    }
+
+    /// SEL-004：填充某对端的候选端点详情（探测周期由执行侧调用）。对端不在管
+    /// 或处于 Relay（无直连链路可展示）则 no-op。
+    pub fn record_candidates(
+        &mut self,
+        public_key: &str,
+        candidates: Vec<meshlet_domain::DirectCandidateStatus>,
+    ) {
+        if let Some(peer) = self.peers.get_mut(public_key) {
+            if peer.state != PeerLinkState::Relay {
+                peer.candidates = candidates;
+            }
+        }
     }
 
     /// 当前处于直连相关状态（非 Relay）的对端清单（公钥 + overlay 地址），
@@ -332,6 +351,7 @@ pub fn plan_updates(
                     last_handshake_at: None,
                     rx_bytes: 0,
                     tx_bytes: 0,
+                    candidates: vec![],
                 },
             );
             continue;
@@ -355,6 +375,7 @@ pub fn plan_updates(
                     last_handshake_at: None,
                     rx_bytes: 0,
                     tx_bytes: 0,
+                    candidates: vec![],
                 },
             );
             updates.push(DirectUpdate::Demote { public_key: key });
@@ -384,6 +405,7 @@ pub fn plan_updates(
                 last_handshake_at: None,
                 rx_bytes: 0,
                 tx_bytes: 0,
+                candidates: vec![],
             },
         );
         match action {
@@ -448,6 +470,7 @@ mod tests {
             last_handshake_at: None,
             rx_bytes: 0,
             tx_bytes: 0,
+            candidates: vec![],
         }
     }
 
@@ -815,6 +838,7 @@ mod tests {
                 last_handshake_at: None,
                 rx_bytes: 0,
                 tx_bytes: 0,
+                candidates: vec![],
             }]
         );
 
@@ -844,6 +868,7 @@ mod tests {
                 last_handshake_at: None,
                 rx_bytes: 0,
                 tx_bytes: 0,
+                candidates: vec![],
             }]
         );
 

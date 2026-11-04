@@ -41,8 +41,8 @@ pub use ipam::{Ipam, IpamError};
 pub use p2p::{
     classify_probe, decide_direct_path, direct_peer_allowed_ips, endpoint_candidates,
     is_lan_reachable, is_private_ip, on_probe, peer_endpoints_for, DeviceDirectState,
-    DirectDecision, DirectEndpointReport, DirectLinkStatus, DirectPeerError, EndpointCandidate,
-    EndpointKind, PeerEndpoints, PeerLinkAction, PeerLinkState, ProbeResult,
+    DirectCandidateStatus, DirectDecision, DirectEndpointReport, DirectLinkStatus, DirectPeerError,
+    EndpointCandidate, EndpointKind, PeerEndpoints, PeerLinkAction, PeerLinkState, ProbeResult,
     DIRECT_HEALTH_WINDOW_SECS, DIRECT_PERSISTENT_KEEPALIVE_SECS, DIRECT_PROBE_INTERVAL_SECS,
     MAX_PROMOTE_ATTEMPTS,
 };

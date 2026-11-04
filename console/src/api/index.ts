@@ -70,6 +70,24 @@ export interface DirectLink {
   rx_bytes?: number;
   /** Cumulative tx bytes (R-DIAG-2); older servers omit it. */
   tx_bytes?: number;
+  /** SEL-004 all candidate endpoint details (endpoint/RTT/loss/current+reason). */
+  candidates?: DirectCandidate[];
+}
+
+/** SEL-004 single direct candidate endpoint detail for a peer. */
+export interface DirectCandidate {
+  /** Candidate endpoint ip:port. */
+  endpoint: string;
+  /** lan | public. */
+  kind: string;
+  /** Window RTT median in ms; null = no RTT sample (all lost / unmeasured). */
+  rtt_ms: number | null;
+  /** Window loss rate 0.0..=1.0. */
+  loss_rate: number;
+  /** Whether this candidate is the currently selected direct endpoint. */
+  selected: boolean;
+  /** Selection reason (current / backup). */
+  reason: string;
 }
 
 /** One interface entry in the R-DIAG snapshot (name / address / state / MTU). */

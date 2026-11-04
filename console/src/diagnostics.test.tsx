@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as api from './api';
 import { DirectPeersBlock } from './pages/diagnostics/DirectPeersBlock';
@@ -66,6 +66,60 @@ describe('DirectPeersBlock', () => {
     vi.spyOn(api.api, 'listDevices').mockResolvedValue([device({ direct_links: [] })]);
     render(<DirectPeersBlock networkId="net-1" />);
     expect(await screen.findByText(/no device reported a direct link/)).toBeTruthy();
+  });
+
+  it('renders all candidates with endpoint/RTT/loss/current selection (SEL-004)', async () => {
+    // 模拟双候选：c1 选中（current），c2 备份（backup）。
+    vi.spyOn(api.api, 'listDevices').mockResolvedValue([
+      device({
+        direct_links: [
+          {
+            public_key: 'pk-hub',
+            virtual_ipv4: '10.240.0.1',
+            link_state: 'direct',
+            last_handshake_age_secs: 5,
+            peer_name: 'hub-node',
+            connection_mode: 'p2p_direct',
+            endpoint: '192.168.1.50:51821',
+            rtt_ms: 11,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            candidates: [
+              {
+                endpoint: '192.168.1.50:51821',
+                kind: 'lan',
+                rtt_ms: 11,
+                loss_rate: 0,
+                selected: true,
+                reason: 'current',
+              },
+              {
+                endpoint: '192.168.1.60:51821',
+                kind: 'lan',
+                rtt_ms: 40,
+                loss_rate: 0.5,
+                selected: false,
+                reason: 'backup',
+              },
+            ],
+          },
+        ],
+      }),
+    ]);
+    render(<DirectPeersBlock networkId="net-1" />);
+
+    expect(await screen.findByText('hub-node')).toBeTruthy();
+    const candidateTable = screen.getByText('candidates').closest('.direct-candidates')! as HTMLElement;
+    const candidateScope = within(candidateTable);
+    // 全部候选可见（端点/RTT/丢包/选中与理由）。
+    expect(candidateScope.getByText('192.168.1.50:51821')).toBeTruthy();
+    expect(candidateScope.getByText('192.168.1.60:51821')).toBeTruthy();
+    expect(candidateScope.getByText('11 ms')).toBeTruthy();
+    expect(candidateScope.getByText('40 ms')).toBeTruthy();
+    expect(candidateScope.getByText('50%')).toBeTruthy(); // 丢包率 0.5 → 50%
+    expect(candidateScope.getByText('current')).toBeTruthy();
+    expect(candidateScope.getByText('backup')).toBeTruthy();
+    expect(candidateScope.getByText('selected')).toBeTruthy(); // 选中标记
   });
 });
 

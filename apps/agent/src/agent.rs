@@ -851,8 +851,12 @@ impl Agent {
                 tx_bytes,
             );
             if !endpoint.is_empty() {
-                self.direct.record_endpoint(&public_key, endpoint);
+                self.direct.record_endpoint(&public_key, endpoint.clone());
             }
+            // SEL-004：汇总候选端点详情（端点/RTT/丢包/当前选中与原因），
+            // 供心跳上报 → console peer 详情渲染。
+            let statuses = self.probe.candidate_statuses(&public_key, &endpoint);
+            self.direct.record_candidates(&public_key, statuses);
         }
     }
 
@@ -1551,6 +1555,7 @@ mod tests {
             last_handshake_at: None,
             rx_bytes: 0,
             tx_bytes: 0,
+            candidates: vec![],
         };
         let (ok, mode, _) = dial_verdict(Some(&peer(PeerLinkState::Direct)));
         assert!(ok);
@@ -1606,6 +1611,7 @@ mod tests {
             last_handshake_at: Some(1_700_000_000),
             rx_bytes: 0,
             tx_bytes: 0,
+            candidates: vec![],
         }];
         let views = direct_peer_views(&wanted, &links);
         assert_eq!(views.len(), 2);

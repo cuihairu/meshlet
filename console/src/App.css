@@ -351,6 +351,39 @@ tr.state-unknown td { color: var(--muted-c); }
   font-weight: 500;
 }
 
+/* SEL-004: 每个 peer 详情下内嵌的候选端点子表（端点/RTT/丢包/选中与理由）。 */
+.direct-candidates {
+  margin-top: var(--space-2);
+  font-size: 0.8125rem;
+}
+
+.direct-candidates h4 {
+  margin: 0 0 var(--space-1);
+  color: var(--muted-c);
+  font-weight: 500;
+}
+
+.direct-candidates-table {
+  border-collapse: collapse;
+}
+
+.direct-candidates-table th,
+.direct-candidates-table td {
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.direct-candidates-table th {
+  color: var(--muted-c);
+  font-weight: 500;
+}
+
+.direct-candidates-table tr.candidate-selected {
+  background: color-mix(in srgb, var(--green, #52c41a) 10%, transparent);
+}
+
 /* R-DIAG diagnostics-page 网络快照 block（路由表/接口/wg 三快照，按设备分节）。 */
 .snapshots-block {
   margin-top: var(--space-5);
