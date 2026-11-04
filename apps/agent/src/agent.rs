@@ -66,11 +66,11 @@ pub struct Agent {
     direct_ledger: std::path::PathBuf,
     /// 上次直连探测时刻（30s 节流；`None` = 未探测过，首轮即探）。
     last_direct_probe: Option<Instant>,
-    /// MT-002 任务通道：已执行任务账本（`{state_dir}/tasks.json`，断线补派
-    /// 据此补报、绝不重跑）。
-    task_ledger: crate::tasks::TaskLedger,
-    /// 任务账本持久化文件路径。
-    task_ledger_path: std::path::PathBuf,
+    /// MT-002 任务通道：后台 worker（独立线程拉取待办并 ack→执行→回执）。
+    /// 主循环 tick 只 [kick](crate::tasks::TaskRuntime::kick) 投递、立即返回，
+    /// 单任务最长 [DEFAULT_TIMEOUT_SECS] 不再阻塞心跳/数据面对账。账本
+    /// （`{state_dir}/tasks.json`，断线补派据此补报、绝不重跑）由 worker 持有。
+    task_runtime: crate::tasks::TaskRuntime,
     /// SEL-001 候选端点探测运行时：独立线程按 5s（可配）对每 peer 全部候选
     /// 端点发 ICMP 探测，采集 RTT/丢包/抖动滑动窗口。候选集由
     /// [`Agent::reconcile_direct`] 每 30s 刷新（零控制面负载）。
@@ -156,6 +156,12 @@ impl Agent {
         // 先起探测运行时再移动 config：字段初始化按书写顺序求值，`dataplane`
         // 会在 struct 字面量里先被 move，探测运行时须在此之前读到 probe 配置。
         let probe = crate::probe::ProbeRuntime::start(&config.dataplane.probe);
+        // 任务 worker 的参数提前取出（config 随后被逐字段 move，不能再借用）。
+        let server_url = config.server_url.clone();
+        let device_token = config.device_token.clone().unwrap_or_default();
+        let task_ledger_path = task_ledger_path(&config.state_dir);
+        let task_ledger = crate::tasks::TaskLedger::load(&task_ledger_path);
+        let notify_enabled = config.tray.notifications;
         Self {
             server_url: config.server_url,
             token: config.device_token.unwrap_or_default(),
@@ -176,8 +182,29 @@ impl Agent {
             direct_ledger: direct_ledger_path(&config.state_dir),
             direct: DirectManager::load(&direct_ledger_path(&config.state_dir)),
             last_direct_probe: None,
-            task_ledger_path: task_ledger_path(&config.state_dir),
-            task_ledger: crate::tasks::TaskLedger::load(&task_ledger_path(&config.state_dir)),
+            task_runtime: crate::tasks::TaskRuntime::start(
+                server_url,
+                device_token,
+                task_ledger,
+                task_ledger_path,
+                // MT-004：任务到达（ack 后）触发托盘气泡。通知是尽力而为：
+                // 与状态气泡一致尊重 `tray.notifications`（默认关），并在 worker
+                // 线程内发送——D-Bus 连接/调用可能阻塞（通知守护不响应），
+                // 绝不影响主循环心跳与数据面对账。
+                move |task: &meshlet_domain::Task| {
+                    if !notify_enabled {
+                        return;
+                    }
+                    let call =
+                        crate::desktop::task_notify_call(&task.id.to_string(), &task.payload.cmd);
+                    let env = crate::tray::EnvProbe::from_env();
+                    let mut client = DesktopClient::default();
+                    let result = client.notify_task(&call, &env);
+                    if !matches!(result, DesktopPublish::Published) {
+                        tracing::debug!(result = ?result, "task arrival not shown");
+                    }
+                },
+            ),
             probe,
         }
     }
@@ -276,36 +303,11 @@ impl Agent {
             .push_back(PendingReceipt { plan, error });
     }
 
-    /// MT-002 任务通道：拉取本设备待办并逐个 ack→执行→回执。失败只记日志
-    /// （下轮重试），绝不打断数据面循环。
+    /// MT-002 任务通道：唤醒后台 worker 拉取本设备待办并逐个 ack→执行→回执。
+    /// 只投递、立即返回（单任务最长 [DEFAULT_TIMEOUT_SECS]，内联会停心跳）；
+    /// worker 失败只记日志（下轮重试），绝不打断数据面循环。
     fn process_tasks(&mut self) {
-        // MT-004：任务到达（ack 后）触发托盘气泡。通知是尽力而为：与状态气泡
-        // 一致尊重 `tray.notifications`（默认关），并在独立线程发送——D-Bus
-        // 连接/调用可能阻塞（通知守护不响应），绝不拖住任务执行与数据面循环。
-        let notify_enabled = self.desktop_config.notifications;
-        let mut on_arrival = |task: &meshlet_domain::Task| {
-            if !notify_enabled {
-                return;
-            }
-            let call = crate::desktop::task_notify_call(&task.id.to_string(), &task.payload.cmd);
-            std::thread::spawn(move || {
-                let env = crate::tray::EnvProbe::from_env();
-                let mut client = DesktopClient::default();
-                let result = client.notify_task(&call, &env);
-                if !matches!(result, DesktopPublish::Published) {
-                    tracing::debug!(result = ?result, "task arrival not shown");
-                }
-            });
-        };
-        if let Err(e) = crate::tasks::process_pending(
-            &self.server_url,
-            &self.token,
-            &mut self.task_ledger,
-            &self.task_ledger_path,
-            &mut on_arrival,
-        ) {
-            tracing::warn!(error = %e, "task processing deferred to next tick");
-        }
+        self.task_runtime.kick();
     }
 
     fn maybe_self_update(&mut self) {

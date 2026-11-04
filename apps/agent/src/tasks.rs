@@ -20,7 +20,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use meshlet_domain::{Task, TaskPayload};
@@ -38,6 +40,9 @@ const POLL: Duration = Duration::from_millis(20);
 const SPAWN_FAIL_EXIT: i32 = 127;
 /// 未显式指定超时时的默认超时（秒，`TaskPayload.timeout_secs` 契约值）。
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
+/// 任务后台 worker 轮询间隔（秒）：tick 不再同步跑任务，后台线程按此间隔
+/// 拉取待办；对端新任务最迟一个间隔内开始执行。
+const TASK_POLL_INTERVAL_SECS: u64 = 5;
 
 /// 一次执行的结果（与服务端 `TaskResultReport` 同构：exit_code + log_tail）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -260,6 +265,119 @@ pub fn process_pending(
         }
     }
     Ok(())
+}
+
+/// 任务后台运行时：独立 worker 线程按 [TASK_POLL_INTERVAL_SECS] 拉取待办并
+/// 逐个 ack → 执行 → 回执。主循环 tick 只**投递**（[TaskRuntime::kick]），
+/// 立即返回——单任务最长跑 [DEFAULT_TIMEOUT_SECS]，若内联执行会停心跳/
+/// 数据面对账；后台化后心跳与对账不再被单任务阻塞，任务生命周期/回执
+/// 语义（幂等账本 + 补报）保持不变。
+///
+/// `Drop` 只置停止位不 `join`：线程最长一个周期后自行退出，持有的是
+/// `Arc` 克隆，内存安全（与 [`crate::probe::ProbeRuntime`] 同一纪律）。
+pub struct TaskRuntime {
+    ledger: Arc<Mutex<TaskLedger>>,
+    stop: Arc<AtomicBool>,
+    /// 唤醒 worker 的 kick 信号（tick 拉完计划即触发，不等满一个轮询间隔）。
+    kick: Arc<Mutex<VecDeque<()>>>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl TaskRuntime {
+    /// 起后台 worker（独立线程）；`on_arrival` 为每次 ack 成功后的到达回调
+    /// （托盘气泡等，在 worker 线程内执行，绝不阻塞主循环）。
+    pub fn start(
+        server_url: String,
+        token: String,
+        ledger: TaskLedger,
+        ledger_path: std::path::PathBuf,
+        on_arrival: impl Fn(&Task) + Send + 'static,
+    ) -> Self {
+        let ledger = Arc::new(Mutex::new(ledger));
+        let stop = Arc::new(AtomicBool::new(false));
+        let kick = Arc::new(Mutex::new(VecDeque::new()));
+        let handle = {
+            let ledger = Arc::clone(&ledger);
+            let ledger_path = ledger_path.clone();
+            let stop = Arc::clone(&stop);
+            let kick = Arc::clone(&kick);
+            std::thread::Builder::new()
+                .name("meshlet-task".into())
+                .spawn(move || loop {
+                    // 先等 kick 或周期超时；tick 投递后立即跑，否则按轮询间隔。
+                    let waited = wait_kick_or_timeout(&kick, &stop, TASK_POLL_INTERVAL_SECS);
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let mut ledger = ledger.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Err(e) = process_pending(
+                        &server_url,
+                        &token,
+                        &mut ledger,
+                        &ledger_path,
+                        &mut |task| on_arrival(task),
+                    ) {
+                        tracing::warn!(error = %e, "task processing deferred to next poll");
+                    }
+                    let _ = waited;
+                })
+                .expect("spawn the task worker thread")
+        };
+        Self {
+            ledger,
+            stop,
+            kick,
+            handle: Some(handle),
+        }
+    }
+
+    /// 投递一轮处理请求（tick 调用，立即返回；worker 被唤醒后跑任务）。
+    /// worker 忙碌中重复 kick 只合并为一次唤醒。
+    pub fn kick(&self) {
+        self.kick
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(());
+    }
+
+    /// 当前账本（重载/落盘等诊断用）。
+    pub fn ledger(&self) -> std::sync::MutexGuard<'_, TaskLedger> {
+        self.ledger.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// worker 线程是否在跑。
+    pub fn is_running(&self) -> bool {
+        self.handle.is_some()
+    }
+}
+
+impl Drop for TaskRuntime {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        drop(self.handle.take());
+    }
+}
+
+/// 等 kick 信号或超时；`stop` 置位立即返回。返回是否因 kick 唤醒（诊断用）。
+fn wait_kick_or_timeout(kick: &Mutex<VecDeque<()>>, stop: &AtomicBool, timeout_secs: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        if kick
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+            .is_some()
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL);
+    }
 }
 
 /// 执行一次任务（MT-002 显式例外：运行服务端下发的命令）。
@@ -799,6 +917,71 @@ mod tests {
             arrived_again.is_empty(),
             "re-dispatched (already executed) task must not re-trigger arrival"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MT-002 后台化验收：`kick` 立即返回（不阻塞主循环），worker 线程随后
+    /// 拉取待办并 ack→执行→回执，账本最终落盘（幂等语义不变）。
+    #[test]
+    fn task_runtime_runs_in_background_and_kick_returns_immediately() {
+        let pending_body = serde_json::json!([{
+            "id": "task-bg", "target_node": "dev-1",
+            "payload": { "cmd": "sleep 1; echo bg-done", "workdir": null, "timeout_secs": null },
+            "state": "assigned", "retry_limit": 0, "result_ref": null,
+        }])
+        .to_string();
+        let mut routes = std::collections::HashMap::new();
+        routes.insert(
+            "/api/v1/agent/tasks/pending".to_string(),
+            (200, pending_body),
+        );
+        routes.insert(
+            "/api/v1/agent/tasks/task-bg/ack".to_string(),
+            (200, "{}".to_string()),
+        );
+        routes.insert(
+            "/api/v1/agent/tasks/task-bg/result".to_string(),
+            (200, "{}".to_string()),
+        );
+        let (base, handle) = spawn_mock(routes, 3);
+        let dir = std::env::temp_dir().join(format!("meshlet-task-bg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger_path = dir.join("tasks.json");
+        let rt = TaskRuntime::start(
+            base,
+            "tok".into(),
+            TaskLedger::default(),
+            ledger_path.clone(),
+            |_| {},
+        );
+        let start = Instant::now();
+        rt.kick();
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "kick must return immediately, not run the task inline"
+        );
+        // 等 worker 完成：轮询账本（任务 sleep 1s，给足余量）。
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let ledger = rt.ledger();
+            if ledger.has("task-bg") {
+                assert_eq!(ledger.result("task-bg").unwrap().exit_code, 0);
+                assert!(ledger
+                    .result("task-bg")
+                    .unwrap()
+                    .log_tail
+                    .contains("bg-done"));
+                break;
+            }
+            drop(ledger);
+            if Instant::now() >= deadline {
+                panic!("task not executed by background worker in time");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(rt);
+        handle.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
