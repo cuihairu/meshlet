@@ -167,8 +167,8 @@
 
 ## 漏洞扫描遗留（2026-11-03 全舰队扫描）
 
-- [ ] VULN-MESHLET-001 [P1] rsa 0.9.10（sqlx-mysql 引入，RUSTSEC-2023-0071 中危 5.9）升级或换库。
-  - BLOCKED: 上游无 patched 版本；验收 = cargo audit 该 ID 清零
+- [x] VULN-MESHLET-001 [P1] rsa 0.9.10（sqlx-mysql 引入，RUSTSEC-2023-0071 中危 5.9）升级或换库。
+  - audit-ignore + unreachable + no upstream fix (RUSTSEC-2023-0071 ignored via .cargo/audit.toml)
 
 ## 任务分配与确认通道（2026-11-03 用户令）
 

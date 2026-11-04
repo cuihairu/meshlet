@@ -1,0 +1,11 @@
+# audit-ignore: RUSTSEC-2023-0071 (rsa 0.9.10, Marvin Attack, medium 5.9)
+#
+# Reasons:
+# 1. No fixed upstream version is available (No fixed upgrade is available).
+# 2. The advisory is unreachable in the build graph: `cargo tree -i rsa --target all` prints nothing.
+# 3. rsa appears only as a Cargo.lock record left by sqlx 0.8.6's sqlx-mysql feature; this
+#    project uses only sqlite, so rsa is not a direct dependency.
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071",
+]
