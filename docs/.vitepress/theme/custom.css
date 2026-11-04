@@ -22,3 +22,23 @@
   --vp-c-brand-3: #e39b55;
   --vp-c-brand-soft: rgba(227, 155, 85, 0.16);
 }
+
+/* fleet-wide docs readability: wrap long code lines, widen content, scroll tables */
+.vp-doc div[class*='language-'] pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.VPDoc .container > .content {
+  max-width: 960px;
+}
+.VPDoc:not(.has-sidebar) .content {
+  max-width: 960px;
+}
+.VPDoc.has-aside .content-container {
+  max-width: 960px;
+}
+.vp-doc table {
+  display: block;
+  overflow-x: auto;
+}
+

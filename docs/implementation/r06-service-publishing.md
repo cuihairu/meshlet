@@ -83,12 +83,31 @@ How to read it: DB-touching paths are bounded by 2 vCPUs plus the serial SQLite 
 ```text
 $ curl -s -X POST http://127.0.0.1:8080/api/v1/publish/routes/check \
     -H 'X-Requested-With: XMLHttpRequest' -H 'content-type: application/json' \
-    -d '{"remote":"10.240.4.9:40000","policy":{"allowed_source_cidrs":["10.240.0.0/16"],"allowed_bearer_tokens":[]}}'
+    -d '{
+            "remote": "10.240.4.9:40000",
+            "policy": {
+              "allowed_source_cidrs": [
+                "10.240.0.0/16"
+              ],
+              "allowed_bearer_tokens": []
+            }
+          }'
 {"allowed":true,"reason":"authorized"}
 
 $ curl -s -X POST http://127.0.0.1:8080/api/v1/publish/routes/check \
     -H 'X-Requested-With: XMLHttpRequest' -H 'content-type: application/json' \
-    -d '{"remote":"192.168.9.9:40000","auth_header":"Bearer wrong","policy":{"allowed_source_cidrs":["10.240.0.0/16"],"allowed_bearer_tokens":["secret"]}}'
+    -d '{
+            "remote": "192.168.9.9:40000",
+            "auth_header": "Bearer wrong",
+            "policy": {
+              "allowed_source_cidrs": [
+                "10.240.0.0/16"
+              ],
+              "allowed_bearer_tokens": [
+                "secret"
+              ]
+            }
+          }'
 {"allowed":false,"reason":"source or bearer token not authorized"}
 
 $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/publish/routes/check
@@ -268,11 +287,21 @@ The fix rejects the mismatch at create time (`check_http_socket_consistent` in
 ```text
 $ # TLS route on a device that already has a plain route
 status=409
-{"error":{"code":"conflict","message":"device dev-reg-2 already serves route hr-3 with tls_passthrough=false; one termination mode per device"}}
+{
+  "error": {
+    "code": "conflict",
+    "message": "device dev-reg-2 already serves route hr-3 with tls_passthrough=false; one termination mode per device"
+  }
+}
 
 $ # second listener on the same device
 status=409
-{"error":{"code":"conflict","message":"device dev-reg-2 already listens for http on 0.0.0.0:18090 (route hr-3); one http listener per device"}}
+{
+  "error": {
+    "code": "conflict",
+    "message": "device dev-reg-2 already listens for http on 0.0.0.0:18090 (route hr-3); one http listener per device"
+  }
+}
 ```
 
 Dropping the stale route reconciles cleanly and the phantom listener disappears:
