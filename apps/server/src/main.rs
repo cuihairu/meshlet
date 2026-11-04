@@ -111,6 +111,9 @@ async fn main() {
         }),
     );
     meshlet_server::convergence::start_recovery(state.clone());
+    // MT-005：周期回收卡死任务（assigned/acked 超窗未回执 → failed + 预算内
+    // 重派）。不依赖 dataplane.enabled——纯控制面环境也应收起。
+    meshlet_server::task::start_task_recovery(state.clone(), 30);
     // 定时自动备份（§17.4）：显式 `[backup] auto = true` 才开启；只写本地
     // `[backup] dir`，无任何外发。到期写一份 + 审计留痕，失败只记日志。
     if config.backup.auto {
