@@ -1,9 +1,10 @@
-# TODO（重构基线版 · 2026-10-20）
+# TODO
 
-> 依据：docs/architecture/target-architecture.md（ChatGPT 重构计划评审，用户令重写）。
-> 旧版清单已归档 docs/archive/todo-pre-refactor-2026-10-20.md，不再作为实现前提。
+> 需求清单：一行一条需求，已完成项保留一行证据（commit hash + 测试数）。
+> 过程叙述与验收详情见 docs/implementation/、docs/decisions/ 与 git log，本清单不复述。
 
 ## 架构约束（十决策，写死）
+
 1. 模块化单体，而非微服务。
 2. Desired State + 不可变 Revision + 纯 Planner + Reconciler 是系统核心。
 3. 控制面不直接拥有通用特权命令执行能力。
@@ -17,301 +18,197 @@
 
 ## 实施阶段（按依赖序）
 
-- [x] R-01 基础架构重建（骨架已落：crates/meshlet-planner 零依赖纯逻辑+状态机+确定性计划；crates/meshlet-store SQLite Revision+Outbox 事务；crates/meshlet-executor Prepare→Verify→Recover 契约；docs/design/r01-domain-model.md；r01-schemas/outbox.sql+openapi.yaml；scripts/check-planner-deps.sh 依赖门）：领域模型（五资源+Device/NetworkAttachment 分离）、Revision/Plan/Receipt、协议 Schema、crate 依赖边界；纯 Planner；SQLite 事务+Outbox；特权执行器接口。
-- [x] R-02 可靠 Linux 网络基础设施：WireGuard Hub、Peer 管理、路由、防火墙、安全撤销、漂移检测、last-good 恢复、单实例多网络隔离。（**2026-10-27 事实修正（M5 审计）**：产品路径的防火墙引擎是 **iptables**（`crates/meshlet-network/src/linux.rs` 的 `LinuxNetworkBackend`，server 与 agent 均消费），本行原写「nftables」有误——nftables 实现只存在于从未被任何 app 依赖的 `crates/meshlet-net-linux`，该 crate 已于同日删除，`docs/implementation/r02-linux-dataplane.md` 顶部已加注；原「隔离已在编译器与防火墙规则层覆盖」一句随 crate 删除失效，现由 `single_instance.rs:212`/`dual_site_end_to_end.rs` 在 netns 层证明（M3 场景 5）。真实 VPS 转发/连通验收与安全撤销 API 细化拆入 R-04/R-07 适配层与验收；跨 netns 部署隔离留待部署主线。）
-- [x] R-03 统一网络规划与冲突分析：IPAM、Segment 策略、网关选择（确定性）、Direct 路由、Alias 映射、全局且与创建顺序无关的冲突检查。（**2026-10-27 事实修正（M5 审计）**：`meshlet-netplan` 从未被 server 消费——server 在 `apps/server/src` 内自建冲突检查（409 语义：`routes.rs:239` 同网段重叠、`aliases.rs:288` 重叠前缀点名对端等集成测试覆盖），计划哈希对路由重排的稳定性由产品路径测试 `device_plan.rs:590` 保证；该纯库连同其打乱顺序独立性测试已于同日删除，`docs/implementation/r03-unified-network-plan.md` 顶部已加注。本项已勾的依据是 server 产品路径的上述性质，不再引用已删除 crate。）
-- [x] R-04 设备端到端组网（Linux Agent）：注册（Bootstrap Token 只存摘要）、启动恢复、执行回执、重试、升级、真实连接诊断。（2026-10-24 PVE 实验台真机验收：空库真实 bootstrap→登录→409 负例→建网→token 只回原文一次→两台设备持 token 自注册→approve→apply→收敛；跨主机基线 20/20 双向、DF 1392 通/1419 与 1472 `+2 errors 100% loss`；13 项诊断收敛后全绿（`recent_handshake 2/2`、`mtu_planned` 引用设备读数 `1420 probe 1392`）；MTU 漂移 1480→1420 一个 tick 愈合（`KernelDrift`）、显式 `tunnel_mtu=1480` 一个 tick 生效（设备探测 `probe 1452`）、删键后自行愈合（`DesiredConfigChanged`）；验收还实测 hub 侧 MTU 跟随已 apply 修订而设备侧读实时配置的不对称，已记为后续项。证据：docs/implementation/r04-linux-agent-e2e.md）
-  - [x] 注册摘要化、启动恢复、执行回执、重试、升级。
-  - [x] 真实连接诊断：大包探测逻辑已进仓；真实 VPS 到设备的端到端连通验收已于 2026-10-24 完成（见父行与 docs/implementation/r04-linux-agent-e2e.md）。
-- [ ] R-05 Windows 完整客户端：隧道服务、系统路由、防火墙、权限提升、开机恢复、~~卸载清理（真平台后端）~~。（2026-11-01 解锁:Windows 真机已具备(openclaw,win-worker 通道),由 win-worker 执行安装与验收;原「缺一台可实际安装的 Windows 机器」已过时。缺的条件，如实记录：一台可实际安装的 Windows 机器——Win10/11 或 Server、管理员权限、允许装 WireGuardNT 驱动并能重启验证开机恢复；编译门不缺：CI 已在 windows-latest 原生跑全 workspace `clippy -D warnings` + `cargo test --workspace`，本机也有单 crate msvc 交叉 check/clippy 绿。2026-10-26 起本机（中文 Windows Server 2022）以 GNU 工具链补齐全 workspace 测试/clippy 绿，路由/防火墙/服务数据面真机验收见子项。仍缺：WireGuardNT 驱动安装后的隧道全生命周期、提权执行层与开机恢复重启验证，以及据此做出的 SystemBackend 接线决策。）【BLOCKED（2026-11-01）：缺一台可实际安装、可重启的 Windows 真机，需用户手动提供机器】
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
+- [x] R-01 基础架构重建：纯 Planner、SQLite 事务+Outbox、特权执行器接口、crate 依赖边界门。
+  - 证据: docs/design/r01-domain-model.md · scripts/check-planner-deps.sh
+- [x] R-02 可靠 Linux 网络基础设施：WireGuard Hub、Peer 管理、路由、防火墙、安全撤销、漂移检测、last-good 恢复、单实例多网络隔离。
+  - 证据: docs/implementation/r02-linux-dataplane.md · netns 隔离测试（single_instance/dual_site）
+- [x] R-03 统一网络规划与冲突分析：IPAM、Segment 策略、网关选择、Direct 路由、Alias 映射、全局冲突检查。
+  - 证据: docs/implementation/r03-unified-network-plan.md · server 409 冲突语义集成测试
+- [x] R-04 设备端到端组网（Linux Agent）：注册、启动恢复、执行回执、重试、升级、真实连接诊断。
+  - 证据: docs/implementation/r04-linux-agent-e2e.md · 2026-10-24 跨主机 20/20 双向基线 · 13 项诊断全绿
+- [ ] R-05 Windows 完整客户端：隧道服务、系统路由、防火墙、权限提升、开机恢复。
+  - BLOCKED: 缺一台可实际安装、可重启的 Windows 真机，需用户手动提供
+- [x] R-05 权限提升：windows_elevation 计划层与错误分类，全平台编译 + Linux 单测。
+  - 证据: 66 tests（未真机实测，未接 SystemBackend）
+- [x] R-05 数据面真机验收（路由/防火墙/服务控制/卸载清理，zh-CN 解码修复）。
+  - 证据: docs/implementation/r05-windows-acceptance.md · meshlet-network 75 单测 + 3 真机集成
+- [x] R-06 服务发布 - TCP/UDP PortForward。
+  - 证据: docs/implementation/r06-service-publishing.md · apps/server/tests/publish.rs
+- [x] R-06 服务发布 - HTTP/HTTPS 发布（SNI 直通，不做 TLS 终止）。
+  - 证据: docs/implementation/r06-service-publishing.md
+- [x] R-06 服务发布 - 授权控制与 server 接线（WriteUser + CSRF）。
+  - 证据: docs/implementation/r06-service-publishing.md · 12 tests
+- [x] R-06 服务发布 - 健康探测（agent 周期探测批量上报）。
+  - 证据: docs/implementation/r06-service-publishing.md
+- [x] R-06 服务发布 - 内部 DNS 服务目录（分流 DNS，仅应答内部后缀）。
+  - 证据: docs/implementation/r06-service-publishing.md
+- [x] R-06 服务发布 - 真实 VPS/真机端到端验收。
+  - 证据: docs/implementation/r06-service-publishing.md · 11 单测 + 3 集成回归
+- [ ] R-07 正式部署与长期运行验收：空白 VPS 安装、密钥轮换、备份恢复、升级回滚、性能基线、真实多设备验收。
+  - BLOCKED: 唯一缺项为长期浸泡，缺数周真数据与实验环境重建（用户决策）
+- [x] R-07 空白容器安装。
+  - 证据: docs/implementation/r07-deployment-acceptance.md · 2026-10-24 真实 release 下载路径验收
+- [x] R-07 密钥轮换与密钥丢失（45 秒内三设备零接触换钥）。
+  - 证据: docs/implementation/r07-deployment-acceptance.md
+- [x] R-07 备份恢复（停服恢复口径）。
+  - 证据: docs/implementation/r07-deployment-acceptance.md
+- [x] R-07 性能基线。
+  - 证据: docs/architecture/performance.md
+- [x] R-07 真实多设备验收（第三台设备 max_uses=1 token 入网）。
+  - 证据: docs/implementation/r07-deployment-acceptance.md
+- [x] R-07 升级回滚。
+  - 证据: commit cefd5ef · docs/implementation/r07-deployment-acceptance.md
+- [ ] R-07 长期运行浸泡：采集器就绪，需数周连续 OK 数据后勾。
+  - BLOCKED: 缺实验环境重建（用户决策）与数周真数据
 
-2026-10-28 巡检（不勾，BLOCKED）：剩余三项真机缺项与 #52 接线决策全部卡在「需一台可实际安装、可重启的 Windows 真机」——win-worker 已永久停用，**需用户手动提供机器**，然后按 docs/implementation/r05-windows-acceptance.md「Still blocked」的手动动作清单逐项验收（装 WireGuardNT 驱动跑隧道全生命周期、提权执行层真机运行、重启验证开机恢复）；此前仓内无任何可推进面。
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
+## 外部评审立项（2026-10-26，已逐条源码核验）
 
-2026-10-27 注记（隧道计划层+执行层原语已落地，父项与三项真机缺项均未勾）：新增 `crates/meshlet-network/src/windows_tunnel.rs`——按 ADR-008 选型 **WireGuardNT**（官方 `wireguard.exe` + `wireguard-nt` 内核驱动，一条受管服务一个隧道；wintun 只是 TUN 适配器，需再押用户态 WireGuard 栈，故不取）。计划层任意平台编译+单测（本机 Linux 94 项 lib 测试绿，`cargo clippy --workspace --all-targets -- -D warnings` 绿，`cargo fmt --check` 绿）：conf 渲染（`[Interface]` Name/Address/可选 ListenPort/MTU/可选 PrivateKey + 每 peer 一节；**私钥仅 `private_key=Some` 时渲染，agent 本地注入、服务端永不携带，`None`=服务沿用现存密钥=幂等重应用**）、`wireguard.exe` 安装/启动/停止/卸载命令构造（`/installtunnelservice <conf>` 等官方 CLI 形状）、幂等 re-apply（卸载不存在隧道=1060/「指定的服务未安装」复用已真机取证的 `windows_service::service_absent` 文案放行；停止未运行=1062 同理）、失败分类（权限文案→InsufficientPrivileges，未知→ApplyRejected fail-closed，**不含任何未真机取证的 fixture**）。`#[cfg(windows)]` 执行层：conf 写盘（私钥落客户端受保护目录）+ `run_wireguard_command`（经 `windows_console` 解码）；文件级 `tests/windows_tunnel.rs`（`#![cfg(windows)]`）由 CI windows-latest `cargo test --workspace` 真跑（conf 写回读/覆盖重写/签名锁定，**不触发真实隧道安装**）。lib.rs 仅注册 `pub mod windows_tunnel`，**未接 SystemBackend、未动 `crate::unsupported`**。仍缺（如实记录，禁止冒充）：WireGuardNT 驱动安装后隧道全生命周期真机、提权执行层真机报文、开机恢复重启验证，及据此的 SystemBackend 接线决策。）
-  - [x] 权限提升：`windows_elevation` 计划层（受管 `.exe` 路径校验、`runas` 命令行转义、错误码/文案 → `InsufficientPrivileges` 分类）全平台编译 + Linux 单测（66 通过）；`#[cfg(windows)]` 执行层（ShellExecuteW runas + TokenElevation 查询）已过 `x86_64-pc-windows-msvc` clippy/check，**未在真机 Windows 实测，不得接为 SystemBackend**。
-  - [x] 数据面真机验收（2026-10-25/26，中文 Windows Server 本机）：抓到并修复本地化根因——netsh/sc.exe 重定向输出是活动代码页（CP936/GBK）而非 UTF-8，`from_utf8_lossy` 丢失全部 zh-CN 文案；新增 `windows_console`（UTF-8 优先 + `MultiByteToWideChar(CP_ACP)` 解码，windows-sys 现有依赖加 `Win32_Globalization`），routes/service/firewall 执行层接入，分类器补真机报文：路由缺失「找不到元素。」、sc 1060「指定的服务未安装。」、防火墙缺失「没有与指定标准相匹配的规则。」、非提权「请求的操作需要提升(作为管理员运行)。」；真机新发现 sc stop 未启动服务返回 1062「服务尚未启动。」——Stop 目标状态是已停止，未运行即已达成，新增幂等成功（含退出码 1060/1062 双通道判定）。新增卸载链重入集成测试 `windows_cleanup_e2e`（服务 create→stop→delete→re-delete、防火墙 add→show→delete→re-delete、空态 CleanupPlan 全步幂等，真机闭环）；`windows_netsh` 原失败用例（幂等 re-delete）转绿。验证：meshlet-network 75 单测 + 3 真机集成全绿；全 workspace `cargo test` 与 clippy（stable-x86_64-pc-windows-gnu）exit 0。
-- [x] R-06 服务发布 - TCP/UDP PortForward。（crate 实现与单测；2026-10-24 已接控制面 CRUD + agent 运行链路：DevicePlan 携带 publish 段，agent 对账后在进程内绑定监听（回环高位端口验证，真机端到端见下条），端口冲突按设备/协议/监听地址判定，见 apps/server/tests/publish.rs）
-- [x] R-06 服务发布 - HTTP/HTTPS 发布。（crate 实现与单测；已接 CRUD。`tls_passthrough: true` 走 SNI 嗅探 + TLS 字节直通，**不做 TLS 终止**：无证书、不解密；字段于 M1 由 `tls_termination` 更名，旧名仍被接受）
-- [x] R-06 服务发布 - 授权控制与 server 接线。（2026-10-23 VPS 实测：CIDR 放行、Bearer 拒绝、缺 CSRF 403 三路径通过；2026-10-24 CRUD 写入端点接入 WriteUser + CSRF，12 个集成测试覆盖）
-- [x] R-06 服务发布 - 健康探测。（crate 实现与单测；2026-10-24 已排程：agent 按 interval 周期探测并批量上报 /api/v1/agent/publish-health，服务端按 (probe, device) 守卫 upsert 到 publish_probe_reports）
-- [x] R-06 服务发布 - 内部 DNS 服务目录（分流 DNS，不覆盖公共 DNS）。（crate 实现与单测；2026-10-24 已接 agent reconcile：按计划起 DNS 套接字、仅应答内部后缀，每设备一个套接字）
-- [x] R-06 服务发布 - 真实 VPS/真机端到端验收。（2026-10-24 验收完成，完整证据见 docs/implementation/r06-service-publishing.md「真实 VPS 验收运行（2026-10-24）」）真实 agent 从服务端计划真实绑定并跑出流量：2 条 L4 转发（18080 允许 0.0.0.0/0 → `L4-FORWARD-BACKEND-OK`；18083 仅允许 10.9.9.9/32 → reset 零字节）、HTTP 路由 18090（本地与经 80 端口的发布域名均回 `HTTP-ROUTE-BACKEND-OK`）、UDP 15353 分流 DNS（`dig @127.0.0.1 -p 15353 app.mesh.internal` → 10.240.0.5，公共域名不应答）、TLS SNI 直通（客户端取回**后端**证书 `CN=tls.mesh.internal`，200 + `TLS-PASSTHROUGH-BACKEND-OK`，未知 SNI 与纯 HTTP 均 reset 且不触碰后端）、探针健康持续上报（`publish_probe_reports.checked_at` 跨周期推进）。验收中发现并修复三个真缺陷：SNI 嗅探器无边界检查在真机 panic 崩掉发布 worker（另附未剥握手头、吃掉 ClientHello 不回灌两个缺陷，11 单测 + 3 集成测试回归）、第二监听口/混合终止模式被静默接受（改为创建期 409，与既有每设备一 DNS 套接字守卫对称）、探针调度整表刷新导致每条探针只跑一次（`checked_at` 曾冻结数小时，已改为只记录真正排出去的 schedule）。**真机未验证，不冒充**：`0.0.0.0:53` 从未绑定过（只在 15353 上验收，53 需 root）；发布端口 15353/18080/18083/18090 被云安全组挡住，外部实测 BLOCKED（该盒子仅 22/80/443/8080 开放，控制面 8080 外部可达并返回 401）；TLS 无外部入口（443 被 cockpit 业务 vhost 占用，加 stream 直通会与线上业务冲突）；经发布域名走 80 的外部流量只在临时 nginx vhost 存在期间成立，该 vhost 已按可回退原则删除。控制台已补创建入口：`App.tsx` 的 `PublishSection` + `api.ts` 四个方法 + `publish.test.tsx`，行字段词汇抄 Portainer 服务「Port publishing」编辑器与 Dokploy 端口表、冲突用同一张 nothing-was-published 卡片、两步内联删除，真浏览器走查通过。历史真机证据与本次验收同见该文档
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
-- [ ] R-07 正式部署与长期运行验收：空白 VPS 安装、密钥轮换、备份恢复（含显式加密恢复包口径）、升级回滚、性能基线、真实多设备验收。（除长期浸泡外六个子项均已带证据验收，见子行与 docs/implementation/r07-deployment-acceptance.md；父项保持未勾，等浸泡数据。2026-10-28 巡检复核：状态不变——六个子项证据在案，父项唯一缺项仍为长期浸泡。）【BLOCKED（2026-11-01）：唯一缺项为长期浸泡，缺数周真数据与实验环境重建（用户决策）】
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
-  - [x] 空白容器安装（2026-10-24，真实 GitHub release 下载路径）：原版 debian-12 容器无 curl/sudo——README 一行式 `curl|sudo` 实测 127 失败（文档已补前置与 wget 形式）；install.sh 经 Recommends 链给容器装了 107 MB 内核镜像（已改 `--no-install-recommends`）；wget 形式装通：依赖齐、资产 sha256 与发布 `SHA256SUMS` 一致、单元加固与 `0600` 文件逐项核对。
-  - [x] 密钥轮换与密钥丢失（2026-10-24）：独立密钥备份→`wg genkey` 轮换→重启后 **45 秒**内三台设备全部零接触换到新 hub 公钥（`reason=DesiredConfigChanged`，`3/3` 握手新鲜）；删 `hub.key` 服务仍 `active`（隧道死、控制面活，记 `hub recovery failed` ERROR——只看 systemctl 发现不了，已如实记录）；从独立备份恢复即回滚轮换，设备零动作跟随。
-  - [x] 备份恢复（2026-10-24）：API 备份 385024 B（`networks=1 devices=2 revisions=3`）；工件为**明文** SQLite `0600 meshlet:meshlet`（显式加密恢复包口径：无加密包，见 docs/zh/architecture/backup-restore.md）；缺 CSRF 头 403；文档顺序 stop→restore→start 实测通过，恢复出的库 `0600 meshlet:meshlet`（修复前 root:root 会 crash-loop），`NRestarts=0`，`system.restore` 审计带源路径，会话随库存活（旧 cookie `/auth/me` 200），无 restore-tmp 残留；**实测发现运行中恢复会把写入送进脱链 inode（一次 201 的 token 铸造消失），重启才重新采用恢复库——文档已把「先停服务」定为强制**。
-  - [x] 性能基线（2026-10-24）：进程内 bench 矩阵（file/memory，c=1/16/64/256，footprint 3.5 KiB/网络、0.2 KiB/token）入 docs/architecture/performance.md；运行中服务真实 socket 基线：`/system/status` 126 req/s 串行 / 261 req/s 8 并发、`/networks` 130 req/s、backup 63 req/s（curl 每次 fork，是下限不是上限）。
-  - [x] 真实多设备验收（2026-10-24）：第三台设备经 `max_uses=1` token 入网（`dev-reg-3`→10.240.0.4→修订 4 apply），hub 三 peer `/32` 握手新鲜，诊断 `3/3 handshakes`、`mtu_planned` 三设备证据一致（`1420 probe 1392`），token 记账 `bt-1 2/5`、`bt-2 1/1`。
-  - [x] 升级回滚（2026-10-24，CT 113 真实 release 资产）：修复 nightly.yml 的 E0463 后 workflow_dispatch 构建成功并发布（`commit=cefd5ef`、`source_dirty=false`）；重建前先把当时已发布的 2026-10-17 资产存到宿主机（对照发布 `SHA256SUMS` 校验 `OK`）。升级=重跑 install.sh：二进制 `4845343087249b66…` → `089893187da04786…`，配置/私钥/设备 token 三哈希逐字节不变，设备未重新注册（`using the saved agent token`），首个 tick 三 peer 握手 11/12/32 秒、DF 1472B ping 3/3 零丢包（平均 0.684 ms）。回滚=旧压缩包走 `MESHLET_INSTALL_ARCHIVE`+`MESHLET_INSTALL_SHA256SUMS` 离线安装（打印 `Verifying staged Meshlet nightly (x86_64)…`）：二进制回到 `4845343087249b66…`、三哈希未动、ping 3/3 零丢包，再次升级后设备停在修复版。回滚到「已发布的旧 tag」仍做不到（无带日期 release），按离线口径覆盖。
-  - [ ] 长期运行浸泡：观察采集器 2026-10-24 起已在跑（PVE 宿主机 `/root/meshlet-soak/collect.sh`，cron 每 30 分钟一行：`status` 标记 + hub 服务状态/`NRestarts`/启动时间、三 agent active 与否、CT111→hub 与 →dev-3 ping 延迟、三 peer 握手时刻）。**首采 `2026-10-24T00:15Z hub=active nrestarts=0 agents=active/active/active` 有效**：01:03Z 复查 `nrestarts=0`、`since` 未变、库内仍 3 台设备、22:59:50 起 server 日志 `self-registered` 计数 0。**修过的真缺陷**：采集器首版在 cron 下每行都是空数据——PVE cron 的 `PATH=/usr/bin:/bin` 不含 `/usr/sbin/pct`，`2026-10-24T00:37:01Z` 那行全空（log 内已标 `[BAD: pre-fix cron PATH, empty data, not soak evidence]`，不作浸泡证据）；现已在脚本开头 `export PATH=/usr/sbin:/usr/bin:/bin` 并加有效性标记，任一关键字段为空即输出 `status=BAD`（用不可路由目标实测触发过 `status=BAD`），修后在模拟 cron 环境 `env -i PATH=/usr/bin:/bin collect.sh` 连跑两次均 `status=OK`、hub/agents/ms/handshakes 全有值。移除方式：`crontab -l | grep -v meshlet-soak | crontab -` 并删 `/root/meshlet-soak`。判据不变：hub 无非预期重启、agent 无重新注册、mesh 内 ping 连续；需数周真数据复查后才勾，禁止提前冒充。【BLOCKED（2026-11-01）：缺实验环境重建（用户决策）与数周真数据】
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
-**首日复查 `2026-10-24T17:16Z`（窗口 `2026-10-24T00:15Z`→`17:07Z`，宿主机 `192.168.5.10` 的 `/root/meshlet-soak/soak.log` 共 35 行）**：33 行 `status=OK`（`01:07:09Z`→`17:07:11Z`，30 分钟节拍无缺行）、1 行首采未打标（`00:15:56Z`，有效）、1 行 `[BAD]`（`00:37:01Z`，即上述 cron PATH 缺陷留下的空行，排除）；hub 全程 `active`、`NRestarts=0`、`ActiveEnterTimestamp` 恒为 `Fri 2026-10-23 22:59:53 UTC`；三 agent `active/active/active`，CT111/112/113 的 `meshlet-agent` 均 `NRestarts=0`（分别自 `22:11:52Z` / `22:11:57Z` / `23:28:16Z` 起）；`wg0` 三 peer 最新握手年龄 −6s..120s（无隧道断点）；CT111→hub ping min/avg/max = 0.121 / 0.703 / 2.980 ms（n=34），CT111→dev-3 = 0.228 / 1.189 / 4.550 ms，各 1 次 `loss` 全来自那行 `[BAD]`；无新增注册：`devices` 仍 3 行且全 `active`（创建于 `22:11:52Z` / `22:11:57Z` / `22:52:10Z`，均早于 hub 启动）、`device_registrations`=0、hub 启动后 `audit_events` 仅 `system.backup`×20（注册类动作计数 0）、server 日志 `22:59:50Z` 起 34070 行中匹配 `enroll|register` 计数 0。**首日未见异常，无需修缺陷；16.85 h 不足以判长期稳定，仍不勾。**
+- [x] M1 tls_termination 更名与能力拒绝。
+  - 证据: publish 12 + backup 9 + migrations 12 集成 · console 17 tests · 全 workspace cargo test 零失败
+- [x] M2 漂移检测升级到身份/所有权级（身份级观测 + 三真机缺陷修复）。
+  - 证据: 单测 8 + 真机注入 3 项 · network 79 + agent 59 tests · workspace exit 0
+- [x] M3 故障矩阵验收（评审九场景真 netns 全真跑）。
+  - 证据: docs/implementation/m3-fault-matrix.md · single_instance 7 + ledger_recovery 6 + 3 集成 tests
+- [x] M4 回滚/重试不得重授已撤销权限（enforce_authorization 四消费点）。
+  - 证据: single_instance 8 tests · 回归测 rolling_back_a_failed_revoke_does_not_reopen_access
+- [x] M5 TODO 完成状态审计。
+  - 证据: commit ebcd9e7 · docs/analysis/todo-completion-audit-2026-10-27.md
 
-2026-10-28 巡检复核（不勾，本侧已核）：2026-10-28 11:13Z 直连 PVE 宿主机（`192.168.5.10`）补核实，确认「终局记录（2026-10-27 巡检）」（见下）所述终局事实无漂移；终局事实与判据以该终局记录为唯一权威记载，本处不重复（复查细节已并入终局记录）。
+## Agent 安装即配防火墙（2026-10-30 用户令）
 
-**终局记录（2026-10-27 巡检，环境已被拆除）**：PVE 任务日志证实实验环境为主动拆除，非故障——2026-10-25 15:48Z root@pam 停 CT 110/111（浸泡自 2026-10-25T16:07:09Z 起转 status=BAD）；2026-10-26 13:51Z 四 CT 全部 vzstart，14:06:24Z 起依次 vzstop（110/111/112/113，末台 14:06:42Z；2026-10-28 已核 PVE `/var/log/pve/tasks/index` 原始行——旧记「22:03 CST」系误读，实为 14:06Z），14:07:07Z 起 vzdestroy×4（110/111/112/113，至 14:07:37Z）销毁，无本地备份。浸泡有效窗口 2026-10-24T00:15Z→2026-10-25T15:37Z（78 行 OK + 首采 1 行，约 39.4 h，仍远不足数周判据，R-07 浸泡不勾）；其后 65 行 BAD 全是环境不存在所致，不作证据。采集 cron 已从 PVE crontab 移除，/root/meshlet-soak/（collect.sh + soak.log 全量 145 行）原样保留。浸泡判据在实验环境重建决策明确前为外部 BLOCKED，本仓代码侧无对应工作可派。2026-10-28 11:13Z 本侧直连复查：环境未重建（`pct list` 仅 CT100 `docker` 在跑，无 meshlet-server/meshlet-agent 服务、无 `wg0`），`soak.log` 冻结于 `2026-10-27T00:07:09Z status=BAD`。用户侧动作：确认销毁是否有意；要完成浸泡需重建 CT110-113 网格并重跑采集器（判据不变）。
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
+- [ ] AGENT-FW-1 [P1] Windows 数据面应用时自动设 wg 接口 NetworkCategory=Private 并放行 ICMPv4 入站，幂等可重跑。
+  - BLOCKED: 真机「ping 直接通」验收需 Windows 真机（代码已落 52a4763/514cb51 · 110 lib tests）
+- [x] AGENT-FW-2 [P2] Linux 检测 ufw/firewalld 活跃时自动放行 wg 接口流量，幂等。
+  - 证据: commit 52a4763 · 101 lib + 4 特权集成全绿
+- [x] AGENT-FW-3 [P2] walkthrough.md 补「安装即配防火墙」验收步骤与回归用例。
+  - 证据: commit adbb65e
+- [ ] AGENT-WIN-1 [P1] Windows 托盘宿主消费 TraySink 四态 PNG，常驻托盘+菜单。
+  - BLOCKED: 图标随状态换图真机走查需 Windows 真机（代码已落 1ed65fa/e09c602/02bc402 · 4 单测）
+- [x] AGENT-WIN-2 [P1] Windows agent 安装包（zip 先行 + install.ps1），真机验收通过。
+  - 证据: commit f86489d/7639110 · 2026-10-31 真机验收 5/5（docs/agent-win-2-acceptance.md）
+- [x] NIGHTLY-PKG [P2] Linux 组件包矩阵：server/agent/cli 各出 .deb+.rpm。
+  - 证据: scripts/package-deb-rpm.sh · run 41045721705 全绿 · 18 资产 SHA256SUMS 对账 OK
 
-## 关键设计要点（来自评审，实现时逐条对照）
-- 状态四类不混用；Revision 执行态机：Pending/Preparing/…（弃单一 Applied）；回滚=新增修订。
-- Planner 纯逻辑：不落库、不执行系统命令、不持私钥；输出确定性计划。
-- 安全三层：设备身份+入网审批 / Segment 与访问策略 / 执行层（nftables 真实施）。
-- 四引擎分离：LAN 路由 / Alias 映射 / L4 发布 / HTTP 发布，各自独立。
-- Rust 工作区 crate 边界按评审第七章目录重建；测试五层 L1-L5 各立验收。
-- 协议：HTTPS+JSON 起步，OpenAPI 为契约源；执行器 Prepare→Verify→Recover 可验证恢复。
+## console 重设计 + dev 部署（2026-10-31）
 
-## 外部评审建议立项（2026-10-26 用户令，来源：ChatGPT 深度评审分享，已逐条源码核验）
+- [x] CONSOLE-REDESIGN [P1] console 视觉重设计 + dev VPS 部署。
+  - 证据: commit 2a7375c/f75391d/b50fe9a/948db6e · 17 tests + build/lint 绿
+- [x] AUDIT-FIX · P2/P3 impeccable 审计待修 8 项。
+  - 证据: commit 2356fa3/1df7169/1f2fbc3/6863f08/5313ef6/c300722/9511c16/6276cda · 28 tests
 
-来源与可信度：评审全文 2.1 万字，核心实现声称已逐条对照源码核验（UnsupportedBackend、needs_apply 四态、
-last_good_plan、tls_termination+sniff_sni、Outbox、drift 按 peer 数、R-04 真机验收、netd 仅存于目标架构、
-deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为三设备，实录 2 设备（TODO R-04 行）。
-评审 P0（Windows 闭环、长期运行验收）与既有 R-05/R-07 完全收敛，不重复立项；下面是仓内 TODO 尚无的增量。
+## meshlet P2P 节点直连（2026-10-31 起，分批 ①-⑤）
 
-- [x] M1 tls_termination 更名与能力拒绝（2026-10-26）：当前 http.rs `tls_termination: bool` 实为 SNI 嗅探+TLS 字节
-      透传（R-06 验收实录后端证书）。改为显式 `tls_passthrough`（词汇沿用 Luban/Envoy 等通行术语，
-      不自造）。**更名范围**：`crates/meshlet-publish` 的 `HttpRoute`（serde `alias = "tls_termination"`，旧序列化计划仍可读，
-      响应只出新名）、`plan.rs`/`runtime.rs`/单测；`apps/server` 的请求结构 `CreatePublishHttpRouteRequest`（同样带 alias，
-      仍 `deny_unknown_fields`）、视图、INSERT 列、恢复 SELECT 全量更名；console `api.ts`/`App.tsx` 同步。**能力显式拒绝**：新增
-      `check_publish_mode_supported`，passthrough 路由若带 `allowed_bearer_tokens` → 409（路由器只建 socket 级
-      `AuthorizedClient::from_socket`，`auth_header` 永不填充，token 永不校验），`path_prefix != "/"` → 409（选路恒
-      `select(&sni, "/")`，路径前缀永不参与匹配）——把两个此前静默 no-op 的组合改为创建期拒绝。**旧字段名映射**：serde alias 双向兼容 +
-      `migrations/013_publish_tls_passthrough.sql`（仅 `ALTER TABLE … RENAME COLUMN`，值与语义不变），`backup.rs` 迁移硬计数 12→13、
-      `migrations/README.md` 当前版本 013。**单测**：新增 `tls_passthrough_rejects_capabilities_it_cannot_enforce`（旧名请求可读、
-      `tls_termination` 不再出现在响应、两条非法组合各 409 并断言文案、plain HTTP 路由仍允许 token+前缀）；生命周期 fixture 原以
-      `tls_termination: true` 静默接受（正是本缺陷），已改 plain HTTP。验证：meshlet-server publish 12 集成 + backup 9 + migrations 12、
-      meshlet-publish 全绿、console 17 通过（3 文件）、全 workspace `cargo test` 零失败、`cargo clippy --workspace --all-targets -D warnings`
-      与 `cargo fmt --all -- --check` exit 0、`pnpm run docs:build` 成功。**顺带修既有红**：`windows_console.rs` 两个真机取证常量仅被
-      windows 门禁测试引用，Linux 上 clippy `-D warnings` 报 dead_code（临时 worktree 于 pristine HEAD 复现，确认与本单无关），已加同
-      cfg 门禁。
-- [x] M2 漂移检测升级到身份/所有权级（2026-10-27 落地）。`NetworkSnapshot` 改为携带身份
-      （`lib.rs:169`/`PeerObserved lib.rs:182`）：peer 按 `wg show` 逐行解析公钥+allowed-ips
-      （`linux.rs:238`，公钥须 44 位 base64 且以 `=` 结尾）；路由只统计 `proto 198` 标记
-      （`linux.rs:40`）；NAT 指纹 `chain|目的|动作|所有权|源|入向接口`（`nat.rs:79`，内核侧
-      `linux.rs:941` 解析同形），集合比对见 `reconcile.rs:165/179/209`。未标记路由与无 Meshlet
-      注释的 NAT 规则进不了观测集合，结构上不会被判漂移也不会被删。新增计划外 meshlet 规则清理
-      （`linux.rs:913`，解析不出形状则跳过不删），`apply_device_plan_sync` 调用（`:1142`）。
-      真机测试抓出并修掉三个真实缺陷：① `iptables -S` 把 `--to` 与取值渲染为两个 token，
-      旧解析器只读一个 → 所有 DNAT 指纹为空 target；② 计划侧指纹用 `{:?}` 打印结构体内部字段，
-      与内核裸 CIDR 串永不对齐；③ POSTROUTING 被塞 `-i` 永不渲染的 `incoming_interface`，
-      计划指纹 `|wg0` 对内核 `|none`，新清理逻辑误删计划内 SNAT 致读回失败
-      （已改为链级规范化：`nat.rs:87`，`device_plan.rs:189`/`agent.rs:409` 只对 PREROUTING 赋值）。
-      验收：单测 8 个（`reconcile.rs:419-544` 五个 + `linux.rs:1470-1551` 三个，含 peer 解析、
-      指纹 round-trip、拒绝渲染器永不产出的形状）；真机注入三项各带修复断言
-      （`backend_wiring.rs:1048-1245` 陌生 peer 移除/计划 peer 存活、未标记路由 `10.245.0.0/24
-      dev wg0` 原行原样存活、多余 meshlet 注释 SNAT 移除且计划 SNAT 与外部规则存活；
-      `agent_reconcile.rs:878-1003` 同三项走真实 agent 判定，逐项 `reason=KernelDrift`）。
-      验证：`cargo test --workspace` exit 0、`backend_wiring` 1/1 (31.66s)、
-      `agent_reconcile` 1/1 (26.95s)、`dual_site_end_to_end` 1/1 (36.63s)、
-      meshlet-agent lib 59 通过、meshlet-network lib 79 通过、
-      `cargo clippy --workspace --all-targets -D warnings` 与 `cargo fmt --all -- --check` exit 0、
-      `pnpm run docs:build` 成功。证据入 `docs/implementation/r04-linux-agent-e2e.md` 及其 zh 镜像。
-- [x] M3 故障矩阵验收（评审 54.2 九场景，2026-10-27 落地）：九场景全真跑（真 netns +
-      sudo ip/wg/iptables，`MESHLET_REQUIRE_DATAPLANE=1` 门禁——无门禁时静默 SKIP，
-      证据全部来自设门禁的运行）。串行单测实测：①hub 重启恢复受管状态
-      （`single_instance.rs:1389` 9.38s：重建后 hub 密钥不变、peer 身份行逐字相同、
-      hub 路由与网关 NAT 相等）；②agent 重启不信账本（`ledger_recovery.rs:379` 1.19s：
-      真实 apply 对照组 `UpToDate`，同标记换路由 → `KernelDrift`，外部路由幸存）；
-      ③改路由被杀（`ledger_recovery.rs:442` 3.01s：三个被杀断点各为真实半途内核状态，
-      收敛到计划 B、账本记 `rev-b`）；④删 LAN 路由连带撤销（`single_instance.rs:1522`
-      6.78s：DELETE 204、alias 列表清空、hub 路由与 allowed-ips 收敛、网关
-      `NoLocalLedger` 所有权清扫 owner NAT、overlay 不断）；⑤双网络并行不串网
-      （`single_instance.rs:212` 53.70s，既有测试：A 重启重建/失败修订回滚不动 B）；
-      ⑥宿主机规则不误删（`backend_wiring.rs:704` 场景 12 主体 `:1247` 32.96s：根命名
-      空间 apply，外来路由/NAT/FORWARD/ip_forward 逐字幸存，`RootGuard` 兜底清理）；
-      ⑦撤销在线设备旧计划不重授（`single_instance.rs:1833` 5.94s：凭证 401、旧修订
-      回执 400 过期、当前修订配旧哈希 400 哈希不符、新修订不回加 peer、存活设备握手
-      与流量计数持续；内核侧 `:624-673`）；⑧hub 公钥轮换（`single_instance.rs:1468`
-      6.20s：hub 换钥、peer 身份不变、设备计划与内核持新钥）；⑨库恢复后内核重新一致
-      （`single_instance.rs:1662` 9.81s：备份→删除→恢复→重启→recover_once→hub 路由
-      逐字复原、网关 NAT 复原、LAN 通路恢复）。
-      如实记录两处非缺陷观察：a) hub 接口重建不带会话密钥，设备旧会话 keepalive
-      （REJECT_AFTER_TIME ≈180s）无法解密、hub 学不到 endpoint——WireGuard 标准行为，
-      身份级重建为本场景合同，数据面回归由设备自身收敛步骤验证（`single_instance.rs:1441`
-      注释）；b) 回滚式恢复后「点 apply」不重收敛——`ConfigLedger::apply` 对已
-      `Applied` 修订幂等返回（`config_state.rs:230`），备份后新增修订又不在恢复出的
-      库里，受支持路径是生产启动恢复 `recover_once`（`main.rs:113`）；产品语义决策留作
-      后续项，本轮不改代码。
-      已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
-      验证：`single_instance` 7 通过（串行 105.89s）、
-      `ledger_recovery` 6 通过 6.35s、`backend_wiring` 1 通过 32.96s、`agent_reconcile`
-      1 通过 27.06s、`dual_site_end_to_end` 1 通过 33.82s、
-      `cargo clippy --workspace --all-targets -D warnings` 与 `cargo fmt --all -- --check`
-      exit 0、`pnpm run docs:build` 成功；证据入 `docs/implementation/m3-fault-matrix.md`
-      及 zh 镜像，侧栏已注册（`docs/.vitepress/config.mts:102`/`:190`）；可并入 R-07
-      浸泡验收执行（场景 2/3/5/6/7 触碰共享内核状态，最值得在浸泡机重复）。
-- [x] M4 回滚/重试不得重授已撤销权限：安全语义优先于机械恢复。撤销权限、删 Peer、删路由、
-      清 NAT 有明确优先级；失败恢复 last_good_plan 前先过当前授权快照。验收：撤销后诱导回滚的
-      单测证明访问未重新打开。
-      → 已落地（2026-10-27）。优先级顺序落在两处：撤销动作本身 `service.rs:2417`
-      `revoke_device` 即按 §11.5/§12.6 先删该设备发布的 LAN 路由及其绑定 alias（撤销 >
-      删路由 > 清 NAT，NAT 随路由集合在网关收敛）；恢复侧新增 `revision.rs:165`
-      `enforce_authorization` 作为唯一过滤点——先删被撤销设备的 peer，再删网关不再活跃的
-      路由，再删失去所属路由的 alias，最后删失去 peer allowed-ips 依据的 hub 转发路由。
-      四个消费边界共用它：内核目标 `revision.rs:208`（apply/rollback/recover 的
-      last_good_plan）、回滚结算 `revision.rs:915`（写回内存恢复日志前）、装载
-      `persist.rs:1562`（失败修订让日志短暂滞留旧计划时，重启读到的是已授权子集）、
-      回滚落库 `persist.rs:2247`（回滚把过滤后的部署写回 `hub_deployments`；原先只写
-      路由/alias，下次重启会从日志读回含被撤销设备的计划）。验收测试
-      `single_instance.rs:2008` `rolling_back_a_failed_revoke_does_not_reopen_access`
-      （日志断言走 `journal_plan`，`:1311`）：撤销 + 两次失败 apply（外来路由占住目的段）
-      → 隧道步已移除被撤销 peer 而 apply 仍失败（撤销优先于机械恢复）→ 回滚后 hub peer
-      列表仍不含被撤销公钥、`ping` 仍不通、日志 JSON 的 peer 与路由均不含它（`journal["aliases"]`
-      未单独断言，alias 无孤儿在内核侧收敛验证）、
-      存活设备握手与流量计数持续累加 → `persist::load` + `recover_once` 重启后同样不复活。
-      取证反向验证：临时摘掉回滚结算的过滤，该测在 `single_instance.rs:2123` 失败，日志
-      JSON 记录回两个 peer（含被撤销公钥 `zdzp…`）——证明断言抓的是本次修的缺陷，而非
-      已被 `from_mesh_with` 覆盖的内核侧。实测：该测单跑 8.44s；`single_instance` 8 通过
-      （串行 116.83s）；`cargo test --workspace`、`cargo clippy --workspace --all-targets
-      -- -D warnings`、`cargo fmt --all -- --check`、`pnpm run docs:build` 全绿。
-      门禁说明：`setup()` 以「sudo 可用 + `wg --version` 成功」判前置条件，本机两者齐备，
-      所以 `MESHLET_REQUIRE_DATAPLANE=1` 在本机只是「缺前置条件时硬失败」的开关，不设也真跑
-      （workspace 运行即真跑：8 测 71.43s）——验收不能只看 exit code。
-- [x] M5 TODO 完成状态审计（作为 TODO #52 SystemBackend 接线决策的前置）：逐条核对已勾项的
-      实现路径、测试覆盖、真实验收证据，重点权限撤销/回滚/多网络隔离/Windows 后端，产出审计报告
-      （结论三分类：有证据/证据弱/仅代码存在）。验收：报告入 `docs/analysis/`（用户令改为
-      analysis，非 review）并进 vitepress 站，#52 决策引用它。
-      → 已落地（2026-10-27，审计基线 `ebcd9e7`）。证据：
-      `docs/analysis/todo-completion-audit-2026-10-27.md` 及 zh 镜像，侧栏已注册
-      （`docs/.vitepress/config.mts` `/analysis/` 与 `/zh/analysis/` 各一条）。核对已勾项 20 条：
-      **有证据 15**（R-04 与两个子项、R-05 数据面子项、R-06 六个子项含真实 VPS 端到端、
-      R-07 空白安装/密钥轮换/备份恢复/多设备/升级回滚、M1/M2/M3/M4）、
-      **证据弱 5**（R-01、R-02、R-03、R-05 权限提升子项、R-07 性能基线）、
-      **仅代码存在 1 处子面**（`windows_elevation.rs:194` 的 `#[cfg(windows)]` 执行层，
-      模块内零测试、从未在真机运行）。三个重点结论：①权限撤销/回滚链路无旁路——
-      `enforce_authorization` 四个消费点（`revision.rs:208/915`、`persist.rs:1562/2225`）
-      全部核实，并遍历所有 `hub_deployments` 写入与内存计划插入点，未找到绕过；
-      ②多网络隔离由 `single_instance.rs:212` 的正负成对断言证明（B 活着且 A 到不了 B），
-      系单机 netns 级证据而非 WAN/NAT 穿越；③Windows **无法接线**——隧道实现整体缺席
-      （`wireguardnt`/`wintun`/`tun2socks`/`OpenAdapter` 在 `crates/`+`apps/` 下零代码，仅
-      `windows_routes.rs:13,207` 两处注释提及），而 `apply_tunnel` 正是 agent 的首个调用
-      （`apps/agent/src/agent.rs:124`），接线需新建子系统而非改一行 `cfg`。另记 12 处 TODO
-      表述与实际不符（R-02 写 nftables 实为 iptables 且 nftables crate 无任何 app 依赖、
-      `meshlet-netplan` 未被 server 消费、`check-planner-deps.sh` 未接任何 CI、R-04 第 25 行
-      自相矛盾、R-06 第 31 行计数过时、M2 行号区间漂移等，详见报告「发现的不一致」）。
-      指针已加两处：`crates/meshlet-network/src/lib.rs` 模块头（接线决策本体）与
-      `docs/zh/guide/walkthrough.md` §4 判定段（#52 验收门）。验证：`pnpm run docs:build` 绿、
-      `cargo test --workspace` 与 `cargo clippy --workspace --all-targets -D warnings` 绿、
-      `cargo fmt --all -- --check` 绿。落 commit = 本提交（单提交无法自引哈希，见 git log 首条）。
-- 说明：评审的「备份明文加密恢复包」已在 R-07 显式加密恢复包口径内（不重复立项）；
-  服务发布授权清单（监听地址/来源 CIDR/UDP 会话生命周期等）在 M1 落地时并入检查单。
+- [x] ① endpoint 上报+API：agent 心跳携带 direct，server 提供 peers/endpoints 查询。
+  - 证据: commit 7374f6f/a1111f5 · config 18 + network 102 + agent 60 + peers_endpoints 6 tests
+- [x] ② agent 直连+回退（连接管理，netns 端到端验收）。
+  - 证据: commit c1f4b63 · 全 workspace cargo test 0 FAILED（network 104 + agent 67）
+- [x] ③ 探测+状态上报（直连/中继状态随心跳上报，console 展示）。
+  - 证据: commit 4fc5aa7 · 域层 161 + agent 68 + peers_endpoints 9 tests
+- [x] ④ 防火墙联动（直连 UDP 端口放行，幂等；direct_connect 默认保持关闭）。
+  - 证据: commit 923c4dc · meshlet-network 106 lib + netns 2 tests
+- [x] P2P-⑤ 暴露 hub 观测的节点公网端点（observed/public endpoint 入 API 与 console）。
+  - 证据: commit 1c5df30/8e89856/168c1c5 · server 2 集成 + console 2 tests（真机 2-peer 未跑）
 
-## 审核发现
-- [x] 审核发现：去重时删除巡检复核中的用户侧动作项（确认销毁是否有意、重建 CT110-113 网格重跑采集器），全文档无其他保留（todo.md:49）。属实（grep 全文仅本条提及）。已恢复：用户侧动作回置「终局记录（2026-10-27 巡检）」（todo.md:51）末尾，与外部 BLOCKED 判据并列，不随巡检复核指针化而丢失。
-- [x] 审核发现：称「全文档终局事实仅一处」但巡检复核（todo.md:49）仍重复 cron 停止/环境销毁/soak.log 冻结等终局记录已有事实，且引用列两处而非权威记载 todo.md:51（todo.md:201，现本节末条）。属实。已收敛：巡检复核（todo.md:49）改为纯指针（仅记 2026-10-28 11:13Z 补核实事件与结论「无漂移」，不再罗列事实），2026-10-28 复查细节（`pct list` 仅 CT100、无 meshlet 服务/`wg0`、`soak.log` 冻结时刻）并入终局记录（todo.md:51）；末条「仅一处（todo.md:49, todo.md:196）」表述已更正为「事实仅记载于 todo.md:51，todo.md:49 与巡检注记均为指针」。
-- [x] 审核发现：先称「39.5h 来源被错误归到 1a2fce2」后称「引入属实」矛盾，且「本提交」指代不明（范围 fd9af3e..b34cce7 内删 39.5h 的实为 b34cce7 非本提交 9ce64d3）（todo.md:200，现本节 39.5h 归因条目）。属实：发现句「被错误归到」系误记，git 实证 `1a2fce2` 引入属实。已重写该条目为一致表述：引入=`1a2fce2`、未改=`fd9af3e`（其新行 39.4h，两值并存）、删除并统一=`b34cce7`（非 9ce64d3）；「本提交」措辞已消除，一律用显式哈希。
-- [x] 审核通过：efb206c5..3e3101b 无发现
-  - 巡检注记（2026-10-28 第二次）：浸泡环境已被销毁，浸泡无法继续；终局事实（环境拆除时间线、有效干净窗口 ≈39.4h、判据未达成、环境级 BLOCKED）的唯一权威记载为「终局记录（2026-10-27 巡检）」（见 R-07 浸泡节，已含 2026-10-28 对 PVE 原始任务日志的复核）。本处只留指针不重复记载，避免双份漂移。
-- [x] 审核发现：同一浸泡窗口（2026-10-24T00:15Z→2026-10-25T15:37Z）在本范围内出现两种时长——1a2fce2 记「约 39.5h」，而 fd9af3e 及既有「终局记录」记「约 39.4 h」（实际 39h22m≈39.4h，39.5h 系四舍五入偏差）。已统一为 39.4h：巡检注记改为指针不再重复时长，权威终局记录保留 39.4h（见本提交）。【2026-10-29 更正归因】git 实证：39.5h 由 `1a2fce2` 引入（其 diff 新增的巡检注记行即含 39.5h）；`fd9af3e` 的 diff 只动巡检复核行、未改 39.5h（其新增巡检复核行为 39.4h，故 `fd9af3e` 之后 39.5h 与 39.4h 并存）；至 `b34cce7` 才删除 39.5h、统一为 39.4h。`1a2fce2`/`fd9af3e` 均在审核范围 `efb206c5..3e3101b` 之外，原「fd9af3e 记 39.4h」措辞不准。
-- [x] 审核发现：新增注记的 vzstop 时刻 `2026-10-26T14:06Z` 与既有「终局记录」的 `22:03 CST`（=14:03Z）相差约 3 分钟，且新注记用 UTC(Z)、旧记录用 CST，同一文档时区/时刻口径不统一。已核 PVE `/var/log/pve/tasks/index` 原始行：vzstop 实为 `2026-10-26T14:06:24Z`→`14:06:42Z`（110→113），**14:06Z 为准**；全记录（首日复查/巡检复核/终局记录）统一为 UTC（见本提交）。
-- [x] 审核发现：新增「巡检注记（2026-10-28 第二次）」与既有「终局记录（2026-10-27 巡检）」大量重复同一终局事实（环境销毁、有效窗口≈39.4h、判据未达成），双份记载易再漂移。已合并去重：唯一权威记载为「终局记录（2026-10-27 巡检）」，巡检注记改为指针（见本提交）。
-- [x] 审核发现：39.5h 归因链曾措辞含混（「来源被错误归到 `1a2fce2`」与「引入属实」并见、「本提交」指代不明）。已重写为一致表述（2026-10-29）：git 实证——`1a2fce2` diff 新增的巡检注记行即含 39.5h（引入属实）；`fd9af3e` diff 只动巡检复核行、其新行为 39.4h、39.5h 原样保留（此后两值并存）；删除 39.5h 并统一为 39.4h 的是 `b34cce7`（非 9ce64d3）；`1a2fce2`/`fd9af3e` 均在审核范围 `efb206c5..3e3101b` 之外，原「fd9af3e 记 39.4h」措辞不准。
-- [x] 审核发现：声称「唯一权威记载」为终局记录并已完成去重，但 `todo.md:49` 的巡检复核仍完整重复环境销毁、有效窗口 39.4h 与判据未达成等同一批终局事实，双份漂移风险并未消除。已收敛：终局事实唯一权威记载为「终局记录（2026-10-27 巡检）」（todo.md:51，已吸收 2026-10-28 直连复查细节与用户侧动作）；巡检复核（todo.md:49）与巡检注记均只含指针、不重复终局事实；全文档终局事实仅记载于 todo.md:51 一处（先前「仅一处（todo.md:49, todo.md:196）」表述有误——49 与巡检注记系指针位置，非事实位置）。
+## 诊断与托盘（2026-11-01 用户令）
 
-## Meshlet Agent 安装即配防火墙(2026-10-30 用户令,实战教训)
+- [x] R-DIAG · P2 · agent 本地网络诊断信息面（三快照 + CLI `meshlet agent diag`）。
+  - 证据: commit 026b638
+- [x] R-TRAY-1 · P2 · 托盘设置界面功能化扩展（命令目录单一事实源 crates/meshlet-commands + 四分区前端）。
+  - 证据: commit b8d9e75/fb1e90d/3d71188/691fc36 · tray 5 tests
+- [x] R-DIAG-2 · P2 · 直连 peers 信息展示（RTT/endpoint/握手/流量 + console 区块）。
+  - 证据: commit d72e4a2/f97f6f0/4ba7d71 · 2-peer 直连场景验收待第二节点
+- [x] macOS x86_64 · tray 应用 .app 打包（CI 腿）。
+  - 证据: commit 69c7ec1/85b8518 · run 41307883225 success · network 115 + tray 5 tests
+- [x] DOC-GIF · P2 · 配置开关效果动态图（off→on 对比 + GIF，可复现流水线）。
+  - 证据: scripts/doc-gif · 12 项效果断言全绿
 
-- [ ] AGENT-FW-1 [P1] Windows 数据面应用时自动:把 wg 接口 NetworkCategory 设为 Private(勿留 Public);创建入站 ICMPv4 放行规则(限定 wg 接口);幂等可重跑。验收:新装机跑完 agent apply 后,远端 ping 该机 wg 地址直接通,无需手工建规则。证据:2026-10-30 实战 dev→win 不通,手工建 Meshlet-ICMPv4-In 才通。【代码已落 52a4763:windows_firewall 加 IcmpV4+localip+MeshFirewallCommand(档位 Private 走 Set-NetConnectionProfile,ICMP 规则 netsh icmpv4:8,any+localip 限定 wg 地址)+firewall_rule_present/net_category_is_private 探测,17 lib 测试绿;walkthrough 验收步骤 adbb65e。**接线（2026-10-31，514cb51）**：`apply_device_plan_sync`（crates/meshlet-network/src/windows.rs:419-422，路由循环后）调用 `ensure_mesh_reachability_sync`（同文件 204-219）→ 探测 NetworkCategory（powershell Get-NetConnectionProfile）与 Meshlet-ICMPv4-In（netsh show rule，GBK 解码）→ `mesh_reachability_commands` 纯规划 → `exec::run_mesh_firewall_command` 逐条执行；幂等可重跑、探测失败按未满足（宁补不漏）、执行失败显式报错。门禁：110 lib 测 + agent 68 测 + clippy -D warnings + msvc --all-targets 交叉全绿。**真机「ping 直接通」验收仍待**——手动项，不勾验收】【BLOCKED（2026-11-01）：验收需一台可实际安装、可重启的 Windows 真机，用户手动提供】
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
-- [x] AGENT-FW-2 [P2] Linux 同理:检测 ufw/firewalld 活跃时自动放行 wg 接口流量,幂等。验收:启用 ufw 的干净机跑 agent 后 mesh 内 ping 通。【52a4763:linux.rs 加 host_firewall_allow_actions(纯规划,全幂等)+探测(ufw status/firewall-cmd --state --query-interface)+ensure_host_firewall_sync(ufw allow in on <if>/firewalld trusted,netns 测试钩子跳过不污染宿主),apply_device_plan_sync 路由后调用;101 lib+4 特权集成全绿】
-- [x] AGENT-FW-3 [P2] walkthrough.md 补「安装即配防火墙」验收步骤与回归用例。【adbb65e:docs/guide/walkthrough.md C 节加防火墙小节;docs/zh/guide/walkthrough.md 加走查 FW(4.1)含 FW-1 Windows/FW-2 Linux 命令与幂等回归用例】
-- [ ] AGENT-WIN-1 [P1] Windows 托盘宿主：用 tray-icon（或 Win32 Shell_NotifyIcon 薄封装）消费 TraySink 的四态 PNG，常驻托盘+菜单（打开面板/退出）。验收：真机托盘图标随状态换图。背景：2026-10-30 openclaw 真机确认 tray.rs 仅 TraySink 写 PNG 状态图（注释明说不引入 tray-icon/tao/winit 等 GUI crate），托盘宿主由桌面壳接入——Linux 面板有宿主，Windows 无任何宿主实现，故 Windows 上永无托盘图标。【进度：宿主已落地 apps/tray-host（Win32 Shell_NotifyIcon 薄封装，零 GUI crate）——1ed65fa 常驻托盘+初始图标态+右键菜单、e09c602 改用普通隐藏窗修复右键（替代 HWND_MESSAGE）、02bc402 消费 TraySink 写出的 icon-16/24.png 以最小零依赖 PNG 解码器（stored-deflate）生成 HICON、status.json 变更 NIM_MODIFY 换图，并弃用 94fc76d 的 resvg 自渲染路径（其状态串映射从不匹配 TraySink accessible_name → 恒灰，且违背宿主应消费 PNG 而非自渲图标）；1c7f2ba 锁清理。4 个单测（PNG 往返/拒非签名或非 RGBA/取 icon24 解码/缺文件 None）+ msvc 交叉 --all-targets + windows-latest CI 覆盖。**图标随状态换图真机走查仍待**（2026-10-31 验收第 7 项仍见 GDI 占位绿块，见 docs/agent-win-2-acceptance.md）——手动项】【BLOCKED（2026-11-01）：验收需一台可实际安装、可重启的 Windows 真机，用户手动提供】
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
-- [x] AGENT-WIN-2 [P1] Windows agent 安装包：MSI/zip 二选一（zip 先行），含 agent.exe+启动注册。验收：openclaw 真机安装后 tray 出现。背景：2026-10-30 openclaw 真机确认未装 meshlet agent（Program Files/ProgramData/LocalAppData 全无、无进程），仅存 WireGuardTunnel$wg-meshlet 隧道服务——「部署了」只是隧道不是 agent；nightly 只产 Linux 二进制，无 Windows 安装包。【进度：nightly 已加 Windows 腿（windows-latest msvc 建 meshlet-agent/cli）→ meshlet-nightly-windows-x86_64.zip（agent.exe+cli.exe+LICENSE+BUILD_INFO）+ scripts/install.ps1 一键安装（下载 zip→SHA256 校验→装 %LOCALAPPDATA%\meshlet→PATH→HKCU Run 隐藏自启→幂等升级保留 agent.toml/密钥/token；MESHLET_INSTALL_ARCHIVE 离线参数对齐 Linux）。2026-10-30 run 41045721705 真跑验证：Windows 腿绿、zip 资产在 release 且 SHA256SUMS 校验 OK、内容逐项核对（无 server）。2026-10-31 用户真机验收 5/5（WireGuardTunnel Running、ping hub 11ms、ping self、agent 计划任务 SYSTEM AtStartup、路由表 10.240.0.0/16；另防火墙 ICMP 规则与 tray-host 右键菜单 PASS）——证据 docs/agent-win-2-acceptance.md，记录提交 f86489d。验收记录的已知问题 KernelDrift 重放已由 7639110 修复（wg dump 读回 peer + IPEnableRouter=1 前置 + 接口 MTU 读取，三个恒真漂移条件消除）】
-已代决：按 docs/decisions/2026-10-30-decisions.md 执行(2026-10-30)
-- [x] NIGHTLY-PKG [P2] Linux 组件包矩阵：meshlet-server/agent/cli 各出 .deb+.rpm（dpkg-deb+rpmbuild——cargo-deb/nfpm/fpm 离线缺失被迫手打，选择一句话：零新依赖、两工具均在镜像），版本 0.0.0~nightly（tild 排序低于任何正式版，不算 bump），console 静态站并入 server 包（server 经 ServeDir 直接托管，故不单出 tar），unit 路径改写 /usr、postinst 幂等建服务用户/状态目录、示例配置不自动落活配置。【scripts/package-deb-rpm.sh；本地 gnu release 二进制真跑：6 包全出，dpkg-deb -c/-e 与 rpm -qlp/-qp --scripts 逐项核对——属主 root/root、二进制 0755/其余 0644、unit 无 /usr/local 残留、示例 TOML tomllib 可解析、cli 包无 postinst、rpm %post 建组/用户/状态目录幂等。nightly.yml 已接线：build 矩阵两腿各出 deb/rpm（rpm 包提供 rpmbuild）、windows 腿产 zip、publish 全资产入 SHA256SUMS 并传 rolling nightly，actionlint 绿、pwsh 语法检查入 checks。资产名用 0.0.0.nightly（GitHub 把 ~ 归一成 .，README URL 与 SHA256SUMS 才解析），内部 Version 仍 0.0.0~nightly 保持预发布排序。真跑 workflow 验收（2026-10-30 三连跑）：run 41041727244 dataplane 单实例时序偶发失败（netns 内核重连断言）→ rerun 全绿但 publish 因 download-artifact 多行 pattern 未拆分致 0 产物 → 修复后 run 41045721705 全绿；gh release view nightly 真见 18 资产（install.sh/install.ps1、2×tar.gz、6×deb、6×rpm、Windows zip、SHA256SUMS），SHA256SUMS 17 行与资产名一一对应（0 个 ~ 残留），实测 deb 与 Windows zip 下载校验 OK、zip 内 agent.exe+cli.exe+LICENSE+BUILD_INFO（无 server）】
+## 审核发现（产品缺陷，已修）
 
-## console 重设计 + dev 部署（2026-10-31，按 plans/jolly-roaming-pancake.md，已完成）
+- [x] 审核发现：CLI state_dir/config_path 与实际安装路径不一致 → 改用 LOCALAPPDATA。
+  - 证据: commit 22283bd · meshlet-cli 5 tests
+- [x] 审核发现：CLI 硬编码 "WireGuard" 隧道名 → 改匹配 wg-meshlet/meshlet。
+  - 证据: commit 22283bd · 回归测 tunnel_service_names_match_install_conventions
+- [x] 审核发现：tray-app get_peers 硬编码接口名 → is_tunnel_interface 匹配。
+  - 证据: commit fb1e90d
+- [x] 审核发现：save_config 丢弃安装键 → rebuild_config 保留 agent 管理键。
+  - 证据: commit 3d71188
+- [x] 审核发现：前端读不存在的 handshake_secs 字段 → 改 last_handshake，dist 与源一致。
+  - 证据: commit 691fc36
+- [x] 审核发现：CLI 无用依赖 serde/toml → 删除。
+  - 证据: commit 6c755c7
+- [x] 审核发现：tray-host icon_24→icon_16 回退短路 → 修复回退并加回归测。
+  - 证据: commit 07667c5 · tray-host 5 tests
+- [x] 审核发现：2FA 写端点缺 WriteUser+CSRF 双重防线 → 补齐并加回归测。
+  - 证据: auth_console 16 tests
+- [x] 审核发现：deploy/windows/install.ps1 下载不存在的资产名 → 改下载 nightly zip 并校验。
+  - 证据: commit b29dd08
+- [x] 审核发现：AuthStore::set_password 死代码 → 移除。
+  - 证据: commit 3ce13f8
+- [x] 审核发现：Windows device_plan_matches 对账粒度不足 → 纯函数逐项对账（peer/routes/MTU/allowed-ips）。
+  - 证据: commit bb835e5 · meshlet-network 118 tests
+- [x] 审核发现：console 2FA 第二步无法完成 TOTP 登录 → 前端补 code 步与错误提示。
+  - 证据: console 19 tests + tsc
+- [x] 审核发现：on_probe Direct 态疑似应 Demote → 复核不采纳（no-flap 设计，测试锁定）。
+- [x] 审核发现：tray-app stateDir 硬编码 admin 路径 → 后端自解析 LOCALAPPDATA。
+  - 证据: cargo test -p meshlet-tray 2/2 绿
+- [x] 审核发现：invoke 缺失未优雅降级 → load/save 早退，路径统一。
+  - 证据: cargo test -p meshlet-tray 2/2 绿
+- [x] 审核发现：错码返回 401 时前端误当缺码 → 显式无效提示。
+  - 证据: console 20 tests
+- [x] 审核发现：托盘菜单打开设置仅 set_focus 不 show → 先 show 再 focus。
+  - 证据: cargo build/clippy -p meshlet-tray 绿
 
-- [x] CONSOLE-REDESIGN [P1] console 视觉重设计（antd v6 + i18n 英/中 + 深浅主题切换 + 全宽响应式 + 分页）+ dev VPS 部署（新 UI + server 含 2FA migration 014）。验收：build/test/lint 绿、dev 机公网可见新 UI。【4 commit 逐段绿后即推：2a7375c（infra：antd 6.6.8+icons+LanguageProvider/LanguageSwitch/ThemeProvider+ConfigProvider locale/算法，i18n en/zh 字典编译期键对齐+interpolate，i18n.test 7 例，3 既有测试零改动）、2a7375c 同批 access 页迁移、f75391d devices 页、b50fe9a diagnostics 页（PublishSection 4 antd Form+Select，tests 改 combobox 交互+findByText）、948db6e 全宽布局+排版（.app 去 1140px 居中，断点 1024/720，Fira Sans/Code，body 16px/1.6，Tag 状态映射，revisions/devices 等长表分页）。每段 console `pnpm build`+17 测试+lint 绿。dev 部署（2026-10-31）：新 server 二进制+dist 入位（旧物备份 /root/meshlet-backup/2026-10-31/），服务 active、migration 13/14 已应用（users 表 totp_secret/totp_enabled 在），公网 https://meshlet.cuihairu.site/ 200、资产 index-r29h7YCt.js/index-C7qitfh7.css 与本地 dist 一致。无版本号，发布红线未触发。未含 P2P agent 侧（属②③④）】
+## Agent-WIN-3/4（2026-11-02 用户令）
 
-- [x] AUDIT-FIX · P2/P3 impeccable 审计待修 8 项（docs/review/2026-10-31-ui-audit-impeccable.md #7-#14）。【8 项全修：每项 console `pnpm build`+`pnpm test`+`pnpm lint` 全绿后单 commit + push（禁攒批、每次 push 前 pull --rebase）。commit：#7 2356fa3（页面 h1+标题层级）、#8 1df7169（NoNetworkSelected i18n）、#9 1f2fbc3（登录品牌标识）、#10 6863f08（网络选择持久化+自动选首个）、#11 5313ef6（Name 列单行省略）、#12 c300722（token 单一事实源 tokens.ts+CSS 变量注入）、#13 9511c16（conflict 卡去 4px 侧边+⚠ 图标）、#14 6276cda（窄屏触控目标≥44px）。验收：console 28 测试全过（新增 network-provider.test.tsx 3 例）、build+lint 绿；审计文档待修清单各条已标修复 commit。P1 #5/#6 按令未动。】
+- [ ] AGENT-WIN-3 [P1] 托盘显示本机虚拟 IP + 直连节点列表(RTT)；菜单：打开面板/本机信息/直连节点/连接节点…/退出。
+  - BLOCKED: 真机走查需 Windows GUI 会话（代码已落 bac6115/1b4ebf1/9b71e23 · 175 tests）
+- [ ] AGENT-WIN-4 [P1] 新增 peer dial <node> 命令并接托盘「连接节点…」子菜单。
+  - BLOCKED: 真机验证拨号与结果气球需 Windows 真机（代码已落 b9eaae0 · 175 tests）
 
-## meshlet P2P 节点直连（2026-10-31 起，任务书 meshlet-p2p.md；分域层/hub/agent 三层，分批 ①-④）
+## 漏洞扫描遗留（2026-11-03 全舰队扫描）
 
-- [x] ① endpoint 上报+API（域层先落 7374f6f：DirectEndpointReport/EndpointCandidate/peer_endpoints_for 等纯逻辑）：agent 心跳携带 `direct`（listen_port+lan_addrs，agent 自枚举），server 在 DeviceState 记录 hub 观测源地址；新增 `GET /api/v1/networks/{id}/peers/endpoints`（device bearer 凭证）返回 `peer_endpoints_for`——排除自身/非 Active、确定性排序、同内网观测不伪造公网候选（打洞误导防护）。handler 测试先行 6 例（401 凭证缺失/伪造、排序+自排除、同内网不伪造公网、公网观测附加 public 候选、无上报排除、错网 404）。【代码已落 a1111f5（rebase 后 push，原 f3c8e62；域层 7374f6f）：apps/agent/src/{agent,server}.rs（direct_report_from）、apps/server/src/{agent,lib,main,service,device_plan}.rs（direct_states: BTreeMap+record_direct_state、peers_endpoints_handler、serve 接 ConnectInfo）、crates/meshlet-config（direct_connect.enabled/listen_port）、crates/meshlet-network（linux.rs lan_addresses_sync+is_lan_interface，unsupported/windows 桩）、tests/peers_endpoints.rs 新增 6 例、既有 7 测试文件注入 ConnectInfo 修正（401 站点无需注入）。验证：meshlet-config 18、meshlet-network 102、meshlet-agent 60、server 全绿（0 失败，含 dual_site 59s）、peers_endpoints 6；cargo clippy -D warnings 绿、cargo check --workspace --all-targets 绿、cargo fmt --check 绿。单 commit、fetch+pull --rebase 后 push（6259d42..a1111f5）】两 agent 直连建立/回退端到端属②③，未勾。
-- [x] ② agent 直连+回退（连接管理）。【代码已落 c1f4b63（fetch+pull --rebase 后 push，948db6e..c1f4b63）：apps/agent/src/direct.rs 新增 DirectManager（直连账本 `{state_dir}/direct.json` 持久化：save/load 启动恢复 Direct 态，keep_keys 让 agent 自管 peer 在计划重放下存活、缺失不算 drift；apply_plan 按 on_probe 状态机产出 Promote/Demote；demote_all）；agent.rs reconcile 不再直连探测、只把 direct_keys 贯穿 needs_apply/apply_*_sync（观测到的外来 peer 仍按 drift 清理），reconcile_direct 30s 节流：fetch_peer_endpoints → direct_scope（hub peer AllowedIPs 里含本机 overlay 地址的最长前缀 CIDR，原 first-found 在多段重叠时选错）→ lan_subnets_sync → handshake_ages_sync → apply_plan → Promote set_direct_peer_sync(/32+endpoint+keepalive)/Demote remove_peer_sync；直连开启时 local_plan listen_port 改写为配置端口。**修 LAN 枚举根因 bug**：接口地址 `10.98.0.20/24` 带主机位，`Ipv4Cidr::from_str` 拒绝 → parse_ip_octet_subnets 恒返回空 → SameLan 永不判中 → 直连永不建立；meshlet-domain 新增 `from_host_address`（掩掉主机位）修 linux.rs 解析+回归测试（lo 127.0.0.0/8、wg 排除、eth0 10.98.0.0/24）。**direct_connect 默认改 off**（批次④防火墙放行未落地前链路不完整，且固定 listen_port 绑定会静默改变既有部署行为；config 测试改名 defaults_off）。双站点 publish 测试 tick_agent 显式 pin off+注释（单 tick 时序下直连探测候选集不对称，属测试 harness 假象，真实 agent 持续 tick 自愈）。验收 netns 测试 agent_direct_connect_establishes_and_falls_back_to_hub：SameLan 判中 → A↔B 直连握手建立（wg dump 双向 transfer>0、/32 AllowedIPs、endpoint 直指对端 underlay）→ hub 端点死亡后 10.241 路由仍通（经直连 /32）→ 撤候选/断对端 → demote 回 hub 中继恢复 → 计划重放无 churn。全绿门禁：cargo test 全 workspace 0 FAILED（agent_reconcile 2 netns ok 40-64s、dual_site 44s、single_instance 8、peers_endpoints 8、meshlet-network 104、config 18、agent lib 67）、clippy -D warnings 绿（agent_reconcile 复杂返回类型抽 type alias）、fmt 绿（tray-host 既有 fmt 漂移顺带修入 a56d92a style commit）。③探测+状态上报、④防火墙联动未动，④落地时再评估默认值翻转】
-- [x] ③ 探测+状态上报（30s RTT 对比，直连/中继状态上报）。【代码已落 4fc5aa7（fetch+pull --rebase 后 push，09e7ad0..4fc5aa7）。**探测与自动回退/恢复已在②落地**（30s 节流 reconcile_direct、握手年龄健康度 classify_probe 升降级——WireGuard 不暴露每 peer RTT，握手年龄是设计采用的活度/RTT 代理，keepalive 15s 持续刷新）；③ 的增量是**状态上报 hub（供 UI 显示 P2P/中继）**：域层 `PeerLinkState::as_str`（relay/direct_pending/direct 契约）+ `DirectLinkStatus`{public_key, virtual_ipv4, link_state, last_handshake_age_secs}（握手年龄探测时快照，状态机决策输入与上报同源）+ `DeviceDirectState.links`；agent `DirectManager::link_statuses`（只报非 Relay 在管对端，按公钥排序确定性，空=全中继）+ `Agent::direct_link_statuses`，心跳 `POST /agent/heartbeat` 携带 `direct_links`（direct.rs 客户端 + HeartbeatRequest serde default）；server `record_direct_state` 存 links（候选临时咨询数据，仅内存，不落库不加 migration）、`DeviceView.direct_links`（list_devices 按 direct_states 组装）；console devices 页新增「Direct links」列（P2P 绿 / P2P pending 橙 Tag + 握手年龄 tooltip，空=全部经 hub 中继提示）+ i18n 英/中 + api 类型。验证：域层 161、agent lib 68（新增 link_statuses 单测 pending→direct→清空）、peers_endpoints 9（新增 heartbeat_link_statuses_surface_in_the_devices_view 心跳→DeviceView 往返）、server 全绿、netns 真机 `agent_direct_connect_establishes_and_falls_back_to_hub` 增补两断言（直连建立+到期探测周期→状态导出「direct」+年龄≤35 快照；撤候选回退→状态上报清空；71.8s）、console 18 测试（新增 devices.test.tsx 渲染 P2P/中继标签）+build+lint 绿；cargo clippy -D warnings 绿、cargo fmt --check 绿、全 workspace 0 FAILED。④ 防火墙联动（直连 UDP 端口放行）未动，④落地时再评估 direct_connect 默认翻转】
-- [x] P2P-⑤ 暴露 hub 观测的节点公网端点（用户令 2026-11-04：节点连 hub 已能拿到公网 ip:port，应存 hub 且后台可见）。现状核验（2026-11-04）：hub **确实观测** agent 心跳源地址（`apps/server/src/agent.rs:263` → `direct_observed_ip`，存 `DeviceDirectState.observed_ip`，p2p.rs:160），但**只存 IP 丢端口**（`direct_observed_ip` 返回 `Option<Ipv4Addr>`，agent.rs:114），且**从未暴露**——不在 `meshlet-api-types`、不在 `console/src/api/index.ts` `Device` 类型，console 不渲染。交付：① 记录含端口（或并入候选生成）；② `Device` API 增 `observed_endpoint`/`public_endpoint`（`observed_ip:listen_port`，公网候选已由 `endpoint_candidates` 合成，p2p.rs:173）；③ console 设备表/诊断页展示。底层数据同供「拓扑图/节点下钻」需求。详析见 `docs/analysis/easytier-comparison.md` P0。
-  - 【已交付 2026-11-04，代码面+测试，未跑真机 2-peer 验收】①端口并入候选生成：`DeviceDirectState::observed_endpoint()`（observed_ip + report.listen_port，p2p.rs）+ `public_candidate()`/`public_endpoint()`（仅非私网观测才标公网）；②API：`DeviceView`（apps/server/src/service.rs，meshlet-api-types 无 Device 类型，DTO 在 service.rs）增 `observed_endpoint`/`public_endpoint`；③console：`api/index.ts` `Device` 类型 + `DevicesSection` 端点列 + `NetworkSnapshotBlock` 节点下钻行。测试：meshlet-server 2 集成测（公网观测 / 同内网只 observed）+ console 2 测（设备表 / 快照块）全绿；门禁 test+clippy -D warnings+fmt+tsc+vitest+oxlint 绿。提交：`feat(domain): expose observed and public endpoints`、`feat(server): expose observed endpoints in device list`、`feat(console): show hub-observed endpoints in devices and diagnostics`。真机 hub+agent 验收未跑。
-- [x] ④ 防火墙联动（直连 UDP 端口放行，沿用 AGENT-FW 思路）。【代码已落 923c4dc（rebase 后 push；上游有并行 7cc5e89 clippy 修复入线，单 commit 重放其顶，7cc5e89..923c4dc）。**沿用 AGENT-FW-2 模式**（ufw/firewalld 探测 + 幂等放行）：linux.rs `HostFirewallAction` 增 `UfwAllowPort{port}`/`FirewalldAllowPort{port}`（`ufw allow <p>/udp` / `firewall-cmd --zone=trusted --add-port=<p>/udp`——直连 peer 经 LAN/公网接口到达本机 wg 监听端口，接口级放行 wg0 不覆盖，必须按端口开）；纯规划 `direct_udp_firewall_allow_actions`（幂等：已放行→空计划、管理器未活跃→no-op，ufw 在前确定性排序）；`host_direct_udp_allow_plan(port)` 探测（`ufw status` 含 `<p>/udp`、`firewall-cmd --query-port=<p>/udp`）；`ensure_direct_udp_firewall_sync(port)`（netns 钩子跳过、失败显式报错不假装生效）。接线：`apply_device_plan_sync` 在 AGENT-FW-2 接口放行后，`plan.tunnel.listen_port` 为 Some 时（agent 仅在 direct_connect.enabled 时改写）自动放行直连 UDP 端口。直连关闭时规则保留无害（只开一个 UDP 端口），幂等可重跑。**默认值再评估：保持 direct_connect 默认关闭**——④ 消除了「链路不完整」顾虑，但「开启即把 wg0 绑到固定监听端口 + 写宿主防火墙」仍属静默行为变更，P2P 是显式配置的优化（`[dataplane.direct_connect] enabled=true`），不默认翻转。验证：meshlet-network lib 106（新增 direct_udp_firewall_plan_is_idempotent_and_manager_gated + ufw_status_port_line_detects_direct_udp_allow）、agent_reconcile netns 2 过（新路径 netns 跳过不污染宿主防火墙，71.9s）、全 workspace 0 FAILED、clippy -D warnings 绿、cargo fmt --check 绿。P2P 批次①-④全部完成；直连链路默认关闭，需显式开启】
+- [ ] VULN-MESHLET-001 [P1] rsa 0.9.10（sqlx-mysql 引入，RUSTSEC-2023-0071 中危 5.9）升级或换库。
+  - BLOCKED: 上游无 patched 版本；验收 = cargo audit 该 ID 清零
 
-- [x] 审核发现：`load_status_icon` 的 `icon_24`→`icon_16` 回退逻辑用了 `?`，当 `icon_24` 在 status.json 中缺失或解码失败时直接返回 `None`，`icon_16` 永远不被尝试；与注释声明的「回退 icon_16」不符（apps/tray-host/src/main.rs:195-203）。【已修 07667c5：键缺失/非字符串改 `let Some(..) else { continue }` 回退下一档（仅文件读取/解码失败原本就 continue，`parent` 提升到循环外），新增回归测 `load_status_icon_falls_back_to_icon16_when_icon24_key_absent`（旧代码必挂、新代码过）；tray-host 5 测 + clippy -D warnings + fmt 全绿】
-- [x] 审核发现：服务端 `two_factor_enroll_handler`/`activate_handler`/`disable_handler` 使用 `AuthenticatedUser` 而非 `WriteUser`+`CsrfHeader`，与其它管理端写端点（如 segment/diagnostics）的 CSRF 双重防线不一致；2FA 端点虽由会话认证，但缺失 `X-Requested-With` 校验（apps/server/src/auth.rs:869、903、942，对照 apps/server/src/lib.rs:956-969）。【已修：三个 handler 改挂 `WriteUser`+`CsrfHeader`（会话恒放行、token 需 `write` scope；缺失 `X-Requested-With` 403），与其它写端点（segment/diagnostics/tokens）同一双重防线；新增回归测 `two_factor_writes_require_csrf_header_and_write_scope`（缺 CSRF 头三端点均 403 + 带头 enroll 200）；`auth_console` 16 测全绿】
-- [x] 审核发现：`deploy/windows/install.ps1` 下载 `meshlet-agent-windows-x64.exe`，但本轮实际发布资产为 `meshlet-nightly-windows-x86_64.zip`（package-windows-zip.ps1）且 nightly.yml 仅上传 zip；部署脚本的下载 URL 无法命中任何发布资产（deploy/windows/install.ps1:109，对照 scripts/package-windows-zip.ps1:40、.github/workflows/nightly.yml 上传步骤）。【已修 b29dd08：第 3 步改下载 `meshlet-nightly-windows-x86_64.zip`（保留 `$ReleaseBase` 用法）→ 拉 SHA256SUMS 精确选该资产校验行（缺失/重复即失败）→ SHA256 校验 → Expand-Archive 临时目录 → 校验 zip 根含 meshlet-agent.exe（缺则失败）→ 拷 `$AgentExe` → `finally` 清理临时目录；`$exeSize<1MB` 防损坏检查保留；幂等可重跑。活件 `scripts/install.ps1` 本就正确（:38 zip、:100-120 同款下载→校验→解压→拷 exe），本修仅修陈年副本 `deploy/windows/install.ps1`；本机无 pwsh（已确认），未本机解析——以与 scripts/install.ps1 逐段对照 + 括号配平粗检为证据】
-- [x] 审核发现：`AuthStore::set_password`（离线维护 CLI 用途）在 diff 中新增但全仓库无任何调用方——dead code，且文档注释声称「离线维护 CLI」无对应 CLI 命令落地（apps/server/src/auth.rs:257）。【已修 3ce13f8：移除死函数——全仓库 grep 仅定义处无调用方，`meshlet-server` CLI 只有 `[config.toml]`/`restore` 两子命令无 reset-password（main.rs:35 起），对照 `set_totp_secret`/`set_totp_enabled` 均有 2FA handler 调用（活）；server 全测试套件 + clippy -D warnings + fmt 全绿】
-- [x] 审核发现：`WindowsNetworkBackend::device_plan_matches_sync` 仅返回「隧道服务存在」布尔，不比对 peer/routes/MTU；而 `inspect_sync` 能读到 peers 与 routes——对账粒度不足，可能把「隧道在但配置已漂移」误判为一致（crates/meshlet-network/src/windows.rs:336-342）。【已修 bb835e5：抽纯函数 `device_plan_matches(plan, extra_peer_keys, snapshot)`（lib.rs，非 cfg-gated、Linux 本机可测；`cfg_attr(not(windows), allow(dead_code))` 豁免 Linux 无调用方）逐项对账：① 每个计划 peer 公钥 ∈ 快照 peers；② 快照每 peer ∈ 计划 ∪ extra_peer_keys（无未受管漂移）；③ 每计划路由 destination ∈ installed_routes（CIDR 精确）；④ 计划显式 MTU 则须 == 快照 tunnel_mtu；⑤ tunnel_exists=false → 不匹配。`device_plan_matches_sync` 改 `inspect_sync()` + 调纯函数。新增 7 单测（全匹配/缺 peer/漂移 peer+extra 放行/缺 route/MTU 漂移/tunnel 不存在/未指定 MTU 跳过）；门禁：meshlet-network 117 测 + clippy -D warnings + fmt + msvc 交叉 check/clippy 全绿】
-- [x] 审核发现：控制台 `SessionUser` 前端类型缺少服务端新加的 `two_factor_required`/`two_factor_enabled` 字段，且 `api.login` 未携带 `code`、AuthGate 无第二步验证码 UI——服务端 2FA 端点已就绪但前端无法完成 TOTP 登录流程（console/src/api/index.ts:146-149、410-411、console/src/App.tsx:140-170）。【已修：`SessionUser` 增 `two_factor_required`/`two_factor_enabled`；`api.login` 增可选 `code`；`AuthGate` 增第二步验证码步骤（服务端返回 `two_factor_required` 时进入 code 步骤，携带 `code` 重新提交，成功才种会话）；新增 i18n `auth.verifyCode`/`codeHint`/`code`/`verify`/`verifyCodeInvalid`（en/zh）；新增回归测 `auth.test.tsx`（先缺码、后带码两段调用断言）；console 19 测 + `tsc -b` 全绿】
-- [x] 审核发现：`on_probe` 的 `Direct` 状态在 `probe=Unknown` 或 `Healthy` 且 `decision=Relay`（对端候选已消失但尚未被 `plan_updates` 的 stale 分支移除）时返回 `Keep` 而非 `Demote`，可能多保留一个周期的直连 peer（crates/meshlet-domain/src/p2p.rs:394-397）。【复核 2026-10-31：**不改**，发现前提不成立——① `peer_endpoints_for` 在 `endpoints.is_empty()` 时 `continue`（p2p.rs:236-237），候选全消失的 peer 根本不进 `wanted`，由 `plan_updates` 的 stale 分支（apps/agent/src/direct.rs:211-219）**同周期**移除并 `Demote`，不存在「仍留 wanted 靠 on_probe 兜底」的场景；② 唯一可达的「wanted 内 decision=Relay」是 endpoints 非空但全不可达（LAN 不在本机子网且无公网候选），此时直连握手仍 `Healthy`（链路实际工作），`Keep` 是刻意防抖设计（`direct_keeps_on_unreadable_probe_no_flapping` 测试显式锁定，p2p.rs:790-800），Demote 会拆掉工作中的直连链路造成抖动。**不采纳：改则违反既有 no-flap 设计决策**】
-- [x] 审核发现（已删，原「本轮 diff 未发现问题」结论作废）：不属实：其「托盘宿主其余部分与既有纪律一致」被后续发现证伪——`open_settings_window`（76ddfbc 引入，早于本 review 时点 4c4ed65）的 `set_focus` 在窗口 hide 后 no-op（tao），点击托盘图标无法重新显示设置窗口（见 248）；tray-app 前端 `stateDir` 硬编码 `C:/Users/admin/.meshlet` 与 `%LOCALAPPDATA%/meshlet/state` 约定不符、`invoke` 缺失时未优雅降级（见 245/246，均早于本 review 时点）。故「本轮 diff 未发现问题」不成立，原行删除，缺陷逐条单列处理。
-- [x] 审核发现：tray-app 前端把 `stateDir` 硬编码为 `'C:/Users/admin/.meshlet'`，与既有约定 `%LOCALAPPDATA%/meshlet/state`（main.rs:107-108、tray-host main.rs:40-42）不一致，且用户名写死为 `admin`，换用户/其它机器即失效（apps/tray-app/index.html:105、apps/tray-app/dist/index.html:105）。【属实。已修：后端 `get_status` 不再接收前端传参，改自解析 `%LOCALAPPDATA%/meshlet/state`（apps/tray-app/src-tauri/src/main.rs `meshlet_state_dir`+`state_dir_from_local`），与 `scripts/install.ps1` 写 `state_dir` 与 tray-host 默认目录一致；`dist/index.html` 已同步。新增 2 单测锁定路径约定（`path_convention_tests`）；`cargo test -p meshlet-tray` 2/2 绿、`cargo clippy -p meshlet-tray` 0 warning。】
-- [x] 审核发现：tray-app 前端改用 `window.__TAURI_INTERNALS__?.invoke`，但 `invoke` 缺失时只显示『Tauri IPC 不可用』后仍继续执行后续 `load()`/`save()`，`invoke` 为 `undefined` 会抛错而非优雅降级；且 `get_status` 用 `stateDir` 但 `get_config`/`save_config` 用 `USERPROFILE/.meshlet`，两套路径来源不统一（apps/tray-app/index.html:97-105）。【属实。已修：`load()`/`save()` 开头 `if (!invoke) return`，IPC 缺失时保留提示不再执行；`get_status` 不传参自解析状态目录；`get_config`/`save_config` 改读/写 `%LOCALAPPDATA%/meshlet/agent.toml`（`config_path_from_local`），与安装脚本生成的 `agent.toml` 路径统一；`dist/index.html` 同步。路径单测锁定；`cargo test -p meshlet-tray` 2/2 绿、`cargo clippy -p meshlet-tray` 0 warning。】
-- [x] 审核发现：控制台 2FA 第二步在服务端返回 `two_factor_required=true`（缺码场景）时直接进入 code 步骤，但服务端「错码」返回 401 而非 `two_factor_required`，故 `verifyCodeInvalid` 分支在错误码路径下不可达——前端把「验证码无效」误当成「缺码重新要求」，用户输错码后仍停留在 code 步但不提示无效（console/src/App.tsx:163-164，对照 apps/server/src/auth.rs:778-803）。【属实。已修：第二步错码 `ApiError.status === 401` 时显式 `setError(t('auth.verifyCodeInvalid'))` 并停在 code 步（console/src/App.tsx catch 分支）；正常登录路径不再走 `two_factor_required` 分支。新增回归测 `auth.test.tsx::shows an invalid-code error…`（401→显示无效提示且仍停留 code 步）；console 20 测 + `tsc -b` 全绿。】
-- [x] 审核发现：tray-app 托盘菜单「打开设置」在设置窗口已被隐藏（关闭即 hide）后仅调用 `set_focus()`，未先 `show()`；tao 的 `set_focus` 在窗口 `VISIBLE` 标志未置时直接 no-op（tao-0.37.2 window.rs:139-145 `if is_visible && !is_minimized && !is_foreground`），因此再次点击托盘图标窗口不会重新显示，用户需先通过其它方式才能打开设置（apps/tray-app/src-tauri/src/main.rs:159-160）。【属实。已修：`open_settings_window` 对已存在窗口先 `show()` 再 `set_focus()`（apps/tray-app/src-tauri/src/main.rs）；`cargo build/clippy -p meshlet-tray` 绿。窗口显隐属 Win32 交互，无 Linux 端自动化可断言（后续 Windows 真机验证）。】
-- [x] 审核发现：新增 Windows 对账纯函数 `device_plan_matches` 只比对 peer 公钥集合与路由目的地 CIDR，未比对 peer 的 `allowed_ips`（快照 `PeerObserved.allowed_ips` 已从 `wg dump` 读回），而 Linux 同职责实现对每个计划 peer 做 allowed-ips 精确匹配（linux.rs:862-872）——Windows 上计划 peer 的 AllowedIPs 漂移（如被外部 `wg set` 改过）会被误判为一致，不触发重放纠回（crates/meshlet-network/src/lib.rs:234-240，对照 linux.rs:858-875）。【属实。已修：`device_plan_matches` 对每计划 peer 增加 allowed-ips 集合精确比对（顺序无关、长度+逐项包含；crates/meshlet-network/src/lib.rs）；新增回归测 `drifted_peer_allowed_ips_false`（peer 存在但内核 allowed-ips 漂移→false）；meshlet-network 118 测 + clippy/fmt 绿。】
-- [x] R-DIAG · P2 · agent 本地网络诊断信息面（用户令 2026-11-01：查看本地的路由表等信息）【已交付 2026-11-01：meshlet-network `diagnostics_sync` 三快照采集（linux/windows/unsupported，复用既有解析器）；CLI `meshlet agent diag`；agent 随心跳上报 `diagnostics`，hub 内存态存储并随设备视图下发（026b638），console 诊断页「网络快照」区块展示。验收差异如实记：Linux 本机 CLI 快照与 `ip route show table all`/`wg show` 一致已比对；Windows 真机与 dev 环境 console 全链路（agent→hub→console）实机验证未跑（本机无 Windows、dev 未部署新版），不冒充通过。】
-  - 交付：agent 采集并上报「路由表（ip route/route print 全表）、接口清单（含地址/状态/MTU）、wg-mlt 接口读数（wg show：peer/握手/流量）」三类快照；console 诊断页新增展示；CLI `meshlet agent diag` 本地一键输出同内容
-  - 复用：meshlet-network 已有 ip route/wg show 解析器（linux.rs §18.3/wg dump），不重写解析；Windows 侧用 `route print` + `Get-NetIPConfiguration` 等价采集
-  - 验收：三类快照在 console 可见且与真实路由表一致（抽样比对 3 条）；Linux+Windows 各验一台；心跳周期内更新【Linux CLI 侧已验；console 全链路+Windows 真机待验，见条目附注】
-- [x] R-TRAY-1 · P2 · 托盘设置界面功能化扩展（用户令 2026-11-01：设置页太简单，支持命令要能在界面看到，按功能拆分）【已交付 2026-11-01：①命令清单单一事实源=新 crate crates/meshlet-commands（CommandSpec 分组目录，CLI `--help` 由目录生成，对账测 `catalog_matches_help_and_dispatch` 钉死 help/目录/分发三处一致，b8d9e75）；②tray Rust 侧新增 get_commands（返回目录）/get_diag（三快照，联动 R-DIAG）/set_autostart（HKCU Run 注册表，非 Windows 如实报不支持）/open_log_dir，get_peers 改 `is_tunnel_interface` 匹配 wg-meshlet/meshlet，save_config 保留 agent 管理键且 interface=wg-meshlet（fb1e90d/3d71188/73be78f），tray 5 测 + clippy -D warnings 全绿；③前端 index.html 四分区重写（连接/诊断/命令/常规），命令区按 get_commands 分组渲染+复制、诊断区用 get_diag 三快照、自启用 set_autostart，字段对齐 get_peers 实际返回 `last_handshake`，dist 与源逐字节一致（691fc36）。验收差异如实记：Windows 真机走查未跑——本机 Linux，Tauri tray 为 Windows 宿主，GUI 无法本机走查；前端 JS 仅经 `node --check` 语法校验；set_autostart/open_log_dir 的 Windows 注册表/资源管理器路径本机不可执行，不冒充通过，待 Windows 真机走查。】
-  - 现状：Tauri tray host（76ddfbc）设置页仅有基础项，无命令可见性、无功能分区。
-  - 交付：设置窗口按功能分区（Tab 或侧栏）：①连接——hub 地址/隧道状态/本机 overlay IP/直连 peers（联动 R-DIAG-2 数据）；②诊断——路由表/接口/网关读数快照（联动 R-DIAG）；③命令——agent 支持的全部 CLI 子命令浏览：按功能分组（连接管理/诊断/配置/服务控制），每条含名称+用途+参数说明，支持复制完整命令行；④常规——开机自启/动效开关/语言/日志目录打开。
-  - 数据源：命令清单从 CLI 注册表/clap 定义生成（单一事实源，新增命令自动出现在界面），不手工维护清单。
-  - 验收：四分区齐全；命令清单与 `meshlet --help` 实际输出一致（对账测试）；设置项改动持久化并即时生效；Windows 真机走查。
-- [x] R-DIAG-2 · P2 · 直连 peers 信息展示（用户令 2026-11-01：查看已建立直连的 peers 信息）【已交付 2026-11-01：agent `enrich_direct_peers` 每 30s 读 wg 端点/握手/流量 + ping 实测 RTT，CLI `meshlet agent diag --peers`/`meshlet peers`，console devices 直连列 + 诊断页「直连对端」区块（d72e4a2/f97f6f0/4ba7d71）。验收差异如实记：2-peer（1 直连 1 中继）场景验收未跑——本机仅 hub 中继对端（106.14.216.177）无直连对端，需第二台 meshlet 节点；RTT 与手工 ping 对账亦需该场景，不冒充通过。】
-  - 交付：诊断面增「直连 peers」区块——每 peer 展示：名称、overlay IP（10.240.x.x）、连接模式（P2P 直连 / hub 中继）、直连 endpoint（ip:port）、RTT 延迟（ms，直连路径实测）、最近握手、累计流量；命令可查：CLI `meshlet agent diag --peers`（或 `meshlet peers`）单命令输出全部 peer 的 IP/模式/延迟/endpoint 表格；数据源=agent 上报的 peer 连接状态（依赖 P2P 直连功能的状态上报）；console 诊断页同步展示
-  - 验收：至少 2 peer 场景（1 直连 1 中继）模式标识与实际一致；RTT 数值与手工 ping 对账误差 <20%；直连断开回落 hub 后 60s 内模式翻转为中继【BLOCKED：本机无直连对端，待第二节点，见条目附注】
-- [x] macOS x86_64 · tray 应用 macOS 打包（用户令 2026-11-01：队列末项，范围=tray 的 .app 打包，无 todo 原条目，经确认后新立）【已交付 2026-11-01：新增 .github/workflows/tray-macos.yml（macos-15-intel x86_64 + `uname -m` 架构守卫、tauri-cli 2.12.4、`cargo tauri build --config` 覆盖 bundle.active/targets=["app"]/signingIdentity="-"、上传 Meshlet.app 工件；69c7ec1/1ab574c/5da0139/88cf7ca/701c8bc/47fc721）。CI 暴露并修复 meshlet-network unsupported.rs 的 macOS 编译错——trait/测试调用 `apply_tunnel_sync`/`apply_device_plan_sync` 缺 P2P 新加的 keep_keys 参数、`NetworkDiagnostics` 导入未用（85b8518；本机 `x86_64-apple-darwin` target `cargo check` + `clippy -D warnings --all-targets` 全绿——unsupported 模块仅非 linux/windows 编译，CI 只跑 ubuntu+windows 从不编译，属潜伏缺陷被 mac 腿逮住）。CI 全链路验证（run 41307883225 success）：`Assert x86_64 runner`（uname -m=x86_64）+ `Test network + tray`（meshlet-network 115 + tray 5 全过，unsupported.rs 拒绝语义测试在 macOS 真实执行）+ `Build .app`（10.66 MiB，ad-hoc 签名，跳过 notarization）+ 上传工件 `meshlet-tray-macos-x86_64-app`（3.1 MiB）。验收差异如实记：无签名证书（ad-hoc、无 notarization，正式分发需 Apple 签名/公证）；set_autostart/open_log_dir 在 macOS 走 `#[cfg(not(windows))]` 如实报不支持；SystemBackend 在 macOS 为 UnsupportedBackend（数据面操作拒绝可见，不假装生效）；无 mac 真机 GUI 走查（本机 Linux）。】
+## 任务分配与确认通道（2026-11-03 用户令）
 
-- [x] 审核发现：CLI 的 `state_dir()`/`config_path()` 用 `C:\ProgramData\meshlet\state` 与 `config.toml`（回退 `%USERPROFILE%\.meshlet\`），与安装脚本/agent/tray 实际使用的 `%LOCALAPPDATA%\meshlet\state` 与 `agent.toml` 不一致，`meshlet info`/`status`/`config` 读不到真实 agent 配置与状态（apps/cli/src/main.rs:52-68, apps/cli/src/main.rs:201）【已修 22283bd：`state_dir`/`config_path` 改用 `local_appdata()`（LOCALAPPDATA→USERPROFILE\AppData\Local→Public）拼 `meshlet\state` 与 `meshlet\agent.toml`（apps/cli/src/main.rs:61,68,75,87,93），与 tray `state_dir_from_local`/`config_path_from_local` 同构；新增回归测 `state_dir_uses_localappdata_meshlet`（apps/cli/src/main.rs:592）；meshlet-cli 5 测 + clippy -D warnings 全绿】
-- [x] 审核发现：CLI 把 WireGuard 接口/隧道/服务名硬编码为 `"WireGuard"`（`service_running("WireGuardTunnel$WireGuard")`、`wg show` 首列过滤 `cols[0]=="WireGuard"`、InterfaceAlias 匹配 `'WireGuard'`），而实际隧道名按 install.ps1/README 为 `wg-meshlet`（后端默认 `meshlet`），导致 `meshlet status` 隧道恒报 down、`meshlet peers` 恒为空、本地 IP/路由恒取不到（apps/cli/src/main.rs:125, apps/cli/src/main.rs:236, apps/cli/src/main.rs:272, apps/cli/src/main.rs:293）【已修 22283bd：`cmd_status` 改 `tunnel_service_running()`（apps/cli/src/main.rs:521，候选 `WireGuardTunnel$wg-meshlet`/`$meshlet`，:513）；`wg_local_ip`/`wg_routes` 的 PowerShell 改 `-match '^(wg-meshlet|meshlet)$'`（apps/cli/src/main.rs:448,469）；新增回归测 `tunnel_service_names_match_install_conventions`（apps/cli/src/main.rs:609，断言不含 `$WireGuard`）】
-- [x] 审核发现：tray-app `get_peers` 同样把接口名硬编码为 `"WireGuard"` 过滤 `cols[0]=="WireGuard"`，而实际隧道名 `wg-meshlet`/`meshlet`，直连 peers 恒为空（apps/tray-app/src-tauri/src/main.rs:116）【不属实：该问题已由远端提交 fb1e90d 修复，现按 `is_tunnel_interface` 匹配 `wg-meshlet`/`meshlet`（apps/tray-app/src-tauri/src/main.rs:204-206），回归测 `tunnel_interface_matches_install_conventions` 断言非 `WireGuard`。】
-- [x] 审核发现：`save_config` 本 diff 路径变更后写入真实 `%LOCALAPPDATA%\meshlet\agent.toml`，但只写 `server_url`/`device_name`/`[dataplane].enabled`/`interface`/`hub_endpoint` 五键，丢弃 install.ps1 写入的 `state_dir`/`bootstrap_token`/`private_key_file`/`poll_interval_secs` 且硬编码 `interface="WireGuard"`（应为 `wg-meshlet`），保存设置会破坏 agent 配置（apps/tray-app/src-tauri/src/main.rs:79-96）【不属实：该问题已由远端提交 3d71188 修复，`rebuild_config` 现保留安装键并写 `interface="wg-meshlet"`（apps/tray-app/src-tauri/src/main.rs:95-126），回归测 `save_config_preserves_agent_managed_keys` 断言 `interface = "wg-meshlet"` 且保留 state_dir/bootstrap_token/private_key_file/poll_interval_secs。】
-- [x] 审核发现：`apps/tray-app/index.html:237` 读取 `p.handshake_secs`，但 Rust `get_peers` 从不返回该字段（返回字符串 `last_handshake`），源前端「最近握手」恒显示 `never`；且与已构建的 `apps/tray-app/dist/index.html:170`（用 `p.last_handshake`）不一致，源/构建产物分叉（apps/tray-app/index.html:237）【已修 691fc36：源前端改读 `p.last_handshake`（apps/tray-app/index.html:439,447,485），全文无 `handshake_secs`；dist 与源逐字节一致（apps/tray-app/dist/index.html:439,447,485）。】
-- [x] 审核发现：apps/cli/Cargo.toml:9-11 新增 `serde`、`toml` 依赖，但 main.rs 仅使用 `serde_json`，`serde`/`toml` 未被引用（配置为手写行式解析而非用 `toml` crate），属无用依赖（apps/cli/Cargo.toml:9-11）【已修 6c755c7：删 `serde`/`toml`，现依赖仅 `serde_json`/`meshlet-network`/`meshlet-commands`（apps/cli/Cargo.toml:9-11）；clippy -D warnings 全绿（未用依赖会触发 unused_crate_dependencies 类告警）。】
+- [x] MT-001 [P1] 任务模型与线性状态机（domain 纯函数）。
+  - 证据: commit a91987e · meshlet-domain 170 tests
+- [x] MT-002 [P1] 任务下发与回执（幂等键 + 断线补派不重跑）。
+  - 证据: commit 028ed3a · domain 170 + agent 82 + 集成 3 tests
+- [x] MT-003 [P1] 用户确认交互：console 任务队列面板 + CLI task assign/ls/confirm/retry。
+  - 证据: commit 29dff8a/3ca3507/7921c3d · meshlet-cli 10 + console 6 + 集成 lifecycle tests
+- [x] MT-004 [P2] 节点侧任务到达托盘通知（D-Bus，降级非致命）。
+  - 证据: commit de60cd5 · meshlet-agent 84 tests
+- [x] MT-005 [P2] 稳定性语义：超时回收重派、重试上限、每任务独立 scratch 目录、标签路由派单。
+  - 证据: commit 558a1f6/bbb6b35/092a7de/9dd43cd · domain 178 tests（容器隔离未做）
 
-- [x] **DOC-GIF · P2 · 文档 · 配置开关效果动态图(每个开关 off→on 对比+GIF)** 【已交付 2026-11-01：新增可复现捕获流水线 scripts/doc-gif/（run.sh + capture.mjs，playwright 1.64.1 + ffmpeg palettegen/paletteuse），驱动真实 UI / 真实 HTTP 输出，12 项效果断言全绿（`SKIP_BUILD=1 scripts/doc-gif/run.sh`）。已录制 4 个开关，每个 off/on 截图 + GIF：① console 主题 dark↔light（html[data-theme] 翻转 + localStorage['meshlet-theme'] 持久化）；② console 语言 en↔zh（导航标签翻转 + localStorage['meshlet-lang'] 持久化）；③ server cookie_secure（真实 bootstrap Set-Cookie 无/有 `Secure`，apps/server/src/auth.rs:402）；④ server console_dir（GET / 404→200 真实状态行）。文档页 docs/guide/toggles.md + docs/zh/guide/toggles.md（双语，逐开关 说明+off 图+on 图+GIF；GIF/图落 docs/public/toggles/），vitepress build 绿（65s）。本机无 asciinema/vhs，CLI/HTTP 类改用「真实捕获输出渲染终端帧 + ffmpeg」，属「真实 UI 录制或可复现脚本生成」口径。】
-  - 交付:枚举本仓全部「开启后有效果」的开关/配置项;自动流水线生成证据——GUI 类用 @vscode/test-electron 或应用截图(off 一张/on 一张+切换过程录屏),CLI 类用终端录屏(asciinema→GIF 或 ffmpeg);ffmpeg 缝合动态 GIF。
-  - 文档:docs「配置效果」页(双语)逐开关嵌入:说明+off 图+on 图+GIF。
-  - 验收:清单内每个开关都有 off/on+GIF;流水线可重跑(配置变更随时再生成);兼作配置效果回归测试。
-  - 参考:kode todo C-24 同款流水线模式(2026-11-01 用户令全舰队推广)。
-  - 验收差异如实记（本机无法录制，已列文档「本机未能录制的开关」，不冒充通过）：tray 开机自启/动效/语言（需 Windows/macOS 桌面 GUI 会话，本机 Linux 无显示）；agent `[dataplane] enabled`（需 NET_ADMIN + 可达 hub，指向 MESHLET_REQUIRE_DATAPLANE=1 / ADR-007）；agent `[dataplane.direct_connect] enabled`（需真实第二节点，同 R-DIAG-2 附注）；服务通知 / status_notifier_item（tray 桌面宿主限制同）。
-- [ ] AGENT-WIN-3 [P1] 托盘显示本机虚拟 IP+直连节点列表(RTT);菜单:打开面板/本机信息/直连节点/连接节点…/退出;tooltip=设备名+虚拟 IPv4+状态。(用户令 2026-11-02,meshlet-win 席位实现中)【代码面已落 main：bac6115(agent tray.rs:210 TrayStatus::new 收 virtual_ip 拼入 tooltip、agent.rs:373 publish_tray、tray-host main.rs:841 build_menu 直连/连接子菜单+779 mode_label+800 load_local_direct_peers)、1b4ebf1(nightly.yml:83 建 meshlet-tray-host、package-windows-zip.ps1:14 入 zip)、9b71e23(windows.rs:455-485 SystemBackend sync 桩+pubkey)。门禁：Linux 5 crate cargo test 175 过/0 败 + clippy --all-targets -D warnings + fmt --check + windows-gnu 交叉全绿。真机走查 BLOCKED——用户令手动项，不改派 win-worker】【BLOCKED（2026-11-02）：托盘图标/菜单/气球显示需 Windows 真机 GUI 会话，用户手动验收】
-- [ ] AGENT-WIN-4 [P1] 新增 peer dial <node> 命令:CommandSpec(connection 组)+executor 接 meshlet-network 主动发起直连拨号,结果可显示;托盘「连接节点…」子菜单调用。(用户令 2026-11-02:触发直连此前无操作入口)【代码面已落 main：b9eaae0(meshlet-network dial.rs:30 DirectDialRequest 契约+62 DirectPeerView、meshlet-commands lib.rs:52 "peer dial" CommandSpec(connection 组)、cli main.rs:203 cmd_peer_dial+265 dial_node、agent agent.rs:687 finish_dial+705 publish_direct_peers+985 dial_verdict、tray-host main.rs:883 spawn_peer_dial 接「连接节点…」(CMD_DIAL_BASE:45))、9b71e23(windows.rs:485 public_key_from_private)。门禁：Linux 5 crate cargo test 175 过/0 败 + clippy --all-targets -D warnings + fmt --check + windows-gnu 交叉全绿。真机走查 BLOCKED——用户令手动项，不改派 win-worker】【BLOCKED（2026-11-02）：需 Windows 真机点击「连接节点…」验证拨号与结果气球，用户手动验收】
+## 智能链路选择（2026-11-04 用户令）
 
-## 漏洞扫描遗留（2026-11-03 全舰队扫描，源 scratch/vuln-scan-*.md）
+- [x] SEL-001 [P1] 多候选端点探测：滑动窗口 RTT/丢包/抖动，默认 5s 可配。
+  - 证据: commit 6086b75 · meshlet-network 152 + config 20 tests · netns 双路径 45ms 差证据
+- [x] SEL-002 [P1] 评分与迟滞切换（30% 迟滞 + 连续 N 采样，零断线换 endpoint）。
+  - 证据: meshlet-network 159 + config 20 + agent 93 tests · 迟滞闸单测 6 个
+- [x] SEL-003 [P2] hub 兜底常热：keep-alive 永不掉、劣化立即回中继、恢复门切回。
+  - 证据: meshlet-network 159 + agent 101 tests · 可注入时钟时序单测
+- [x] SEL-004 [P2] console peer 详情展示全部候选（端点/RTT/丢包/选中与原因）。
+  - 证据: console 35 tests（含双候选渲染）· agent candidate_statuses 单测
 
-- [ ] VULN-MESHLET-001 [BLOCKED·上游无修复·中危 5.9·RUSTSEC-2023-0071] rsa 0.9.10（sqlx-mysql 引入）：patched 为空，等上游发布或换库；不勾，验收：上游出 patched 或换库后 cargo audit 该 ID 清零
+## 审核发现（40901d..cf3d9c8 任务通道/拨号/probe，人工自审）
 
-## 任务分配与确认通道（用户令 2026-11-03：meshlet 组网已通，任务分配/确认交互不自然）
-
-> 定位：把控制面已有的「配置下发+应用回执」模式泛化为**通用任务通道**，让多机并发开发（或任何运维任务）有自然的「派→收→跑→报→人确认」闭环，替代人肉 SSH。与 §14 通用任务系统同源，落地为最小闭环先行。
-
-- [x] `MT-001 [P1]` 任务模型与状态机。【代码已落 a91987e：crates/meshlet-domain/src/task.rs——`TaskId`(幂等键 newtype)/`TaskPayload{cmd,workdir,timeout_secs}`/`Task{state,retry_limit,result_ref}`、线性状态机 `TaskState::transition(Assigned→Acked→Running→Done|Failed)` 纯函数（对齐 on_probe 惯例，乱序/终态事件一律 `TaskError::IllegalTransition` 拒绝不静默）、`TaskAction::operation()` 审计用操作名（沿用 windows_cleanup 审计惯例）、`Task::apply/record_result`、serde 小写变体名与 as_str 契约一致。retry_limit 为数据、重派决策归 MT-005，状态机不内建重试。验收已过：meshlet-domain 170 passed（新增 9 个 task:: 测试——new_task_starts_assigned_with_no_result / success_lifecycle_walks_the_full_chain / failure_lifecycle_ends_in_failed / terminal_states_reject_every_event / out_of_order_events_are_rejected / apply_leaves_state_untouched_on_illegal_event / audit_operation_names_are_stable / record_result_fills_result_ref / task_serializes_for_dispatch_round_trip 共 9 个全绿，clippy -D warnings 绿、fmt --check 绿、workspace check 绿】
-- [x] `MT-002 [P1]` 下发与回执：server 经既有配置下发通道派任务（task id 为幂等键，断线重连补派不重复执行）；agent 收到即回 **ack**，运行中心跳，结束回传 exit code + 日志尾部。验收：断线补派幂等集成测试（对齐 F-2030 流量补报模式）。【代码已落 028ed3a：migrations/015_tasks.sql（tasks 表 + idx_tasks_target_state，migrations.rs/backup.rs/README 三处硬计数同步）+ apps/server/src/task.rs（assign 幂等键去重 / pending_for / ack / record_result，全部经 commit_task 原子落库 + 审计「不留痕不放行」）+ apps/agent/src/tasks.rs（拉待办→ack→跑命令→先落 {state_dir}/tasks.json 账本→回执；账本已有 id 只补报绝不重跑；unix process_group(0) + kill(-pgid) 超时整组终止，防 shell fork 的孤儿子进程占管道）。验收已过：meshlet-domain 170 passed、meshlet-agent 82 passed（新增 8 个 tasks:: 测试——ledger_round_trips_through_disk / ledger_corrupt_file_starts_empty_without_panic / ledger_evicts_oldest_over_capacity / decide_reruns_only_unexecuted_tasks / run_task_captures_output_and_exit_code / run_task_workdir_applies / run_task_timeout_kills_and_reports_failure / run_task_spawn_failure_is_visible 共 8 个全绿）、server 集成 tests/task_dispatch.rs 3 passed（dispatch_lifecycle_and_redispatch_idempotency：assign→pending→ack→result→补派同 id 200 不重置状态→pending 恒空（agent 不会重跑）→重复 ack/result 幂等；dispatch_rejects_unknown_or_inactive_target：未知 404 / 撤销未激活 409 / 待审批 404 / 未知任务 404；agent_endpoints_require_valid_token：无凭证/伪造 401），clippy -D warnings 绿、fmt --check 绿、workspace check 绿。备注：server 全量跑时 backup 的 concurrent_backup_contains_only_complete_business_commits 偶发负载性 flake（与本次改动无关，无表计数断言、单独跑绿）】
-- [x] `MT-003 [P1]` 用户确认交互：console 节点页任务队列面板（assigned/running/done 分列、一键「确认完成/驳回重跑」）+ CLI `meshlet task assign/ls/confirm/retry`。**确认是用户侧动作**，agent 不得自判 done。验收：面板+CLI 各一交互测试。【代码已落 29dff8a+3ca3507+7921c3d：A=29dff8a——migrations/016_tasks_confirm.sql（tasks 加 confirmed_at/rejected_at/parent_task_id 三列，仅加列：migrations.rs 26 表不变 / backup.rs 15→16 / README 016 行三处硬计数同步）+ apps/server/src/task.rs（confirm 仅 done 且幂等重确认返回不改状态；retry 从 done|failed 生成 `{root}-r{n}` 新代（root 沿 parent 链溯源）、parent_task_id=立即父、活子重入 409、先提交原任务 rejected_at 审计再提交新代 retried 审计；list_network 按 created_at+id 排序；console_routes 挂 GET/POST tasks + confirm/retry，WriteUser+CSRF）+ persist.rs 16 列原子落库/加载 + service/lib/telemetry 加 TaskNotFound(NotFound)；B=3ca3507——CLI `meshlet task assign/ls/confirm/retry`（手写 parse_flags、ureq、Bearer mlt_ + x-requested-with CSRF、--server/--token > MESHLET_SERVER/MESHLET_TOKEN > agent.toml 解析链、任务域 `task --help`、--timeout 严格秒数非法即报错）+ R-TRAY-1 目录 4 条同步；C=7921c3d——console TasksSection（inFlight=assigned|acked|running / done / failed / settled 四分列：done 给「确认完成+驳回重跑」、failed 给「驳回重跑」、settled 只标 Tag 无动作；派发行选目标+命令）挂 DevicesPage + api listTasks/createTask/confirmTask/retryTask + i18n en/zh + App.css。验收已过：server 集成 task_dispatch.rs 新增 user_confirm_and_retry_lifecycle（confirm-from-done / confirm-running 409 / 幂等重确认 / retry→{id}-r1 父=id / 重入 409 / 二次 retry→{id}-r2 / list 4 条）+ task_list_requires_authentication；meshlet-cli 10 passed（task_cli_interacts_with_live_server 真实 socket+真实 ureq 断言方法/路径/Bearer/CSRF 头；parse_flags / 列表渲染含截断对齐 / 目录-帮助-派发一致性）；console tasks.test.tsx 4 passed（四分列+按钮可见性 / confirm 调 confirmTask / retry 调 retryTask 且提示同时含原 id 与新代 id / dispatch 调 createTask）+ devices.test.tsx 2 passed；tsc -b + oxlint + clippy -D warnings + fmt --check 全绿。备注：A/B/C 三单干净上下文审核均无 BLOCKER/MAJOR，MINOR 已当场修（B：验收测试补 CSRF 头断言、task --help、列宽对齐、--timeout 静默丢；C：retry 提示补新代 id、inFlight 标签补 acked、空态统一）】
-- [x] `MT-004 [P2]` 节点侧通知：任务到达时 agent 托盘气泡（复用 tray 模块）+ 点击打开该任务详情。验收：托盘通知触发测试。【代码已落 de60cd5：apps/agent/src/desktop.rs——`task_notify_call(id,cmd)` 复用 notify 契约（NotifyCall）构造任务到达气泡：摘要静态 `Task arrived`（TASK_ARRIVED_SUMMARY）、body=`{id}: {cmd}`、动作 `[open, "Open task"]`（TASK_ACTION_OPEN，点击路由键），expires 5s；tasks.rs——`process_one`/`process_pending` 增 `on_arrival: &mut dyn FnMut(&Task)` 回调，ack 成功后执行前触发（真到达；断线补派 ReReport 不是到达不触发）；agent.rs——`process_tasks` 接 `on_arrival`：尊重 `tray.notifications`（默认关，与状态气泡一致），`task_notify_call` 后在独立线程发（D-Bus 连接/调用可能阻塞，绝不拖任务执行与数据面循环），失败仅 debug 日志；dbus.rs（Linux）——`ensure_session` 惰性连接助手、`notify(conn,&NotifyCall)` 收窄签名、`notify_task(call,env)->DesktopPublish`（无桌面 Headless/无总线 NoBus/成功 Published，全部降级非致命）；desktop_unsupported.rs（非 Linux）——`notify_task` 返回 Headless 不假装 Published。验收已过（代码面）：meshlet-agent 84 passed（新增 desktop::tests::task_arrival_call_names_id_cmd_and_open_action——摘要/body 含 id+cmd/动作对/expires；tasks::tests::arrival_callback_fires_once_for_new_tasks_only——真实 socket mock：新任务 ack 后 on_arrival 恰触发一次、账本已有补派任务不触发）+ 集成 2/6/3 passed，clippy -D warnings 绿、fmt --check 绿、`cargo check -p meshlet-agent --target x86_64-pc-windows-gnu` 绿（非 Linux cfg 分裂编译）。审核无 BLOCKER/MAJOR，MINOR 已修（通知尊重 tray.notifications；D-Bus 调用移独立线程）。备注：Windows 真机验收 BLOCKED（MT1104 只做代码面）；「点击打开该任务详情」=ActionInvoked→详情路由，属桌面宿主真实交互，待真机】
-- [x] `MT-005 [P2]` 稳定性语义：任务超时自动回收重派、重试上限、每任务独立 worktree/容器隔离、按节点标签（role/capability）路由派单。验收：超时回收与标签路由单测。【代码已落 558a1f6+bbb6b35+092a7de+9dd43cd：A=558a1f6——server 超时回收：窗口=max(payload.timeout_secs 或 300, 60)，到点将任务回收为 Failed(exit 124) 并按 `{root}-r{n}` 重派，`used < retry_limit` 才继续（重试上限）；B1=bbb6b35——domain：`Device.labels: BTreeMap<String,String>`、`Device::matches_labels(required)`（全部 k=v 对齐全）、`select_by_labels(devices, required)`（按 id 取首个 Active）、`TaskPayload.required_labels`（serde default）；B2=092a7de——server：`POST /api/v1/networks/{id}/devices/{did}/labels`（克隆→改→落库→换活状态，「不落库不放行」，审计 device.labels_set、op_log set_device_labels）、`AssignTaskRequest{target_device_id, required_labels}` 解析顺序=幂等→标签解析→构建、migrations/017_device_labels.sql（仅加列 devices.labels/tasks.required_labels，migrations.rs 26 表不变/backup.rs 16→17/v8-restore 测试先删列模拟 v8 形状）；C=9dd43cd——agent：workdir 为 None 时每任务独立 scratch 目录（temp/meshlet-task-{pid}-{seq}，静态 AtomicU64 序号，跑完删除），容器隔离本轮未做。验收已过（代码面）：meshlet-domain 178 passed（新增 5 个 labels/routing 测试——matches_labels_*、select_by_labels_* 全绿）、server 单测 assign 5 个（无目标按标签选/无标签按 id 取首活/目标不匹配 409/目标匹配成功/无匹配 409）+ 集成 task_dispatch.rs `label_routed_dispatch_and_labels_endpoint`（labels 端点 200、自动选标签命中 worker、显式不匹配 409、无匹配 409、pending 可见）+ migrations.rs `migration_017_adds_labels_and_task_required_labels_columns`，agent 86 passed（新增 `run_task_without_workdir_runs_in_per_task_scratch_and_cleans_up`），clippy -D warnings 绿、fmt --check 绿。未验（如实标注）：容器隔离（本轮未做，仅 scratch 目录）；console/CLI 标签派单入口（server API 已通但无 UI/CLI 设标签或按标签派单表面）；真机验收未跑（MT1104 只做代码面）。备注：审核门 skill commit-review-gate 本机不可用，以逐文件 diff 人工自审替代，捕获并修复了幂等顺序与「不落库不放行」两处问题】
-
-## 智能链路选择：多候选探测 + 择优切换（用户令 2026-11-04，打洞落地后的下一层）
-
-> 链路种类：SameLan 直连 / 打洞直连 / hub 中继（+LAN 地址与公网端点两类候选）。目标：存在多链路时自动选最快的，切换零断线，hub 兜底常热。
-> 前置：lane/nat-punch 落地（先有链路种类，再做选择）。决策框架需预留候选评分接口。
-
-- [x] `SEL-001 [P1]` 候选探测：agent 周期（默认 5s，可配）对每 peer 的全部候选端点发轻量探测，采集 RTT/丢包/抖动滑动窗口；探测走 WG 或 ICMP 不新增控制面负载。验收：单测窗口统计；netns 双路径探测到不同 RTT。【代码已落 6086b75：A=meshlet-network/src/probe.rs——`ProbeWindow`（有界滑动窗口：保留最近 N 次，超限逐出最旧；`rtt_ms`=RTT 样本中位数（鲁棒集中趋势，SEL-002 评分用）/`loss_rate`=Lost/总样本/`jitter_ms`=相邻 RTT 绝对差均值（RFC 3550 式））、`ProbeTracker`（每 (device_id, EndpointCandidate) 一窗口，BTreeMap 不要求 Hash；`retain_peers` 回收下线对端目标）、`probe_round`（对每 peer 每候选发一次探测，传输 `transport(ip)->Option<u128>` 可注入；None=丢包；先 retain 再探测）、`default_transport`（Linux=`ping -c 1 -W 1` ICMP echo 即 linux.rs 新增 `run_ping_rtt`；非 Linux=None 不假装探测到——SEL-001 以 Linux 为准验收）；B=meshlet-config——`[dataplane.probe]`（enabled 默认关/interval_secs 默认 5s/window 默认 20，0 值校验拒绝）；C=apps/agent/src/probe.rs——`ProbeRuntime`（独立线程按 interval_secs 节拍探测：候选缓存由 `reconcile_direct` 每 30s 刷新，探测线程绝不请求 server=零控制面负载；缓存/跟踪器双 Mutex 无嵌套无死锁；Drop 置停止位不 join（线程最长一个周期自退）；线程 panic 由 `lock()` 毒化恢复兜住）；agent.rs——`reconcile_direct` 成功拉候选后 `update_candidates(&wanted)`、直连关时清缓存。验收已过：单测窗口统计=probe::tests 12 个全绿（窗口容量钳位/逐出最旧/中位数奇偶/丢包不计入中位数/全丢 None/丢包率/抖动均值/<2 个 RTT None/跟踪器逐目标独立/retain 回收/probe_round 记 Rtt 与 Lost/retain 只留活 peer）；netns 双路径 RTT 不同=`tests/probe_netns.rs` 真跑出数值证据 `fast_path=15ms slow_path=60ms diff=45ms`（netem 15ms vs 60ms，MESHLET_REQUIRE_DATAPLANE=1 下通过，断言 slow >= fast+20ms，无特权 CI 打 SKIP 保持全绿）；meshlet-network lib 152 passed + 集成 alias_nat/backend_wiring/lan_source/probe_netns/wg_forwarding 全绿、meshlet-config 20 passed（新增 2 个 probe 解析/校验）、meshlet-agent lib+集成全绿、clippy --all-targets -D warnings 绿、fmt --check 绿、windows-gnu 交叉 check 绿。审核门：commit-review-gate skill 本机不可用，以逐文件 diff 人工自审替代（无 BLOCKER/MAJOR；顺手修了 clippy cloned_ref_to_slice_refs 与 netns 前缀冲突规避——`mltp` 与既有 `mltb`/`mltw` 互不为前缀）。备注：①本轮「探测走 ICMP」已落地，「走 WG」传输未做（WG 隧道探测随 lane/nat-punch 落地后接入，端口已保留在目标标识里）；②SEL-002/004 尚未消费窗口（`ProbeRuntime::snapshot()` 已备好接口）；③真机多 peer 场景未跑（本机只有 netns 模拟）】
-- [x] `SEL-002 [P1]` 评分与迟滞切换：得分=RTT 主导+丢包重罚；切换须新路径连续 N 采样且优于现路径 ≥30%（防抖）；切换=更新 WG peer endpoint（漫游零断线），事件记录理由。验收：迟滞闸单测（抖动场景不切）；切换事件可查。【代码已落：A=meshlet-network/src/probe.rs——`score`（`rtt_ms 中位数 * (1 + LOSS_PENALTY*丢包率)`，LOSS_PENALTY=10：50% 丢包把 100ms 得分 100→600；全丢窗口无 RTT 样本 → +∞ 最差）、`SwitchGate`（`required` 连续采样 + `margin`=30% 迟滞：`evaluate` 在候选得分 ≤ 现路径得分*(1-margin) 且连续 N 轮时返回 `SwitchDecision{to, reason}`，现路径重新领先/差距不足 30% 都清零计数）；B=meshlet-config——`[dataplane.probe]` 新增 `switch_required`（默认 3）/`switch_margin_percent`（默认 30，0..=100 校验拒绝）；C=apps/agent/src/probe.rs——`ProbeRuntime::evaluate_switch`（读窗口快照推进迟滞闸）；D=apps/agent/src/agent.rs——`apply_switch_decisions`（`reconcile_direct` 里对 `direct` 状态对端评估，经 `backend.set_direct_endpoint_sync` 即 Linux `wg set <if> peer <key> endpoint <ip:port>` 无缝漫游，零断线；成功才 `dial::append_switch_event` 追加 `{state_dir}/direct-switch-events.json`（JSON Lines，事件可查）记录 from/to/reason/at_ms）；E=meshlet-network/src/{linux,windows,unsupported}.rs——`set_direct_endpoint_sync`（Windows/非 Linux 显式 Unsupported 拒绝）。验收已过：迟滞闸单测=`switch_gate_jitter_does_not_flip`（20 轮交替领先但差距 10%<30% 永不切，probe.rs:670）、`switch_gate_switches_after_required_consecutive_better_samples`（100ms vs 60ms 差 40%≥30%，前 2 轮不切第 3 轮切，probe.rs:639）、`switch_gate_resets_streak_when_current_is_best_again`（probe.rs:693）、`switch_gate_requires_strict_margin_improvement`（20% 差距 5 轮不切，probe.rs:741）、`switch_gate_full_loss_makes_that_path_worst`（现路径全丢 +∞ 一次即切，probe.rs:759）、`score_uses_rtt_with_loss_penalty_and_penalizes_full_loss`（100ms→100、50% 丢包→600、全丢→+∞，probe.rs:618）；切换事件可查=`switch_events_append_and_are_queryable`（追加两事件顺序保留、缺失文件空列表，dial.rs:270）；agent 侧=`evaluate_switch_requires_gate_and_reports_decision`（apps/agent/src/probe.rs:158）+`parse_endpoint_candidate_reads_ip_port_and_kind`（apps/agent/src/agent.rs）；meshlet-network lib 159 passed、meshlet-config 20 passed、meshlet-agent lib 93 passed、workspace `cargo test --workspace` 全绿（含 netns 直连集成 `agent_direct_connect_establishes_and_falls_back_to_hub`）、clippy --workspace --all-targets -D warnings 绿、fmt --check 绿。备注：①SEL-003 hub 兜底（直连劣化立即回中继/恢复迟滞切回）与 SEL-004 console 候选展示尚未落；②本机 netns 可跑（sudo/ip/tc/ping 齐），但 SEL-002 验收按任务书「迟滞闸单测」完成——真机双路径漫游随 SEL-003 时序测试一并覆盖。】
-- [x] `SEL-003 [P2]` hub 兜底常热：hub peer keep-alive 永不掉；直连劣化（丢包尖峰/超时）触发立即回中继，恢复后按迟滞闸切回。验收：netns 断直连场景回退/恢复时序测试（若 netns 环境不可用，用可注入时钟的时序单测并如实记录）。【代码已落：A=meshlet-network/src/probe.rs——`is_degraded`（丢包率 ≥ LOSS_SPIKE_THRESHOLD=0.5 或末次超时 → 劣化，probe.rs:427）、`RecoveryGate`（回中继后连续 `required`(=3) 轮健康才放行切回；不健康清零，probe.rs:440-478）；B=meshlet-config——`[dataplane.probe]` 新增 `recovery_required`（默认 3，0 值校验拒绝）；C=apps/agent/src/direct.rs——`plan_updates`/`apply_plan` 增 `degraded`（直连/DirectPending 对端被标劣化 → 立即 `DirectUpdate::Demote` 回中继）与 `hold_relay`（回中继后未连续健康 N 轮 → 保持中继，不切回）；D=apps/agent/src/agent.rs——`reconcile_direct` 里 `probe.degraded_map()` 推导劣化 → 喂状态机；`recovery`（`RecoveryGate`）逐轮记录健康度并计算 hold 集；`enforce_hub_keepalive` 把 hub peer 的 persistent-keepalive 强制 ≥ `HUB_KEEPALIVE_SECS`(=25)（旧版计划 None/低值都抬到 floor，hub 永不掉，agent.rs 的 `enforce_hub_keepalive_raises_none_or_low_to_floor` 测试覆盖）；E=apps/agent/src/probe.rs——`ProbeRuntime::degraded_map`（窗口快照 → 每对端劣化布尔）。验收：netns 断直连场景完整时序测试不可用（探测线程走宿主 `default_transport` 真 ICMP，netns 内注入丢包无法直接驱动探测窗口），按任务书替代用**可注入时钟的时序单测**并如实记录：`sel003_fallback_and_recovery_timeline`（apps/agent/src/direct.rs:721，注入 degraded/健康轮：①健康首次 Promote → ②劣化立即 Demote 回中继 → ③回中继后第 1、2 轮健康保持中继不切回 → ④第 3 轮健康恢复门放行 → 重新 Promote 切回）；另 `degraded_direct_peer_immediately_falls_back_to_relay`（direct.rs:593）、`recovery_hold_keeps_relay_until_gate_is_ready`（direct.rs:683）、`recovery_after_degradation_repromotes_via_state_machine`（direct.rs:652）、`degraded_detects_loss_spike_and_timeout`（probe.rs:851，50% 丢包/末次超时判劣化、全 RTT 健康、空窗口不劣化）、`recovery_gate_requires_consecutive_healthy_rounds`（probe.rs:876）、`recovery_gate_retains_only_live_peers`（probe.rs:896）、`degraded_map_marks_peers_with_loss_spike_or_timeout`（apps/agent/src/probe.rs:203）、`enforce_hub_keepalive_raises_none_or_low_to_floor`（agent.rs:1641）；meshlet-network lib 159 passed、meshlet-agent lib 101 passed、meshlet-config 20 passed、workspace `cargo test --workspace` 全绿、clippy --workspace --all-targets -D warnings 绿、fmt --check 绿。备注：SEL-004 console 候选展示未落。】
-- [x] `SEL-004 [P2]` console 可见：peer 详情展示全部候选（端点/RTT/丢包/当前选中与原因）。验收：模拟双候选页面渲染测试。【代码已落：A=crates/meshlet-domain/src/p2p.rs——`DirectCandidateStatus`（endpoint/kind/rtt_ms/loss_rate/selected/reason 纯数据载体，p2p.rs:445）+`DirectLinkStatus::candidates`（p2p.rs:498，serde default 空=未上报），lib.rs 重导出；B=apps/agent/src/probe.rs——`ProbeRuntime::candidate_statuses`（probe.rs:141，读窗口快照过滤该 peer，按 (ip,port) 排序确定性，`selected`=与现 endpoint 匹配，`reason`=current/backup）；C=apps/agent/src/direct.rs——`DirectPeer::candidates` + `DirectManager::record_candidates`（direct.rs:228，Relay 态 no-op）；D=apps/agent/src/agent.rs——`enrich_direct_peers` 里对每直连 peer 汇总候选详情供心跳上报；E=console——`api/index.ts` 增 `DirectCandidate` 接口、`DirectPeersBlock.tsx` 渲染候选子表（端点/kind/RTT/丢包/选中/理由，DirectPeersBlock.tsx:25 起）、`App.css` 子表样式（.direct-candidates-table，App.css:366，选中行高亮 .candidate-selected）、`en.ts`/`zh.ts` 新增 8 个 i18n key。验收已过：模拟双候选页面渲染测试=`renders all candidates with endpoint/RTT/loss/current selection (SEL-004)`（console/src/diagnostics.test.tsx:71，双候选 c1=192.168.1.50:51821 selected/current/RTT 11ms/loss 0% 与 c2=192.168.1.60:51821 backup/RTT 40ms/loss 50% 全部可见，`within` 限定候选子表断言端点/RTT/50% 丢包/current/backup/选中标记）；agent 侧汇总=`candidate_statuses_reports_all_candidates_with_selection`（apps/agent/src/probe.rs:267，RTT 中位数 11ms/40ms、丢包 0%/50%、selected/current 与 backup 区分、其它 peer 不串扰）；crates/meshlet-domain lib 全绿（含 `DirectLinkStatus` 新旧 JSON 序列化/反序列化兼容）、meshlet-agent lib 101+1 passed、workspace `cargo test --workspace` 全绿、clippy --workspace --all-targets -D warnings 绿、fmt --check 绿、console `npm test` 35 passed（含 SEL-004 渲染）、`npm run lint`（oxlint）绿、`tsc -b` 绿。备注：SEL-002/003 已在前置 commit 落地，本项目三项勾选完毕。】
-
-## 审核发现（40901d..cf3d9c8 任务通道/标签路由/诊断/拨号/probe，人工自审）
-
-- [x] 审核发现：重派预算可被绕过——reclaim 的 `root = rec.parent_task_id.clone().unwrap_or_else(|| id)` 只上溯一层而非沿 parent 链回到根，对第二代+任务（如 `task-1-r2`，parent=`task-1-r1`）root 误设为立即父，`next_retry_seq(root)` 在该父前缀下数不到已有兄弟（`task-1-r*` 全挂在根 `task-1` 下），`used=next-1` 恒 0，`used < retry_limit` 永真 → 超时回收后任务无限重派，重试上限失效（apps/server/src/task.rs:512，retry() 同病 at :352）。【已修 2026-11-04：reclaim/retry 均改为沿 parent 链逐代回溯到根（apps/server/src/task.rs:363,530），`next_retry_seq` 在根前缀下数到全部兄弟；证据：单测 `deep_chain_reclaim_walks_to_root_and_respects_budget` + `retry_deep_chain_walks_to_root`、集成 `deep_chain_redispatch_respects_budget`（apps/server/tests/task_dispatch.rs），server+agent 全测绿、clippy --all-targets -D warnings 绿、fmt --check 绿。】
-- [x] 审核发现：跨网络幂等返回不一致——assign 显式 id 路径 `state.tasks.get(id)` 不校验网络归属，网络 A 的 console 用户 POST /networks/B/tasks 传 A 已有 id 会 200 返回 A 的任务（泄漏 cmd/log_tail/target），而 confirm/retry 均校验网络，行为不一致（apps/server/src/task.rs:160）。【已修 2026-11-04：assign 显式 id 命中已有记录时校验 `network_id` 归属，他网返回 404（apps/server/src/task.rs:164），与 confirm/retry 一致；证据：集成 `assign_foreign_network_id_is_not_found`（apps/server/tests/task_dispatch.rs），全测绿。】
-- [x] 审核发现：自动 id 与显式 id 碰撞覆盖——assign 自动路径 `TaskId(format!("task-{seq}"))` 不检查 `state.tasks` 是否已存在同名（用户此前显式传过 `id="task-7"`），随后 `state.tasks.insert` 静默覆盖原任务记录，丢失其状态/结果（apps/server/src/task.rs:168,225）。【已修 2026-11-04：assign 自动路径生成 `task-{seq}` 时若 `state.tasks` 已含同名则递增 seq 直至空位（apps/server/src/task.rs:175-178），不再覆盖；证据：单测 `assign_auto_id_skips_explicit_collision`、集成 `auto_id_skips_collision_with_explicit_id`，全测绿。】
-- [x] 审核发现：回收与活 agent 竞争致重复执行+状态错乱——agent 在单 tick 内联拉取 [A,B] 顺序执行，A 跑满窗口期间 server 对未 ack 的 B 回收（failed+exit124）并重派 B-r1，agent 随后仍执行旧 B 并回执，`record_result` 对终态任务覆盖 `rec.result`（state 仍 failed 但 exit_code 换真实值，控制台显示 failed+exit0），且 B-r1 也被执行 → 同一命令双跑（apps/server/src/task.rs:282 覆盖，apps/agent/src/tasks.rs:211 process_pending 内联）。【已修 2026-11-04：`record_result` 对终态任务不再覆盖 result/state，重复回执幂等忽略（apps/server/src/task.rs:283-289）；证据：集成 `stale_result_does_not_overwrite_terminal_state`（apps/server/tests/task_dispatch.rs），全测绿。】
-- [x] 审核发现：账本淘汰序假设错误——TaskLedger::record 用 `BTreeMap.keys().next()` 按字典序淘汰最旧，注释称「task-{seq} 字典序=时间序」（apps/agent/src/tasks.rs:30），但 `task-10` < `task-2` 字典序且重派 id `task-1-r2` 更乱序 → 可能先淘汰较新任务（apps/agent/src/tasks.rs:93-99）。【已修 2026-11-04：账本改为按**真实插入序**（FIFO）淘汰，entries + 持久化 order 队列（apps/agent/src/tasks.rs:30,52-59,93-107,111-126）；证据：单测 `ledger_evicts_by_real_time_order_not_id_lexicographic`（task-10 < task-2 乱序下先淘汰最早完成的 task-2，apps/agent/src/tasks.rs:520-539）、`ledger_persists_insertion_order_across_reload`（apps/agent/src/tasks.rs:541-557），agent 全测绿、clippy --all-targets -D warnings 绿、fmt --check 绿。】
-- [x] 审核发现：任务内联阻塞心跳/数据面——process_pending 在 tick 内同步跑任务（默认超时 300s），期间不心跳 → server 可能判设备离线，直连/路由对账停摆（apps/agent/src/tasks.rs:211，apps/agent/src/agent.rs:281 process_tasks）。【已修 2026-11-04：新增 `TaskRuntime` 后台 worker（apps/agent/src/tasks.rs:265-360，独立线程按 5s 轮询 + kick 唤醒），`Agent::process_tasks` 改为只 `kick` 立即返回（apps/agent/src/agent.rs:307），账本由 worker 持有、到达回调在 worker 线程内发（apps/agent/src/agent.rs:179-205）；证据：单测 `task_runtime_runs_in_background_and_kick_returns_immediately`（kick <200ms 返回、worker 后跑任务并落账本，apps/agent/src/tasks.rs:928-982），agent 全测绿、clippy --all-targets -D warnings 绿、fmt --check 绿。】
-- [x] 审核发现：enrich_direct_peers 内联 ping 阻塞——在主循环 tick 内（非 30s 门控）对每个直连对端顺序 `ping -W 1`（最多 1s/对端），多对端时主循环停顿数秒，心跳与数据面对账被拖慢（apps/agent/src/agent.rs:725 调用,771,791）。【已修 2026-11-04：新增 `DirectRttRuntime` 后台 worker（apps/agent/src/direct_rtt.rs:28-108，独立线程按候选集 ping、快照只读不阻塞），`Agent::enrich_direct_peers` 改为只 `update_candidates` + 读快照、绝不内联 `ping_rtt_ms`（apps/agent/src/agent.rs:771-804），后端加 `Clone`（crates/meshlet-network/src/linux.rs:346、windows.rs:34，供 worker 携带 netns/sudo/interface）；证据：单测 `snapshot_never_blocks_and_reflects_background_probe`（读快照 <200ms，不阻塞 ping，apps/agent/src/direct_rtt.rs:140-175）、`empty_candidates_clear_snapshot`（apps/agent/src/direct_rtt.rs:177-207），agent+network 全测绿、clippy --all-targets -D warnings 绿、fmt --check 绿。】
-- [x] 审核发现：测试缺口——无跨网络幂等 assign、显式/自动 id 碰撞、深链重派预算、回收-活 agent 竞争、终态覆盖的测试（apps/server/tests/task_dispatch.rs 仅覆盖单网络生命周期/幂等/标签路由/认证）。【已补 2026-11-04 随 715ad2c：集成 assign_foreign_network_id_is_not_found、auto_id_skips_collision_with_explicit_id、deep_chain_redispatch_respects_budget、stale_result_does_not_overwrite_terminal_state（含回收-活 agent 竞争，task_dispatch.rs:803 注释段）+ 单测 assign_auto_id_skips_explicit_collision、deep_chain_reclaim_walks_to_root_and_respects_budget、retry_deep_chain_walks_to_root，server+agent 全测绿、clippy --all-targets -D warnings 绿。】
+- [x] 审核发现：重派预算可被绕过（parent 链未回溯到根）→ 沿链回溯 + 回归测。
+  - 证据: 单测 deep_chain_reclaim_walks_to_root_and_respects_budget + 集成 deep_chain_redispatch_respects_budget
+- [x] 审核发现：跨网络幂等 assign 返回不一致 → 校验 network_id 归属（404）。
+  - 证据: 集成 assign_foreign_network_id_is_not_found
+- [x] 审核发现：自动 id 与显式 id 碰撞覆盖 → seq 递增避让。
+  - 证据: 单测 assign_auto_id_skips_explicit_collision + 集成 auto_id_skips_collision_with_explicit_id
+- [x] 审核发现：回收与活 agent 竞争致重复执行 → 终态回执幂等忽略。
+  - 证据: 集成 stale_result_does_not_overwrite_terminal_state
+- [x] 审核发现：账本按字典序淘汰非时间序 → 改真实插入序 FIFO。
+  - 证据: 单测 ledger_evicts_by_real_time_order_not_id_lexicographic
+- [x] 审核发现：任务内联阻塞心跳/数据面 → TaskRuntime 后台 worker。
+  - 证据: 单测 task_runtime_runs_in_background_and_kick_returns_immediately
+- [x] 审核发现：enrich_direct_peers 内联 ping 阻塞 → DirectRttRuntime 后台 worker。
+  - 证据: 单测 snapshot_never_blocks_and_reflects_background_probe
+- [x] 审核发现：跨网络幂等/碰撞/深链/竞争/终态覆盖测试缺口 → 补集成与单测。
+  - 证据: commit 715ad2c
