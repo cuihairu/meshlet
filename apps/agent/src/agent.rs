@@ -14,7 +14,8 @@ use std::time::Instant;
 use meshlet_config::{AgentConfig, DataplaneConfig, DirectConnectConfig};
 use meshlet_domain::PeerLinkState;
 use meshlet_domain::{
-    DataplaneEvidence, DirectEndpointReport, DirectLinkStatus, Ipv4Cidr, DIRECT_PROBE_INTERVAL_SECS,
+    DataplaneEvidence, DirectEndpointReport, DirectLinkStatus, EndpointCandidate, Ipv4Cidr,
+    DIRECT_PROBE_INTERVAL_SECS,
 };
 use meshlet_network::dial::{self, DirectDialRequest, DirectDialResult, DirectPeerView};
 use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
@@ -731,6 +732,11 @@ impl Agent {
         // R-DIAG-2：对处于直连状态的对端刷新读数（wg 端点/握手/流量）+ 实测
         // 直连路径 RTT——即使本周期无动作也要刷新，供心跳与控制台/CLI 展示。
         self.enrich_direct_peers();
+        // SEL-002：迟滞切换。已建立直连的对端，若其候选窗口中另有路径连续 N
+        // 采样且优于现路径 ≥30%，则 `wg set endpoint` 漫游过去（零断线），
+        // 并追加切换事件（事件可查）。探测未启用 / 无直连 / 无更优路径都
+        // 是 no-op——绝不影响数据面循环。
+        self.apply_switch_decisions();
         // 发布直连对端视图（`direct-peers.json`）：托盘「直连节点 / 连接节点…」
         // 子菜单与 CLI `peer dial` 解析 `<node>` 的数据源。
         self.publish_direct_peers(&wanted);
@@ -813,6 +819,65 @@ impl Agent {
             if !endpoint.is_empty() {
                 self.direct.record_endpoint(&public_key, endpoint);
             }
+        }
+    }
+
+    /// SEL-002：对每个已建立直连的对端评估迟滞闸，需要时漫游 endpoint。
+    ///
+    /// 只作用于 `direct` 状态的对端（`direct_pending` 尚未验证、`Relay` 无直连
+    /// 链路，切换无意义）。`wg set endpoint` 失败只记日志——直连仍是增益，
+    /// 保持当前 endpoint 下一周期再试；成功才记录切换事件（[`dial`] 追加）。
+    fn apply_switch_decisions(&mut self) {
+        if !self.dataplane.probe.enabled {
+            return;
+        }
+        // 现路径候选（endpoint）解析 + 直连对端集合：只评估非 Relay。
+        let statuses = self.direct.link_statuses();
+        for status in statuses {
+            if status.link_state != "direct" {
+                continue;
+            }
+            let Some(current) = parse_endpoint_candidate(&status.endpoint) else {
+                // 尚无已下发的直连 endpoint（异常态）：不切换。
+                continue;
+            };
+            let Some(decision) = self
+                .probe
+                .evaluate_switch(&status.public_key, Some(current))
+            else {
+                continue;
+            };
+            if let Err(e) = self
+                .backend
+                .set_direct_endpoint_sync(&status.public_key, decision.to.socket())
+            {
+                tracing::warn!(
+                    public_key = %status.public_key,
+                    error = %e,
+                    "direct endpoint switch failed; keeping current path"
+                );
+                continue;
+            }
+            let event = dial::SwitchEvent {
+                public_key: status.public_key.clone(),
+                from: status.endpoint.clone(),
+                to: decision.to.socket().to_string(),
+                reason: decision.reason.clone(),
+                at_ms: dial::now_millis(),
+            };
+            if let Err(e) = dial::append_switch_event(Path::new(&self.state_dir), &event) {
+                tracing::warn!(error = %e, "direct switch event not recorded");
+            }
+            tracing::info!(
+                public_key = %status.public_key,
+                from = %event.from,
+                to = %event.to,
+                reason = %event.reason,
+                "direct endpoint switched (SEL-002)"
+            );
+            // 更新直连管理器记录的 endpoint（下一轮以此为现路径基准）。
+            self.direct
+                .record_endpoint(&status.public_key, event.to.clone());
         }
     }
 
@@ -1036,6 +1101,24 @@ fn direct_report_from(
         listen_port: direct_connect.listen_port,
         lan_addrs,
     })
+}
+
+/// SEL-002：从直连端点字符串（`ip:port`）解析候选。无法解析（空 / 畸形）→
+/// `None`（调用方按「无已下发直连候选」处理，不切换）。
+fn parse_endpoint_candidate(endpoint: &str) -> Option<EndpointCandidate> {
+    let (ip, port) = endpoint.rsplit_once(':')?;
+    let ip = ip.parse::<Ipv4Addr>().ok()?;
+    let port = port.parse::<u16>().ok()?;
+    // 分类未知（端点字符串不携带 kind）：按私网判定，仅用于迟滞闸的
+    // `current` 匹配——候选窗口按 (ip,port) 键匹配，kind 不影响相等判定
+    // 之外的行为（EndpointCandidate 的 Ord 含 kind，但候选集来自同源，同
+    // ip:port 的 kind 一致）。
+    let kind = if meshlet_domain::is_private_ip(ip) {
+        meshlet_domain::EndpointKind::Lan
+    } else {
+        meshlet_domain::EndpointKind::Public
+    };
+    Some(EndpointCandidate { ip, port, kind })
 }
 
 /// hub 入口地址兜底（纯逻辑，§16.4）：服务端不知道 agent 的网络位置，计划里
@@ -1490,5 +1573,21 @@ mod tests {
         assert_eq!(b.mode, "hub_relay");
         assert_eq!(b.rtt_ms, None);
         assert_eq!(b.endpoint, "");
+    }
+
+    #[test]
+    fn parse_endpoint_candidate_reads_ip_port_and_kind() {
+        use meshlet_domain::EndpointKind;
+        // 私网 → Lan；畸形/空 → None。
+        let lan = parse_endpoint_candidate("192.168.1.50:51821").expect("lan parses");
+        assert_eq!(lan.ip, "192.168.1.50".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(lan.port, 51821);
+        assert_eq!(lan.kind, EndpointKind::Lan);
+        let public = parse_endpoint_candidate("203.0.113.10:51820").expect("public parses");
+        assert_eq!(public.kind, EndpointKind::Public);
+        assert!(parse_endpoint_candidate("").is_none());
+        assert!(parse_endpoint_candidate("192.168.1.50").is_none());
+        assert!(parse_endpoint_candidate("not-an-ip:51821").is_none());
+        assert!(parse_endpoint_candidate("192.168.1.50:99999").is_none());
     }
 }

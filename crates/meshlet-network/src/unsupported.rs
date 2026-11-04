@@ -153,6 +153,15 @@ impl UnsupportedBackend {
         Err(self.refuse("remove_peer"))
     }
 
+    /// SEL-002 直连 endpoint 漫游本平台无实现：显式拒绝。
+    pub fn set_direct_endpoint_sync(
+        &self,
+        _public_key: &str,
+        _endpoint: SocketAddrV4,
+    ) -> Result<(), NetworkError> {
+        Err(self.refuse("set_direct_endpoint"))
+    }
+
     pub fn remove_stale_meshlet_routes_sync(
         &self,
         _routes: &[RouteConfig],

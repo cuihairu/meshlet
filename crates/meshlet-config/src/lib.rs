@@ -221,7 +221,7 @@ impl ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawDataplaneConfig {
     enabled: Option<bool>,
@@ -240,15 +240,19 @@ struct RawDirectConnectConfig {
     listen_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawProbeConfig {
     enabled: Option<bool>,
     interval_secs: Option<u64>,
     window: Option<usize>,
+    /// SEL-002 迟滞切换：新路径须连续 N 采样且优于现路径 ≥ margin。
+    /// `margin` 以百分比给出（30 = 30%）。默认 3 / 30%。
+    switch_required: Option<usize>,
+    switch_margin_percent: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawAgentConfig {
     server_url: Option<String>,
@@ -279,7 +283,7 @@ struct RawTrayConfig {
 }
 
 /// Agent 配置。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AgentConfig {
     pub server_url: String,
     pub state_dir: String,
@@ -329,7 +333,7 @@ impl TrayConfig {
 
 /// Agent 数据面配置（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）：
 /// **默认全关**——关闭时 agent 只打印状态、不碰内核。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DataplaneConfig {
     pub enabled: bool,
     /// 受管 WireGuard 接口名。
@@ -371,7 +375,7 @@ impl Default for DirectConnectConfig {
 }
 
 /// SEL-001 候选端点探测配置（任务书：agent 周期，默认 5s，可配）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProbeConfig {
     /// 是否开启候选端点探测。默认关；开启且 `direct_connect.enabled` 且对端
     /// 有候选端点时才发探测（无候选 = 无目标，no-op）。
@@ -381,6 +385,11 @@ pub struct ProbeConfig {
     /// 每目标滑动窗口容量（最近 N 次探测）：SEL-002 的评分/迟滞判定在窗口上
     /// 做，过小会随单次抖动频繁翻转。默认 20。
     pub window: usize,
+    /// SEL-002 迟滞切换：新路径须**连续** N 次采样（默认 3）且得分优于现路径
+    /// ≥ `switch_margin` 才切换，防抖（抖动场景不切）。
+    pub switch_required: usize,
+    /// SEL-002 迟滞裕量（0.0..=1.0；默认 0.30 = 30%）。
+    pub switch_margin: f64,
 }
 
 impl Default for ProbeConfig {
@@ -389,6 +398,8 @@ impl Default for ProbeConfig {
             enabled: false,
             interval_secs: 5,
             window: 20,
+            switch_required: 3,
+            switch_margin: 0.30,
         }
     }
 }
@@ -492,6 +503,13 @@ impl AgentConfig {
                 .interval_secs
                 .unwrap_or(default.dataplane.probe.interval_secs),
             window: raw_probe.window.unwrap_or(default.dataplane.probe.window),
+            switch_required: raw_probe
+                .switch_required
+                .unwrap_or(default.dataplane.probe.switch_required),
+            switch_margin: raw_probe
+                .switch_margin_percent
+                .map(|p| p / 100.0)
+                .unwrap_or(default.dataplane.probe.switch_margin),
         };
         if probe.interval_secs < 1 {
             return Err(ConfigError::InvalidDataPlane(
@@ -501,6 +519,16 @@ impl AgentConfig {
         if probe.window < 1 {
             return Err(ConfigError::InvalidDataPlane(
                 "dataplane.probe.window must be at least 1".into(),
+            ));
+        }
+        if probe.switch_required < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.switch_required must be at least 1".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&probe.switch_margin) {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.switch_margin_percent must be 0..=100".into(),
             ));
         }
         Ok(Self {
@@ -865,10 +893,15 @@ listen_port = 20000
         assert!(!d.enabled);
         assert_eq!(d.interval_secs, 5);
         assert_eq!(d.window, 20);
+        // SEL-002 迟滞默认：连续 3 采样、裕量 30%。
+        assert_eq!(d.switch_required, 3);
+        assert_eq!(d.switch_margin, 0.30);
         // 缺 [dataplane] 段同样取默认。
         let d = AgentConfig::from_toml("").unwrap().dataplane.probe;
         assert!(!d.enabled);
         assert_eq!(d.interval_secs, 5);
+        assert_eq!(d.switch_required, 3);
+        assert_eq!(d.switch_margin, 0.30);
 
         let c = AgentConfig::from_toml(
             r#"
@@ -876,12 +909,16 @@ listen_port = 20000
 enabled = true
 interval_secs = 2
 window = 8
+switch_required = 5
+switch_margin_percent = 40
 "#,
         )
         .unwrap();
         assert!(c.dataplane.probe.enabled);
         assert_eq!(c.dataplane.probe.interval_secs, 2);
         assert_eq!(c.dataplane.probe.window, 8);
+        assert_eq!(c.dataplane.probe.switch_required, 5);
+        assert_eq!(c.dataplane.probe.switch_margin, 0.40);
     }
 
     #[test]
@@ -890,6 +927,13 @@ window = 8
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
         let err = AgentConfig::from_toml("[dataplane.probe]\nwindow = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err = AgentConfig::from_toml("[dataplane.probe]\nswitch_required = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err =
+            AgentConfig::from_toml("[dataplane.probe]\nswitch_margin_percent = 101").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
         let err = AgentConfig::from_toml("[dataplane.probe]\nbogus = 1").unwrap_err();

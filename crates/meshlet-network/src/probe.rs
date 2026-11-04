@@ -264,6 +264,151 @@ pub fn default_transport(_ip: Ipv4Addr) -> Option<u128> {
 }
 
 // ---------------------------------------------------------------------------
+// SEL-002 路径评分与迟滞切换（纯逻辑，无 IO）
+// ---------------------------------------------------------------------------
+
+/// 丢包重罚系数：`score = rtt_ms * (1 + LOSS_PENALTY * loss_rate)`.
+/// RTT 是主导项（毫秒直接作基数），丢包率以乘法放大——10% 丢包把得分
+/// 加倍，全丢窗口无 RTT 样本则得分记为 +∞（最差）。丢包重罚保证「丢包尖峰」
+/// 的劣化路径不会因中位数 RTT 仍低而被误判为优。
+pub const LOSS_PENALTY: f64 = 10.0;
+
+/// 路径得分（SEL-002 评分）：`rtt_ms * (1 + LOSS_PENALTY * loss_rate)`.
+///
+/// - 空窗口 → `None`（尚无读数，不参与比较）；
+/// - 窗口内无 RTT 样本（全丢）→ `Some(+∞)`（最差，任何有 RTT 的路径更优）；
+/// - 其余 → `Some(rtt 中位数 * (1 + LOSS_PENALTY * 丢包率))`。
+///
+/// 越低越好。SEL-002 的迟滞切换直接以此做「新路径优于现路径 ≥30%」判定。
+pub fn score(window: &ProbeWindow) -> Option<f64> {
+    if window.is_empty() {
+        return None;
+    }
+    match window.rtt_ms() {
+        None => Some(f64::INFINITY),
+        Some(rtt) => Some(rtt as f64 * (1.0 + LOSS_PENALTY * window.loss_rate())),
+    }
+}
+
+/// 一次迟滞切换决策（SEL-002）：目标候选 + 人类可读理由（事件记录用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchDecision {
+    /// 切换到的候选端点。
+    pub to: EndpointCandidate,
+    /// 切换理由（如「score 60.0 beats 100.0 by >=30% for 3 consecutive samples」）。
+    pub reason: String,
+}
+
+/// 迟滞闸（SEL-002）：新路径须**连续** `required` 次采样且得分优于现路径
+/// ≥ `margin`（默认 30%）才切换，防抖。纯状态机，无 IO。
+///
+/// 状态按 `(peer, candidate)` 记录连续更优计数：候选变差 / 现路径重新领先 /
+/// 切换目标变化都会清零相应计数，绝不因单次抖动翻转。
+#[derive(Debug, Clone)]
+pub struct SwitchGate {
+    required: usize,
+    margin: f64,
+    /// `(peer, candidate)` → 连续满足「优于现路径 ≥ margin」的采样数。
+    streaks: BTreeMap<ProbeTarget, usize>,
+}
+
+impl SwitchGate {
+    /// 新建迟滞闸。`required` 下限 1；`margin` 钳制到 `(0.0, 1.0]`。
+    pub fn new(required: usize, margin: f64) -> Self {
+        Self {
+            required: required.max(1),
+            margin: margin.clamp(f64::EPSILON, 1.0),
+            streaks: BTreeMap::new(),
+        }
+    }
+
+    pub fn required(&self) -> usize {
+        self.required
+    }
+
+    pub fn margin(&self) -> f64 {
+        self.margin
+    }
+
+    /// 评估一轮：给定现路径与全部候选窗口，返回是否切换。
+    ///
+    /// - `current`：当前选中的候选（`None` = 尚无直连路径，初始选择由
+    ///   DirectManager 负责，本闸只做**已建立路径之间的切换**）；
+    /// - `windows`：该 peer 的候选 → 窗口快照（[`ProbeTracker::windows`]
+    ///   按 device_id 过滤后的视图）。
+    ///
+    /// 返回 `Some(SwitchDecision)` 当且仅当：存在一个候选，其得分严格低于
+    /// 现路径得分、且 `得分 <= 现路径得分 * (1 - margin)`，且该候选已连续
+    /// `required` 轮满足此条件。达到阈值后重置该候选计数（一次切换一次计数）。
+    pub fn evaluate(
+        &mut self,
+        peer: &str,
+        current: Option<EndpointCandidate>,
+        windows: &BTreeMap<ProbeTarget, ProbeWindow>,
+    ) -> Option<SwitchDecision> {
+        let current = current?;
+        if windows.is_empty() {
+            return None;
+        }
+        let current_score = windows
+            .get(&(peer.to_string(), current))
+            .and_then(score)
+            .unwrap_or(f64::INFINITY);
+
+        // 最佳候选 = 得分最低者（确定性：得分相同取地址最小者）。
+        let mut best_candidate: Option<EndpointCandidate> = None;
+        let mut best_score = f64::INFINITY;
+        for ((p, c), w) in windows {
+            if p != peer {
+                continue;
+            }
+            let s = score(w).unwrap_or(f64::INFINITY);
+            let better = match best_candidate {
+                None => true,
+                Some(bc) => s < best_score || (s == best_score && *c < bc),
+            };
+            if better {
+                best_candidate = Some(*c);
+                best_score = s;
+            }
+        }
+        let best_candidate = best_candidate?;
+
+        if best_candidate == current {
+            // 现路径仍是最佳：所有候选的连胜计数清零（连续条件被打破）。
+            self.streaks.clear();
+            return None;
+        }
+
+        // 新路径须**严格**更优且优于现路径 ≥ margin（防抖）。
+        let improved =
+            best_score < current_score && best_score <= current_score * (1.0 - self.margin);
+        if !improved {
+            self.streaks.remove(&(peer.to_string(), best_candidate));
+            return None;
+        }
+
+        let key = (peer.to_string(), best_candidate);
+        let streak = self.streaks.entry(key.clone()).or_insert(0);
+        *streak += 1;
+        if *streak >= self.required {
+            let reason = format!(
+                "score {best_score:.1} beats current {current_score:.1} by >= {:.0}% for {} consecutive samples",
+                self.margin * 100.0,
+                *streak
+            );
+            self.streaks.remove(&key);
+            Some(SwitchDecision {
+                to: best_candidate,
+                reason,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -465,5 +610,165 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert!(t.window("dev-b", c2).is_none());
         assert_eq!(t.window("dev-b", c1).unwrap().rtt_ms(), Some(5));
+    }
+
+    // -- score ----------------------------------------------------------------
+
+    #[test]
+    fn score_uses_rtt_with_loss_penalty_and_penalizes_full_loss() {
+        // 无丢包：score = rtt。
+        let mut w = ProbeWindow::new(4);
+        w.record(ProbeSample::Rtt(100));
+        assert_eq!(score(&w), Some(100.0));
+        // 50% 丢包：score = 100 * (1 + 10*0.5) = 600。
+        let mut half = ProbeWindow::new(4);
+        half.record(ProbeSample::Rtt(100));
+        half.record(ProbeSample::Lost);
+        assert_eq!(score(&half), Some(600.0));
+        // 全丢：无 RTT 样本 → +∞（最差）。
+        let mut all = ProbeWindow::new(4);
+        all.record(ProbeSample::Lost);
+        assert_eq!(score(&all), Some(f64::INFINITY));
+        // 空窗口 → None（尚无读数）。
+        assert_eq!(score(&ProbeWindow::new(4)), None);
+    }
+
+    // -- SwitchGate -----------------------------------------------------------
+
+    #[test]
+    fn switch_gate_switches_after_required_consecutive_better_samples() {
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let mut gate = SwitchGate::new(3, 0.30);
+        let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+
+        // 前 2 轮：c2 得分 60 vs c1 得分 100，已满足 ≥30% 但未连续满 3 轮。
+        for _ in 0..2 {
+            windows.clear();
+            let mut w1 = ProbeWindow::new(8);
+            w1.record(ProbeSample::Rtt(100));
+            let mut w2 = ProbeWindow::new(8);
+            w2.record(ProbeSample::Rtt(60));
+            windows.insert(("dev-b".into(), c1), w1);
+            windows.insert(("dev-b".into(), c2), w2);
+            assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+        }
+        // 第 3 轮：连续 3 轮 → 切换。
+        windows.clear();
+        let mut w1 = ProbeWindow::new(8);
+        w1.record(ProbeSample::Rtt(100));
+        let mut w2 = ProbeWindow::new(8);
+        w2.record(ProbeSample::Rtt(60));
+        windows.insert(("dev-b".into(), c1), w1);
+        windows.insert(("dev-b".into(), c2), w2);
+        let decision = gate.evaluate("dev-b", Some(c1), &windows).expect("switch");
+        assert_eq!(decision.to, c2);
+        assert!(decision.reason.contains("3 consecutive"));
+    }
+
+    #[test]
+    fn switch_gate_jitter_does_not_flip() {
+        // 抖动场景：c1 与 c2 得分交替领先、差距不足 30% → 永不切换。
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let mut gate = SwitchGate::new(3, 0.30);
+        for round in 0..20u64 {
+            let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+            // 交替领先但差距仅 10%（不足 30% 迟滞）。
+            let (a, b) = if round % 2 == 0 { (100, 90) } else { (90, 100) };
+            let mut w1 = ProbeWindow::new(8);
+            w1.record(ProbeSample::Rtt(a));
+            let mut w2 = ProbeWindow::new(8);
+            w2.record(ProbeSample::Rtt(b));
+            windows.insert(("dev-b".into(), c1), w1);
+            windows.insert(("dev-b".into(), c2), w2);
+            assert!(
+                gate.evaluate("dev-b", Some(c1), &windows).is_none(),
+                "jitter must not flip the path (round {round})"
+            );
+        }
+    }
+
+    #[test]
+    fn switch_gate_resets_streak_when_current_is_best_again() {
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let mut gate = SwitchGate::new(3, 0.30);
+        let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+
+        // 2 轮 c2 更好（连续计数=2）。
+        for _ in 0..2 {
+            windows.clear();
+            let mut w1 = ProbeWindow::new(8);
+            w1.record(ProbeSample::Rtt(100));
+            let mut w2 = ProbeWindow::new(8);
+            w2.record(ProbeSample::Rtt(60));
+            windows.insert(("dev-b".into(), c1), w1);
+            windows.insert(("dev-b".into(), c2), w2);
+            assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+        }
+        // 第 3 轮：c1 回到最佳 → 计数清零，不切换。
+        windows.clear();
+        let mut w1 = ProbeWindow::new(8);
+        w1.record(ProbeSample::Rtt(50));
+        let mut w2 = ProbeWindow::new(8);
+        w2.record(ProbeSample::Rtt(100));
+        windows.insert(("dev-b".into(), c1), w1);
+        windows.insert(("dev-b".into(), c2), w2);
+        assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+        // 再 3 轮 c2 更好：计数从 0 重新开始 → 需满 3 轮。
+        for _ in 0..2 {
+            windows.clear();
+            let mut w1 = ProbeWindow::new(8);
+            w1.record(ProbeSample::Rtt(100));
+            let mut w2 = ProbeWindow::new(8);
+            w2.record(ProbeSample::Rtt(60));
+            windows.insert(("dev-b".into(), c1), w1);
+            windows.insert(("dev-b".into(), c2), w2);
+            assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+        }
+        windows.clear();
+        let mut w1 = ProbeWindow::new(8);
+        w1.record(ProbeSample::Rtt(100));
+        let mut w2 = ProbeWindow::new(8);
+        w2.record(ProbeSample::Rtt(60));
+        windows.insert(("dev-b".into(), c1), w1);
+        windows.insert(("dev-b".into(), c2), w2);
+        assert!(gate.evaluate("dev-b", Some(c1), &windows).is_some());
+    }
+
+    #[test]
+    fn switch_gate_requires_strict_margin_improvement() {
+        // 差距 20%（<30%）：即使连续多轮也不切换。
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let mut gate = SwitchGate::new(3, 0.30);
+        for _ in 0..5 {
+            let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+            let mut w1 = ProbeWindow::new(8);
+            w1.record(ProbeSample::Rtt(100));
+            let mut w2 = ProbeWindow::new(8);
+            w2.record(ProbeSample::Rtt(80));
+            windows.insert(("dev-b".into(), c1), w1);
+            windows.insert(("dev-b".into(), c2), w2);
+            assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+        }
+    }
+
+    #[test]
+    fn switch_gate_full_loss_makes_that_path_worst() {
+        // 现路径全丢（score=+∞），新路径有 RTT → 一次即切换（required=1）。
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let mut gate = SwitchGate::new(1, 0.30);
+        let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+        let mut w1 = ProbeWindow::new(8);
+        w1.record(ProbeSample::Lost);
+        let mut w2 = ProbeWindow::new(8);
+        w2.record(ProbeSample::Rtt(40));
+        windows.insert(("dev-b".into(), c1), w1);
+        windows.insert(("dev-b".into(), c2), w2);
+        let decision = gate.evaluate("dev-b", Some(c1), &windows).expect("switch");
+        assert_eq!(decision.to, c2);
     }
 }

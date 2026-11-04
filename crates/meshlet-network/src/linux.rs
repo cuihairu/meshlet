@@ -603,6 +603,28 @@ impl LinuxNetworkBackend {
         Ok(())
     }
 
+    /// SEL-002：直连 peer 的 endpoint 漫游更新（`wg set <if> peer <key> endpoint
+    /// <ip:port>`）。WireGuard 在同一 peer 上改 endpoint 是**无缝**的（不
+    /// 断开已有握手，只把后续包引向新地址），满足「漫游零断线」。幂等：
+    /// 重复设置同一 endpoint 结果一致。
+    pub fn set_direct_endpoint_sync(
+        &self,
+        public_key: &str,
+        endpoint: SocketAddrV4,
+    ) -> Result<(), NetworkError> {
+        let endpoint = endpoint.to_string();
+        self.run(&[
+            "wg",
+            "set",
+            &self.interface,
+            "peer",
+            public_key,
+            "endpoint",
+            &endpoint,
+        ])?;
+        Ok(())
+    }
+
     /// `ip -4 route show dev <if> proto <marker>` → successful Meshlet route
     /// destinations. The routing protocol marker is the route-side ownership
     /// tag: unlike `proto kernel` connected routes, these objects can be

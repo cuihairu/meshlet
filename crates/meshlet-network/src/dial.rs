@@ -76,9 +76,33 @@ pub struct DirectPeerView {
     pub last_handshake_at: Option<u64>,
 }
 
+/// SEL-002 直连 endpoint 切换事件（[`direct_switch_events_path`] 追加记录）。
+///
+/// 事件可查（任务书「切换事件可查」）：agent 每成功执行一次
+/// `wg set endpoint` 漫游就追加一条到 `{state_dir}/direct-switch-events.json`
+/// （JSON Lines），CLI / 运维可直接读该文件审计切换历史。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SwitchEvent {
+    /// 对端 wg 公钥。
+    pub public_key: String,
+    /// 切换前 endpoint（`ip:port`）。
+    pub from: String,
+    /// 切换后 endpoint（`ip:port`）。
+    pub to: String,
+    /// 切换理由（SEL-002 迟滞闸给出）。
+    pub reason: String,
+    /// 事件时刻（Unix 毫秒字符串）。
+    pub at_ms: String,
+}
+
 /// 拨号请求路径：`{state_dir}/direct-dial.json`。
 pub fn dial_request_path(state_dir: &Path) -> PathBuf {
     state_dir.join("direct-dial.json")
+}
+
+/// SEL-002 切换事件路径：`{state_dir}/direct-switch-events.json`。
+pub fn direct_switch_events_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("direct-switch-events.json")
 }
 
 /// 拨号结果路径：`{state_dir}/direct-dial-result.json`。
@@ -132,6 +156,30 @@ pub fn load_direct_peers(state_dir: &Path) -> Option<Vec<DirectPeerView>> {
 
 pub fn write_direct_peers(state_dir: &Path, views: &[DirectPeerView]) -> std::io::Result<()> {
     write_json(state_dir, &direct_peers_path(state_dir), views)
+}
+
+/// 追加一条 SEL-002 切换事件（JSON Lines 追加；事件可查）。
+pub fn append_switch_event(state_dir: &Path, event: &SwitchEvent) -> std::io::Result<()> {
+    std::fs::create_dir_all(state_dir)?;
+    let path = direct_switch_events_path(state_dir);
+    let mut line = serde_json::to_vec(event).map_err(io_err)?;
+    line.push(b'\n');
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    f.write_all(&line)
+}
+
+/// 读取全部 SEL-002 切换事件（缺失/损坏文件 → 空列表；可查）。
+pub fn load_switch_events(state_dir: &Path) -> Vec<SwitchEvent> {
+    let Ok(raw) = std::fs::read_to_string(direct_switch_events_path(state_dir)) else {
+        return Vec::new();
+    };
+    raw.lines()
+        .filter_map(|l| serde_json::from_str::<SwitchEvent>(l).ok())
+        .collect()
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
@@ -216,5 +264,33 @@ mod tests {
     #[test]
     fn now_millis_is_a_numeric_string() {
         assert!(now_millis().parse::<u128>().is_ok());
+    }
+
+    #[test]
+    fn switch_events_append_and_are_queryable() {
+        let dir =
+            std::env::temp_dir().join(format!("meshlet-switch-events-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let e1 = SwitchEvent {
+            public_key: "key-a".into(),
+            from: "192.168.1.50:51821".into(),
+            to: "192.168.1.60:51821".into(),
+            reason: "score 60 beats 100 by >=30%".into(),
+            at_ms: "1000".into(),
+        };
+        let e2 = SwitchEvent {
+            public_key: "key-a".into(),
+            from: "192.168.1.60:51821".into(),
+            to: "192.168.1.50:51821".into(),
+            reason: "score 40 beats 60 by >=30%".into(),
+            at_ms: "2000".into(),
+        };
+        append_switch_event(&dir, &e1).unwrap();
+        append_switch_event(&dir, &e2).unwrap();
+        // 事件可查：顺序保持追加序。
+        assert_eq!(load_switch_events(&dir), vec![e1, e2]);
+        // 缺失文件 → 空。
+        assert!(load_switch_events(&dir.join("missing")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

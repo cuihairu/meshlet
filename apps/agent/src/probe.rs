@@ -19,9 +19,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use meshlet_config::ProbeConfig;
-use meshlet_domain::PeerEndpoints;
+use meshlet_domain::{EndpointCandidate, PeerEndpoints};
 use meshlet_network::probe::{
-    default_transport, probe_round, ProbeTarget, ProbeTracker, ProbeWindow,
+    default_transport, probe_round, ProbeTarget, ProbeTracker, ProbeWindow, SwitchDecision,
+    SwitchGate,
 };
 
 /// 探测运行时：一个后台线程 + 候选缓存（reconcile 写 / 探测线程读）+
@@ -33,6 +34,9 @@ use meshlet_network::probe::{
 pub struct ProbeRuntime {
     cache: Arc<Mutex<Vec<PeerEndpoints>>>,
     tracker: Arc<Mutex<ProbeTracker>>,
+    /// SEL-002 迟滞闸：agent 主循环只读评估结果，状态由 `evaluate_switch`
+    /// 就地推进（短临界区，探测线程不触碰）。
+    gate: Arc<Mutex<SwitchGate>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -43,6 +47,10 @@ impl ProbeRuntime {
     pub fn start(config: &ProbeConfig) -> Self {
         let cache = Arc::new(Mutex::new(Vec::new()));
         let tracker = Arc::new(Mutex::new(ProbeTracker::new(config.window)));
+        let gate = Arc::new(Mutex::new(SwitchGate::new(
+            config.switch_required,
+            config.switch_margin,
+        )));
         let stop = Arc::new(AtomicBool::new(false));
         let handle = if config.enabled {
             let cache = Arc::clone(&cache);
@@ -79,6 +87,7 @@ impl ProbeRuntime {
         Self {
             cache,
             tracker,
+            gate,
             stop,
             handle,
         }
@@ -94,6 +103,20 @@ impl ProbeRuntime {
     /// peers × 候选数）。
     pub fn snapshot(&self) -> BTreeMap<ProbeTarget, ProbeWindow> {
         lock(&self.tracker).windows().clone()
+    }
+
+    /// SEL-002：评估某对端是否该把直连 endpoint 切换到更优候选。
+    ///
+    /// 读窗口快照并推进迟滞闸（[`SwitchGate::evaluate`]）。`current` = 当前
+    /// 已下发的直连候选；`None` = 尚无直连路径（初始选择不由本闸负责）。
+    /// 返回切换决策（含理由），由调用方执行 `wg set endpoint` 并记录事件。
+    pub fn evaluate_switch(
+        &self,
+        peer: &str,
+        current: Option<EndpointCandidate>,
+    ) -> Option<SwitchDecision> {
+        let snapshot = self.snapshot();
+        lock(&self.gate).evaluate(peer, current, &snapshot)
     }
 
     /// 探测线程是否在跑（配置开关；关 = 冷启动零开销）。
@@ -114,4 +137,50 @@ impl Drop for ProbeRuntime {
 /// 跟踪器都是短临界区，毒化只可能是探测线程已崩——恢复数据继续用）。
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meshlet_network::probe::ProbeSample;
+
+    fn config() -> ProbeConfig {
+        ProbeConfig {
+            enabled: false,
+            interval_secs: 5,
+            window: 8,
+            switch_required: 3,
+            switch_margin: 0.30,
+        }
+    }
+
+    #[test]
+    fn evaluate_switch_requires_gate_and_reports_decision() {
+        let rt = ProbeRuntime::start(&config());
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        let c2 = EndpointCandidate::lan("192.168.1.60".parse().unwrap(), 51821);
+        // 探测线程关（enabled=false）：手动记录 3 轮窗口，验证迟滞闸。
+        {
+            let mut tracker = lock(&rt.tracker);
+            for _ in 0..3 {
+                tracker.record("dev-b", c1, ProbeSample::Rtt(100));
+                tracker.record("dev-b", c2, ProbeSample::Rtt(60));
+            }
+        }
+        // 第 1、2 轮不切，第 3 轮切（连续 3 轮）。
+        assert!(rt.evaluate_switch("dev-b", Some(c1)).is_none());
+        assert!(rt.evaluate_switch("dev-b", Some(c1)).is_none());
+        let decision = rt.evaluate_switch("dev-b", Some(c1)).expect("switch");
+        assert_eq!(decision.to, c2);
+        assert!(decision.reason.contains("3 consecutive"));
+        // 切换到 c2 后：现路径最佳 → 不再切换。
+        assert!(rt.evaluate_switch("dev-b", Some(c2)).is_none());
+    }
+
+    #[test]
+    fn evaluate_switch_none_without_current_path() {
+        let rt = ProbeRuntime::start(&config());
+        // 无现路径（初始选择由 DirectManager 负责）→ 本闸不切。
+        assert!(rt.evaluate_switch("dev-b", None).is_none());
+    }
 }

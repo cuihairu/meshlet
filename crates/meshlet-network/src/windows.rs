@@ -619,6 +619,17 @@ impl WindowsNetworkBackend {
             "direct-connect peer removal on Windows is not yet implemented".to_string(),
         ))
     }
+
+    /// SEL-002 直连 endpoint 漫游（Windows 尚未接线）：显式拒绝。
+    pub fn set_direct_endpoint_sync(
+        &self,
+        _public_key: &str,
+        _endpoint: std::net::SocketAddrV4,
+    ) -> Result<(), NetworkError> {
+        Err(NetworkError::Unsupported(
+            "direct-connect endpoint roam on Windows is not yet implemented".to_string(),
+        ))
+    }
 }
 
 impl Default for WindowsNetworkBackend {
