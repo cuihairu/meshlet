@@ -29,6 +29,7 @@ use crate::{
 use meshlet_domain::Ipv4Cidr;
 
 /// Windows 网络后端：WireGuardNT 隧道 + netsh 路由。
+#[derive(Clone)]
 pub struct WindowsNetworkBackend {
     /// 受管 WireGuard 接口名（与 WireGuardNT 隧道服务名对应）。
     interface: String,

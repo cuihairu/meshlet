@@ -342,6 +342,7 @@ fn foreign_route_line(line: &str, interface: &str) -> Option<String> {
 }
 
 /// Linux 网络后端：命令执行器 + 对账式幂等应用。
+#[derive(Clone)]
 pub struct LinuxNetworkBackend {
     /// 测试钩子：命令在此 netns 内执行（`ip netns exec <ns> ...`）。
     netns: Option<String>,

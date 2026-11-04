@@ -66,6 +66,8 @@ pub struct Agent {
     direct_ledger: std::path::PathBuf,
     /// 上次直连探测时刻（30s 节流；`None` = 未探测过，首轮即探）。
     last_direct_probe: Option<Instant>,
+    /// R-DIAG-2 直连 RTT 后台运行时：独立线程 ping 直连对端（不阻塞 tick）。
+    direct_rtt: crate::direct_rtt::DirectRttRuntime,
     /// MT-002 任务通道：后台 worker（独立线程拉取待办并 ack→执行→回执）。
     /// 主循环 tick 只 [kick](crate::tasks::TaskRuntime::kick) 投递、立即返回，
     /// 单任务最长 [DEFAULT_TIMEOUT_SECS] 不再阻塞心跳/数据面对账。账本
@@ -162,6 +164,9 @@ impl Agent {
         let task_ledger_path = task_ledger_path(&config.state_dir);
         let task_ledger = crate::tasks::TaskLedger::load(&task_ledger_path);
         let notify_enabled = config.tray.notifications;
+        // R-DIAG-2：RTT 探测与数据面解耦（后台线程）。后端可 Clone（仅携带
+        // netns/sudo/interface 配置），worker 线程内 `ping_rtt_ms` 不拖主循环。
+        let direct_rtt = crate::direct_rtt::DirectRttRuntime::start(backend.clone());
         Self {
             server_url: config.server_url,
             token: config.device_token.unwrap_or_default(),
@@ -182,6 +187,7 @@ impl Agent {
             direct_ledger: direct_ledger_path(&config.state_dir),
             direct: DirectManager::load(&direct_ledger_path(&config.state_dir)),
             last_direct_probe: None,
+            direct_rtt,
             task_runtime: crate::tasks::TaskRuntime::start(
                 server_url,
                 device_token,
@@ -766,15 +772,19 @@ impl Agent {
     }
 
     /// R-DIAG-2：从内核刷新各直连对端的实际状态（endpoint / 最近握手 /
-    /// 累计流量）并对每条直连链路实测 RTT（`ping` 该对端 overlay 地址）。
+    /// 累计流量），RTT 取**后台运行时**的最新实测值（绝不内联 `ping`）。
     ///
     /// 读数失败只记日志——展示数据源是「最后已知态」，绝不让诊断采集干扰
     /// 数据面；对端已不在管（本周期被 Demote）则各 record_* no-op。
     fn enrich_direct_peers(&mut self) {
         let candidates = self.direct.direct_candidates();
         if candidates.is_empty() {
+            // 无直连对端：清空 RTT 候选（后台线程下一轮 no-op）。
+            self.direct_rtt.update_candidates(Vec::new());
             return;
         }
+        // 后台线程按最新候选集 ping；主循环只读快照，不等任何 ping。
+        self.direct_rtt.update_candidates(candidates.clone());
         let net = match self.backend.diagnostics_sync() {
             Ok(net) => net,
             Err(e) => {
@@ -782,16 +792,17 @@ impl Agent {
                 return;
             }
         };
+        let rtts = self.direct_rtt.snapshot();
         for (public_key, vip) in candidates {
             let wg_peer = net.wg.iter().find(|p| p.public_key == public_key);
             let endpoint = wg_peer.map(|p| p.endpoint.clone()).unwrap_or_default();
             let last_handshake_at =
                 wg_peer.and_then(|p| (p.last_handshake > 0).then_some(p.last_handshake));
             let (rx_bytes, tx_bytes) = wg_peer.map(|p| (p.rx_bytes, p.tx_bytes)).unwrap_or((0, 0));
-            let rtt_ms = self
-                .backend
-                .ping_rtt_ms(vip)
-                .map(|v| v.min(u64::MAX as u128) as u64);
+            // 读快照：刚更新候选集的第一次读可能尚未有实测值（None=未知，
+            // 与「读数失败」一致，展示数据源最后已知态）。`vip` 仅供记录日志。
+            let rtt_ms = rtts.get(&public_key).copied().flatten();
+            let _ = vip;
             self.direct.record_peer_status(
                 &public_key,
                 rtt_ms,
