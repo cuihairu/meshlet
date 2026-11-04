@@ -228,10 +228,40 @@ pub fn process_pending(
 ///
 /// 平台 shell：unix `sh -c`，Windows `cmd /C`。超时默认
 /// [DEFAULT_TIMEOUT_SECS]；超时 kill 子进程（退出码非 0 → 服务端判失败）。
+///
+/// 隔离（MT-005）：`workdir` 缺省时命令跑在**每任务独立 scratch 目录**
+/// （跑完即删），任务产物不落在 agent 进程 cwd；显式 `workdir` 按下发值
+/// 执行。容器级隔离（nsjail/沙箱）不在本轮。
 pub fn run_task(payload: &TaskPayload) -> TaskResult {
+    let scratch = payload.workdir.is_none().then(unique_scratch_dir);
+    if let Some(dir) = &scratch {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            return TaskResult {
+                exit_code: SPAWN_FAIL_EXIT,
+                log_tail: format!("scratch dir create failed: {e}"),
+            };
+        }
+    }
+    let result = run_task_in(payload, scratch.as_deref());
+    if let Some(dir) = &scratch {
+        // 任务结束即清场（残留 = 泄漏临时盘，不重试不告警，静默尽力）。
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    result
+}
+
+/// 实际执行（scratch 目录由 [run_task] 创建/清理）。
+fn run_task_in(payload: &TaskPayload, scratch: Option<&std::path::Path>) -> TaskResult {
     let mut cmd = shell_command(&payload.cmd);
-    if let Some(workdir) = &payload.workdir {
-        cmd.current_dir(workdir);
+    match scratch {
+        Some(dir) => {
+            cmd.current_dir(dir);
+        }
+        None => {
+            if let Some(workdir) = &payload.workdir {
+                cmd.current_dir(workdir);
+            }
+        }
     }
     // unix：把子进程放进自己的进程组——shell 会 fork 子命令（如
     // `sh -c "sleep 30"` 里 `sleep` 是直接子进程的孙进程），超时 kill 必须
@@ -290,6 +320,14 @@ pub fn run_task(payload: &TaskPayload) -> TaskResult {
         exit_code: status.code().unwrap_or(1),
         log_tail,
     }
+}
+
+/// 每任务独立 scratch 目录（MT-005）：`temp/meshlet-task-{pid}-{seq}`，
+/// 进程内原子序号保证并发任务不共用目录。
+fn unique_scratch_dir() -> std::path::PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("meshlet-task-{}-{}", std::process::id(), n))
 }
 
 /// 平台 shell 命令构造。
@@ -486,6 +524,38 @@ mod tests {
                 .log_tail
                 .contains(&dir.to_string_lossy().into_owned()));
             let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn run_task_without_workdir_runs_in_per_task_scratch_and_cleans_up() {
+        #[cfg(not(target_os = "windows"))]
+        {
+            let p = TaskPayload {
+                cmd: "pwd".into(),
+                workdir: None,
+                timeout_secs: None,
+                required_labels: Default::default(),
+            };
+            let first = run_task(&p);
+            assert_eq!(first.exit_code, 0);
+            let first_dir = std::path::PathBuf::from(first.log_tail.trim());
+            // 跑在独立 scratch 目录，且跑完即删。
+            assert!(
+                first_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().starts_with("meshlet-task-"))
+                    .unwrap_or(false),
+                "cwd {first_dir:?} must be a per-task scratch dir"
+            );
+            assert!(!first_dir.exists(), "scratch dir must be removed after run");
+
+            // 第二个任务 → 不同 scratch 目录（每任务独立）。
+            let second = run_task(&p);
+            assert_eq!(second.exit_code, 0);
+            let second_dir = std::path::PathBuf::from(second.log_tail.trim());
+            assert_ne!(first_dir, second_dir);
+            assert!(!second_dir.exists());
         }
     }
 
