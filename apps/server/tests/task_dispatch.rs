@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tower::ServiceExt; // oneshot
 
 const OVERLAY: &str = "10.240.0.0/16";
+type SharedAppState = std::sync::Arc<meshlet_server::auth::AppState>;
 
 #[derive(Clone)]
 struct Ctx {
@@ -36,7 +37,7 @@ impl meshlet_domain::ConfigApplyBackend for OkBackend {
 }
 
 /// 构建 router（数据面默认关：任务通道不依赖数据面开关）。
-async fn app() -> Router {
+async fn app() -> (Router, SharedAppState) {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
         .unwrap();
@@ -54,7 +55,8 @@ async fn app() -> Router {
         .with_dataplane(meshlet_config::DataPlaneConfig::default())
         .with_apply_backend(Arc::new(|_, _| Box::new(OkBackend))),
     );
-    meshlet_server::router(state)
+    let router = meshlet_server::router(state.clone());
+    (router, state)
 }
 
 async fn res_body(res: axum::response::Response) -> serde_json::Value {
@@ -86,8 +88,8 @@ async fn admin(
 }
 
 /// bootstrap → 建网络 → 邀请首台设备入网。返回 (ctx, device_id, agent_token)。
-async fn bootstrap(name: &str, public_key: &str) -> (Ctx, String, String) {
-    let app = app().await;
+async fn bootstrap(name: &str, public_key: &str) -> (Ctx, String, String, SharedAppState) {
+    let (app, state) = app().await;
     let res = app
         .clone()
         .oneshot(
@@ -130,7 +132,29 @@ async fn bootstrap(name: &str, public_key: &str) -> (Ctx, String, String) {
         network_id,
     };
     let (device_id, token) = enroll(&ctx, name, public_key).await;
-    (ctx, device_id, token)
+    (ctx, device_id, token, state)
+}
+
+/// 在同一 server 实例上追加第二个网络（跨网络幂等/隔离测试用）。
+async fn add_network(ctx: &Ctx) -> Ctx {
+    let (st, net) = admin(
+        &ctx.app,
+        &ctx.cookie,
+        "/api/v1/networks",
+        serde_json::json!({ "name": "other", "overlay_cidr": "10.241.0.0/16" }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{net}");
+    assert_ne!(
+        net["id"].as_str().unwrap(),
+        &ctx.network_id,
+        "distinct network"
+    );
+    Ctx {
+        app: ctx.app.clone(),
+        cookie: ctx.cookie.clone(),
+        network_id: net["id"].as_str().unwrap().to_string(),
+    }
 }
 
 /// 邀请 + 入网一台设备（返回 device_id、agent_token）。
@@ -298,9 +322,14 @@ async fn retry(ctx: &Ctx, id: &str) -> (StatusCode, serde_json::Value) {
     .await
 }
 
+/// 把任务 updated_at 拨老（集成测试复用生产回收扫描）。
+fn age_task(state: &SharedAppState, id: &str, age_secs: u64) {
+    meshlet_server::task::age_task_for_test(&mut state.mesh.lock().unwrap(), id, age_secs);
+}
+
 #[tokio::test]
 async fn dispatch_lifecycle_and_redispatch_idempotency() {
-    let (ctx, device_id, token) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+    let (ctx, device_id, token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
     // 1. 派发：201，初始 assigned，自动生成 task-1。
     let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
@@ -350,7 +379,7 @@ async fn dispatch_lifecycle_and_redispatch_idempotency() {
 
 #[tokio::test]
 async fn dispatch_rejects_unknown_or_inactive_target() {
-    let (ctx, device_id, _token) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+    let (ctx, device_id, _token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
     // 不存在的设备 → 404。
     let (st, body) = assign(&ctx, "no-such-device", "echo hi", None).await;
@@ -434,7 +463,7 @@ async fn dispatch_rejects_unknown_or_inactive_target() {
 /// `{root}-r{n}`（新 id 才能触发 agent 重跑），运行中不可驳回。
 #[tokio::test]
 async fn user_confirm_and_retry_lifecycle() {
-    let (ctx, device_id, token) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+    let (ctx, device_id, token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
     // 1. 派发 → agent 全程 → done。
     let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
@@ -520,7 +549,7 @@ async fn user_confirm_and_retry_lifecycle() {
 /// 列取需认证（未登录 401）。
 #[tokio::test]
 async fn task_list_requires_authentication() {
-    let (ctx, device_id, _token) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+    let (ctx, device_id, _token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
     let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
     assert_eq!(st, StatusCode::CREATED, "{task}");
     let res = ctx
@@ -540,7 +569,7 @@ async fn task_list_requires_authentication() {
 
 #[tokio::test]
 async fn agent_endpoints_require_valid_token() {
-    let (ctx, _, _) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+    let (ctx, _, _, _) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
     // 无凭证 / 伪造凭证 → 401（agent API 认证边界）。
     let res = ctx
@@ -577,7 +606,7 @@ async fn agent_endpoints_require_valid_token() {
 /// 显式目标与标签不符拒绝 → 无匹配设备拒绝。
 #[tokio::test]
 async fn label_routed_dispatch_and_labels_endpoint() {
-    let (ctx, worker_id, worker_token) = bootstrap("worker", "pub-edge-aaaa-0001").await;
+    let (ctx, worker_id, worker_token, _state) = bootstrap("worker", "pub-edge-aaaa-0001").await;
     let (builder_id, builder_token) = enroll(&ctx, "builder", "pub-edge-aaaa-0002").await;
 
     // 操作员打标：worker → role=builder；builder → 无标。
@@ -669,4 +698,137 @@ async fn assign_labeled(
         body,
     )
     .await
+}
+
+/// 跨网络幂等 assign：网络 B 的 console 用户 POST /networks/B/tasks 传
+/// 网络 A 已有 id → 404（不泄漏 A 任务），与 confirm/retry 一致。
+#[tokio::test]
+async fn assign_foreign_network_id_is_not_found() {
+    let (ctx, device_id, _token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+    let other = add_network(&ctx).await;
+
+    // 网络 A 建任务。
+    let (st, task) = assign(&ctx, &device_id, "echo hi", Some("task-cross")).await;
+    assert_eq!(st, StatusCode::CREATED, "{task}");
+
+    // 网络 B 用同 id：404，不返回 A 的任务（防 cmd/log 泄漏）。
+    let (st, body) = assign(&other, &device_id, "echo hi", Some("task-cross")).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"]["code"], "not_found");
+    assert_eq!(body["error"]["message"], "task task-cross not found");
+}
+
+/// 自动 id 与显式 id 碰撞：用户显式传过 `id="task-1"` 后，自动序列
+/// 不得静默覆盖——生成时跳过已占用的 `task-{seq}` 并递增。
+#[tokio::test]
+async fn auto_id_skips_collision_with_explicit_id() {
+    let (ctx, device_id, _token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+
+    // 用户显式占掉 task-1。
+    let (st, explicit) = assign(&ctx, &device_id, "echo explicit", Some("task-1")).await;
+    assert_eq!(st, StatusCode::CREATED, "{explicit}");
+    assert_eq!(explicit["cmd"], "echo explicit");
+
+    // 下一次自动派发：不得覆盖 task-1 → 取 task-2，原任务保留。
+    let (st, auto) = assign(&ctx, &device_id, "echo auto", None).await;
+    assert_eq!(st, StatusCode::CREATED, "{auto}");
+    assert_eq!(auto["id"], "task-2");
+    assert_eq!(auto["cmd"], "echo auto");
+
+    let (st, list) = task_list(&ctx).await;
+    assert_eq!(st, StatusCode::OK, "{list}");
+    let arr = list.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    let orig = arr
+        .iter()
+        .find(|t| t["id"] == "task-1")
+        .expect("explicit task preserved");
+    assert_eq!(orig["cmd"], "echo explicit");
+    assert_eq!(orig["state"], "assigned");
+}
+
+/// 深链（第二代 r2）重派预算：reclaim 必须沿 parent 链回到根，否则
+/// `task-1-r2` 的 root 误判为 `task-1-r1` 而数不到兄弟 `task-1-r1`，
+/// 预算恒 0 → 无限重派。回收 `-r2`（已产生 r1、r2 两代，limit=2）应
+/// 不再派发。
+#[tokio::test]
+async fn deep_chain_redispatch_respects_budget() {
+    let (ctx, device_id, _token, state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+
+    // 首代 → r1 → r2（limit=2）。
+    let (st, orig) = assign(&ctx, &device_id, "echo hi", Some("task-deep")).await;
+    assert_eq!(st, StatusCode::CREATED, "{orig}");
+    // 首代须终态才可驳回。
+    {
+        let mut guard = state.mesh.lock().unwrap();
+        meshlet_server::task::complete_task_for_test(&mut guard, "task-deep", true);
+    }
+    let r1: serde_json::Value;
+    {
+        let (st, task) = retry(&ctx, "task-deep").await;
+        assert_eq!(st, StatusCode::CREATED, "{task}");
+        r1 = task;
+    }
+    // r1 完成后再驳回 r1 → r2。
+    let r1_id = r1["id"].as_str().unwrap().to_string();
+    {
+        let mut guard = state.mesh.lock().unwrap();
+        meshlet_server::task::complete_task_for_test(&mut guard, &r1_id, true);
+    }
+    let (st, task) = retry(&ctx, &r1_id).await;
+    assert_eq!(st, StatusCode::CREATED, "{task}");
+    let r2 = task;
+    assert_eq!(r2["id"], "task-deep-r2");
+
+    // 把 r2 拨老（超窗）→ 回收扫描。r2 已存在且 r1 也在（root=task-deep），
+    // next_retry_seq(task-deep) = 3，used = 2 ≥ limit=2 → 不再派发 r3。
+    age_task(&state, "task-deep-r2", 400);
+    meshlet_server::task::task_recovery_for_test(state.clone()).await;
+
+    let guard = state.mesh.lock().unwrap();
+    let rec =
+        meshlet_server::task::task_for_test(&guard, "task-deep-r2").expect("r2 still present");
+    assert_eq!(rec.task.state, meshlet_domain::TaskState::Failed);
+    assert_eq!(
+        rec.result.as_ref().unwrap().exit_code,
+        124,
+        "reclaimed synthetic timeout exit"
+    );
+    assert!(
+        meshlet_server::task::task_for_test(&guard, "task-deep-r3").is_none(),
+        "budget exhausted: must not redispatch r3"
+    );
+}
+
+/// 回收与活 agent 竞争：server 先回收（failed+exit124），agent 随后回执
+/// 旧结果——`record_result` 对终态任务不得覆盖 result/state。
+#[tokio::test]
+async fn stale_result_does_not_overwrite_terminal_state() {
+    let (ctx, device_id, token, state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
+
+    // 派发任务，agent 拉到并 ack（ack 后 server 才可回收）。
+    let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
+    assert_eq!(st, StatusCode::CREATED, "{task}");
+    let id = task["id"].as_str().unwrap().to_string();
+    assert_eq!(ack(&ctx.app, &token, &id).await, StatusCode::OK);
+
+    // 拨老触发回收：failed + 合成超时结果。
+    age_task(&state, &id, 400);
+    meshlet_server::task::task_recovery_for_test(state.clone()).await;
+
+    {
+        let guard = state.mesh.lock().unwrap();
+        let rec = meshlet_server::task::task_for_test(&guard, &id).expect("reclaimed");
+        assert_eq!(rec.task.state, meshlet_domain::TaskState::Failed);
+        assert_eq!(rec.result.as_ref().unwrap().exit_code, 124);
+    }
+
+    // agent 旧回执（真实 exit 0）：200，但终态不被覆盖（仍 failed+124）。
+    let (st, body) = result(&ctx.app, &token, &id, 0).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "failed");
+    assert_eq!(
+        body["exit_code"], 124,
+        "terminal result must not be overwritten"
+    );
 }

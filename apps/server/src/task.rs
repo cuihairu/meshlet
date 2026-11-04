@@ -142,8 +142,9 @@ pub struct TaskResultReport {
     pub log_tail: String,
 }
 
-/// 派发任务（assign）。显式 id 已存在 → 幂等返回已有记录（`new_seq=None,
-/// created=false`）；否则创建 `task-{seq}`（或显式 id）并置
+/// 派发任务（assign）。显式 id 已存在且归属请求网络 → 幂等返回已有记录
+/// （`new_seq=None, created=false`）；归属其他网络 → 404；否则创建
+/// `task-{seq}`（或显式 id，自动 id 与已有任务冲突则递增序列）并置
 /// [TaskState::Assigned]。返回 `(记录, 新 task_seq, 是否新建)`。
 pub(crate) fn assign(
     state: &mut MeshState,
@@ -153,17 +154,24 @@ pub(crate) fn assign(
     // 标签路由要求（MT-005）：缺省 = 无约束。
     let required = req.required_labels.clone().unwrap_or_default();
 
-    // 幂等键优先：同 id 已存在（无论状态）→ 原样返回，不重复建、不重置
-    // 状态（重发同一派发请求不得因标签/设备状态漂移而改判）。
+    // 幂等键优先：同 id 已存在（无论状态）且归属请求网络 → 原样返回，
+    // 不重复建、不重置状态（重发同一派发请求不得因标签/设备状态漂移而
+    // 改判）；归属其他网络 → 404（与 confirm/retry 一致，不泄漏他网任务）。
     let (id, new_seq) = match &req.id {
         Some(id) => {
             if let Some(existing) = state.tasks.get(id) {
+                if existing.network_id.to_string() != network_id {
+                    return Err(ServiceError::TaskNotFound(id.clone()));
+                }
                 return Ok((existing.clone(), None, false));
             }
             (TaskId(id.clone()), None)
         }
         None => {
-            let seq = state.task_seq() + 1;
+            let mut seq = state.task_seq() + 1;
+            while state.tasks.contains_key(&format!("task-{seq}")) {
+                seq += 1;
+            }
             state.set_task_seq(seq);
             (TaskId(format!("task-{seq}")), Some(seq))
         }
@@ -253,8 +261,9 @@ pub(crate) fn ack(state: &mut MeshState, id: &str) -> Option<TaskAction> {
     }
 }
 
-/// 记录结果：沿合法状态机路径推进到 done|failed（缺 ack/start 补完），
-/// 已是终态则幂等更新日志尾部；返回本次动作（终态幂等返回 `None`）。
+/// 记录结果：沿合法状态机路径推进到 done|failed（缺 ack/start 补完）；
+/// 已是终态则幂等忽略（不覆盖终态 result/state，重复回执只作废，防回收
+/// 与活 agent 竞争时旧回执改写合成超时结果），返回 `None`。
 pub(crate) fn record_result(
     state: &mut MeshState,
     id: &str,
@@ -277,7 +286,9 @@ pub(crate) fn record_result(
     let action = if matches!(rec.task.state, TaskState::Running) {
         rec.task.apply(TaskEvent::Complete(outcome)).ok()
     } else {
-        None // 已是终态：幂等重复回执，只更新结果尾部
+        // 已是终态（或乱序不可补）：幂等重复回执，不覆盖终态
+        // result/state（回收与活 agent 竞争时旧回执不得改写合成超时结果）。
+        return None;
     };
     rec.result = Some(TaskResult {
         exit_code,
@@ -321,7 +332,7 @@ pub(crate) fn retry(
         .get(id)
         .filter(|rec| rec.network_id.to_string() == network_id)
         .cloned()
-        .ok_or_else(|| ServiceError::TaskNotFound(format!("task {id}")))?;
+        .ok_or_else(|| ServiceError::TaskNotFound(id.to_string()))?;
     if !matches!(orig.task.state, TaskState::Done | TaskState::Failed) {
         return Err(ServiceError::Conflict(format!(
             "task {id} is {} and cannot be retried",
@@ -348,11 +359,18 @@ pub(crate) fn retry(
         rec.clone()
     };
 
-    // 重试链的根：被驳回任务若是重跑代，则沿 parent 回到根，代号续接。
-    let root = rejected
-        .parent_task_id
-        .clone()
-        .unwrap_or_else(|| id.to_string());
+    // 重试链的根：被驳回任务若是重跑代，则沿 parent 链回到根，代号续接
+    // （逐代回溯，第二代+任务不能只看立即父——`task-1-r2` 的立即父是
+    // `task-1-r1`，root 必须回溯到 `task-1` 才能数到兄弟 `task-1-r1`）。
+    let mut root = id.to_string();
+    let mut parent = rejected.parent_task_id.clone();
+    while let Some(p) = parent {
+        root = p.clone();
+        parent = state
+            .tasks
+            .get(&p)
+            .and_then(|rec| rec.parent_task_id.clone());
+    }
     let next = next_retry_seq(state, &root);
     let new_id = format!("{root}-r{next}");
     let task = Task::new(
@@ -507,9 +525,17 @@ fn reclaim(state: &mut MeshState, id: &str) -> TaskRecovery {
     rec.updated_at = now.clone();
     state.tasks.insert(id.to_string(), rec.clone());
 
-    // 重派预算：重试链根（首代 = 自身 id，重跑代沿 parent 回到根）已产生的
-    // 代数 ≥ retry_limit 时不再派发。
-    let root = rec.parent_task_id.clone().unwrap_or_else(|| id.to_string());
+    // 重派预算：重试链根（首代 = 自身 id，重跑代沿 parent 链回到根——逐代
+    // 回溯，第二代+不能只看立即父）已产生的代数 ≥ retry_limit 时不再派发。
+    let mut root = id.to_string();
+    let mut parent = rec.parent_task_id.clone();
+    while let Some(p) = parent {
+        root = p.clone();
+        parent = state
+            .tasks
+            .get(&p)
+            .and_then(|p_rec| p_rec.parent_task_id.clone());
+    }
     let next = next_retry_seq(state, &root);
     let used = next - 1;
     let redispatch = if used < rec.task.retry_limit as u64 {
@@ -553,6 +579,50 @@ pub fn start_task_recovery(state: SharedAppState, interval_secs: u64) {
             }
         }
     });
+}
+
+/// 集成测试用：跑一轮与 [`start_task_recovery`] 相同的回收（正常路
+/// 径是周期后台任务，无法从路由触发；`#[doc(hidden)]` 不进公共 API
+/// 文档）。落库复用 [`task_recovery_once`]，保证与生产路径一致。
+#[doc(hidden)]
+pub async fn task_recovery_for_test(state: SharedAppState) {
+    task_recovery_once(state)
+        .await
+        .expect("test recovery sweep");
+}
+
+/// 集成测试用：把任务 `updated_at` 拨老 `age_secs` 秒，使回收窗口判定
+/// 命中（生产路径由 [`start_task_recovery`] 周期扫描，无法从路由触发；
+/// `#[doc(hidden)]` 不进公共 API 文档）。
+#[doc(hidden)]
+pub fn age_task_for_test(state: &mut MeshState, id: &str, age_secs: u64) {
+    if let Some(rec) = state.tasks.get_mut(id) {
+        let now = service::now_unix();
+        rec.updated_at = chrono::DateTime::from_timestamp(now - age_secs as i64, 0)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    }
+}
+
+/// 集成测试用：读取任务记录（状态/结果/父链断言）。
+#[doc(hidden)]
+pub fn task_for_test(state: &MeshState, id: &str) -> Option<TaskRecord> {
+    state.tasks.get(id).cloned()
+}
+
+/// 集成测试用：把任务沿合法状态机推进到终态（模拟 agent 完成；生产路径
+/// 是 agent 回执，无法从路由直插终态）。`#[doc(hidden)]` 不进公共文档。
+#[doc(hidden)]
+pub fn complete_task_for_test(state: &mut MeshState, id: &str, success: bool) {
+    if let Some(rec) = state.tasks.get_mut(id) {
+        let _ = rec.task.apply(TaskEvent::Ack);
+        let _ = rec.task.apply(TaskEvent::Start);
+        let _ = rec.task.apply(TaskEvent::Complete(if success {
+            TaskOutcome::Success
+        } else {
+            TaskOutcome::Failure
+        }));
+    }
 }
 
 /// 一次回收：持 persist 锁串行化全部任务写路径（assign/ack/result/confirm/
@@ -1067,6 +1137,116 @@ mod tests {
             st.tasks.get("task-1").unwrap().task.state,
             TaskState::Failed
         );
+    }
+
+    /// 审核发现：深链（第二代 r2）回收必须沿 parent 链回到根——r2 的
+    /// 立即父是 r1，只看一层会把 root 误判为 r1，数不到兄弟 r1，预算恒 0
+    /// → 无限重派。回收 r2（r1、r2 两代已存在，limit=2）不应再派 r3。
+    #[test]
+    fn deep_chain_reclaim_walks_to_root_and_respects_budget() {
+        let now = 1_800_000_000;
+        let mut st = state();
+        // 根（未卡）、r1（未卡）、r2（卡）：limit=2。
+        insert(
+            &mut st,
+            NewTask {
+                id: "task-1",
+                state: TaskState::Assigned,
+                timeout_secs: Some(300),
+                retry_limit: 2,
+                parent: None,
+                age: 1,
+            },
+            now,
+        );
+        insert(
+            &mut st,
+            NewTask {
+                id: "task-1-r1",
+                state: TaskState::Assigned,
+                timeout_secs: Some(300),
+                retry_limit: 2,
+                parent: Some("task-1"),
+                age: 1,
+            },
+            now,
+        );
+        insert(
+            &mut st,
+            NewTask {
+                id: "task-1-r2",
+                state: TaskState::Acked,
+                timeout_secs: Some(300),
+                retry_limit: 2,
+                parent: Some("task-1-r1"),
+                age: 400,
+            },
+            now,
+        );
+        let events = recover_stuck_tasks(&mut st, now, &policy());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].reclaimed, "task-1-r2");
+        assert_eq!(events[0].redispatch, None, "budget exhausted at r2");
+        assert_eq!(
+            st.tasks.get("task-1-r2").unwrap().task.state,
+            TaskState::Failed
+        );
+        assert!(!st.tasks.contains_key("task-1-r3"));
+    }
+
+    /// 审核发现：第二代 r2 驳回重跑（MT-003 retry）同样须沿 parent 链回到
+    /// 根——r2 被驳回后新代应接 `task-1-r3`（不是挂在 r1 下重复 r1 计数）。
+    #[test]
+    fn retry_deep_chain_walks_to_root() {
+        let now = 1_800_000_000;
+        let mut st = state();
+        // 根、r1、r2 全终态（可驳回），parent 链 task-1-r2 → r1 → root。
+        for (id, parent) in [
+            ("task-1", None),
+            ("task-1-r1", Some("task-1")),
+            ("task-1-r2", Some("task-1-r1")),
+        ] {
+            insert(
+                &mut st,
+                NewTask {
+                    id,
+                    state: TaskState::Assigned,
+                    timeout_secs: Some(300),
+                    retry_limit: 3,
+                    parent,
+                    age: 1,
+                },
+                now,
+            );
+            let rec = st.tasks.get_mut(id).unwrap();
+            let _ = rec.task.apply(TaskEvent::Ack);
+            let _ = rec.task.apply(TaskEvent::Start);
+            let _ = rec.task.apply(TaskEvent::Complete(TaskOutcome::Success));
+        }
+        let (rec, _seq) = retry(&mut st, "net-1", "task-1-r2").unwrap();
+        assert_eq!(rec.task.id.0, "task-1-r3");
+        assert_eq!(rec.parent_task_id.as_deref(), Some("task-1-r2"));
+    }
+
+    /// 审核发现：自动 id 与显式 id 碰撞——用户显式占掉 `task-{seq}` 后，
+    /// assign 自动路径必须跳过已占用 id（递增 seq），不得静默覆盖。
+    #[test]
+    fn assign_auto_id_skips_explicit_collision() {
+        let (mut st, net, ids) = mesh_with_devices();
+        // 显式占掉 task-1。
+        let mut req = assign_req(Some(&ids[0]), BTreeMap::new());
+        req.id = Some("task-1".into());
+        let (rec, _, _) = assign(&mut st, &net, &req).unwrap();
+        assert_eq!(rec.task.id.0, "task-1");
+
+        // 自动派发：不覆盖 task-1，取 task-2。
+        let (rec, seq, _) =
+            assign(&mut st, &net, &assign_req(Some(&ids[0]), BTreeMap::new())).unwrap();
+        assert_eq!(rec.task.id.0, "task-2");
+        assert_eq!(seq, Some(2));
+        // 原 task-1 仍在（未被覆盖）。
+        assert_eq!(st.tasks.get("task-1").unwrap().task.payload.cmd, "echo hi");
+        assert_eq!(st.tasks.get("task-2").unwrap().task.payload.cmd, "echo hi");
     }
 
     #[test]
