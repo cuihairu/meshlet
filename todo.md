@@ -304,3 +304,14 @@ deps 检查脚本）全部命中；唯一事实错误：评审称 R-04 验收为
 - [ ] `SEL-002 [P1]` 评分与迟滞切换：得分=RTT 主导+丢包重罚；切换须新路径连续 N 采样且优于现路径 ≥30%（防抖）；切换=更新 WG peer endpoint（漫游零断线），事件记录理由。验收：迟滞闸单测（抖动场景不切）；切换事件可查。
 - [ ] `SEL-003 [P2]` hub 兜底常热：hub peer keep-alive 永不掉；直连劣化（丢包尖峰/超时）触发立即回中继，恢复后按迟滞闸切回。验收：netns 断直连场景回退/恢复时序测试。
 - [ ] `SEL-004 [P2]` console 可见：peer 详情展示全部候选（端点/RTT/丢包/当前选中与原因）。验收：模拟双候选页面渲染测试。
+
+## 审核发现（40901d..cf3d9c8 任务通道/标签路由/诊断/拨号/probe，人工自审）
+
+- [ ] 审核发现：重派预算可被绕过——reclaim 的 `root = rec.parent_task_id.clone().unwrap_or_else(|| id)` 只上溯一层而非沿 parent 链回到根，对第二代+任务（如 `task-1-r2`，parent=`task-1-r1`）root 误设为立即父，`next_retry_seq(root)` 在该父前缀下数不到已有兄弟（`task-1-r*` 全挂在根 `task-1` 下），`used=next-1` 恒 0，`used < retry_limit` 永真 → 超时回收后任务无限重派，重试上限失效（apps/server/src/task.rs:512，retry() 同病 at :352）。
+- [ ] 审核发现：跨网络幂等返回不一致——assign 显式 id 路径 `state.tasks.get(id)` 不校验网络归属，网络 A 的 console 用户 POST /networks/B/tasks 传 A 已有 id 会 200 返回 A 的任务（泄漏 cmd/log_tail/target），而 confirm/retry 均校验网络，行为不一致（apps/server/src/task.rs:160）。
+- [ ] 审核发现：自动 id 与显式 id 碰撞覆盖——assign 自动路径 `TaskId(format!("task-{seq}"))` 不检查 `state.tasks` 是否已存在同名（用户此前显式传过 `id="task-7"`），随后 `state.tasks.insert` 静默覆盖原任务记录，丢失其状态/结果（apps/server/src/task.rs:168,225）。
+- [ ] 审核发现：回收与活 agent 竞争致重复执行+状态错乱——agent 在单 tick 内联拉取 [A,B] 顺序执行，A 跑满窗口期间 server 对未 ack 的 B 回收（failed+exit124）并重派 B-r1，agent 随后仍执行旧 B 并回执，`record_result` 对终态任务覆盖 `rec.result`（state 仍 failed 但 exit_code 换真实值，控制台显示 failed+exit0），且 B-r1 也被执行 → 同一命令双跑（apps/server/src/task.rs:282 覆盖，apps/agent/src/tasks.rs:211 process_pending 内联）。
+- [ ] 审核发现：账本淘汰序假设错误——TaskLedger::record 用 `BTreeMap.keys().next()` 按字典序淘汰最旧，注释称「task-{seq} 字典序=时间序」（apps/agent/src/tasks.rs:30），但 `task-10` < `task-2` 字典序且重派 id `task-1-r2` 更乱序 → 可能先淘汰较新任务（apps/agent/src/tasks.rs:93-99）。
+- [ ] 审核发现：任务内联阻塞心跳/数据面——process_pending 在 tick 内同步跑任务（默认超时 300s），期间不心跳 → server 可能判设备离线，直连/路由对账停摆（apps/agent/src/tasks.rs:211，apps/agent/src/agent.rs:281 process_tasks）。
+- [ ] 审核发现：enrich_direct_peers 内联 ping 阻塞——在主循环 tick 内（非 30s 门控）对每个直连对端顺序 `ping -W 1`（最多 1s/对端），多对端时主循环停顿数秒，心跳与数据面对账被拖慢（apps/agent/src/agent.rs:725 调用,771,791）。
+- [ ] 审核发现：测试缺口——无跨网络幂等 assign、显式/自动 id 碰撞、深链重派预算、回收-活 agent 竞争、终态覆盖的测试（apps/server/tests/task_dispatch.rs 仅覆盖单网络生命周期/幂等/标签路由/认证）。
