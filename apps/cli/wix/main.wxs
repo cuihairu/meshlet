@@ -2,11 +2,13 @@
 <!--
   Meshlet Windows MSI (WiX v3 manifest, built via cargo-wix from apps/cli).
 
-  cargo-wix injects the `$(var.Cargo*)` defines on every run, so exe sources
-  must use `$(var.CargoTargetBinDir)` and the product version comes from the
-  workspace version via `$(var.CargoPackageVersion)`. Do not build with an
-  explicit target triple: cargo-wix resolves candle/light relative paths
-  against the repo root cwd and a triple would move the exes (LGHT0103).
+  cargo-wix injects `$(var.Cargo*)` defines on every run, so exe sources
+  must use `$(var.CargoTargetBinDir)`. The product version comes from the
+  workspace version via `$(var.Version)` (cargo-wix passes `-dVersion=`;
+  it does NOT define `CargoPackageVersion`, which would fail candle with
+  CNDL0150). Do not build with an explicit target triple: cargo-wix
+  resolves candle/light relative paths against the repo root cwd and a
+  triple would move the exes (LGHT0103).
   The manifest packages all four workspace bins; cargo-wix only builds its own
   package's bin (meshlet-cli), so the nightly workflow pre-builds the other
   three with the same release-profile build invocation (without a target).
@@ -17,7 +19,7 @@
       Name='Meshlet'
       Language='1033'
       Codepage='1252'
-      Version='$(var.CargoPackageVersion)'
+      Version='$(var.Version)'
       Manufacturer='meshlet'
       UpgradeCode='ad61fb0d-6819-4f3e-8072-ded49409b10b'>
 
