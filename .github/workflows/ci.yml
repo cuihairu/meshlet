@@ -81,6 +81,78 @@ jobs:
       - name: Enforce zero third-party dependencies in meshlet-planner
         run: scripts/check-planner-deps.sh
 
+  # AGENT-WIN-1/3/4 证据腿（todo.md「CI windows-latest 出截图证据」）：
+  # tray-host 在真实 Windows 桌面会话消费 TraySink 四态 fixture（examples/
+  # tray_fixture 生成，与生产端同一 PNG 格式）、注册托盘图标（NIM_ADD）、
+  # 随状态换 tooltip——截图 + stderr 日志上传为验收工件。
+  tray-windows:
+    name: tray host / windows-latest
+    runs-on: windows-latest
+    needs: [test]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: apps/tray-host
+
+      - name: Test tray host
+        run: cargo test -p meshlet-tray-host
+
+      - name: Generate four-state tray fixtures
+        run: cargo run -p meshlet-tray-host --example tray_fixture -- tray-fixture
+
+      # 托盘宿主有 agent 联动看门狗：无 meshlet-agent.exe 进程时宽限 ~30s 后
+      # 自退。stub 常驻进程让截图窗口内托盘保持在线（进程名匹配即满足）。
+      - name: Start keep-alive stub agent process
+        run: |
+          Copy-Item C:\Windows\System32\cmd.exe "$env:TEMP\meshlet-agent.exe" -Force
+          Start-Process "$env:TEMP\meshlet-agent.exe" -ArgumentList '/c','ping -n 3600 127.0.0.1' -WindowStyle Hidden
+
+      - name: Launch tray host
+        run: |
+          Start-Process "target\debug\meshlet-tray-host.exe" `
+            -ArgumentList "$(Resolve-Path tray-fixture)\online" `
+            -RedirectStandardError tray-host.log -RedirectStandardOutput tray-host.out
+
+      - name: Capture desktop screenshot
+        run: |
+          Start-Sleep -Seconds 10
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+          $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
+          $bitmap.Save("$PWD\tray-windows.png")
+
+      # 门禁：托盘图标注册成功（NIM_ADD = true）且 tooltip 随状态 JSON 更新。
+      - name: Gate on tray registration evidence
+        run: |
+          Get-Content tray-host.log | Write-Output
+          $log = Get-Content tray-host.log -Raw
+          if ($log -notmatch 'NIM_ADD = true') { Write-Error 'tray icon was not registered (NIM_ADD)'; exit 1 }
+          if ($log -notmatch 'tooltip=') { Write-Error 'tooltip was not applied from status.json'; exit 1 }
+
+      - name: Stop stub and tray host
+        if: always()
+        run: |
+          Get-Process meshlet-tray-host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process meshlet-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - name: Upload tray evidence
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: tray-windows-evidence
+          path: |
+            tray-windows.png
+            tray-host.log
+            tray-fixture/**/status.json
+            tray-fixture/**/*.png
+          if-no-files-found: warn
+
   console:
     name: console build
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

@@ -1011,7 +1011,7 @@ mod tests {
         let mut idat = vec![0x78u8, 0x01u8];
         idat.push(0x01); // BFINAL=1, BTYPE=00
         idat.extend_from_slice(&(raw.len() as u16).to_le_bytes());
-        idat.extend_from_slice(&(raw.len() as u16).wrapping_neg().to_le_bytes());
+        idat.extend_from_slice(&(!(raw.len() as u16)).to_le_bytes()); // NLEN = ~LEN
         idat.extend_from_slice(&raw);
         idat.extend_from_slice(&[0; 4]);
         chunk(&mut out, b"IDAT", &idat);
@@ -1301,5 +1301,89 @@ mod tests {
         let cut = truncate_for_balloon(&long);
         assert!(cut.chars().count() <= 251);
         assert!(cut.ends_with('…'));
+    }
+
+    // ── ①②④ 菜单结构（AGENT-WIN-3/4 Windows 真机验证：CI windows-latest
+    //    的 workspace test 腿实跑本文件——真实 Win32 菜单创建 + 内容读回）──
+
+    #[cfg(all(test, target_os = "windows"))]
+    mod windows_menu_tests {
+        use super::*;
+
+        /// 按位置读菜单项文本（`GetMenuStringW` 两段式：先量长度再取）。
+        fn menu_string(hmenu: HMENU, pos: u32) -> String {
+            let len = unsafe { GetMenuStringW(hmenu, pos, std::ptr::null_mut(), 0, MF_BYPOSITION) };
+            if len <= 0 {
+                return String::new();
+            }
+            let mut buf = vec![0u16; len as usize + 1];
+            unsafe {
+                GetMenuStringW(
+                    hmenu,
+                    pos,
+                    buf.as_mut_ptr(),
+                    buf.len() as i32,
+                    MF_BYPOSITION,
+                );
+            }
+            String::from_utf16_lossy(&buf[..len as usize])
+        }
+
+        #[test]
+        fn build_menu_contains_status_direct_dial_panel_and_quit() {
+            let peers = vec![
+                DirectPeerView::sample("nas", "10.240.0.2", "p2p_direct", Some(12)),
+                DirectPeerView::sample("", "10.240.0.4", "hub_relay", None),
+            ];
+            let (direct, relay) = split_peer_views(&peers);
+            let hmenu = build_menu("Meshlet「dev」 10.240.0.5：在线", &direct, &relay);
+            unsafe {
+                // 结构：首行 / sep / 直连节点 / sep / 连接节点… / sep /
+                // 打开面板 / sep / 退出。
+                assert_eq!(GetMenuItemCount(hmenu), 9, "menu layout must be intact");
+
+                // ① 首行 = 设备名 + 虚拟 IP + 状态（禁用展示项）。
+                assert_eq!(menu_string(hmenu, 0), "Meshlet「dev」 10.240.0.5：在线");
+                assert_ne!(GetMenuState(hmenu, 0, MF_BYPOSITION) & MF_GRAYED, 0);
+
+                // ② 直连节点子菜单：IP/模式/RTT 数据行，禁用态。
+                let direct_sub = GetSubMenu(hmenu, 2);
+                assert!(!direct_sub.is_null(), "直连节点 must be a submenu");
+                assert_eq!(GetMenuItemCount(direct_sub), 1);
+                assert_eq!(menu_string(direct_sub, 0), "10.240.0.2 · 直连 · 12 ms");
+                assert_ne!(GetMenuState(direct_sub, 0, MF_BYPOSITION) & MF_GRAYED, 0);
+
+                // ④ 连接节点… 子菜单：中继候选可点击（非禁用）。
+                let dial_sub = GetSubMenu(hmenu, 4);
+                assert!(!dial_sub.is_null(), "连接节点… must be a submenu");
+                assert_eq!(GetMenuItemCount(dial_sub), 1);
+                assert_eq!(menu_string(dial_sub, 0), "10.240.0.4  10.240.0.4");
+                assert_eq!(
+                    GetMenuState(dial_sub, 0, MF_BYPOSITION) & MF_GRAYED,
+                    0,
+                    "dial candidates must be clickable"
+                );
+
+                // ③ 打开面板 / 退出。
+                assert_eq!(menu_string(hmenu, 6), "打开面板");
+                assert_eq!(menu_string(hmenu, 8), "退出");
+
+                DestroyMenu(hmenu);
+            }
+        }
+
+        #[test]
+        fn build_menu_shows_empty_placeholders_without_peers() {
+            let hmenu = build_menu("Meshlet", &[], &[]);
+            unsafe {
+                let direct_sub = GetSubMenu(hmenu, 2);
+                let dial_sub = GetSubMenu(hmenu, 4);
+                assert_eq!(GetMenuItemCount(direct_sub), 1);
+                assert_eq!(menu_string(direct_sub, 0), "（无）");
+                assert_eq!(GetMenuItemCount(dial_sub), 1);
+                assert_eq!(menu_string(dial_sub, 0), "（无）");
+                DestroyMenu(hmenu);
+            }
+        }
     }
 }

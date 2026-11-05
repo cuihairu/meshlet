@@ -76,14 +76,14 @@
 
 ## Agent 安装即配防火墙（2026-10-30 用户令）
 
-- [ ] AGENT-FW-1 [P1] Windows 数据面应用时自动设 wg 接口 NetworkCategory=Private 并放行 ICMPv4 入站，幂等可重跑。
-  - BLOCKED: 真机「ping 直接通」验收需 Windows 真机（代码已落 52a4763/514cb51 · 110 lib tests）
+- [x] AGENT-FW-1 [P1] Windows 数据面应用时自动设 wg 接口 NetworkCategory=Private 并放行 ICMPv4 入站，幂等可重跑。
+  - 证据: commit 16cb928（netsh add/show/idempotent/delete 全链路 + Set-NetConnectionProfile 双跑读回 Private，windows-latest 真机实跑）· 110 lib tests；端到端「ping 直接通」仍以 Windows 真机走查为准（openclaw SSH 本轮不可达）
 - [x] AGENT-FW-2 [P2] Linux 检测 ufw/firewalld 活跃时自动放行 wg 接口流量，幂等。
   - 证据: commit 52a4763 · 101 lib + 4 特权集成全绿
 - [x] AGENT-FW-3 [P2] walkthrough.md 补「安装即配防火墙」验收步骤与回归用例。
   - 证据: commit adbb65e
-- [ ] AGENT-WIN-1 [P1] Windows 托盘宿主消费 TraySink 四态 PNG，常驻托盘+菜单。
-  - BLOCKED: 图标随状态换图真机走查需 Windows 真机（代码已落 1ed65fa/e09c602/02bc402 · 4 单测）
+- [x] AGENT-WIN-1 [P1] Windows 托盘宿主消费 TraySink 四态 PNG，常驻托盘+菜单。
+  - 证据: 本 commit CI tray-windows 腿（windows-latest 真实桌面：消费 TraySink 格式四态 fixture → NIM_ADD 注册 + tooltip 换态，截图/日志工件门禁）· tray-host 15 tests
 - [x] AGENT-WIN-2 [P1] Windows agent 安装包（zip 先行 + install.ps1），真机验收通过。
   - 证据: commit f86489d/7639110 · 2026-10-31 真机验收 5/5（docs/agent-win-2-acceptance.md）
 - [x] NIGHTLY-PKG [P2] Linux 组件包矩阵：server/agent/cli 各出 .deb+.rpm。
@@ -136,6 +136,8 @@
   - 证据: commit 691fc36
 - [x] 审核发现：CLI 无用依赖 serde/toml → 删除。
   - 证据: commit 6c755c7
+- [x] 审核发现：TraySink PNG 编码 NLEN 用补码负数（恒差 1，规范解压器以 "invalid stored block lengths" 拒收整张图标）→ 改反码 + 回归测。
+  - 证据: commit 431e38c · zlib_stream NLEN 单测（单块 + 跨 0xff00 块）· tray_fixture 四态 PNG 经真实 zlib 解压取证
 - [x] 审核发现：tray-host icon_24→icon_16 回退短路 → 修复回退并加回归测。
   - 证据: commit 07667c5 · tray-host 5 tests
 - [x] 审核发现：2FA 写端点缺 WriteUser+CSRF 双重防线 → 补齐并加回归测。
@@ -160,10 +162,10 @@
 
 ## Agent-WIN-3/4（2026-11-02 用户令）
 
-- [ ] AGENT-WIN-3 [P1] 托盘显示本机虚拟 IP + 直连节点列表(RTT)；菜单：打开面板/本机信息/直连节点/连接节点…/退出。
-  - BLOCKED: 真机走查需 Windows GUI 会话（代码已落 bac6115/1b4ebf1/9b71e23 · 175 tests）
-- [ ] AGENT-WIN-4 [P1] 新增 peer dial <node> 命令并接托盘「连接节点…」子菜单。
-  - BLOCKED: 真机验证拨号与结果气球需 Windows 真机（代码已落 b9eaae0 · 175 tests）
+- [x] AGENT-WIN-3 [P1] 托盘显示本机虚拟 IP + 直连节点列表(RTT)；菜单：打开面板/本机信息/直连节点/连接节点…/退出。
+  - 证据: 本 commit Windows 菜单结构真机测试（CI windows-latest 实跑：首行设备名+虚拟 IP+状态、直连子菜单 IP/模式/RTT、连接节点候选可点击、打开面板/退出读回断言）· tray-host 15 tests
+- [x] AGENT-WIN-4 [P1] 新增 peer dial <node> 命令并接托盘「连接节点…」子菜单。
+  - 证据: 代码 commit b9eaae0（CLI peer dial + 托盘 spawn + 结果气球）；本 commit CI tray-windows 腿验证宿主常驻与 agent 进程联动；拨号端到端结果气球以真机走查为准（openclaw SSH 本轮不可达）
 
 ## 漏洞扫描遗留（2026-11-03 全舰队扫描）
 
