@@ -96,6 +96,10 @@
 - [x] AUDIT-FIX · P2/P3 impeccable 审计待修 8 项。
   - 证据: commit 2356fa3/1df7169/1f2fbc3/6863f08/5313ef6/c300722/9511c16/6276cda · 28 tests
 
+## Windows 托盘随安装包分发（2026-11-05 用户问「装完怎么没托盘」暴露）
+
+- [ ] INSTALL-TRAY-1 [P2] install.ps1 默认安装并自启 meshlet-tray-host（现仅 zip 内携带、install.ps1 只装 agent——scripts/install.ps1:165/188）；行为：复制 tray-host、HKCU Run 注册（logon 启动，指向 agent state 目录）、可选立即启动；CI windows-latest 出托盘截图；nightly zip 重发后真机验证托盘出现。
+
 ## Console 网络拓扑图（2026-11-05 用户令，补账：此前未入账）
 
 - [x] TOPO-1 [P1] console 新增「拓扑」页：hub 居中，节点环布；连线区分 直连（实线，标注 RTT）与 hub 中继（虚线）；节点卡=设备名/虚拟 IP/在线状态/online_state；数据源=现有 peers/endpoints API + 心跳状态，实时刷新；直连未启用或单节点时如实显示引导（如何开 direct_connect、为什么当前无直连）。中英文案双语（UiStrings 惯例）。
