@@ -4,11 +4,13 @@ use axum::Router;
 use http_body_util::BodyExt;
 use meshlet_domain::PresenceThresholds;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
 const OVERLAY: &str = "10.245.0.0/16";
 const PUBLIC_KEY: &str = "63WKTVQHfLQMkXWNpBdDQqfWf2vN6VjYtYQjbfYnPEo=";
+static DB_SEQ: AtomicU32 = AtomicU32::new(0);
 
 struct Ctx {
     app: Router,
@@ -17,15 +19,10 @@ struct Ctx {
 }
 
 async fn app() -> Ctx {
-    let debug_dir = std::env::temp_dir().join("meshlet-txdebug");
-    std::fs::create_dir_all(&debug_dir).unwrap();
-    let db = debug_dir.join(format!(
-        "meshlet-tx-boundary-{}-{}-debug.db",
+    let db = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "meshlet-tx-boundary-{}-{}.db",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        DB_SEQ.fetch_add(1, Ordering::SeqCst)
     ));
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
