@@ -198,9 +198,12 @@ Each iteration forks a fresh `curl` process, so these are floors set by client p
 
 ## Not accepted
 
-- Windows client: no Windows machine on this seat, so R-05 stays open.
-  - **2026-11-05 update**: three Windows machines have been provided (imac 192.168.5.117, openclaw 10.240.0.3, work win11 `cuihaitao` 10.240.0.5); the R-05 acceptance is running on imac and the cuihaitao node is installed (agent + tray host) and online. The note above reflects only that seat at that time. The `x86_64-pc-windows-msvc`
-   check/clippy gate is green, nothing more.
+- Windows client: remains not accepted while the R-05 end-to-end acceptance runs on the newly
+  provided Windows machines.
+  - **2026-11-05 update**: three Windows machines have been provided (imac 192.168.5.117,
+    openclaw 10.240.0.3, work win11 `cuihaitao` 10.240.0.5); the R-05 acceptance is running on
+    imac and the cuihaitao node is installed (agent + tray host) and online (plan applied,
+    tunnel up). The `x86_64-pc-windows-msvc` check/clippy gate is green, nothing more.
 - Long-run soak: the run is hours, not weeks. No sustained traffic over a multi-day window.
 - LAN routes, alias mappings, NAT and gateway agents are exercised as absent (`not_applicable`/`unavailable`
    in diagnostics), not positively tested on a gateway.

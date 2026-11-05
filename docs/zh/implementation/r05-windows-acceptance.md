@@ -79,8 +79,8 @@ netsh 删除不存在路由返回 `D5 D2 B2 BB B5 BD D4 AA CB D8 A1 A3`（
 
 ## 仍未验收
 
-以下三项保持 BLOCKED，也是 R-05 不勾的原因。**win-worker 已永久停用；
-补齐需要用户手动提供可重启的 Windows 真机。**
+以下三项仍是 R-05 未勾的原因，但 2026-11-05 起不再 BLOCKED：win-worker 已永久停用；
+用户已提供可重启的 Windows 真机，三项验收正在真机执行中（见下方 2026-11-05 更新）。
 
 > **2026-11-05 更新**：真机已到位（imac 192.168.5.117、openclaw 10.240.0.3、work cuihaitao 10.240.0.5，共 3 台）。本节 BLOCKED 口径作废；全链路验收在 imac 进行中，cuihaitao 节点已安装 agent 与 tray-host 并在线（10.240.0.8，期望计划已应用）。
 
