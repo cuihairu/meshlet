@@ -98,7 +98,8 @@
 
 ## Windows 托盘随安装包分发（2026-11-05 用户问「装完怎么没托盘」暴露）
 
-- [ ] INSTALL-TRAY-1 [P2] install.ps1 默认安装并自启 meshlet-tray-host（现仅 zip 内携带、install.ps1 只装 agent——scripts/install.ps1:165/188）；行为：复制 tray-host、HKCU Run 注册（logon 启动，指向 agent state 目录）、`-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程存在；nightly zip 重发后的真机托盘出现/菜单走查保持 BLOCKED，待用户手动验证（不代勾）。
+- [ ] INSTALL-TRAY-1 [P2] install.ps1 默认安装并自启 meshlet-tray-host（行为：复制 tray-host、HKCU Run 注册（logon 启动，指向 agent state 目录）、`-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程存在）；nightly zip 重发后的真机托盘出现/菜单走查保持 BLOCKED，待用户手动验证（不代勾）。
+  - 实现状态: 已完成——commit 8740c52 将 tray-host 复制到安装目录、注册 HKCU Run 自启（指向 agent state 目录）、新增 `-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程与注册表条目（installer-windows 腿绿）。真机托盘出现/菜单走查保持 BLOCKED，不代勾。
 
 ## Console 网络拓扑图（2026-11-05 用户令，补账：此前未入账）
 
