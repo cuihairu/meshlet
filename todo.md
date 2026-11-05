@@ -96,6 +96,11 @@
 - [x] AUDIT-FIX · P2/P3 impeccable 审计待修 8 项。
   - 证据: commit 2356fa3/1df7169/1f2fbc3/6863f08/5313ef6/c300722/9511c16/6276cda · 28 tests
 
+## Console 网络拓扑图（2026-11-05 用户令，补账：此前未入账）
+
+- [ ] TOPO-1 [P1] console 新增「拓扑」页：hub 居中，节点环布；连线区分 直连（实线，标注 RTT）与 hub 中继（虚线）；节点卡=设备名/虚拟 IP/在线状态/online_state；数据源=现有 peers/endpoints API + 心跳状态，实时刷新；直连未启用或单节点时如实显示引导（如何开 direct_connect、为什么当前无直连）。中英文案双语（UiStrings 惯例）。
+  - 验收: console 组件测试覆盖拓扑渲染三态（有直连/仅中继/单节点引导）；CI 绿；真机双节点走查挂 R-DIAG-2 同一前置。
+
 ## Windows MSI 安装包（2026-11-05 用户追问补账：此前口头承诺未入账，已漏 19 天——账本纪律事故）
 
 - [ ] NIGHTLY-MSI-1 [P1] Windows nightly 增出 MSI 安装包（cargo-wix）：meshlet-server/agent/cli + tray-host 打进单个 msi，含开始菜单项与卸载；与现有 zip 并存不互替；CI windows-latest 真实产出 msi 并入 nightly release 资产。
