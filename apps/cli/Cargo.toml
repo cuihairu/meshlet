@@ -10,3 +10,6 @@ serde_json = { workspace = true }
 ureq = { workspace = true }
 meshlet-network = { workspace = true }
 meshlet-commands = { workspace = true }
+
+[build-dependencies]
+winresource = "0.1"

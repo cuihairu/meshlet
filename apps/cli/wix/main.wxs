@@ -1,0 +1,103 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!--
+  Meshlet Windows MSI (WiX v3 manifest, built via cargo-wix from apps/cli).
+
+  cargo-wix injects the `$(var.Cargo*)` defines on every run, so exe sources
+  must use `$(var.CargoTargetBinDir)` and the product version comes from the
+  workspace version via `$(var.CargoPackageVersion)`. Do not build with an
+  explicit target triple: cargo-wix resolves candle/light relative paths
+  against the repo root cwd and a triple would move the exes (LGHT0103).
+  The manifest packages all four workspace bins; cargo-wix only builds its own
+  package's bin (meshlet-cli), so the nightly workflow pre-builds the other
+  three with the same release-profile build invocation (without a target).
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product
+      Id='*'
+      Name='Meshlet'
+      Language='1033'
+      Codepage='1252'
+      Version='$(var.CargoPackageVersion)'
+      Manufacturer='meshlet'
+      UpgradeCode='ad61fb0d-6819-4f3e-8072-ded49409b10b'>
+
+    <Package
+        Description='Meshlet overlay network (server, agent, CLI and tray host)'
+        Manufacturer='meshlet'
+        InstallerVersion='500'
+        Compressed='yes'
+        InstallScope='perMachine' />
+
+    <MajorUpgrade
+        AllowSameVersionUpgrades='yes'
+        DowngradeErrorMessage='A newer version of [ProductName] is already installed.' />
+
+    <MediaTemplate EmbedCab='yes' />
+
+    <Icon Id='MeshletIco' SourceFile='assets/icons/meshlet.ico' />
+    <Property Id='ARPPRODUCTICON' Value='MeshletIco' />
+
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='ProgramFiles64Folder'>
+        <Directory Id='INSTALLDIR' Name='Meshlet' />
+      </Directory>
+      <Directory Id='ProgramMenuFolder'>
+        <Directory Id='MeshletProgramsFolder' Name='Meshlet' />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id='INSTALLDIR'>
+      <Component Id='MeshletServerExe' Guid='d022ecc6-fc11-432f-a05a-26a249556afe'>
+        <File Id='MeshletServerFile' Name='meshlet-server.exe'
+              Source='$(var.CargoTargetBinDir)\meshlet-server.exe' KeyPath='yes' />
+      </Component>
+      <Component Id='MeshletAgentExe' Guid='ddb900f1-107c-46e2-b1cc-27b477239288'>
+        <File Id='MeshletAgentFile' Name='meshlet-agent.exe'
+              Source='$(var.CargoTargetBinDir)\meshlet-agent.exe' KeyPath='yes' />
+      </Component>
+      <Component Id='MeshletCliExe' Guid='5de61ae1-cd02-4cf5-a16c-1c342312bd9b'>
+        <File Id='MeshletCliFile' Name='meshlet-cli.exe'
+              Source='$(var.CargoTargetBinDir)\meshlet-cli.exe' KeyPath='yes' />
+      </Component>
+      <Component Id='MeshletTrayHostExe' Guid='87c5a9d0-af79-4d4f-8883-094c9e271617'>
+        <File Id='MeshletTrayHostFile' Name='meshlet-tray-host.exe'
+              Source='$(var.CargoTargetBinDir)\meshlet-tray-host.exe' KeyPath='yes' />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id='MeshletProgramsFolder'>
+      <Component Id='MeshletShortcuts' Guid='dd601c95-bc31-44f8-ba86-6485f1c3f32e'>
+        <Shortcut Id='MeshletCliShortcut'
+                  Name='Meshlet CLI'
+                  Description='Meshlet command line client'
+                  Target='[INSTALLDIR]meshlet-cli.exe'
+                  WorkingDirectory='INSTALLDIR' />
+        <Shortcut Id='MeshletTrayShortcut'
+                  Name='Meshlet Tray Host'
+                  Description='Meshlet system tray status host'
+                  Target='[INSTALLDIR]meshlet-tray-host.exe'
+                  WorkingDirectory='INSTALLDIR' />
+        <Shortcut Id='MeshletUninstallShortcut'
+                  Name='Uninstall Meshlet'
+                  Description='Uninstall Meshlet'
+                  Target='[SystemFolder]msiexec.exe'
+                  Arguments='/x [ProductCode]' />
+        <RemoveFolder Id='RemoveMeshletProgramsFolder' On='uninstall' />
+        <RegistryValue Root='HKCU'
+                       Key='Software\meshlet\Meshlet'
+                       Name='startmenu'
+                       Type='integer'
+                       Value='1'
+                       KeyPath='yes' />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id='DefaultFeature' Title='Meshlet' Level='1'>
+      <ComponentRef Id='MeshletServerExe' />
+      <ComponentRef Id='MeshletAgentExe' />
+      <ComponentRef Id='MeshletCliExe' />
+      <ComponentRef Id='MeshletTrayHostExe' />
+      <ComponentRef Id='MeshletShortcuts' />
+    </Feature>
+  </Product>
+</Wix>
