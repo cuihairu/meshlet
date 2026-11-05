@@ -137,6 +137,10 @@
 
 **明确不做／延后：** 延后 MSI、自动驱动分发和自动升级中心；不把校验和当成发布者签名；不宣称 zip 已经具备 Windows 完整网络能力；不将 token 写入报告或公开日志。
 
+> 更新（2026-11-05）：用户推翻本条「延后 MSI」的决定——MSI 已落地并进入 nightly（`todo.md` NIGHTLY-MSI-1；
+> cargo-wix 构建 `meshlet-nightly-windows-x86_64.msi`，单包含 server/agent/CLI/tray-host、开始菜单项与卸载项）。
+> 以上原文保留为历史口径；真机安装验收仍未做，AGENT-WIN-2 口径不变。
+
 ## D6：实验环境被拆除，需要先查明责任吗？
 
 **来源：** R-07 终局记录及用户侧动作（`todo.md:51`）；审核发现中的重复引用统一归此项。

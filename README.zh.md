@@ -83,7 +83,7 @@ Windows 是数据面目标平台，受真机验收门禁（[R-05](docs/implement
 **Windows 上仍未就绪：**
 
 - **agent 活动数据面后端未接线。** Windows 的 `SystemBackend` 仍是显式 `unsupported` 占位，直到隧道生命周期、提权执行层与开机恢复通过真机验收。Windows agent 可注册、上报状态，但应用隧道/路由/NAT 计划被显式拒绝——没有任何假装成功。
-- **无 MSI，且安装包真机验收未做。** nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）；尚无 MSI，安装脚本也未经真机验收（AGENT-WIN-2）。
+- **MSI 已入 nightly，安装包真机验收未做。** nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）、`install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)），以及 MSI 安装包（`meshlet-nightly-windows-x86_64.msi`，cargo-wix 构建：server/agent/CLI/tray-host 单包，含开始菜单项与卸载项）；两类安装包均未经真机验收（AGENT-WIN-2、`todo.md` NIGHTLY-MSI-1）。
 - **Windows 托盘宿主已随包发布，真机验收待做。** `apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`），已随 nightly zip 发布；`install.ps1` 尚不安装/注册它，图标换图与菜单的真机走查按 AGENT-WIN-2/3 跟踪。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知；仓库内没有面向任一平台桌面壳的面板宿主二进制。
 
 ### 在 Windows 安装 agent

@@ -98,10 +98,12 @@ Windows is a data-plane target gated behind real-machine acceptance
   `unsupported` placeholder until the tunnel lifecycle, elevation exec and boot-recovery items pass
   real-machine acceptance. A Windows agent registers and reports status, but applying a
   tunnel/routes/NAT plan is rejected with an explicit error — nothing pretends to succeed.
-- **No MSI, and real-machine install acceptance is pending.** The nightly release publishes a
-  Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`) and an `install.ps1` installer
-  ([install below](#install-the-agent-on-windows)); there is no MSI, and the installer has not yet
-  been accepted on a real machine (AGENT-WIN-2).
+- **MSI is in the nightly; real-machine install acceptance is pending.** The nightly release publishes a
+  Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`), an `install.ps1` installer
+  ([install below](#install-the-agent-on-windows)) and an MSI installer
+  (`meshlet-nightly-windows-x86_64.msi`, built with cargo-wix: server/agent/CLI/tray-host in one
+  package, start-menu shortcuts, Add/Remove Programs entry). Neither installer has been accepted on
+  a real machine yet (AGENT-WIN-2, NIGHTLY-MSI-1 in `todo.md`).
 - **A Windows tray host ships, real-machine acceptance pending.** `apps/tray-host`
   (`meshlet-tray-host.exe`, a thin Win32 `Shell_NotifyIcon` host) consumes the agent's four-state
   status PNGs (`TraySink`) and is included in the nightly zip; `install.ps1` does not install or
