@@ -415,7 +415,11 @@ fn zlib_stream(data: &[u8]) -> Vec<u8> {
         let len = data.len().saturating_sub(i).min(CHUNK);
         out.push((i + len >= data.len()) as u8); // BFINAL=bit0, BTYPE=00(stored)
         out.extend_from_slice(&(len as u16).to_le_bytes());
-        out.extend_from_slice(&(len as u16).wrapping_neg().to_le_bytes());
+        // NLEN = LEN 的**反码**（RFC 1950 stored 块校验和）；此前误用
+        // `wrapping_neg`（补码负数）恒差 1，规范解压器（如通用 zlib）会以
+        // "invalid stored block lengths" 拒收整张 PNG——自研解码器不校验
+        // NLEN 才一直没暴露（审核发现，tray 三连验收时以真实解压器取证）。
+        out.extend_from_slice(&(!(len as u16)).to_le_bytes());
         out.extend_from_slice(&data[i..i + len]);
         i += len;
         if i >= data.len() {
@@ -698,6 +702,32 @@ mod tests {
     }
 
     // ── PNG 编码 ────────────────────────────────────────────────────────
+
+    /// NLEN 回归（审核发现）：stored 块的 NLEN 必须是 LEN 的**反码**
+    /// （RFC 1950）。此前误用补码负数恒差 1，规范解压器拒收整张 PNG。
+    /// 覆盖单块（< 0xff00）与多块（跨 CHUNK 边界）两种流。
+    #[test]
+    fn zlib_stream_nlen_is_the_ones_complement_of_len() {
+        for total in [100usize, 0xff00, 0xff00 + 100] {
+            let data: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+            let stream = zlib_stream(&data);
+            let mut i = 2usize;
+            let mut decoded = Vec::new();
+            loop {
+                assert_eq!(stream[i] >> 1, 0, "only stored blocks are written");
+                let len = u16::from_le_bytes([stream[i + 1], stream[i + 2]]) as usize;
+                let nlen = u16::from_le_bytes([stream[i + 3], stream[i + 4]]);
+                assert_eq!(nlen, !(len as u16), "NLEN must be ~LEN (RFC 1950)");
+                decoded.extend_from_slice(&stream[i + 5..i + 5 + len]);
+                let last = stream[i] & 0x01 != 0;
+                i += 5 + len;
+                if last {
+                    break;
+                }
+            }
+            assert_eq!(decoded, data);
+        }
+    }
 
     #[test]
     fn png_roundtrip_decodes_the_same_pixels() {
