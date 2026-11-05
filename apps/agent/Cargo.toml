@@ -28,3 +28,6 @@ zbus = { version = "5.19.0", default-features = false, features = ["async-io"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_RemoteDesktop"] }
+
+[build-dependencies]
+winresource = "0.1"

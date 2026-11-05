@@ -1,3 +1,8 @@
+// Release 构建（nightly msi/zip）以 GUI 子系统链接：无控制台，stdout/stderr
+// 不可用，日志改走文件 appender（见 `init_tray_logging`）；debug 构建保留控制台
+// 子系统，供 CI 的 stderr 重定向门禁（ci.yml tray 注册证据）照常工作。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Windows 系统托盘宿主：消费 [TraySink] 的 PNG 状态图。
 //!
 //! 监听 agent 写出的 `status.json` + `icon-*.png`，通过 `Shell_NotifyIcon`
@@ -90,7 +95,10 @@ fn main() {
     let tray_dir = state_dir.join("tray");
     let status_path = tray_dir.join("status.json");
 
-    eprintln!("meshlet-tray-host: watching {}", tray_dir.display());
+    // `_log_guard` 必须绑定到 main 生命周期：non-blocking 写线程随 guard 存活。
+    let _log_guard = init_tray_logging();
+
+    tracing::info!("watching {}", tray_dir.display());
 
     while !tray_dir.exists() {
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -131,7 +139,7 @@ fn main() {
             GetModuleHandleW(std::ptr::null()),
             std::ptr::null(),
         );
-        eprintln!("meshlet-tray-host: hwnd={hwnd:p}");
+        tracing::debug!("hwnd={hwnd:p}");
         G_HWND.store(hwnd as isize, Ordering::SeqCst);
 
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
@@ -143,13 +151,13 @@ fn main() {
         nid.hIcon = load_status_icon(&status_path)
             .map(|(w, h, rgba)| rgba_to_icon(&rgba, w, h))
             .unwrap_or_else(create_green_icon);
-        eprintln!("meshlet-tray-host: hIcon={:p}", nid.hIcon);
+        tracing::debug!("hIcon={:p}", nid.hIcon);
         let tip: Vec<u16> = "Meshlet\0".encode_utf16().collect();
         for (i, &w) in tip.iter().enumerate().take(127) {
             nid.szTip[i] = w;
         }
         let ok = Shell_NotifyIconW(NIM_ADD, &nid);
-        eprintln!("meshlet-tray-host: NIM_ADD = {ok}");
+        tracing::info!("NIM_ADD = {ok}");
 
         // 菜单不再在此一次性构建：每次右键按当前状态快照重建（见
         // tray_wnd_proc / build_menu），首行 + 直连/连接子菜单均为新鲜数据。
@@ -190,7 +198,7 @@ fn main() {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        eprintln!("meshlet-tray-host: message loop exited");
+        tracing::info!("message loop exited");
     }
 }
 
@@ -408,7 +416,7 @@ fn update_tray(status_path: &std::path::Path, nid: &mut NOTIFYICONDATAW) {
 
     if let Some(status) = status {
         let tooltip = status["tooltip"].as_str().unwrap_or("Meshlet");
-        eprintln!("meshlet-tray-host: tooltip={tooltip}");
+        tracing::info!("tooltip={tooltip}");
 
         let tip_wide: Vec<u16> = tooltip.encode_utf16().collect();
         for i in 0..127 {
@@ -530,19 +538,19 @@ fn ascii_lower(c: u16) -> u16 {
 #[cfg(windows)]
 fn terminate_agent() {
     let Some(pid) = agent_pid() else {
-        eprintln!("meshlet-tray-host: no agent process to stop");
+        tracing::warn!("no agent process to stop");
         return;
     };
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if handle.is_null() {
-            eprintln!(
-                "meshlet-tray-host: OpenProcess({pid}) failed: {}",
+            tracing::warn!(
+                "OpenProcess({pid}) failed: {}",
                 std::io::Error::last_os_error()
             );
             return;
         }
-        eprintln!("meshlet-tray-host: stopping agent pid={pid}");
+        tracing::info!("stopping agent pid={pid}");
         TerminateProcess(handle, 0);
         CloseHandle(handle);
     }
@@ -552,11 +560,11 @@ fn terminate_agent() {
 #[cfg(windows)]
 fn open_panel(hwnd: HWND) {
     let Some(state_dir) = G_STATE_DIR.get() else {
-        eprintln!("meshlet-tray-host: state dir unknown, cannot open panel");
+        tracing::warn!("state dir unknown, cannot open panel");
         return;
     };
     let Some(url) = panel_url(state_dir) else {
-        eprintln!("meshlet-tray-host: no panel URL (server_url missing from agent.toml)");
+        tracing::warn!("no panel URL (server_url missing from agent.toml)");
         return;
     };
     let op: Vec<u16> = "open\0".encode_utf16().collect();
@@ -602,6 +610,41 @@ fn panel_url(state_dir: &std::path::Path) -> Option<String> {
     None
 }
 
+/// 托盘宿主日志初始化。
+///
+/// - debug 构建：控制台子系统仍在，直接写 stderr —— ci.yml 的
+///   `-RedirectStandardError` 门禁（`NIM_ADD`/`tooltip` 断言）依赖它。
+/// - release 构建：`windows_subsystem="windows"` 无控制台，写每日滚动的日志
+///   文件（`%LOCALAPPDATA%/meshlet/logs/meshlet-tray-host.log`）。目录不存在
+///   或不可写时降级为 `io::sink`——托盘功能优先，绝不因日志 panic。
+#[cfg(windows)]
+fn init_tray_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    if cfg!(debug_assertions) {
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(std::io::stderr)
+            .init();
+        return None;
+    }
+    let log_dir = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .map(|base| base.join("meshlet").join("logs"))
+        .filter(|dir| std::fs::create_dir_all(dir).is_ok());
+    let (writer, guard) = match log_dir {
+        Some(dir) => tracing_appender::non_blocking(tracing_appender::rolling::daily(
+            dir,
+            "meshlet-tray-host.log",
+        )),
+        // 日志目录不可用：静默丢弃日志，不 panic。
+        None => tracing_appender::non_blocking(std::io::sink),
+    };
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(writer)
+        .init();
+    Some(guard)
+}
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("meshlet-tray-host is Windows-only");
@@ -617,7 +660,7 @@ unsafe extern "system" fn tray_wnd_proc(
 ) -> LRESULT {
     if msg == WM_APP + 1 {
         let event = lparam as u32;
-        eprintln!("meshlet-tray-host: tray event={event:#x}");
+        tracing::debug!("tray event={event:#x}");
         if event == WM_RBUTTONUP || event == WM_LBUTTONUP {
             // ①②④：每次右键按当前状态快照重建菜单——首行（设备名+虚拟 IP+
             // 状态）、「直连节点」（IP/模式/RTT）、「连接节点…」（可拨候选）。
@@ -643,7 +686,7 @@ unsafe extern "system" fn tray_wnd_proc(
                 hwnd,
                 std::ptr::null(),
             ) as usize;
-            eprintln!("meshlet-tray-host: menu cmd={cmd}");
+            tracing::debug!("menu cmd={cmd}");
             // 菜单已用毕，立即销毁（`TPM_RETURNCMD` 不投递 WM_COMMAND）。
             destroy_current_menu();
             match cmd {
@@ -669,7 +712,7 @@ unsafe extern "system" fn tray_wnd_proc(
     }
     // ④ watchdog：agent 进程已死，托盘随之退出。
     if msg == WM_TRAY_EXIT {
-        eprintln!("meshlet-tray-host: agent process gone, exiting tray");
+        tracing::info!("agent process gone, exiting tray");
         do_exit();
         return 0;
     }
