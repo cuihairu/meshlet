@@ -21,7 +21,7 @@ features:
     link: /zh/implementation/r04-linux-agent-e2e
     linkText: 验收记录
   - title: 没做到的不打勾
-    details: 没有可用 Windows 真机（R-05 未勾）；长期浸泡采集器 2026-10-24 起在跑，需要数周数据；尚无带日期的 release。TODO 里这三项都保持可见。
+    details: Windows 真机已到位（3 台：imac / openclaw / work-win11），R-05 全链路验收在 imac 进行中；长期浸泡采集器 2026-10-24 起在跑，需要数周数据；尚无带日期的 release。TODO 里这三项都保持可见。
     link: /zh/implementation/r07-deployment-acceptance
     linkText: 部署验收
 ---

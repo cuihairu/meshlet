@@ -82,6 +82,8 @@ netsh 删除不存在路由返回 `D5 D2 B2 BB B5 BD D4 AA CB D8 A1 A3`（
 以下三项保持 BLOCKED，也是 R-05 不勾的原因。**win-worker 已永久停用；
 补齐需要用户手动提供可重启的 Windows 真机。**
 
+> **2026-11-05 更新**：真机已到位（imac 192.168.5.117、openclaw 10.240.0.3、work cuihaitao 10.240.0.5，共 3 台）。本节 BLOCKED 口径作废；全链路验收在 imac 进行中，cuihaitao 节点已安装 agent 与 tray-host 并在线（10.240.0.8，期望计划已应用）。
+
 1. **WireGuardNT 隧道全生命周期** —— 安装 WireGuardNT 驱动后在真机跑
    install → start → stop → uninstall。
 2. **提权执行层真机运行** —— `windows_elevation` 执行路径从未在真机
