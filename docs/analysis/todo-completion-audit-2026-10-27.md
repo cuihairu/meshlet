@@ -2,10 +2,10 @@
 
 **Scope:** M5 in `todo.md` — verify, item by item, every **checked** box: implementation
 path, test coverage, and real acceptance evidence. This report is also the required
-upstream input to the still-pending **TODO #52 SystemBackend wiring decision**
+upstream input to the still-pending TODO #52 SystemBackend wiring decision
 (`crates/meshlet-network/src/lib.rs:44-49`).
 
-**Conditions:** audited 2026-10-27 on `/home/cui/workspaces/meshlet` at `ebcd9e7`
+Conditions: audited 2026-10-27 on `/home/cui/workspaces/meshlet` at `ebcd9e7`
 (post-M4), read-only inspection of code, tests, and acceptance docs, plus one live
 `cargo test --workspace` run at that revision (exit 0; `single_instance` 8 tests in
 71.14 s parallel — corroborating the 71.43 s figure M4 records).
@@ -96,8 +96,8 @@ The security-critical chain is real and has no gap in the paths I swept.
 
 ## Focus area 3 — Windows backend (the #52 input)
 
-**Windows cannot be wired as `SystemBackend` today, and the blocker is not a missing
-`cfg` line.**
+Windows cannot be wired as `SystemBackend` today, and the blocker is not a missing
+`cfg` line.
 
 - **The decision site** is a single alias (`lib.rs:44-49`): Linux →
   `linux::LinuxNetworkBackend`, non-Linux → `unsupported::UnsupportedBackend`. Its
@@ -107,7 +107,7 @@ The security-critical chain is real and has no gap in the paths I swept.
 - **Zero tunnel implementation.** A grep for `wireguardnt|wintun|tun2socks|OpenAdapter`
   over `crates/` and `apps/` returns exactly two hits, both doc comments in
   `windows_routes.rs:13,207`. No driver load, no adapter creation, no adapter-name
-  discovery. Windows today is **routes + firewall + service + elevation + cleanup only** —
+  discovery. Windows today is routes + firewall + service + elevation + cleanup only —
   and `apply_tunnel` is the first call the agent makes
   (`apps/agent/src/agent.rs:124`). Wiring requires building the tunnel subsystem
   (driver install, tunnel service, config persistence, interface discovery, MTU), which
@@ -144,19 +144,20 @@ rollback `:1158`, drift detection `:819/1388/1435`. Revoke ordering covered by
 `apps/server/tests/device_revoke.rs` (8 tests). Last-good recovery at
 `apps/agent/src/agent.rs:502`. `docs/implementation/r02-linux-dataplane.md` is nine lines
 of prose with **no dates, hashes, or numbers** — it describes
-`crates/meshlet-net-linux/`, which **no app depends on** (nftables implementation,
-effectively dead code). **Deleted 2026-10-27**; the doc now carries a superseded note.
+`crates/meshlet-net-linux/`, which no app depends on (nftables implementation,
+effectively dead code). Deleted 2026-10-27; the doc now carries a superseded note.
 
 ### R-03 — 证据弱
-**`crates/meshlet-netplan` was deleted 2026-10-27** (follow-up #2), so the symbol:line
+`crates/meshlet-netplan` was deleted 2026-10-27 (follow-up #2), so the symbol:line
 references below are historical, kept for the record:
 `crates/meshlet-netplan` (`canonical_conflicts:18`, `analyze_network_conflicts:103`,
 `validate_network:131`, `plan_hub_peers:330`, `plan_network:411`). 12 tests / 23 fns,
-ungated, including the order-independence claims: `stable_ipam_allocates_lowest_free_addresses_independent_of_input_order:248`,
+ungated, including the order-independence claims:
+`stable_ipam_allocates_lowest_free_addresses_independent_of_input_order:248`,
 `overlapping_alias_space_is_rejected_without_favoring_input_order:321`,
 `hub_plan_is_identical_after_shuffling_creation_order:366`,
 `global_conflict_set_and_plan_error_are_order_independent:519`. But
-`meshlet-netplan` appears in **no** `apps/*/Cargo.toml` and **no** server source file;
+`meshlet-netplan` appears in **no** `apps/*/Cargo.toml` and no server source file;
 the server does its own conflict handling (`apps/server/src/alias.rs:63`,
 `lib.rs:282/360`).
 
@@ -181,13 +182,14 @@ classification) with 11 Linux tests; the `#[cfg(windows)]` exec layer
 (`windows_elevation.rs:194`) has **no tests inside it** and its own doc at `:196` states
 it was never tested on a machine. Sub-item honest as labelled, but "权限提升" covers the
 compile gate only.
-**Dataplane real-machine:** two `#![cfg(target_os = "windows")]` integration files
+Dataplane real-machine: two `#![cfg(target_os = "windows")]` integration files
 (`tests/windows_netsh.rs`, `tests/windows_cleanup_e2e.rs`) run natively in CI on
 windows-latest (`.github/workflows/ci.yml` matrix `os: [ubuntu-latest, windows-latest]`
 with `cargo test --workspace`). Real zh-CN bytes are embedded as assertions
 (`GBK_ELEMENT_ABSENT` = `D5 D2 B2 BB B5 BD D4 AA CB D8 A1 A3` → `找不到元素。`), including
 sc 1060/1062 idempotency. Note the decoder is `#[cfg(windows)]` with a Linux
-`utf8_lossy` stub, so CP936 decoding is only verified on real Windows. Also: `docs/implementation/r05-windows-acceptance.md` **does not exist** and was never committed —
+`utf8_lossy` stub, so CP936 decoding is only verified on real Windows. Also:
+`docs/implementation/r05-windows-acceptance.md` does not exist and was never committed —
 `dispatch/` is untracked scratch. (后补见本次提交新增的
 `docs/implementation/r05-windows-acceptance.md` —— R-05 数据面真机验收记录。)
 
@@ -197,18 +199,18 @@ TLS branch `:165`, plain `:187`, bounds-checked SNI sniff `:227`), `authorizatio
 (OR semantics, IPv4-only), `health.rs:35`, `dns.rs:85/108/134/159`.
 
 Claimed counts verified exactly: publish integration **12**, backup **9**
-(`assert_eq!(migrations, 13)` at `:361`), migrations **12**, console **17**; SNI fixes
-**11 unit + 3 integration**.
+(`assert_eq!(migrations, 13)` at `:361`), migrations 12, console 17; SNI fixes
+11 unit + 3 integration.
 
 Acceptance `docs/implementation/r06-service-publishing.md` is a verbatim host log from
 `106.14.216.177`: `18080` → `L4-FORWARD-BACKEND-OK`, `18083` (`10.9.9.9/32`) → reset zero
 bytes, `18090` → `HTTP-ROUTE-BACKEND-OK`, `dig @127.0.0.1 -p 15353` → `10.240.0.5` with
-public names unanswered, TLS passthrough returning the **backend** cert
+public names unanswered, TLS passthrough returning the backend cert
 `CN=tls.mesh.internal` via `openssl s_client` from both `127.0.0.1` and `172.19.169.82`,
 probe `checked_at` advancing across two 35 s snapshots. Three real defects found and fixed
 with regressions.
 
-**Explicitly not verified**, and TODO's R-06 real-machine acceptance entry discloses all of
+Explicitly not verified, and TODO's R-06 real-machine acceptance entry discloses all of
 it accurately: `0.0.0.0:53`
 was never bound (root binding needs privileges); `15353/18080/18083/18090` are blocked by
 the cloud security group, so all data-plane evidence is loopback/private-IP only; no
@@ -228,8 +230,8 @@ real published artifacts, but a lab, not a rented VPS.
   `hub recovery failed` ERROR. That ERROR line is exactly the case `systemctl` cannot show,
   and nothing automates detecting it.
 - **Backup/restore:** 11 integration tests (the strongest of the six) plus the real run
-  (`385024 B`, `networks=1 devices=2 revisions=3`, plaintext SQLite `0600`). **Residual
-  risk:** restoring while the service runs renames a file over `meshlet.db` while the
+  (`385024 B`, `networks=1 devices=2 revisions=3`, plaintext SQLite `0600`). Residual
+  risk: restoring while the service runs renames a file over `meshlet.db` while the
   process holds the old inode — every later write, including a token mint returning **201**,
   lands on a detached inode and never reaches disk. The stop-first order is now mandatory
   in two docs but enforced only by prose; no code guard or test.
@@ -288,25 +290,25 @@ run.
 
 ## Discrepancies found (TODO wording vs reality)
 
-1. **R-02 says "nftables"; the wired backend uses iptables.** The nftables
+1. R-02 says "nftables"; the wired backend uses iptables. The nftables
    implementation lives only in `crates/meshlet-net-linux`, which no app depends on, and
    `r02-linux-dataplane.md` describes that unwired crate.
-2. **`crates/meshlet-netplan` is not on the product path.** The server implements conflict
+2. `crates/meshlet-netplan` is not on the product path. The server implements conflict
    handling itself. R-03's checked claim implies otherwise.
-3. **The planner dependency gate is unenforced.** `scripts/check-planner-deps.sh` is
+3. The planner dependency gate is unenforced. `scripts/check-planner-deps.sh` is
    correct but referenced by no CI job and no Makefile.
-4. **R-02 and R-03 acceptance docs contain no measured values** — nine lines of prose each,
+4. R-02 and R-03 acceptance docs contain no measured values — nine lines of prose each,
    restating what unit tests cover. That is why both are 证据弱.
-5. **R-04's 真实连接诊断 sub-item is self-contradictory**: "真实 VPS 到设备的端到端连通验收仍留下轮"
+5. R-04's 真实连接诊断 sub-item is self-contradictory: "真实 VPS 到设备的端到端连通验收仍留下轮"
    followed by "(2026-10-24 完成，见父行…)". The implementation doc marks it done.
-6. **Stale test count in TODO's R-06 授权控制 entry**: 11 integration tests is the pre-M1
+6. Stale test count in TODO's R-06 授权控制 entry: 11 integration tests is the pre-M1
    number; M1's added test makes 12. `r06-service-publishing.md` also disagreed with itself
    (11 in the coverage bullet, 12 in the surface table).
-7. **`backup.rs` "migration hard count" is not in source.** There is no count constant in
+7. `backup.rs` "migration hard count" is not in source. There is no count constant in
    `apps/server/src/backup.rs`; the migration count comes from
    `sqlx::migrate!("../../migrations")` at `store.rs:17`, and 13 is asserted in the tests
    (`backup.rs:368`, `:1086`). Claim true, wording implies a source constant.
-8. **"crate 实现与单测" overstates unit-test placement** for DNS, health probes, and
+8. "crate 实现与单测" overstates unit-test placement for DNS, health probes, and
    forwarding (TODO's R-06 DNS, 健康探测, and PortForward entries): those source files contain no in-file unit tests —
    coverage is integration tests plus lib tests in `runtime.rs`.
 9. **Line ranges drifted in the M2 TODO text**: `backend_wiring.rs:977-1182` is scenario 11
@@ -317,11 +319,11 @@ run.
    cap `:701` → `:236` (test at `:842`); heartbeat `:422` → `collect_evidence :555` with
    the probe at `:567`; update-manifest `lib.rs:941` → `:945`; self-update test span
    `:219-259` → `:227-275`. All corrected on 2026-10-27.
-10. **`windows_firewall.rs` module header is stale** — see Focus area 3.
+10. `windows_firewall.rs` module header is stale — see Focus area 3.
 11. **"真实 VPS" is imprecise for R-04 and R-07** — both ran on a local PVE lab host with
     containers. R-06's run was on a real cloud VPS. Not false, but the terms are used
     loosely.
-12. **M4's test does not explicitly assert `journal["aliases"]` is empty**; empty aliases
+12. M4's test does not explicitly assert `journal["aliases"]` is empty; empty aliases
     hold only transitively. TODO's "peer/路由/alias 均不含它" over-claims slightly.
 
 ## Blocked — external conditions required
@@ -346,7 +348,7 @@ None of these can be advanced locally. Nothing was changed in those TODO lines.
 
 ## Follow-ups that are locally actionable
 
-**Status (2026-10-27, same day): all four landed.** #1 in `ee1cf12`, #2 in `eb6ce1b`,
+Status (2026-10-27, same day): all four landed. #1 in `ee1cf12`, #2 in `eb6ce1b`,
 #3 in `2fe3fd5` (flock-based instance lock, not just a probe), #4 in the line-number sweep
 across `todo.md`, `r04-linux-agent-e2e.md`, `r06-service-publishing.md` and the two
 `windows_*.rs` headers (this report's own TODO references were made line-independent so

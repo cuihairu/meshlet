@@ -2,7 +2,8 @@
 
 ## 现状结论
 
-当前 agent 是后台拉取客户端，不是本地 API 服务。它读取配置、解析设备凭证、从 Meshlet server 拉取类型化期望计划，在本机应用/对账，再上报应用回执和心跳；不会执行服务端下发的 Shell 命令。Agent 入口没有本地 TCP listener 或 Unix socket。本方案讨论同机脚本、CLI 和后续桌面控制台使用的新本地控制面。
+当前 agent 是后台拉取客户端，不是本地 API 服务。它读取配置、解析设备凭证、从 Meshlet server 拉取类型化期望计划，在本机应用/对账，再上报应用回执和心跳；
+不会执行服务端下发的 Shell 命令。Agent 入口没有本地 TCP listener 或 Unix socket。本方案讨论同机脚本、CLI 和后续桌面控制台使用的新本地控制面。
 
 ## 当前行为与安全证据
 
@@ -21,11 +22,13 @@
 | 注册申请需管理员批准；批准前不进入活动设备集，也不能获得计划 | [`apps/server/src/agent.rs:303`](https://github.com/cuihairu/meshlet/blob/main/apps/server/src/agent.rs#L303)、[ADR-011](../decisions/adr-011-device-self-registration.md) |
 | 敏感管理操作写入审计；审计记录接口不能接收原始凭证材料 | [`apps/server/src/audit.rs:1`](https://github.com/cuihairu/meshlet/blob/main/apps/server/src/audit.rs#L1)、[`:45`](https://github.com/cuihairu/meshlet/blob/main/apps/server/src/audit.rs#L45) |
 
-Server 已有实质认证/审计能力：一次性管理员自举、会话、CSRF、分范围管理 API Token、独立设备凭证、审批门槛与敏感写入审计；敏感操作审计失败时拒绝放行。与本地 API 相关的缺口是：没有本地调用者身份、本地权限策略、本地审计 actor、listener 生命周期或状态/应用/日志 IPC 契约。现有 Token 只有宽泛 read/write 两档；浏览器会话是用户身份，不应变成本地 agent 密钥。
+Server 已有实质认证/审计能力：一次性管理员自举、会话、CSRF、分范围管理 API Token、独立设备凭证、审批门槛与敏感写入审计；敏感操作审计失败时拒绝放行。与本地 API 相关的缺口是：没有本地调用者身份、本地权限策略、
+本地审计 actor、listener 生命周期或状态/应用/日志 IPC 契约。现有 Token 只有宽泛 read/write 两档；浏览器会话是用户身份，不应变成本地 agent 密钥。
 
 ## 本地 API 边界
 
-**调用者：**(1) 同用户脚本/自动化，(2) 本机 Meshlet CLI，(3) 后续桌面/托盘控制台。配置网络需要提权时，root/系统服务应另有明确调用者策略。远程调用不在范围内；本 API 不应成为另一个网络管理 listener。
+**调用者：**(1) 同用户脚本/自动化，(2) 本机 Meshlet CLI，(3) 后续桌面/托盘控制台。配置网络需要提权时，root/系统服务应另有明确调用者策略。远程调用不在范围内；
+本 API 不应成为另一个网络管理 listener。
 
 **根据现有功能推导的首批能力：**
 
@@ -51,23 +54,30 @@ Apply 是要求 reconcile 服务端当前已批准的期望状态，不是本地
 
 ## 推荐方案
 
-**推荐基于 OS peer identity 的本地 IPC：Linux 首期用 Unix Domain Socket + `SO_PEERCRED`；Windows Agent 控制实现时用显式限制 DACL 的 named pipe 适配器。**协议和授权逻辑保持 transport-neutral。这是一个方案：由宿主认证本地主体，再按平台提供等价 IPC。不将 loopback Bearer Token 作为主要身份机制。
+推荐基于 OS peer identity 的本地 IPC：Linux 首期用 Unix Domain Socket +
+`SO_PEERCRED`；Windows Agent 控制实现时用显式限制 DACL 的 named pipe 适配器。协议和授权逻辑保持 transport-neutral。这是一个方案：由宿主认证本地主体，
+再按平台提供等价 IPC。不将 loopback Bearer Token 作为主要身份机制。
 
-理由：脚本和桌面配置无需复制秘密；内核直接给出调用者身份；Linux 与当前 server/agent 部署一致；Windows named pipe 有成熟 ACL 模型，避免引入本地 HTTP Token 特例。Server 现有凭证继续各司其职：OS 本地身份授权本地操作，设备凭证认证 agent 到 server。审计增加明确的本地 actor 和操作结果；本地 OS 身份不会隐式变成 Meshlet 管理员账号。
+理由：脚本和桌面配置无需复制秘密；内核直接给出调用者身份；Linux 与当前 server/agent 部署一致；Windows named pipe 有成熟 ACL 模型，
+避免引入本地 HTTP Token 特例。Server 现有凭证继续各司其职：OS 本地身份授权本地操作，设备凭证认证 agent 到 server。审计增加明确的本地 actor 和操作结果；
+本地 OS 身份不会隐式变成 Meshlet 管理员账号。
 
 ### 分阶段路径
 
 1. **先定契约和威胁边界：**读状态、请求 reconcile、有界日志；禁止任意命令、调用者自带计划、读取私钥和管理 server 写操作。确定请求大小/时限及审计字段。
-2. **Linux MVP：**在 agent runtime 目录下使用一个 AF_UNIX socket；目录和 socket 采用严格 owner/mode；accept 后验证 peer credentials；默认仅允许服务属主 UID，只有有依据时才配置额外组。返回结构化状态；触发 reconcile 应入队给现有 worker，避免第二条并发 apply 路径。
+2. **Linux MVP：**在 agent runtime 目录下使用一个 AF_UNIX socket；目录和 socket 采用严格 owner/mode；accept 后验证 peer credentials；
+  默认仅允许服务属主 UID，只有有依据时才配置额外组。返回结构化状态；触发 reconcile 应入队给现有 worker，避免第二条并发 apply 路径。
 3. **CLI 接入：**CLI 连接本地 socket，不读取 agent 的设备 Token 或私钥。审计记录 peer UID、操作、结果、期望修订/哈希和时间；不记录凭证。
 4. **Windows 适配器：**Named Pipe 使用明确 DACL 限定目标用户/管理员组，拒绝远程客户端并校验对端身份；保持同一协议/授权语义。此项独立于 PN-03 的完整数据面支持。
 5. **桌面 UI 与策略细化：**CLI 稳定后再接桌面；若特权操作需要交互提权，再评估 polkit 确认。只有真实消费者提出需求后才细分更多 scope。
 
 ### 与 MOD-05 的关系及 ADR
 
-这是 agent 本地控制协议，不是 MOD-05 所述管理 SDK/公共 API。它可成为 CLI/桌面消费的独立本地接口。MOD-05 仍指 server 管理 API DTO、稳定消费者文档和独立 SDK；本地协议不因此发布或承诺兼容。MOD-02 可在本地 API 契约成形后再考虑抽取共享授权词汇。
+这是 agent 本地控制协议，不是 MOD-05 所述管理 SDK/公共 API。它可成为 CLI/桌面消费的独立本地接口。MOD-05 仍指 server 管理 API DTO、稳定消费者文档和独立 SDK；
+本地协议不因此发布或承诺兼容。MOD-02 可在本地 API 契约成形后再考虑抽取共享授权词汇。
 
-建议决策记录：**ADR-013 — Agent Local Control API and OS-Principal Authorization（Agent 本地控制 API 与 OS 主体授权）**。决策内容包括 socket/pipe 协议、本地主体映射、默认用户/组策略、允许操作、审计 schema、特权操作边界和协议版本策略。若先不实现 Windows，应明确 Linux-first 范围，并要求后续适配器保持同一策略。
+建议决策记录：ADR-013 — Agent Local Control API and OS-Principal Authorization（Agent 本地控制 API 与 OS 主体授权）。
+决策内容包括 socket/pipe 协议、本地主体映射、默认用户/组策略、允许操作、审计 schema、特权操作边界和协议版本策略。若先不实现 Windows，应明确 Linux-first 范围，并要求后续适配器保持同一策略。
 
 ## 范围声明
 

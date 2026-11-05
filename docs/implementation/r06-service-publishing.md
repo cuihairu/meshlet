@@ -1,19 +1,31 @@
 # R-06: Service Publishing Progress
 
-R-06 is wired end to end and has been run on a real device: a real `meshlet-agent` binds forwarding ports, an HTTP listener and a DNS socket from a server-delivered plan, and external traffic reaches the published backends. The full real-device record is in [Live VPS acceptance run, 2026-10-24](#live-vps-acceptance-run-2026-10-24); the surfaces that remain unverified on a real device are listed in [What is still not accepted](#what-is-still-not-accepted).
+R-06 is wired end to end and has been run on a real device: a real `meshlet-agent` binds forwarding ports,
+ an HTTP listener and a DNS socket from a server-delivered plan, and external traffic reaches the published backends.
+ The full real-device record is in [Live VPS acceptance run, 2026-10-24](#live-vps-acceptance-run-2026-10-24);
+ the surfaces that remain unverified on a real device are listed in
+[What is still not accepted](#what-is-still-not-accepted).
 
 ## Implemented
 
 - TCP and UDP PortForward publish local services through the mesh and preserve the selected transport protocol.
 - HTTP and HTTPS publishing routes external traffic to mesh services.
-- Authorization control is exposed through `POST /api/v1/publish/routes/check`; the server route is wired at `apps/server/src/lib.rs:1017` through the `meshlet-publish` service adapter.
+- Authorization control is exposed through `POST /api/v1/publish/routes/check`; the server route is wired at
+  `apps/server/src/lib.rs:1017` through the `meshlet-publish` service adapter.
 - Health probes validate that a published target is reachable before traffic is admitted.
 - The internal DNS service directory supports split-horizon service discovery without overriding public DNS resolution.
-- Automated coverage is `cargo test -p meshlet-publish` = 35 passed (21 lib, 1 dns_catalog, 3 forwarding, 4 health_probe, 6 http_publishing), `cargo test -p meshlet-server` = 213 passed across 24 suites including `publish.rs` 12 and `publish_check.rs` 2 (the per-suite count re-verified 2026-10-27; the 213/24 totals are the 2026-10-24 acceptance snapshot and have since grown with new suites), `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean, and the console at 17 passed tests plus a clean build.
+- Automated coverage is `cargo test -p meshlet-publish` = 35 passed (21 lib, 1 dns_catalog, 3 forwarding,
+   4 health_probe, 6 http_publishing), `cargo test -p meshlet-server` = 213 passed across 24 suites including
+  `publish.rs` 12 and `publish_check.rs` 2 (the per-suite count re-verified 2026-10-27;
+   the 213/24 totals are the 2026-10-24 acceptance snapshot and have since grown with new suites),
+  `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean,
+   and the console at 17 passed tests plus a clean build.
 
 ## Live VPS Acceptance Record (2026-10-23)
 
-Acceptance host `106.14.216.177` (Aliyun ECS, Ubuntu, kernel 7.0.0-34-generic, 2 vCPU / 1.6 GiB RAM, `/proc/cpuinfo` model string `Intel(R) Xeon(R) Platinum`). Every command and output below is verbatim from that host and unmodified. This document contains no passwords, tokens, or private-key material.
+Acceptance host `106.14.216.177` (Aliyun ECS, Ubuntu, kernel 7.0.0-34-generic, 2 vCPU / 1.6 GiB RAM, `/proc/cpuinfo`
+ model string `Intel(R) Xeon(R) Platinum`). Every command and output below is verbatim from that host and unmodified.
+ This document contains no passwords, tokens, or private-key material.
 
 ### Server status snapshot
 
@@ -33,11 +45,17 @@ oddsmaker-demo-postgres Up 2 weeks (healthy)
 oddsmaker-demo-redis Up 2 weeks (healthy)
 ```
 
-Deployment evidence: the packages were built on the VPS with the pinned 1.99.0 toolchain. The previous `ce36e81` binary has sha256 `514e076d7cacc448321087abf7fde4b3a3912115a4c32f653c8b79a3abd454a3` (13705376 bytes); the new `ef97f0d` binary has sha256 `75327714caf46018e72acb7cfafc60a19b65b7781bcbde5df26825bb780e15ff` (12734632 bytes). They were swapped with an atomic `install` + `mv`, followed by `systemctl restart`; the service came back `active` and the journal recorded `mesh state rebuilt from database networks=1 devices=0 revisions=1`. At the end of the acceptance the server was still running `ef97f0d` (sha256 matches the value above).
+Deployment evidence: the packages were built on the VPS with the pinned 1.99.0 toolchain. The previous `ce36e81`
+ binary has sha256 `514e076d7cacc448321087abf7fde4b3a3912115a4c32f653c8b79a3abd454a3` (13705376 bytes); the new
+`ef97f0d` binary has sha256 `75327714caf46018e72acb7cfafc60a19b65b7781bcbde5df26825bb780e15ff` (12734632 bytes).
+ They were swapped with an atomic `install` + `mv`, followed by `systemctl restart`; the service came back `active`
+ and the journal recorded `mesh state rebuilt from database networks=1 devices=0 revisions=1`.
+ At the end of the acceptance the server was still running `ef97f0d` (sha256 matches the value above).
 
 ### Control-plane benchmark (real VPS, not the CI machine)
 
-`cargo run --release -p meshlet-server --example bench`. The driver is an in-process axum `oneshot`, so **TCP/TLS stack cost is excluded** — the numbers are for before/after comparison only.
+`cargo run --release -p meshlet-server --example bench`. The driver is an in-process axum `oneshot`,
+ so **TCP/TLS stack cost is excluded** — the numbers are for before/after comparison only.
 
 ```text
 $ ./target/release/examples/bench --db file --secs 8 --sweep 1,8,32
@@ -74,7 +92,12 @@ Memory footprint, run separately with `--footprint` (500 networks + 500 tokens p
 | 再 500 API Token（SQLite 行） | 500 | 132 KiB | 0.3 KiB/token |
 ```
 
-How to read it: DB-touching paths are bounded by 2 vCPUs plus the serial SQLite pool. Throughput for `/networks` and `/auth/tokens` is essentially flat from 8 to 32 concurrent workers (18333 → 18739, 9015 → 8814) while p50 latency rises from 358 µs to 1569 µs — that is queueing, not degradation. Error counts are 0 across all three concurrency levels. The external-path baseline, measured from the local machine to the VPS on `GET /api/v1/system/status` over 10 samples, was min 20.9 ms / max 25.4 ms / mean ~23.2 ms.
+How to read it: DB-touching paths are bounded by 2 vCPUs plus the serial SQLite pool. Throughput for `/networks` and
+`/auth/tokens` is essentially flat from 8 to 32 concurrent workers (18333 → 18739,
+ 9015 → 8814) while p50 latency rises from 358 µs to 1569 µs — that is queueing, not degradation.
+ Error counts are 0 across all three concurrency levels. The external-path baseline,
+ measured from the local machine to the VPS on `GET /api/v1/system/status` over 10 samples,
+ was min 20.9 ms / max 25.4 ms / mean ~23.2 ms.
 
 ### Authorization control, measured live (the only wired-in surface)
 
@@ -114,7 +137,13 @@ $ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/api/v1/
 403
 ```
 
-A missing CSRF header `X-Requested-With: XMLHttpRequest` returns 403, consistent with `publish/routes/check 4xx = 1` in `meshlet_http_requests_total`. Authorization is enforced before the service connection is opened (`crates/meshlet-publish/src/forwarding.rs:66`, `forwarding.rs:115`, `http.rs:165`, `http.rs:191`). `AuthorizationPolicy::authorize` (`crates/meshlet-publish/src/authorization.rs:45`) has OR semantics: a CIDR match returns `Allowed` immediately without checking the token; an IPv6 source can never match a CIDR because `Ipv4Cidr` only expresses IPv4, so it can only be admitted via a bearer token.
+A missing CSRF header `X-Requested-With: XMLHttpRequest` returns 403, consistent with `publish/routes/check 4xx = 1` in
+`meshlet_http_requests_total`.
+ Authorization is enforced before the service connection is opened (`crates/meshlet-publish/src/forwarding.rs:66`,
+`forwarding.rs:115`, `http.rs:165`, `http.rs:191`). `AuthorizationPolicy::authorize`
+ (`crates/meshlet-publish/src/authorization.rs:45`) has OR semantics: a CIDR match returns `Allowed`
+ immediately without checking the token; an IPv6 source can never match a CIDR because `Ipv4Cidr` only expresses IPv4,
+ so it can only be admitted via a bearer token.
 
 ### Wiring closed on 2026-10-24 (wiring plus tests)
 
@@ -180,12 +209,12 @@ publishing** section (`console/src/App.tsx`, `PublishSection`), driven by four m
 
 Borrowing, recorded so the provenance is auditable:
 
-- **Portainer's service "Port publishing" editor** — the row vocabulary. Each L4 row reads
+- Portainer's service "Port publishing" editor — the row vocabulary. Each L4 row reads
   `protocol | published host:port → target host:port`, with the listener and backend split into
   separate host and port fields exactly as Portainer does; the same vocabulary is reused by
   Dokploy's per-app port table, which is what makes the port-forward row readable to a reader of
   either product.
-- **The meshlet host-forwarding conflict card** — how a failure is shown. A refused create renders
+- The meshlet host-forwarding conflict card — how a failure is shown. A refused create renders
   the same `Publishing conflict — nothing was published.` card the host-forwarding editor uses, so
   a failure is never a raw error string and never looks like a partial publish.
 - **Portainer's two-step inline delete** — `Delete` turns into `Confirm delete` + `Cancel` in the
@@ -476,9 +505,9 @@ part of the box's permanent configuration and is not verified as such.
   private IP only.
 - **No TLS termination.** There is no certificate and no decryption anywhere in this path —
   `tls_passthrough` means SNI pass-through.
-- **Public HTTP ingress for a published name is not permanently configured.** It worked only while a
+- Public HTTP ingress for a published name is not permanently configured. It worked only while a
   temporary nginx vhost was present, and that vhost was removed.
-- **The device-global limit is a design limit, not a bug to fix silently.** One HTTP listener and
+- The device-global limit is a design limit, not a bug to fix silently. One HTTP listener and
   one termination mode per device, now enforced at create time with 409 instead of silently
   dropping the second value. A device that needs both a plain and a TLS hostname needs two
   listeners, which this plan shape cannot express.

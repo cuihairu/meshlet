@@ -2,13 +2,16 @@
 
 调研日期：2026-10-17。目标是筛选个人自托管所需的能力，不追求复制商业产品。本文结合厂商官方文档与本仓静态核对，未对三者做同环境测速或成功率实验；功能存在不代表任意平台、套餐或自托管形态都支持。
 
-本文是调研与建议，尚未成为 Accepted ADR。现有代码缺口见 [架构与 TODO 审查](architecture-review-2026-10-17.md)。商业套餐、预览功能和客户端行为可能变化，实施时需固定版本复核；不以免费额度、价格或营销性能数字决定架构。
+本文是调研与建议，尚未成为 Accepted ADR。现有代码缺口见 [架构与 TODO 审查](architecture-review-2026-10-17.md)。商业套餐、预览功能和客户端行为可能变化，实施时需固定版本复核；
+不以免费额度、价格或营销性能数字决定架构。
 
 ## 1. 面向个人的结论
 
-Meshlet 当前主要是可自托管的 WireGuard hub 组网与配置管理，ZeroTier 更接近可编程虚拟以太网，Tailscale 更接近带自动连接与身份策略的三层设备网络。个人版应重点借鉴连接恢复、路径可见性、简单授权和服务入口，不复制整个企业产品体系。[ZeroTier 协议][Z1]、[Tailscale 连接类型][T1]
+Meshlet 当前主要是可自托管的 WireGuard hub 组网与配置管理，ZeroTier 更接近可编程虚拟以太网，Tailscale 更接近带自动连接与身份策略的三层设备网络。个人版应重点借鉴连接恢复、路径可见性、
+简单授权和服务入口，不复制整个企业产品体系。[ZeroTier 协议][Z1]、[Tailscale 连接类型][T1]
 
-“ZeroTier 更快、Tailscale 成功率更高”可以作为实验假设，不能作为普遍结论。两者都有直连与回退；实际差异可能来自直连比例、中继位置、UDP 限制、物理线路、端点性能、MTU 和软件版本。本次没有可比较的实测数字。[ZeroTier 带宽说明][Z2]、[Tailscale 性能建议][T3]
+“ZeroTier 更快、Tailscale 成功率更高”可以作为实验假设，不能作为普遍结论。两者都有直连与回退；实际差异可能来自直连比例、中继位置、UDP 限制、物理线路、端点性能、MTU 和软件版本。
+本次没有可比较的实测数字。[ZeroTier 带宽说明][Z2]、[Tailscale 性能建议][T3]
 
 个人版建议保留一个管理员、少量网络与设备、自有 VPS、显式访问策略。设备数量按实际清单验收，不预设企业规模；DNS、P2P 和回退能力按使用需要逐步加入。
 
@@ -20,28 +23,32 @@ Meshlet 当前主要是可自托管的 WireGuard hub 组网与配置管理，Zer
 | 常规业务路径 | A → 自有 VPS → B | 尝试建立 P2P，不能直连则中继 [连接][Z3] | 直连、Peer Relay、DERP [连接][T1] | Meshlet 当前所有跨设备流量受 VPS 路径约束 |
 | 加密与中继信任 | A↔hub、hub↔B 分段 WireGuard；hub 解密再转发 | 端点间加密，中继不读取业务载荷 [安全][Z4] | 端点间 WireGuard 加密，含中继路径 [连接][T1] | Meshlet 信任 VPS；不能宣传中继不可见明文 |
 | 控制与转发部署 | 逻辑分离，生产执行仍在 server 进程内 | controller 与 root/relay 职责不同 [控制器][Z5] | 协调服务与业务转发分离 [故障边界][T4] | 不必拆微服务，但应明确特权执行边界 |
-| 自托管 | 自有 server、DB、hub；部署闭环待补 | controller 可自建；不等于替换所有 root 基础设施 [控制器][Z5] | 官方客户端可接自定义控制器；Headscale 为独立项目 [自定义控制器][T5]、[Headscale][H1] | 先区分“自建控制面”和“完全自主转发” |
+| 自托管 | 自有 server、DB、hub；部署链路待补 | controller 可自建；不等于替换所有 root 基础设施 [控制器][Z5] | 官方客户端可接自定义控制器；Headscale 为独立项目 [自定义控制器][T5]、[Headscale][H1] | 先区分“自建控制面”和“完全自主转发” |
 | 多网络 | 控制面有记录，单实例 hub 资源未隔离 | 客户端可加入多个网络 [多网络][Z6] | 支持管理多个 tailnet；常规客户端切换账号不等于同时接入 [tailnet][T6]、[切换][T7] | 先做网络内分组，再按需推进一机多网 |
 | 平台 | Linux 真后端；Windows 完整隧道未接入 | 主流桌面/移动平台，有功能差异 [平台][Z7] | 主流桌面/移动平台，有功能差异 [安装][T8] | 编译/CI 通过不能代表平台网络功能可用 |
 | 服务访问 | 当前靠 IP 和路由 | 网络 + 外部应用或代理 [Pylon][Z8] | Serve、Services、Funnel 分别面向不同用途 [Serve][T9]、[Services][T10]、[Funnel][T11] | 可用 Nginx 和四层转发实现个人服务入口 |
 
-两种“中继”尤其不能混淆：Meshlet 当前 hub 是被信任的路由终点；转发端点间密文的 relay 则不终止端点间 WireGuard 隧道。若以后要求 VPS 不可读取转发载荷，需要单独设计端点间密钥分发与密文转发，而非只换 UI 名称。
+两种“中继”尤其不能混淆：Meshlet 当前 hub 是被信任的路由终点；转发端点间密文的 relay 则不终止端点间 WireGuard 隧道。若以后要求 VPS 不可读取转发载荷，需要单独设计端点间密钥分发与密文转发，
+而非只换 UI 名称。
 
 ## 3. 速度与成功率应分别衡量
 
 ### 3.1 为何可能感觉 ZeroTier 更快
 
-优先记录实际路径。如果 ZeroTier 直连，而 Tailscale 在 DERP 中继，结果反映的是路径差异，不能据此判断 ZeroTier 协议吞吐一定更高。若两者都直连，再比较 CPU、端点实现、链路、MTU 和测试方向；内核实现也不能单凭名称判定一定更快。[ZeroTier 中继诊断][Z3]、[Tailscale 性能][T3]
+优先记录实际路径。如果 ZeroTier 直连，而 Tailscale 在 DERP 中继，结果反映的是路径差异，不能据此判断 ZeroTier 协议吞吐一定更高。若两者都直连，再比较 CPU、端点实现、链路、MTU 和测试方向；
+内核实现也不能单凭名称判定一定更快。[ZeroTier 中继诊断][Z3]、[Tailscale 性能][T3]
 
 Meshlet 中继 RTT 可粗略理解为 A↔VPS 与 VPS↔B 两段路径时延的合成，吞吐受两段链路及 VPS 转发能力限制。这是架构推导，不能替代测量。增加 HTTP 代理只能改变服务路由，不能消除底层绕路。
 
 ### 3.2 为何可能感觉 Tailscale 更容易连上
 
-Tailscale 用 DERP 协助协商和保底，再争取升级到直连；当前还提供同 tailnet 的 Peer Relay。Peer Relay 使用可达 UDP 端口，解决不了所有“UDP 完全禁用”的场景；DERP 的 HTTPS 路径才是此类环境中的重要回退。[连接流程][T1]、[DERP][T2]、[Peer Relay][T12]
+Tailscale 用 DERP 协助协商和保底，再争取升级到直连；当前还提供同 tailnet 的 Peer Relay。Peer Relay 使用可达 UDP 端口，
+解决不了所有“UDP 完全禁用”的场景；DERP 的 HTTPS 路径才是此类环境中的重要回退。[连接流程][T1]、[DERP][T2]、[Peer Relay][T12]
 
 ZeroTier 也有 UDP P2P、root 中继、周期性直连尝试和 TCP 回退，不能写成“没有保底”。官方提供自建 TCP relay 指南，同时提示其性能限制。[连接][Z1]、[TCP relay][Z9]
 
-Meshlet 目前只有到 VPS 的 WireGuard UDP 路径。HTTPS 控制 API 可达不能证明隧道可达；开放 UDP 443 也不能代替 HTTPS/TCP 回退。STUN 发现公网映射不等于能穿透所有 NAT。[STUN][T13]
+Meshlet 目前只有到 VPS 的 WireGuard UDP 路径。HTTPS 控制 API 可达不能证明隧道可达；
+开放 UDP 443 也不能代替 HTTPS/TCP 回退。STUN 发现公网映射不等于能穿透所有 NAT。[STUN][T13]
 
 ### 3.3 成功率口径
 
@@ -61,7 +68,7 @@ HTTPS 能出站也不保证任何回退协议都能通过：代理认证、TLS �
 
 编号用于与 TODO/后续设计交叉引用。每表分别比较同一层能力，避免把控制面管理和数据面转发当成同一功能。
 
-取舍：**必需**＝已明确需求或可靠性基础；**推荐**＝个人常用且收益高；**条件**＝特定设备/网络出现后再做；**暂缓**＝本期不承担。
+取舍：**必需**＝已明确需求或可靠性基础；**推荐**＝个人常用且收益高；条件＝特定设备/网络出现后再做；暂缓＝本期不承担。
 
 难度是本仓增量工程判断，不是工期承诺：S＝局部配置/UI；M＝跨模块但可复用后端；L＝涉及网络生命周期/跨平台；XL＝新增传输、移动平台或信任模型。推荐栏的“原型”不等于承诺正式实现。
 
@@ -98,7 +105,8 @@ HTTPS 能出站也不保证任何回退协议都能通过：代理认证、TLS �
 | N09 二层桥接/广播/组播 | 有相关能力，移动端受限 [物理集成][Z16] | 不提供通用 L2 网络 [定位][T23] | v1 排除 | 暂缓 / XL：发现需求先考虑应用层发现代理 |
 | N10 网关 HA/动态路由 | 系统路由/多路径可组合，非本仓同等承诺 [多路径][Z13] | subnet router HA [HA][T24] | 单网关模型 | 条件 / L–XL：先单点可恢复，不做 BGP/OSPF 平台 |
 
-ZeroTier New Central 的 **Network Groups** 是组织网络的管理层级，不等于 Meshlet 要增加的“网络内设备组”；Tailscale 的用户组、设备 tags 与多个 tailnet 也不是同一个概念。[ZeroTier 层级][Z10]、[Tailscale 标签][T18]
+ZeroTier New Central 的 **Network Groups** 是组织网络的管理层级，不等于 Meshlet 要增加的“网络内设备组”；Tailscale 的用户组、
+设备 tags 与多个 tailnet 也不是同一个概念。[ZeroTier 层级][Z10]、[Tailscale 标签][T18]
 
 ### 4.3 服务入口、名称与应用（S01–S12）
 
@@ -117,7 +125,10 @@ ZeroTier New Central 的 **Network Groups** 是组织网络的管理层级，不
 | S11 文件投送/共享盘 | 可运行文件服务 | Taildrop / Taildrive [投送][T28]、[共享盘][T29] | 无 | 暂缓 / L：复用 SFTP/SMB/现有同步工具 |
 | S12 SOCKS/无 TUN 应用接入 | Pylon [代理][Z8] | userspace networking [用户态][T30] | 无 | 条件 / L：容器或无管理员权限需求出现后再做 |
 
-S01 与 Tailscale Serve 不是完全相同的产品语义：Serve 主要发布本机服务，Meshlet 需求是指定入口设备 A 转到设备 B。S03 的 HTTP 代理也不能替代 SSH/数据库/游戏 UDP 的转发；TLS 透传不能按加密 URL 路由，参见 [Nginx HTTP](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) 与 [TLS preread](https://nginx.org/en/docs/stream/ngx_stream_ssl_preread_module.html)。
+S01 与 Tailscale Serve 不是完全相同的产品语义：Serve 主要发布本机服务，Meshlet 需求是指定入口设备 A 转到设备 B。S03 的 HTTP 代理也不能替代 SSH/数据库/游戏 UDP 的转发；
+TLS 透传不能按加密 URL 路由，
+参见 [Nginx HTTP](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) 与
+[TLS preread](https://nginx.org/en/docs/stream/ngx_stream_ssl_preread_module.html)。
 
 ### 4.4 身份与权限（A01–A10）
 
@@ -147,11 +158,13 @@ ZeroTier 官方 New Central 文档把模板规则与自定义规则按套餐区�
 | P05 iOS/iPadOS | 两者有客户端 [ZT 平台][Z7]、[TS 安装][T8] | 无后端 | 条件 / XL：VPN 扩展、签名、分发和后台行为先原型 |
 | P06 NAS/路由器 | 按厂商/平台适配，不能泛称全支持 [ZT 平台][Z7]、[TS 安装][T8] | 通用 Linux 与 LAN 网关可复用 | 推荐 / M–L：先网关与安装文档，再专用包 |
 | P07 系统托盘/状态/通知 | 桌面客户端具备 UI，平台各异 [ZT 配置][Z12]、[TS 安装][T8] | Linux D-Bus 实现已入仓，真实桌面待验收 | 推荐 / M：沿用现有工作，不能挤占核心网络修复 |
-| P08 自动更新/升级回退 | 有安装/更新渠道 [ZT 平台][Z7]、[TS 安装][T8] | 构建/安装说明，未有完整更新闭环 | 推荐 / M–L：先手动可靠升级与配置兼容，自动更新后置 |
+| P08 自动更新/升级回退 | 有安装/更新渠道 [ZT 平台][Z7]、[TS 安装][T8] | 构建/安装说明，未有完整的自动更新链路 | 推荐 / M–L：先手动可靠升级与配置兼容，自动更新后置 |
 
 手机支持会显著增加工作量。若必须在所有手机上可用且尽快获得成熟穿透，复用现成客户端的路线必须与继续自研作成本对照，而不是把移动端算作一个普通网络后端。
 
-补充：常规组网使用虚拟网卡不等于需要每次手动启动 VPN，也不意味着改变全局出口。用户态代理可覆盖受限场景，但无法直接替代宿主所有应用的透明网络接入。ZeroTier/Tailscale/NetBird/EasyTier 的网卡与代理模式核对，以及 Meshlet 的模块边界建议，见 [模块化与库复用提案](../architecture/modularity-and-library-design.md)。
+补充：常规组网使用虚拟网卡不等于需要每次手动启动 VPN，也不意味着改变全局出口。用户态代理可覆盖受限场景，
+但无法直接替代宿主所有应用的透明网络接入。ZeroTier/Tailscale/NetBird/EasyTier 的网卡与代理模式核对，以及 Meshlet 的模块边界建议，见
+[模块化与库复用提案](../architecture/modularity-and-library-design.md)。
 
 ### 4.6 运维、集成与明确不做（O01–O08）
 
@@ -182,9 +195,11 @@ ZeroTier 官方 New Central 文档把模板规则与自定义规则按套餐区�
 
 ### 5.2 两个需要原型的架构变化
 
-**简单直连也需要权限闭环。** 当前客户端只有 hub 一个 Peer；增加直连必须分发目标 Peer 公钥/端点、改变 AllowedIPs 和路由，并处理同一目标在直连与 hub 路径间的归属、回退及撤销。不能简单给两个 Peer 配同一目的前缀并期望内核自动做路径择优。上线前必须让直连端点执行访问策略，防止绕过 hub 的组间限制。
+**简单直连同样绕不开权限处理。** 当前客户端只有 hub 一个 Peer；增加直连必须分发目标 Peer 公钥/端点、改变 AllowedIPs 和路由，并处理同一目标在直连与 hub 路径间的归属、回退及撤销。
+不能简单给两个 Peer 配同一目的前缀并期望内核自动做路径择优。上线前必须让直连端点执行访问策略，防止绕过 hub 的组间限制。
 
-**HTTPS 回退需要传输适配。** 内核 WireGuard 使用 UDP，不能将 Endpoint 改为 HTTPS URL。候选包括复用已有可审查实现、用户态 WireGuard 传输适配或本地 UDP 到受控隧道的桥接；均需验证身份授权、MTU、背压、断线恢复和性能。套 TCP 的回退可能因有序传输与丢包产生队头阻塞，只作为可用性保底。C07 原型应比较它们，不能预先承诺 DERP 协议兼容或端到端信任性质。
+**HTTPS 回退需要传输适配。** 内核 WireGuard 使用 UDP，不能将 Endpoint 改为 HTTPS URL。候选包括复用已有可审查实现、用户态 WireGuard 传输适配或本地 UDP 到受控隧道的桥接；
+均需验证身份授权、MTU、背压、断线恢复和性能。套 TCP 的回退可能因有序传输与丢包产生队头阻塞，只作为可用性保底。C07 原型应比较它们，不能预先承诺 DERP 协议兼容或端到端信任性质。
 
 这些属于待设计方案；本次只确认研究方向，不引入新依赖或自研密码协议。
 
@@ -197,7 +212,8 @@ ZeroTier 官方 New Central 文档把模板规则与自定义规则按套餐区�
 | 自建 ZeroTier controller + 代理 | 复用客户端及多网/L2 机制 [controller][Z5] | controller 与根发现/relay 不同；不能把自建 controller 或旧 Moons 教程当成完全独立基础设施 |
 | 使用托管组网 + 自有服务配置 | 最少自建连接组件，聚焦个人服务 | 控制依赖外部服务；和“完全自托管”目标不同，按用户接受程度选择 |
 
-**调研发现：ZeroTier 官方 Private Root Servers 页面已将 private moons 标为不推荐部署，并提示可靠性风险。** 页面仍保留历史配置教程，不能因此推荐新建 Moon 作为个人版加速方案。[官方说明][Z11]
+调研发现：ZeroTier 官方 Private Root Servers 页面已将 private moons 标为不推荐部署，并提示可靠性风险。 页面仍保留历史配置教程，
+不能因此推荐新建 Moon 作为个人版加速方案。[官方说明][Z11]
 
 继续自研有价值的前提，是自定义控制/服务编排本身就是目标。如果只想尽快获得成熟跨平台连接，应先用小规模复用原型比较维护成本。本文不据此切换 Meshlet 技术路线。
 
@@ -205,7 +221,8 @@ ZeroTier 官方 New Central 文档把模板规则与自定义规则按套餐区�
 
 ### 6.1 固定条件
 
-使用相同 A/B 设备、同一网络和相近时间窗口，记录 OS、CPU、软件版本、MTU、物理上/下行、VPS 位置与带宽、源地址保留方式。每次只启用一套组网，避免三套客户端路由/DNS 互相干扰。每组先确认实际业务路径；原始与优化参数分开记录。
+使用相同 A/B 设备、同一网络和相近时间窗口，记录 OS、CPU、软件版本、MTU、物理上/下行、VPS 位置与带宽、源地址保留方式。每次只启用一套组网，避免三套客户端路由/DNS 互相干扰。每组先确认实际业务路径；
+原始与优化参数分开记录。
 
 分别报告真实产品体验和同路径对照：自动选路反映日用体验；强制或确认相同类型的直连/中继才用于比较实现开销。没有官方支持的强制方式时记录观察到的路径，不伪造同条件。各产品不能使用同一中继位置时，明确说明线路因素未受控。
 
@@ -258,7 +275,8 @@ wg show
 
 ## 7. 官方来源与复核方式
 
-表内短链接均指向本次查阅的官方文档或项目自身文档。索引用于覆盖功能目录；详细行为以对应功能页为依据。“未查到同等内置功能”只说明本次核验范围，不断言第三方或未来版本绝对不能实现。来源更新后应重新核验套餐、平台和限制，尤其 Peer Relay、Services、Moons 与多 tailnet 行为。
+表内短链接均指向本次查阅的官方文档或项目自身文档。索引用于覆盖功能目录；详细行为以对应功能页为依据。“未查到同等内置功能”只说明本次核验范围，不断言第三方或未来版本绝对不能实现。来源更新后应重新核验套餐、平台和限制，
+尤其 Peer Relay、Services、Moons 与多 tailnet 行为。
 
 [Z1]: https://docs.zerotier.com/protocol/
 [Z2]: https://docs.zerotier.com/faq/bandwidth/

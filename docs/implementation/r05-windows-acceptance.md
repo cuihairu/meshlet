@@ -21,7 +21,7 @@ module headers of `crates/meshlet-network/src/windows_*.rs`.
 
 ## The localization root cause and its fix
 
-netsh / sc.exe **redirected output is the active code page, not UTF-8**.
+netsh / sc.exe redirected output is the active code page, not UTF-8.
 Real-machine bytes: netsh deleting a missing route returns `D5 D2 B2 BB B5 BD D4
 AA CB D8 A1 A3` (GBK for `找不到元素。`). The exec layers had decoded with
 `String::from_utf8_lossy`, so all zh-CN text was lost to U+FFFD and every
@@ -79,7 +79,7 @@ with the text match).
 
 ## Test evidence (as recorded, acceptance snapshot)
 
-- `meshlet-network`: **75 unit tests + 3 real-machine integration tests** all
+- `meshlet-network`: 75 unit tests + 3 real-machine integration tests all
   green (2026-10-25/26 snapshot; the crate has since grown with the tunnel
   plan layer).
 - Full workspace `cargo test` and `cargo clippy` on
@@ -90,9 +90,9 @@ with the text match).
 
 ## Still blocked
 
-These three remain BLOCKED and are the reason R-05 stays unchecked. **win-worker
+These three remain BLOCKED and are the reason R-05 stays unchecked. win-worker
 已永久停用 — the win-worker is permanently decommissioned; completing them
-requires a user-provided rebootable Windows machine.**
+requires a user-provided rebootable Windows machine.
 
 1. **WireGuardNT tunnel full lifecycle** — install the WireGuardNT driver, then
    run install → start → stop → uninstall on real hardware.

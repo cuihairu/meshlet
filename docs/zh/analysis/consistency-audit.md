@@ -19,7 +19,7 @@
 | # | 位置 | 差异 | 处置 |
 |---|---|---|---|
 | D1 | `docs/architecture/domain-model.md:40` | 文档写 `overlay_ipv4_cidr`，实际字段是 `overlay_cidr`（`crates/meshlet-domain/src/entities.rs:50` 的 `Network.overlay_cidr`；`migrations/001_init.sql:17` 列名 `overlay_cidr`） | 文档改为 `overlay_cidr`（存档 §6 原名 `overlay_ipv4_cidr`，实现沿用更短的 `overlay_cidr`） |
-| D2 | `docs/architecture/diagnostics.md:59-60` | ① 路由占位符写 `{id}`，实际注册为 `{network_id}`（`apps/server/src/lib.rs`）；② `404 not_found（diagnostics_not_run，…）` 把内部变体名 `ServiceError::DiagnosticsNotRun` 与 HTTP `code` 混在一处，易误读为 JSON 错误码 | ① 占位符改为 `{network_id}`；② 改为 `404`（`code: "not_found"`，内部变体 `ServiceError::DiagnosticsNotRun`），与 `ErrorCode` 的 snake_case 序列化口径一致 |
+| D2 | `docs/architecture/diagnostics.md:59-60` | (1) 路由占位符写 `{id}`，实际注册为 `{network_id}`（`apps/server/src/lib.rs`）；(2) `404 not_found（diagnostics_not_run，…）` 把内部变体名 `ServiceError::DiagnosticsNotRun` 与 HTTP `code` 混在一处，易误读为 JSON 错误码 | (1) 占位符改为 `{network_id}`；(2) 改为 `404`（`code: "not_found"`，内部变体 `ServiceError::DiagnosticsNotRun`），与 `ErrorCode` 的 snake_case 序列化口径一致 |
 
 两处均为**文档侧笔误**，不涉及代码行为变更。
 

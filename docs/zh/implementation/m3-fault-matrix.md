@@ -12,7 +12,8 @@ M3 要求把评审 54.2 的九个故障场景真跑一遍并留可重复证据�
 下面的证据全部来自设了门禁的运行。
 
 需要 hub 的场景走生产启动路径（`boot_app`，`apps/server/tests/single_instance.rs:1146`）：
-`store::connect` → `persist::load` → `AppState::new(...).with_dataplane(...).with_apply_backend(hub_backend_factory_with(...))`
+`store::connect` → `persist::load` →
+`AppState::new(...).with_dataplane(...).with_apply_backend(hub_backend_factory_with(...))`
 → 真实 axum 路由表、真实管理员 bootstrap、真实设备入网，再用真实 `SystemBackend`
 在每个测试自己的 network namespace 里 `sudo` 执行。每个测试 7 个 netns
 （`mlsi{pid}-0..6`）：hub `10.240.0.1` 在 `wg0` 上（51820，MTU 1380）、

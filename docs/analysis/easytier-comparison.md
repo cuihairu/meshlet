@@ -2,9 +2,12 @@
 
 ## Takeaway
 
-EasyTier 的定位是**去中心化、开箱即用**：无服务端、`--network-name/--network-secret` 一行起网、自动 NAT 打洞、多协议传输。meshlet 的定位是**自托管 + 强管控**：控制面（server）+ WG hub + agent 三层，bootstrap/invite 审批、修订状态机、审计、作用域 token。
+EasyTier 的定位是**去中心化、开箱即用**：无服务端、`--network-name/--network-secret` 一行起网、自动 NAT 打洞、多协议传输。meshlet 的定位是**自托管 + 强管控**：
+控制面（server）+ WG hub + agent 三层，bootstrap/invite 审批、修订状态机、审计、作用域 token。
 
-两者不是竞争关系而是互补。值得从 EasyTier 借鉴的集中在**连通性**（WireGuard 门户、NAT 打洞、多 hub 冗余）与**可观测性**（per-node 端点/NAT 类型展示）；meshlet 反过来在**服务发布**（L4/L7 转发、TLS 直通、健康探测、分流 DNS）与**治理**（审批、审计、修订/回滚）上强于 EasyTier。
+两者不是竞争关系而是互补。值得从 EasyTier 借鉴的集中在连通性（WireGuard 门户、NAT 打洞、
+多 hub 冗余）与可观测性（per-node 端点/NAT 类型展示）；meshlet 反过来在服务发布（L4/L7 转发、TLS 直通、健康探测、分流 DNS）与治理（审批、审计、
+修订/回滚）上强于 EasyTier。
 
 ## 对比矩阵
 
@@ -34,19 +37,30 @@ EasyTier 的定位是**去中心化、开箱即用**：无服务端、`--network
 
 现状（代码证据）：
 
-- hub **确实观测**到每个 agent 心跳 HTTP 请求的源地址：`apps/server/src/agent.rs:263` → `direct_observed_ip(&addr)`，存入 `DeviceDirectState.observed_ip`（`crates/meshlet-domain/src/p2p.rs:160`，「心跳 HTTP 请求的源地址（hub 观测）」）。
+- hub **确实观测**到每个 agent 心跳 HTTP 请求的源地址：`apps/server/src/agent.rs:263` → `direct_observed_ip(&addr)`，存入
+  `DeviceDirectState.observed_ip`（`crates/meshlet-domain/src/p2p.rs:160`，「心跳 HTTP 请求的源地址（hub 观测）」）。
 - **但只存 IP、丢端口**：`direct_observed_ip`（`agent.rs:114`）返回 `Option<Ipv4Addr>`，端口被丢弃。
-- **且未暴露**：`observed_ip` 只存在于 domain/service/agent 内部，不在 `meshlet-api-types`、不在 `console/src/api/index.ts` 的 `Device` 类型（该类型只有 `direct_links`/`diagnostics`），console 任何页面不渲染它。
+- **且未暴露**：`observed_ip` 只存在于 domain/service/agent 内部，不在 `meshlet-api-types`、不在 `console/src/api/index.ts` 的 `Device`
+   类型（该类型只有 `direct_links`/`diagnostics`），console 任何页面不渲染它。
 
-建议：① 记录完整 `SocketAddr`（含端口，或至少把端口并入候选生成）；② `Device` API 增加 `observed_endpoint`/`public_endpoint`（`observed_ip:listen_port`，公网候选已在 `p2p.rs:173` 由 `endpoint_candidates` 合成）；③ console 设备表/诊断页展示。这同时是「拓扑图/节点下钻」需求（用户 2026-11-01 令）的底层数据。成本低，收益直接。
+建议：
+
+1. 记录完整 `SocketAddr`（含端口，或至少把端口并入候选生成）。
+2. `Device` API 增加 `observed_endpoint`/`public_endpoint`（`observed_ip:listen_port`，公网候选已在 `p2p.rs:173` 由
+  `endpoint_candidates` 合成）。
+3. console 设备表/诊断页展示。
+
+这同时是「拓扑图/节点下钻」需求（用户 2026-11-01 令）的底层数据。成本低，收益直接。
 
 ### P1 · WireGuard 门户（EasyTier `--vpn-portal`）
 
-任何原生 WG 客户端（iOS/Android/路由器）无需 meshlet agent 即可入网。meshlet 已是 WG 原生，门户 = 新增一种 peer 类型 + 配置生成端点（`easytier-cli vpn-portal` 对应物）。注意：门户 peer 无心跳/计划/审批纪律，需当作静态 peer 单独管理（密钥轮换、撤销、IPAM 分配与审计）。价值高（移动端是当前最大缺口），成本中。
+任何原生 WG 客户端（iOS/Android/路由器）无需 meshlet agent 即可入网。meshlet 已是 WG 原生，门户 = 新增一种 peer 类型 + 配置生成端点（`easytier-cli vpn-portal`
+ 对应物）。注意：门户 peer 无心跳/计划/审批纪律，需当作静态 peer 单独管理（密钥轮换、撤销、IPAM 分配与审计）。价值高（移动端是当前最大缺口），成本中。
 
 ### P0 · NAT 打洞（核心目标，开发中——lane/nat-punch 已开工）
 
-用户 2026-11-04 拍板：打洞是 meshlet 立项初心与核心目标，不是可选项。产品连接策略即「hub 先互知 → 打洞直连为常态 → 失败回退 hub 中继，hub 常连不断」。本项前置的端点暴露（P0）已在 main 树并行实现，打洞本体在 lane/nat-punch 分支开发（双向同时发包 + hub 协调 + 退避回退）。
+用户 2026-11-04 拍板：打洞是 meshlet 立项初心与核心目标，不是可选项。产品连接策略即「hub 先互知 → 打洞直连为常态 → 失败回退 hub 中继，hub 常连不断」。
+本项前置的端点暴露（P0）已在 main 树并行实现，打洞本体在 lane/nat-punch 分支开发（双向同时发包 + hub 协调 + 退避回退）。
 
 ### P2 · 多 hub / 中继冗余
 
@@ -72,10 +86,15 @@ EasyTier 支持 IPv6 穿越；meshlet overlay 纯 IPv4（`direct_observed_ip` �
 
 ## 附：README「v1 范围」过时注记
 
-`README.md` "Not in scope for v1" 写「P2P/NAT hole punching」，但 P2P 直连（①-④）已在 2026-10-31 全部实现（`direct.rs`/`DirectManager`、`peer_endpoints_for`、防火墙联动）；未实现的仅剩**打洞**。按 `docs-implementation-reconciliation` 全局令（能力矩阵反映真实状态），该句应改为仅「NAT hole punching」不在范围。
+`README.md` "Not in scope for v1" 写「P2P/NAT hole punching」，
+但 P2P 直连（批次 1–4）已在 2026-10-31 全部实现（`direct.rs`/`DirectManager`、`peer_endpoints_for`、防火墙联动）；未实现的仅剩**打洞**。按
+`docs-implementation-reconciliation` 全局令（能力矩阵反映真实状态），该句应改为仅「NAT hole punching」不在范围。
 
 ## 来源
 
-- EasyTier README（`https://github.com/EasyTier/EasyTier`，Features/Quick Start/Subnet Proxy/WireGuard Integration/Self-Hosted Public Shared Node）。
-- meshlet `todo.md`（R-01..R-07、P2P 批次①-④、R-DIAG/R-TRAY-1）、`crates/meshlet-domain/src/p2p.rs`、`apps/server/src/agent.rs`、`console/src/api/index.ts`、`console/src/pages/diagnostics/DirectPeersBlock.tsx`。
+- EasyTier README（`https://github.com/EasyTier/EasyTier`，
+  Features/Quick Start/Subnet Proxy/WireGuard Integration/Self-Hosted Public Shared Node）。
+- meshlet
+  `todo.md`（R-01..R-07、P2P 批次 1–4、R-DIAG/R-TRAY-1）、`crates/meshlet-domain/src/p2p.rs`、`apps/server/src/agent.rs`、
+`console/src/api/index.ts`、`console/src/pages/diagnostics/DirectPeersBlock.tsx`。
 - 本仓既有对比：`docs/analysis/personal-networking-comparison.md`（vs ZeroTier/Tailscale，61 能力）。

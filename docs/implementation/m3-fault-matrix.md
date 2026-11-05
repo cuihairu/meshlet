@@ -163,8 +163,8 @@ reached the kernel. The pool is closed, `restore_from_backup` swaps the
 database back in, and the server boots again (bootstrap now answers 409, so the
 test logs in instead — the same session either way).
 
-Recorded as observed behavior: **clicking apply cannot re-converge the kernel
-after a restore that rewinds applied history.** `ConfigLedger::apply` returns
+Recorded as observed behavior: clicking apply cannot re-converge the kernel
+after a restore that rewinds applied history. `ConfigLedger::apply` returns
 immediately for a revision that is already `Applied`
 (`crates/meshlet-domain/src/config_state.rs:230`), and the revision created
 after the backup no longer exists in the restored database, so there is no

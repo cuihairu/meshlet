@@ -1,20 +1,26 @@
 # meshlet console 界面审核 · 2026-10-31（impeccable 技能）
 
 > 对象：`console/`（React 19 + Vite 8 + antd v6，按功能域重构后：网络/准入/设备/诊断 4 路由域 + 登录 + 空/加载态，桌面与窄屏两档）。
-> 方法：impeccable 的 audit/critique playbook（a11y / 性能 / 主题 / 响应式 / 实现完整性 + Nielsen 10 启发式 + Design Specificity 判定）。真实渲染截图，非静态走查。
+> 方法：impeccable 的 audit/critique playbook（a11y / 性能 / 主题 / 响应式 / 实现完整性 + Nielsen 10 启发式 + Design Specificity 判定）。真实渲染截图，
+> 非静态走查。
 > 边界：不动 logo 与品牌绿 accent；不 bump version；vitest 全绿门禁。
-> 截图目录：逐页证据见 `2026-10-31-ui-audit-impeccable/shots/`；4 个已修问题的 before/after 同视图成对截图见 `shots-before/` 与 `shots-after/`（文件名按问题编号对齐）。
+> 截图目录：逐页证据见 `2026-10-31-ui-audit-impeccable/shots/`；4 个已修问题的 before/after 同视图成对截图见 `shots-before/` 与 `shots-after/`
+> （文件名按问题编号对齐）。
 
 ## 整体印象（critique，不留情面）
 
-这套 console 是**一款有产品判断力的运维工具，不是装饰性仪表盘**。它的骨架是对的：深色瑞士极简、全宽 fluid 布局、状态点必须说明来源（presence_source）、诊断页"不可用 ≠ 通过"的诚实标注、冲突卡片给出恢复路径、设备表 `direct_links ?? []` 的版本错位容忍——这些是好产品的本能，不是 UI 模板堆出来的。品牌绿 accent 用在正确的地方（导航激活、按钮、焦点、冲突虚线框）。
+这套 console 是**一款有产品判断力的运维工具，不是装饰性仪表盘**。它的骨架是对的：深色瑞士极简、全宽 fluid 布局、状态点必须说明来源（presence_source）、诊断页"不可用 ≠ 通过"的诚实标注、
+冲突卡片给出恢复路径、设备表 `direct_links ?? []` 的版本错位容忍——这些是好产品的本能，不是 UI 模板堆出来的。品牌绿 accent 用在正确的地方（导航激活、按钮、焦点、冲突虚线框）。
 
-但它有**一批明确的工艺漏洞**，按"运维人员出事时会怎么抓狂"排序：
+但它有**一批明确的工艺漏洞**，按"运维人员出事时会怎么抓狂"排序。前四项是硬故障：
 
 1. **一个缺失 API 字段就能让设备页白屏**。`d.direct_links.length` 没有防御——旧服务器（Oct 20 二进制）省略该字段，整张表崩成空白页。管理后台在故障排查时最不能白屏。
 2. **焦点环不可见**——最基础的键盘可达性 affordance 被 antd cssinjs 的 `colorPrimaryBg` 盖掉了，键盘用户几乎看不见自己在哪。这不是"待优化"，是"基本功能缺失"。
 3. **浅色主题两处真实 WCAG AA 失败**：状态标签 2.2:1、激活导航 2.78:1、主按钮 3.32:1。品牌绿 accent 让这些对比度问题容易被"看起来还行"糊弄过去，但 AA 是硬线。
 4. **窄屏把宽表挤成字堆**。"device-reg-1"折成三行、时间戳折成两行——390px 下表格直接不可读。
+
+其余三项较小但同样真实：
+
 5. **首屏体验**：4 个路由域里 3 个在没手动选网络时是死胡同空态，用户第一反应是"坏了？"。网络选择不持久化、不自动选第一个。
 6. **标题层级从 h3 起跳**，没有页面级标题——屏幕阅读器用户拿不到文档结构。
 7. 小但真实的：一处硬编码英文破坏 i18n、冲突卡片左侧 4px 强调边（检测器 AI-slop tell）、登录页无品牌标识、品牌绿浅色对比度（边界约束未修，需决策）。
@@ -23,36 +29,57 @@
 
 ## 审核方法
 
-- 本地环境：systemd `meshlet-server :8080` + vite dev `:5173`（`/api` 代理到 :8080），本地 admin bootstrap（凭证见 `~/.hermes/cache/scratch/mlt-reset.sh`，勿外传/不入库）。
-- 截图：Playwright 1.63.0（chromium r1243），强制暗/亮双主题，26 张 PNG 全量，13 张精选 JPEG 入 `2026-10-31-ui-audit-impeccable/shots/`。before/after 对在独立 worktree（`30d530c^` 修复前代码，dev server :5175）重渲染，同视图、同视口、同主题。
+- 本地环境：systemd `meshlet-server :8080` + vite dev `:5173`（`/api` 代理到 :8080），本地 admin bootstrap（凭证见
+  `~/.hermes/cache/scratch/mlt-reset.sh`，勿外传/不入库）。
+- 截图：Playwright 1.63.0（chromium r1243），强制暗/亮双主题，26 张 PNG 全量，13 张精选 JPEG 入
+  `2026-10-31-ui-audit-impeccable/shots/`。before/after 对在独立 worktree（`30d530c^` 修复前代码，dev server :5175）重渲染，同视图、同视口、同主题。
 - 版本错位：运行中 systemd 二进制（Oct 20）早于 `direct_links` 字段（当前源码总是下发）——这个时间差暴露了真实崩溃。
-- DESIGN.md / PRODUCT.md：**仓内缺失**（impeccable 要求对照，此处记录为"无"）。i18n 以 `src/i18n/en.ts` / `zh.ts` 为事实源。组件规则 `src/App.css`，token `src/theme.css`。
+- DESIGN.md / PRODUCT.md：**仓内缺失**（impeccable 要求对照，此处记录为"无"）。i18n 以 `src/i18n/en.ts` / `zh.ts` 为事实源。组件规则
+  `src/App.css`，token `src/theme.css`。
 
 ## 问题清单（按严重度排序）
 
 ### P1
 
 #### 1. 设备页 `direct_links` 缺失即崩溃 — **已修**
-- **现象**：旧服务器省略 `direct_links`（而非返回 `[]`），`DevicesSection.tsx` 直接读 `d.direct_links.length` → `TypeError: Cannot read properties of undefined (reading 'length')`，整页 React 渲染崩溃成空白。
-- **截图**：before 白屏 `shots-before/issue-01-before.jpg`；after 设备表完整渲染（Direct links 列显示 "all relay via hub" 回退）`shots-after/issue-01-after.jpg`；逐页证据 `2026-10-31-ui-audit-impeccable/shots/dark-devices-desktop.jpg`。
+- **现象**：旧服务器省略 `direct_links`（而非返回 `[]`），`DevicesSection.tsx` 直接读 `d.direct_links.length` →
+  `TypeError: Cannot read properties of undefined (reading 'length')`，整页 React 渲染崩溃成空白。
+- **截图**：before 白屏
+  `shots-before/issue-01-before.jpg`；after 设备表完整渲染（Direct links 列显示 "all relay via hub" 回退）
+`shots-after/issue-01-after.jpg`；
+  逐页证据 `2026-10-31-ui-audit-impeccable/shots/dark-devices-desktop.jpg`。
 - **定位**：`console/src/pages/devices/DevicesSection.tsx:113-116`（原 :114）。
 - **修复**：`const links = d.direct_links ?? []` —— 版本错位容忍，列回退为 "all relay via hub" 或链接标签。
 
 #### 2. 窄屏（≤720px）宽表被挤压、文字折成字堆 — **已修**
 - **现象**：antd 在 ~390px 挤压列、单元格换行成高堆叠；"device-reg-1" 折三行、"Max uses" 折两行、时间戳折两行，不可读。诊断表/准入表/注册令牌表均受影响。
-- **截图**：before `shots-before/issue-02-before.jpg`（折行字堆）；after `shots-after/issue-02-after.jpg`（自然宽度 + 横向滚动）；逐页证据 `2026-10-31-ui-audit-impeccable/shots/dark-access-narrow.jpg`、`2026-10-31-ui-audit-impeccable/shots/dark-diagnostics-narrow.jpg`。
+- **截图**：before `shots-before/issue-02-before.jpg`（折行字堆）；after `shots-after/issue-02-after.jpg`（自然宽度 + 横向滚动）；逐页证据
+  `2026-10-31-ui-audit-impeccable/shots/dark-access-narrow.jpg`、
+`2026-10-31-ui-audit-impeccable/shots/dark-diagnostics-narrow.jpg`。
 - **定位**：`console/src/App.css:335-345`（`@media (max-width: 720px)` 响应式块）。
-- **修复**：`.ant-table-content { overflow-x: auto }` + `.ant-table-content > table { min-width: max-content }` —— 表格保持自然宽度，内容包装横向滚动，绝不挤压列。
+- **修复**：`.ant-table-content { overflow-x: auto }` + `.ant-table-content > table { min-width: max-content }`
+   —— 表格保持自然宽度，内容包装横向滚动，绝不挤压列。
 
 #### 3. 浅色主题状态标签对比度不达标（WCAG AA 失败）— **已修**
-- **现象**：antd 默认 `success` 文本 `#52c41a` 在浅填充上约 2.2:1、`warning` `#d48806` 约 2.8:1，低于 4.5:1。`active`/`pending` 等状态标签在浅主题难读。
-- **截图**：before 亮绿标签 `shots-before/issue-03-before.jpg`（对比 `#52c41a`）；after 深绿 `#15803d` 标签 `shots-after/issue-03-after.jpg`（4.79:1）；逐页证据 `2026-10-31-ui-audit-impeccable/shots/light-devices-desktop.jpg`、`2026-10-31-ui-audit-impeccable/shots/light-networks-desktop.jpg`。
+- **现象**：antd 默认 `success` 文本 `#52c41a` 在浅填充上约 2.2:1、`warning` `#d48806` 约 2.8:1，低于 4.5:1。`active`/`pending`
+   等状态标签在浅主题难读。
+- **截图**：before 亮绿标签 `shots-before/issue-03-before.jpg`（对比 `#52c41a`）；after 深绿 `#15803d` 标签
+  `shots-after/issue-03-after.jpg`（4.79:1）；逐页证据
+  `2026-10-31-ui-audit-impeccable/shots/light-devices-desktop.jpg`、
+`2026-10-31-ui-audit-impeccable/shots/light-networks-desktop.jpg`。
 - **定位**：`console/src/theme/antd-theme.ts:37-40`（light token 块）。
-- **修复**：固定 AA 合规文本+填充对——`colorSuccess:#15803d`/`colorSuccessBg:#f0fdf4`（4.79:1）、`colorWarning:#b45309`/`colorWarningBg:#fffbeb`（4.84:1）。antd 把填充作为种子色 tint 派生，故文本+填充须同时设定。暗色主题（~9.2:1 / ~9.6:1）与品牌主色未动。
+- **修复**：
+  固定 AA 合规文本+填充对——`colorSuccess:#15803d`/`colorSuccessBg:#f0fdf4`（4.79:1）、
+`colorWarning:#b45309`/`colorWarningBg:#fffbeb`（4.84:1）。antd 把填充作为种子色 tint 派生，
+  故文本+填充须同时设定。暗色主题（~9.2:1 / ~9.6:1）与品牌主色未动。
 
 #### 4. 焦点环近不可见（WCAG 2.4.7 / 2.4.11）— **已修**
-- **现象**：antd 的 cssinjs 样式在 `App.css` 之后注入，其 `:focus-visible` 环（以 `colorPrimaryBg` 绘制——暗色 `#18492a`、浅色淡绿）盖过 app 规则，在两种背景上都近乎不可见。键盘用户无法定位焦点。
-- **截图**：before 暗绿近不可见环 `shots-before/issue-04-before.jpg`；after 亮绿 accent 环 `shots-after/issue-04-after.jpg`（"Run checks" 按钮上对比）；逐页证据 `2026-10-31-ui-audit-impeccable/shots/dark-access-narrow.jpg`、`2026-10-31-ui-audit-impeccable/shots/dark-diagnostics-narrow.jpg`。
+- **现象**：antd 的 cssinjs 样式在 `App.css` 之后注入，其 `:focus-visible` 环（以 `colorPrimaryBg` 绘制——暗色 `#18492a`、浅色淡绿）盖过 app 规则，
+  在两种背景上都近乎不可见。键盘用户无法定位焦点。
+- **截图**：before 暗绿近不可见环 `shots-before/issue-04-before.jpg`；after 亮绿 accent 环
+  `shots-after/issue-04-after.jpg`（"Run checks" 按钮上对比）；逐页证据
+  `2026-10-31-ui-audit-impeccable/shots/dark-access-narrow.jpg`、
+`2026-10-31-ui-audit-impeccable/shots/dark-diagnostics-narrow.jpg`。
 - **定位**：`console/src/App.css:47-51`（`:focus-visible`）。
 - **修复**：`:focus-visible { outline: 2px solid var(--accent) !important; }` —— `!important` 胜出 antd 注入样式；焦点环保持设计一部分、从不移除。
 
@@ -66,7 +93,8 @@
 - **现象**：`#16a34a` 底 + 白字约 3.32:1，低于 4.5:1。登录/创建操作主按钮受影响。
 - **定位**：`console/src/theme/antd-theme.ts:26`（`colorPrimary`）。
 - **修复建议**：浅主题主按钮底色调深至 `#15803d`（≈4.5:1）或加粗字重。品牌绿约束内，需用户拍板。
-- **截图**：`2026-10-31-ui-audit-impeccable/shots/light-networks-desktop.jpg`（"Create network" 按钮）、`2026-10-31-ui-audit-impeccable/shots/login-dark-desktop.jpg`。
+- **截图**：`2026-10-31-ui-audit-impeccable/shots/light-networks-desktop.jpg`（"Create network" 按钮）、
+  `2026-10-31-ui-audit-impeccable/shots/login-dark-desktop.jpg`。
 
 ### P2
 
@@ -109,16 +137,28 @@
 ### P3
 
 #### 13. `.conflict` 卡片左侧 4px 强调边（AI-slop tell）— **已修**
-- **修复 commit**：`9511c16`（去掉 `border-left: 4px`，统一 1px 边框，加 `⚠` 图标表达严重度）。
+
+现象与定位：
+
 - **现象**：`border-left: 4px solid var(--danger-strong)` 是检测器的 "side-tab accent border" 信号，AI 设计模板痕迹。
 - **定位**：`console/src/App.css:266`。
+
+修复与证据：
+
+- **修复 commit**：`9511c16`（去掉 `border-left: 4px`，统一 1px 边框，加警告图标表达严重度）。
 - **修复建议**：统一 1px 边框 + 图标表达严重度。
 - **截图**：`2026-10-31-ui-audit-impeccable/shots/dark-networks-homelab-detail.jpg`（冲突卡片）。
 
 #### 14. 移动端触控目标偏小 — **已修**
-- **修复 commit**：`6276cda`（720px 断点下 antd 按钮/输入/选择/表格操作行 `min-height:44px`，行内 padding 放大）。
+
+现象与定位：
+
 - **现象**：触控目标约 32px（低于 44px 最佳；过 WCAG 2.5.8 24px 下限）；移动端操作热区不足。
 - **定位**：`console/src/App.css`（表格/表单控件），窄屏放大按钮/行内操作区。
+
+修复与证据：
+
+- **修复 commit**：`6276cda`（720px 断点下 antd 按钮/输入/选择/表格操作行 `min-height:44px`，行内 padding 放大）。
 - **修复建议**：窄屏下放大 tap 目标。
 - **截图**：`2026-10-31-ui-audit-impeccable/shots/dark-access-narrow.jpg`。
 
@@ -131,12 +171,14 @@
 | 3 | 浅色状态标签对比度 | `shots-before/issue-03-before.jpg` | `shots-after/issue-03-after.jpg` | `30d530c` |
 | 4 | 焦点环不可见 | `shots-before/issue-04-before.jpg` | `shots-after/issue-04-after.jpg` | `30d530c` |
 
-> before/after 在独立 worktree（修复前代码 `30d530c^`）同视图重渲染：同页面、同视口、同主题；4 个修复全部带成对的同视图截图。修复前截图在 `docs/review/shots-before/`，修复后在 `docs/review/shots-after/`。
+> before/after 在独立 worktree（修复前代码 `30d530c^`）同视图重渲染：同页面、同视口、同主题；4 个修复全部带成对的同视图截图。修复前截图在 `docs/review/shots-before/`，
+> 修复后在 `docs/review/shots-after/`。
 
 ## 待修清单
 
 - **P1 品牌约束（待决，2）**：#5 激活导航文字对比（App.css:143）、#6 主按钮文字对比（antd-theme.ts:26）。本轮禁止改动，留用户决策。
-- **P2（6，已修）**：#7 标题层级 `2356fa3`、#8 i18n 硬编码 `1df7169`、#9 登录品牌 `1f2fbc3`、#10 网络持久化 `6863f08`、#11 Name 列换行 `5313ef6`、#12 双 token 源 `c300722`。
+- **P2（6，已修）**：#7 标题层级 `2356fa3`、#8 i18n 硬编码 `1df7169`、#9 登录品牌 `1f2fbc3`、#10 网络持久化 `6863f08`、#11 Name 列换行
+  `5313ef6`、#12 双 token 源 `c300722`。
 - **P3（2，已修）**：#13 侧边框 AI-slop tell `9511c16`、#14 触控目标偏小 `6276cda`。
 
 ## impeccable 审计评分（修复后状态）
@@ -172,7 +214,8 @@
 
 ### Design Specificity
 
-**高。** 明显为 meshlet 而作：presence 语义（"绿点必须说明来源"，archive §12.2）、诊断"不可用 ≠ 通过"的诚实性、版本修订生命周期、segment grants、conflict 恢复路径（§8.3）、gateway-kernel 证据列。这些不是模板能生成的领域细节。
+**高。** 明显为 meshlet 而作：presence 语义（"绿点必须说明来源"，archive §12.2）、诊断"不可用 ≠ 通过"的诚实性、
+版本修订生命周期、segment grants、conflict 恢复路径（§8.3）、gateway-kernel 证据列。这些不是模板能生成的领域细节。
 
 ### 检测器
 
@@ -181,7 +224,8 @@
 ## 运行备注
 
 - vitest 门禁：4 files / 18 tests pass（修复后状态）。
-- 截图生成脚本：`/home/cui/.cache/persona-ui-shots/mlt-audit-shot.mjs`（全量 26 张）与 `mlt-pairs.mjs`（4 问题 before/after 对，参数化 base-url + out-dir）。
+- 截图生成脚本：`/home/cui/.cache/persona-ui-shots/mlt-audit-shot.mjs`（全量 26 张）与 `mlt-pairs.mjs`（4 问题 before/after 对，
+  参数化 base-url + out-dir）。
 - 修复前重渲染：`git worktree add /tmp/mlt-before 30d530c^`，node_modules 软链，dev server :5175。
 - 凭证：本地 admin bootstrap（`meshlet-admin-2026`），来自 `~/.hermes/cache/scratch/mlt-reset.sh`，**勿外传、不入库**。
 - 本日同日落地的后端 Windows 防火墙接线（`514cb51`）是后端改动、非 UI，不在本次审计范围。

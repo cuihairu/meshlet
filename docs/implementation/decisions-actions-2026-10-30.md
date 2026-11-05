@@ -50,7 +50,7 @@ The wiring decision must not silently drop NAT segments.
 
 - `scripts/install.ps1` registers a **per-user HKCU Run** entry: the agent starts in the logged-in
   user session, **without elevation**. That is sufficient for the control plane (register/heartbeat/
-  status) and for the D4 user-session tray host, but **not** for `netsh`/`sc`/`wireguard.exe` tunnel
+  status) and for the D4 user-session tray host, but not for `netsh`/`sc`/`wireguard.exe` tunnel
   installation, which need elevation.
 - The candidate wiring therefore needs one of: (a) elevate at the point of the privileged operation
   via `windows_elevation` (relaunch elevated / runas, with the managed-path check), or (b) a managed
@@ -116,7 +116,7 @@ item (待用户)**; this spec is the design the implementation will follow.
 ## D10 — Recovery acceptance contract (after restore, apply must not be expected to fix the network)
 
 Adopted per the decision: **apply stays idempotent**; the recovery contract is
-**stop service → restore backup → start service → verify convergence**. "数据库恢复完成" and
+stop service → restore backup → start service → verify convergence. "数据库恢复完成" and
 "系统真正可用" are two distinct progress states.
 
 ### Contract

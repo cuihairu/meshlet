@@ -54,7 +54,7 @@ netsh 删除不存在路由返回 `D5 D2 B2 BB B5 BD D4 AA CB D8 A1 A3`（
 - **`windows_service`** —— 执行层真机验证 2026-10-26：create / stop（含
   从未启动的 1062 幂等）/ delete / re-delete（1060 幂等）。
 - **`windows_cleanup`** —— 只有计划层；执行复用三个已验证的 exec 薄封装。
-  卸载链重入集成测试 `windows_cleanup_e2e` 2026-10-26 真机闭环：服务
+  卸载链重入集成测试 `windows_cleanup_e2e` 2026-10-26 真机跑通：服务
   create→stop→delete→re-delete、防火墙 add→show→delete→re-delete、空态
   `CleanupPlan` 全步幂等。
 - **`windows_elevation`** —— 计划层（受管 `.exe` 路径校验、`runas` 命令行

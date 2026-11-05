@@ -13,7 +13,8 @@
 
 ## 技术选型（§4.1 / §4.2）
 
-【待核】建议选型，实现时结合目标平台与依赖版本核验（[存档 §4.1](/zh/review/chatgpt-2026-10-13#_4-1-后端)、[§4.2](/zh/review/chatgpt-2026-10-13#_4-2-前端)）：
+【待核】建议选型，
+实现时结合目标平台与依赖版本核验（[存档 §4.1](/zh/review/chatgpt-2026-10-13#_4-1-后端)、[§4.2](/zh/review/chatgpt-2026-10-13#_4-2-前端)）：
 
 | 层 | 选型 |
 |---|---|
@@ -32,11 +33,8 @@
 
 【待核】（[存档 §4.3](/zh/review/chatgpt-2026-10-13#_4-3-隧道与网络工具)）：
 
-- WireGuard 作为隧道与加密基础；
-- Linux 内核接口优先（`wg-quick`/Netlink/受控系统命令按配置事务与可测试性选择）；
-- Windows 优先评估官方 WireGuard for Windows 的受支持管理方式；
-- NAT 用 nftables 等受支持的规则管理；防火墙**只管理 Meshlet 自有规则**；
-- **不得把随意拼接的 Shell 命令作为核心网络配置抽象**。
+WireGuard 作为隧道与加密基础；Linux 内核接口优先（`wg-quick`/Netlink/受控系统命令按配置事务与可测试性选择）；Windows 优先评估官方 WireGuard for Windows 的受支持管理方式；
+NAT 用 nftables 等受支持的规则管理，防火墙**只管理 Meshlet 自有规则**；**不得把随意拼接的 Shell 命令作为核心网络配置抽象**。
 
 ## Rust Workspace 建议（§4.4）
 
