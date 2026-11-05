@@ -636,7 +636,7 @@ fn init_tray_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
             "meshlet-tray-host.log",
         )),
         // 日志目录不可用：静默丢弃日志，不 panic。
-        None => tracing_appender::non_blocking(std::io::sink),
+        None => tracing_appender::non_blocking(std::io::sink()),
     };
     tracing_subscriber::fmt()
         .with_ansi(false)
