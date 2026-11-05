@@ -107,6 +107,8 @@ fn icmp_rule_add_show_delete_roundtrip_is_idempotent_on_a_real_firewall() {
 /// 真机档位：`Set-NetConnectionProfile -NetworkCategory Private` 在真实
 /// 接口上执行两次（幂等可重跑）后读回确为 Private。接口取自
 /// `Get-NetConnectionProfile`（保证存在连接档位；CI runner 的以太网接口）。
+/// runner 的接口别名常含空格（`Ethernet 1`），不满足计划层的注入防线字符
+/// 集——就地重命名为合法别名（一次性，runner 是可丢弃机器）。
 #[test]
 fn network_category_private_set_is_idempotent_on_a_real_interface() {
     // 找一个有连接档位的接口（runner 的物理/虚拟网卡都有）。
@@ -124,8 +126,29 @@ fn network_category_private_set_is_idempotent_on_a_real_interface() {
         panic!("no interface with a connection profile on this machine: {profiles:?}");
     };
 
+    // 别名不满足计划层注入防线字符集（如含空格）→ 重命名为合法名。
+    let charset_ok = !interface.is_empty()
+        && interface
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_' || c == b'.');
+    let interface = if charset_ok {
+        interface.to_string()
+    } else {
+        let (_, rename_out) = run(
+            "powershell",
+            &[
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                format!("Rename-NetAdapter -Name '{interface}' -NewName 'meshletci'"),
+            ],
+        );
+        eprintln!("rename adapter output: {rename_out}");
+        "meshletci".to_string()
+    };
+
     // 接口名进 PowerShell 单引号字符串——与生产同一注入防线（计划层校验）。
-    let set = MeshFirewallCommand::set_network_category_private(interface)
+    let set = MeshFirewallCommand::set_network_category_private(&interface)
         .expect("planned interface name must pass injection validation");
     // 连设两次：第二次是幂等重跑（已是 Private 再设仍成功）。
     run_mesh_firewall_command(&set).expect("first set");
