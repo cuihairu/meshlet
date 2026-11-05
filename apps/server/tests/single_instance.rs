@@ -200,11 +200,17 @@ fn ping(name: &str, target: &str) -> bool {
 }
 
 fn reconnects(name: &str, target: &str) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
+    // 90s window: the device re-applies its plan (resets the WG session) and
+    // the keepalive handshake is sub-second on an idle box, but the nightly
+    // dataplane leg shares CPU with concurrent CI jobs — a 2026-11-05 schedule
+    // run lost this race at 35s. Pace the probes too: a tight fork loop of
+    // `ping` processes starves the very namespaces it is waiting on.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     while std::time::Instant::now() < deadline {
         if ping(name, target) {
             return true;
         }
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }
     false
 }

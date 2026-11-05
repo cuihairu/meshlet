@@ -7,11 +7,16 @@ on:
     paths: ['apps/**', 'crates/**', 'migrations/**', 'deploy/**', 'scripts/**', '.github/workflows/dataplane.yml', 'Cargo.*']
   workflow_dispatch:
   workflow_call:
+    inputs:
+      runner:
+        description: 'Optional runner label override (falls back to vars.CI_RUNNER, then ubuntu-latest).'
+        type: string
+        required: false
 permissions:
   contents: read
 jobs:
   linux-kernel:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       MESHLET_REQUIRE_DATAPLANE: '1'
