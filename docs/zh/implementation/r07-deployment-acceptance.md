@@ -79,9 +79,12 @@ hub 密钥是服务器唯一持有的传输秘密；设备密钥留在设备上�
 `applied the desired device plan … reason=DesiredConfigChanged`。未做任何设备侧操作。诊断读作
 `3/3 device(s) with a handshake inside the 120s window`，到三个 overlay 地址的 ping 零丢包。
 
-密钥丢失与既定口径：删掉 `hub.key` 后重启，服务没有停下——保持 `active`、控制面照常应答，同时记
-`{"level":"ERROR","message":"hub recovery failed","network_id":"net-1","error":"read private_key_file /etc/meshlet/hub.key: No such file or directory (os error 2)"}`
-。
+密钥丢失与既定口径：删掉 `hub.key` 后重启，服务没有停下——保持 `active`、控制面照常应答，同时记下如下错误：
+
+```json
+{"level":"ERROR","message":"hub recovery failed","network_id":"net-1","error":"read private_key_file /etc/meshlet/hub.key: No such file or directory (os error 2)"}
+```
+
 也就是隧道侧已死而控制台还能用，安静得足以让人漏掉这一行。从独立备份恢复密钥并重启后隧道即恢复，设备侧零动作（三次 ping 零丢包）。注意这个备份实际恢复的是什么：它存的是轮换前的密钥
 `S7HIikdT8Xvkb78fDOi5HlP6f5RAC7m0QcCkw6R9XQs=`，所以恢复它等于撤销了轮换，设备也跟随回到旧密钥——一次成功的轮换应当被当成一次需要备份的变更，而不是一项既成事实。
 

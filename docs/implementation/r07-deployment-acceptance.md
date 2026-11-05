@@ -112,9 +112,13 @@ Zero-touch on the devices:
 `3/3 device(s) with a handshake inside the 120s window`, and pings to all three overlay addresses were lossless.
 
 Key loss, and the documented stance: deleting `hub.key` and restarting did **not** stop the service — the server stayed
-`active` and kept answering the control plane, and logged
-`{"level":"ERROR","message":"hub recovery failed","network_id":"net-1","error":"read private_key_file /etc/meshlet/hub.key: No such file or directory (os error 2)"}`.
- The tunnel side is dead while the console still works, which is quiet enough to deserve watching for that error line.
+`active` and kept answering the control plane, and logged:
+
+```json
+{"level":"ERROR","message":"hub recovery failed","network_id":"net-1","error":"read private_key_file /etc/meshlet/hub.key: No such file or directory (os error 2)"}
+```
+
+The tunnel side is dead while the console still works, which is quiet enough to deserve watching for that error line.
  Restoring the key from the independent backup and restarting brought
  the tunnel back with no device-side action (three lossless pings).
  Note what that backup actually restores: it held the **pre-rotation** key
