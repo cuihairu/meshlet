@@ -77,13 +77,13 @@
 ## Agent 安装即配防火墙（2026-10-30 用户令）
 
 - [x] AGENT-FW-1 [P1] Windows 数据面应用时自动设 wg 接口 NetworkCategory=Private 并放行 ICMPv4 入站，幂等可重跑。
-  - 证据: commit 16cb928（netsh add/show/idempotent/delete 全链路 + Set-NetConnectionProfile 双跑读回 Private，windows-latest 真机实跑）· 110 lib tests；端到端「ping 直接通」仍以 Windows 真机走查为准（openclaw SSH 本轮不可达）
+  - 证据: commit 16cb928/8bd2351（netsh add/show/idempotent/delete 全链路 + Set-NetConnectionProfile 双跑读回 Private，windows-latest 真机实跑 · run 41976760018）· 110 lib tests；端到端「ping 直接通」仍以 Windows 真机走查为准（openclaw SSH 本轮不可达）
 - [x] AGENT-FW-2 [P2] Linux 检测 ufw/firewalld 活跃时自动放行 wg 接口流量，幂等。
   - 证据: commit 52a4763 · 101 lib + 4 特权集成全绿
 - [x] AGENT-FW-3 [P2] walkthrough.md 补「安装即配防火墙」验收步骤与回归用例。
   - 证据: commit adbb65e
 - [x] AGENT-WIN-1 [P1] Windows 托盘宿主消费 TraySink 四态 PNG，常驻托盘+菜单。
-  - 证据: 本 commit CI tray-windows 腿（windows-latest 真实桌面：消费 TraySink 格式四态 fixture → NIM_ADD 注册 + tooltip 换态，截图/日志工件门禁）· tray-host 15 tests
+  - 证据: commit bbdc0e8/fb08bac · CI tray-windows 腿 run 41976760018（windows-latest 真实桌面：消费 TraySink 格式四态 fixture → NIM_ADD=1 注册 + tooltip 换态，截图/日志工件门禁绿）· tray-host 17 tests
 - [x] AGENT-WIN-2 [P1] Windows agent 安装包（zip 先行 + install.ps1），真机验收通过。
   - 证据: commit f86489d/7639110 · 2026-10-31 真机验收 5/5（docs/agent-win-2-acceptance.md）
 - [x] NIGHTLY-PKG [P2] Linux 组件包矩阵：server/agent/cli 各出 .deb+.rpm。
@@ -168,9 +168,9 @@
 ## Agent-WIN-3/4（2026-11-02 用户令）
 
 - [x] AGENT-WIN-3 [P1] 托盘显示本机虚拟 IP + 直连节点列表(RTT)；菜单：打开面板/本机信息/直连节点/连接节点…/退出。
-  - 证据: 本 commit Windows 菜单结构真机测试（CI windows-latest 实跑：首行设备名+虚拟 IP+状态、直连子菜单 IP/模式/RTT、连接节点候选可点击、打开面板/退出读回断言）· tray-host 15 tests
+  - 证据: commit bbdc0e8 · Windows 菜单结构真机测试（run 41973077285/41976760018 windows-latest 实跑：首行设备名+虚拟 IP+状态、直连子菜单 IP/模式/RTT、连接节点候选可点击、打开面板/退出读回断言）· tray-host 17 tests
 - [x] AGENT-WIN-4 [P1] 新增 peer dial <node> 命令并接托盘「连接节点…」子菜单。
-  - 证据: 代码 commit b9eaae0（CLI peer dial + 托盘 spawn + 结果气球）；本 commit CI tray-windows 腿验证宿主常驻与 agent 进程联动；拨号端到端结果气球以真机走查为准（openclaw SSH 本轮不可达）
+  - 证据: 代码 commit b9eaae0（CLI peer dial + 托盘 spawn + 结果气球）；commit bbdc0e8 CI tray-windows 腿验证宿主常驻与 agent 进程联动（run 41976760018 绿）；拨号端到端结果气球以真机走查为准（openclaw SSH 本轮不可达）
 
 ## 漏洞扫描遗留（2026-11-03 全舰队扫描）
 
@@ -223,6 +223,8 @@
 ## Windows agent 部署发现（2026-11-05 openclaw/imac 真机取证）
 
 - [x] BUG: Windows apply 对已存在隧道不重配（apply_device_plan_sync 走 InstallService，wireguard.exe 对已存在服务返回 "already installed" 被判幂等成功 → 不更新 key/地址）。
-  - 证据: 本 commit · `install_plan` 停/卸/装重配路径 + already-installed fail-closed + sc query 状态码解析 · meshlet-network 166 lib tests
+  - 证据: commit 5c9ce1c · `install_plan` 停/卸/装重配路径 + already-installed fail-closed + sc query 状态码解析 · meshlet-network 166 lib tests
 - [x] BUG: 漂移检测不查本机私钥/适配器地址（drifted() 只比对 peer 公钥+allowed-ips 与 ledger 地址 → 手动隧道 peer 恰与 plan 一致即误判 UpToDate）。
-  - 证据: 本 commit · NetworkSnapshot 增 local_public_key/tunnel_address 双读数（Linux wg dump 接口行 + ip -4 addr / Windows wg.exe dump + netsh addresses），drifted() 增两查（读数缺失不判）· network 168 + agent 104 tests
+  - 证据: commit a66fe18 · NetworkSnapshot 增 local_public_key/tunnel_address 双读数（Linux wg dump 接口行 + ip -4 addr / Windows wg.exe dump + netsh addresses），drifted() 增两查（读数缺失不判）· network 168 + agent 104 tests
+- [x] BUG: CI windows 腿两处测试脆断（task runtime 测试用 Unix shell 语法在 cmd /C 下必挂；live firewall 测试未处理 runner 接口别名含空格）→ 按平台语法/改名后实跑通过。
+  - 证据: commit 321a3d3/c0610a3/8bd2351 · run 41976760018 windows 腿绿
