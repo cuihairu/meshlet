@@ -147,17 +147,40 @@ impl WindowsNetworkBackend {
         // 漂移探测：从 `wg.exe show <name> dump` 读回实际生效的 peer。读不到
         // （wg.exe 缺失 / 隧道未运行 / 输出异常）一律返回空——调用方据存在性
         // 判定为「与期望不符」宁可重装收敛，绝不因读数缺失假装一致。
-        let Some(exe) = self.find_wg_exe() else {
-            return Vec::new();
-        };
-        let Ok(out) = std::process::Command::new(&exe)
+        match self.read_tunnel_dump(tunnel_name) {
+            Some(text) => crate::windows_tunnel::parse_wg_dump_peers(&text),
+            None => Vec::new(),
+        }
+    }
+
+    /// `wg.exe show <name> dump` 原文（接口行 + peer 行；解码走
+    /// [windows_console] 的活动代码页兜底）。读不到 → None。
+    fn read_tunnel_dump(&self, tunnel_name: &str) -> Option<String> {
+        let exe = self.find_wg_exe()?;
+        let out = std::process::Command::new(&exe)
             .args(["show", tunnel_name, "dump"])
             .output()
-        else {
-            return Vec::new();
-        };
-        let text = String::from_utf8_lossy(&out.stdout);
-        crate::windows_tunnel::parse_wg_dump_peers(&text)
+            .ok()?;
+        Some(format!(
+            "{}{}",
+            crate::windows_console::decode_output(&out.stdout),
+            crate::windows_console::decode_output(&out.stderr),
+        ))
+    }
+
+    /// 受管接口适配器的实际 IPv4 地址（`netsh interface ipv4 show addresses
+    /// name=<if>` 解析；漂移判定的适配器地址读数，BUG②）。读不到 → None。
+    fn interface_address(&self) -> Option<std::net::Ipv4Addr> {
+        let output = std::process::Command::new("netsh")
+            .args(["interface", "ipv4", "show", "addresses", &self.interface])
+            .output()
+            .ok()?;
+        let text = format!(
+            "{}{}",
+            crate::windows_console::decode_output(&output.stdout),
+            crate::windows_console::decode_output(&output.stderr),
+        );
+        parse_netsh_interface_ipv4_address(&text)
     }
 
     /// `wg.exe` 路径解析（与 [Self::find_wireguard_exe] 同纪律：WireGuard for
@@ -446,6 +469,20 @@ impl WindowsNetworkBackend {
         } else {
             None
         };
+        // 本机身份读数（BUG② 修复的漂移判定输入）：dump 接口行第 2 列是
+        // 本机公钥（读不到 → None，证据缺失不判）；适配器地址读 netsh。
+        let local_public_key = if tunnel_exists {
+            self.read_tunnel_dump(&self.interface)
+                .as_deref()
+                .and_then(crate::parse_wg_dump_local_public_key)
+        } else {
+            None
+        };
+        let tunnel_address = if tunnel_exists {
+            self.interface_address()
+        } else {
+            None
+        };
         Ok(NetworkSnapshot {
             tunnel_exists,
             forwarding_enabled,
@@ -453,6 +490,8 @@ impl WindowsNetworkBackend {
             installed_routes,
             nat_rules: Vec::new(),
             tunnel_mtu,
+            local_public_key,
+            tunnel_address,
         })
     }
 
@@ -765,6 +804,37 @@ fn parse_ip_enable_router(text: &str) -> Option<bool> {
     }
 }
 
+/// 解析 `netsh interface ipv4 show addresses name=<if>` 输出中该接口的首个
+/// IPv4 地址（BUG② 漂移判定的适配器地址读数；纯函数，跨平台单测）。
+///
+/// 行形如 en `   IP Address:                           10.240.0.7` 或
+/// zh-CN `   IP 地址:                           10.240.0.7`——标签宽匹配
+/// （`IP Address` / `IP 地址`），取行内最后一个可解析为 IPv4 的词元。
+/// 「子网前缀」行的 `(masked …)` 不含独立 IPv4 词元、且匹配不到地址标签，
+/// 不会误命中。读不到 → None。
+fn parse_netsh_interface_ipv4_address(text: &str) -> Option<std::net::Ipv4Addr> {
+    for line in text.lines() {
+        let is_address_label =
+            line.to_ascii_lowercase().contains("ip address") || line.contains("IP 地址");
+        if !is_address_label {
+            continue;
+        }
+        if let Some(addr) = line
+            .split_whitespace()
+            .filter_map(|token| {
+                token
+                    .trim_end_matches(':')
+                    .parse::<std::net::Ipv4Addr>()
+                    .ok()
+            })
+            .next_back()
+        {
+            return Some(addr);
+        }
+    }
+    None
+}
+
 fn mask_to_prefix(mask: &str) -> u8 {
     let octets: Vec<u8> = mask.split('.').filter_map(|s| s.parse().ok()).collect();
     if octets.len() != 4 {
@@ -936,6 +1006,35 @@ mod tests {
         // 空行 / 空公钥 → None。
         assert!(parse_wg_dump_diag_line_windows("").is_none());
         assert!(parse_wg_dump_diag_line_windows("\t\t\t").is_none());
+    }
+
+    /// netsh 接口地址解析（BUG② 读数端）：en/zh 标签都命中，取行内 IPv4
+    /// 词元；无标签行 / 无地址 → None。
+    #[test]
+    fn netsh_interface_address_parses_en_and_zh_labels() {
+        let en = "Configuration for interface \"meshlet\"\r\n\
+                  DHCP enabled:                         No\r\n\
+                  IP Address:                           10.240.0.7\r\n\
+                  Subnet Prefix:                        10.240.0.7/32 (masked 255.255.255.255)\r\n";
+        assert_eq!(
+            parse_netsh_interface_ipv4_address(en),
+            Some("10.240.0.7".parse().unwrap())
+        );
+        let zh = "接口 \"meshlet\" 的 IP 配置\r\n\
+                  DHCP 已启用:                          否\r\n\
+                  IP 地址:                           10.240.0.9\r\n\
+                  子网前缀:                          10.240.0.9/32 (掩码 255.255.255.255)\r\n";
+        assert_eq!(
+            parse_netsh_interface_ipv4_address(zh),
+            Some("10.240.0.9".parse().unwrap())
+        );
+        // 无地址标签行 / 完全无关文本 → None。
+        assert_eq!(
+            parse_netsh_interface_ipv4_address("   子网前缀: 10.240.0.7/32\r\n"),
+            None
+        );
+        assert_eq!(parse_netsh_interface_ipv4_address(""), None);
+        assert_eq!(parse_netsh_interface_ipv4_address("not a netsh dump"), None);
     }
 
     #[test]

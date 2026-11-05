@@ -577,7 +577,16 @@ impl Agent {
         }
         let mut ledger_plan = local_plan;
         ledger_plan.tunnel.private_key = None;
-        AgentState::from_plan(&ledger_plan).save(&self.state_path)?;
+        // 本机公钥指纹入账本（BUG② 漂移判定）：对账据此识别「peer 一致但
+        // 本机私钥被换」的手动隧道。推导失败（wg 缺失等）按缺省留空——
+        // 漂移判定对空指纹不判，下轮重放成功后再补齐。
+        let mut ledger = AgentState::from_plan(&ledger_plan);
+        if let Some(key) = &self.private_key {
+            if let Ok(public_key) = self.backend.public_key_from_private(key) {
+                ledger.local_public_key = public_key;
+            }
+        }
+        ledger.save(&self.state_path)?;
         tracing::info!(
             desired_config_hash = %plan.desired_config_hash,
             routes = plan.routes.len(),

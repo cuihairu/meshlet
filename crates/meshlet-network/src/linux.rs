@@ -767,6 +767,19 @@ impl LinuxNetworkBackend {
             Vec::new()
         };
         let nat_rules = self.meshlet_nat_signatures_sync()?;
+        // 本机身份读数（BUG② 修复的漂移判定输入）：dump 读不到 → None（证据
+        // 缺失不判）；适配器地址从 `ip -4 addr show dev <if>` 读实际地址。
+        let local_public_key = if tunnel_exists {
+            let dump = self.wg_dump_on_interface()?;
+            crate::parse_wg_dump_local_public_key(&dump)
+        } else {
+            None
+        };
+        let tunnel_address = if tunnel_exists {
+            self.interface_address()
+        } else {
+            None
+        };
         Ok(NetworkSnapshot {
             tunnel_exists,
             forwarding_enabled,
@@ -774,7 +787,28 @@ impl LinuxNetworkBackend {
             installed_routes,
             nat_rules,
             tunnel_mtu,
+            local_public_key,
+            tunnel_address,
         })
+    }
+
+    /// `wg show <if> dump` 原文（接口行 + peer 行；`wg` 缺失/接口未起 → 错误，
+    /// 由调用方按证据缺失处理）。
+    fn wg_dump_on_interface(&self) -> Result<String, NetworkError> {
+        let dump = self.run(&["wg", "show", &self.interface, "dump"])?;
+        Ok(String::from_utf8_lossy(&dump.stdout).into_owned())
+    }
+
+    /// 受管接口的实际 IPv4 地址（`ip -4 -o addr show dev <if>` 单行格式，复用
+    /// [`parse_ip_octet_addrs`] 的行解析）。读不到 → None。
+    fn interface_address(&self) -> Option<Ipv4Addr> {
+        let out = self
+            .run(&["ip", "-4", "-o", "addr", "show", "dev", &self.interface])
+            .ok()?;
+        parse_ip_octet_addrs(&String::from_utf8_lossy(&out.stdout))
+            .into_iter()
+            .find(|(ifname, _)| ifname == &self.interface)
+            .map(|(_, addr)| addr)
     }
 
     /// 枚举本机 RFC1918 局域网地址（§12 P2P 直连候选上报）：`ip -4 -o addr

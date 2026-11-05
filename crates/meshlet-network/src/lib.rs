@@ -219,6 +219,14 @@ pub struct NetworkSnapshot {
     /// 隧道接口的实际 MTU 读数（`ip link show` 解析；计划显式配置 MTU
     /// 时用于漂移判定：内核读数与计划不符即重放纠回）。
     pub tunnel_mtu: Option<u32>,
+    /// 受管接口的本机公钥指纹（`wg show dump` 接口行第 2 列，44 字符
+    /// base64）。漂移判定据此识别「peer 恰与计划一致但本机私钥被换」的
+    /// 手动隧道（todo.md Windows 部署发现第二项）；读不到 → `None`
+    /// （证据缺失不判，不进重放死循环）。
+    pub local_public_key: Option<String>,
+    /// 受管接口适配器的实际 IPv4 地址。漂移判定比对计划地址——手动隧道
+    /// 换了地址也必须重放纠回；读不到 → `None`（证据缺失不判）。
+    pub tunnel_address: Option<std::net::Ipv4Addr>,
 }
 
 /// 受管接口上读出的一个 WireGuard peer（身份级事实：公钥 + allowed-ips）。
@@ -226,6 +234,18 @@ pub struct NetworkSnapshot {
 pub struct PeerObserved {
     pub public_key: String,
     pub allowed_ips: Vec<Ipv4Cidr>,
+}
+
+/// 解析 `wg show <if> dump` 接口行的本机公钥指纹（字段 1；字段 0 是私钥，
+/// 绝不外传）。Linux `wg` 与 Windows `wg.exe` 同一 dump 格式，共享本解析。
+/// 公钥按身份校验（44 字符 base64、`=` 结尾）——残行/占位文本不臆造指纹。
+pub fn parse_wg_dump_local_public_key(dump: &str) -> Option<String> {
+    let header = dump.lines().next()?;
+    let public_key = header.split_whitespace().nth(1)?;
+    if public_key.len() != 44 || !public_key.ends_with('=') {
+        return None;
+    }
+    Some(public_key.to_string())
 }
 
 /// 网络诊断信息面（R-DIAG，2026-11-01 用户令）：agent 本地路由表 / 接口
@@ -302,7 +322,8 @@ pub enum NetworkError {
 ///    `extra_peer_keys` 是直连保留等允许存在的额外 peer）；
 /// ③ 每个计划路由 `destination` 必须在 `installed_routes`（CIDR 精确匹配）；
 /// ④ 计划显式指定 MTU 则须与快照 `tunnel_mtu` 一致；
-/// ⑤ 隧道不存在（`tunnel_exists=false`）→ 不匹配。
+/// ⑤ 隧道不存在（`tunnel_exists=false`）→ 不匹配；
+/// ⑥ 适配器实际地址读数存在且与计划地址不同 → 不匹配（手动换址的隧道）。
 ///
 /// 调用方是 `#[cfg(windows)]` 的 `WindowsNetworkBackend`，故非 Windows 目标
 /// 上本函数保持可编译（含单测）但无调用方——按仓内惯例以 cfg_attr 豁免
@@ -350,6 +371,13 @@ pub(crate) fn device_plan_matches(
     }
     if let Some(mtu) = plan.tunnel.mtu {
         if snapshot.tunnel_mtu != Some(mtu) {
+            return false;
+        }
+    }
+    // ⑥ 适配器实际地址：读数存在且与计划不符 → 手动换址，必须判不匹配。
+    //    读数缺失（None）不判——证据缺失不假装一致，也不进重放死循环。
+    if let Some(actual) = snapshot.tunnel_address {
+        if actual != plan.tunnel.address {
             return false;
         }
     }
@@ -417,11 +445,26 @@ mod device_plan_matches_tests {
             installed_routes: routes.iter().map(|r| r.parse().unwrap()).collect(),
             nat_rules: Vec::new(),
             tunnel_mtu: mtu,
+            local_public_key: None,
+            tunnel_address: None,
         }
     }
 
     fn empty_extra() -> BTreeSet<String> {
         BTreeSet::new()
+    }
+
+    #[test]
+    fn adapter_address_mismatch_reads_as_not_matching() {
+        // 手动把隧道地址改了（peer/路由/MTU 全一致）→ 必须判不匹配；
+        // 读数缺失（None）不判。
+        let p = plan(&["pk-a"], &["10.240.0.0/24"], None);
+        let mut moved = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
+        moved.tunnel_address = Some("10.240.0.99".parse().unwrap());
+        assert!(!device_plan_matches(&p, &empty_extra(), &moved));
+        let mut matching = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
+        matching.tunnel_address = Some(p.tunnel.address);
+        assert!(device_plan_matches(&p, &empty_extra(), &matching));
     }
 
     #[test]
@@ -570,6 +613,8 @@ mod tests {
                 installed_routes: vec!["10.240.0.0/16".parse().unwrap()],
                 nat_rules: Vec::new(),
                 tunnel_mtu: Some(1420),
+                local_public_key: None,
+                tunnel_address: None,
             })
         }
 
@@ -761,6 +806,26 @@ mod tests {
         assert!(
             serde_json::from_value::<DevicePlan>(value).is_err(),
             "host bits set must be rejected"
+        );
+    }
+
+    /// 本机公钥指纹解析（BUG② 修复的读数端）：接口行字段 1；私钥（字段 0）
+    /// 绝不返回；残行 / 占位文本 / 空表 → None。
+    #[test]
+    fn wg_dump_local_public_key_reads_field_one_and_validates_shape() {
+        let key = format!("{}=", "K".repeat(43));
+        let dump = format!("some-private-key\t{key}\t51820\t0\n");
+        assert_eq!(parse_wg_dump_local_public_key(&dump), Some(key.clone()));
+        // 接口行在前、peer 行在后：只看首行。
+        let with_peer =
+            format!("{dump}PEER-KEY-PLACEHOLDER\t\tendpoint\t10.240.0.2/32\t0\t0\t0\t0\n");
+        assert_eq!(parse_wg_dump_local_public_key(&with_peer), Some(key));
+        // 空表 / 残行 / 非法形状。
+        assert_eq!(parse_wg_dump_local_public_key(""), None);
+        assert_eq!(parse_wg_dump_local_public_key("only-private-key\n"), None);
+        assert_eq!(
+            parse_wg_dump_local_public_key("priv\tPLACEHOLDER\t51820\t0\n"),
+            None
         );
     }
 }

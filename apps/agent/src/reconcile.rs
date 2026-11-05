@@ -39,6 +39,11 @@ pub struct AgentState {
     /// 最近一次应用成功时刻（ISO-8601 UTC，排查用；不影响决策）。
     #[serde(default)]
     pub applied_at: String,
+    /// 应用时本机的 WireGuard 公钥指纹（`wg pubkey` 推导；BUG② 修复）。
+    /// 漂移判定据此识别「peer 恰与计划一致但本机私钥被换」的手动隧道。
+    /// 旧账本无此字段（空串 = 不判，重放一次后自然补齐）。
+    #[serde(default)]
+    pub local_public_key: String,
     /// The full plan last applied to the kernel. It is the rollback source for
     /// a failed transition; older ledgers without this field replay safely.
     #[serde(default)]
@@ -60,6 +65,7 @@ impl AgentState {
             nat_rules: rule_signatures(&plan.nat_rules),
             nat_owners: owners(&plan.nat_rules),
             applied_at: now(),
+            local_public_key: String::new(),
             last_good_plan: Some(plan.clone()),
         }
     }
@@ -145,7 +151,10 @@ pub fn needs_apply(
 /// Kernel state versus desired drift（身份级，非数量级）。
 ///
 /// 每一项都按**对象身份**判，不按计数——「数量相同」不代表「身份相同」：
-/// - 隧道：不存在，或地址与期望不是同一个 → 漂移（重启后接口消失是常态）；
+/// - 隧道：不存在，或适配器实际地址与期望不是同一个 → 漂移（重启后接口消失
+///   是常态；账本地址与计划地址同源过时，内核实际读数才是事实）；
+/// - 本机私钥：账本记录的应用公钥与内核 dump 读出的本机公钥不同 → 漂移
+///   （手动换钥的隧道即便 peer 恰与计划一致也必须重放纠回，BUG②）；
 /// - peer：期望与实际按 `公钥 → allowed-ips` 集合逐项比对。少一个（手工删
 ///   peer）、多一个（受管接口上多装的本 meshlet peer）、allowed-ips 被改宽，
 ///   三条都判漂移；
@@ -164,6 +173,26 @@ fn drifted(
     }
     if !state.tunnel_address.is_empty() && state.tunnel_address != plan.tunnel.address.to_string() {
         return true;
+    }
+    // 适配器实际地址（BUG②）：内核读数与计划不一致（手动换址 / 半途失败）
+    // → 漂移。旧检查只比「账本地址 vs 计划地址」，两者都过时（同一来源），
+    // 手动隧道换了地址也不会被看见；这里比的是**内核实际读数**。读数缺失
+    // （None）不判——证据缺失不假装一致，也不进重放死循环。
+    if let Some(actual) = snapshot.tunnel_address {
+        if actual != plan.tunnel.address {
+            return true;
+        }
+    }
+    // 本机私钥指纹（BUG②）：账本记录了应用时的公钥，而内核 dump 读出的
+    // 本机公钥不同 → 有人换了私钥（手动重建 / 密钥轮换旁路），必须重放纠回。
+    // peer 集合恰与计划一致的经典误判（判 UpToDate 跳过 apply、报 applied
+    // 成功但内核未变）正是漏了这一项。账本无指纹（旧账本）或读数缺失都不判。
+    if !state.local_public_key.is_empty() {
+        if let Some(actual) = &snapshot.local_public_key {
+            if actual != &state.local_public_key {
+                return true;
+            }
+        }
     }
     // MTU：计划显式配置而内核读数不符 → 漂移（手工改动 / 半途失败的纠回）。
     // 计划未配置 MTU 时不判：内核默认值或管理员有意设置都不算违背计划。
@@ -399,6 +428,8 @@ mod tests {
             installed_routes: plan.routes.iter().map(|route| route.destination).collect(),
             nat_rules: plan.nat_rules.iter().map(|rule| rule.signature()).collect(),
             tunnel_mtu: Some(1420),
+            local_public_key: None,
+            tunnel_address: Some(plan.tunnel.address),
         }
     }
 
@@ -444,6 +475,51 @@ mod tests {
         let d = apply(&state_of(&p), &rebooted, &p);
         assert!(d.needs_apply, "a vanished tunnel must be replayed");
         assert_eq!(d.reason, Reason::KernelDrift);
+    }
+
+    #[test]
+    fn peer_consistent_but_local_key_rotated_is_drift() {
+        // BUG② 回归（todo.md「Windows 部署发现」第二项）：手动重建的隧道 peer
+        // 恰与计划一致，但本机私钥被换 → 此前判 UpToDate 跳过 apply（报
+        // applied 成功但内核未变），现在必须判 KernelDrift。
+        let p = plan("hash-a", false);
+        let mut state = state_of(&p);
+        state.local_public_key = "K".repeat(43) + "=";
+
+        // peer 一致、本机公钥不同 → 漂移。
+        let mut hand_rebuilt = healthy(&p);
+        hand_rebuilt.local_public_key = Some("M".repeat(43) + "=");
+        assert_eq!(apply(&state, &hand_rebuilt, &p).reason, Reason::KernelDrift);
+
+        // 本机公钥一致（正常 re-apply 后的内核）→ 不漂移。
+        let mut matching = healthy(&p);
+        matching.local_public_key = Some(state.local_public_key.clone());
+        assert!(!apply(&state, &matching, &p).needs_apply);
+
+        // 读数缺失（dump 不可读）→ 不判（证据缺失不进重放死循环）。
+        let mut unreadable = healthy(&p);
+        unreadable.local_public_key = None;
+        assert!(!apply(&state, &unreadable, &p).needs_apply);
+
+        // 旧账本（无指纹字段）→ 不判，重放一次后自然补齐。
+        let old_ledger = state_of(&p); // local_public_key 默认空
+        assert!(!apply(&old_ledger, &hand_rebuilt, &p).needs_apply);
+    }
+
+    #[test]
+    fn adapter_address_different_from_plan_is_drift() {
+        // BUG② 回归：手动隧道换了地址（peer 一致）。旧检查只比「账本地址 vs
+        // 计划地址」（同源过时），内核实际读数不一致现在必须命中。
+        let p = plan("hash-a", false);
+        let state = state_of(&p);
+        let mut moved = healthy(&p);
+        moved.tunnel_address = Some("10.240.0.99".parse().unwrap());
+        assert_eq!(apply(&state, &moved, &p).reason, Reason::KernelDrift);
+
+        // 读数缺失 → 不判。
+        let mut unreadable = healthy(&p);
+        unreadable.tunnel_address = None;
+        assert!(!apply(&state, &unreadable, &p).needs_apply);
     }
 
     #[test]

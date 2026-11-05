@@ -217,5 +217,5 @@
 
 - [x] BUG: Windows apply 对已存在隧道不重配（apply_device_plan_sync 走 InstallService，wireguard.exe 对已存在服务返回 "already installed" 被判幂等成功 → 不更新 key/地址）。
   - 证据: 本 commit · `install_plan` 停/卸/装重配路径 + already-installed fail-closed + sc query 状态码解析 · meshlet-network 166 lib tests
-- [ ] BUG: 漂移检测不查本机私钥/适配器地址。drifted() 只比对 peer 公钥+allowed-ips 与 ledger 地址 → 手动隧道 peer 恰与 plan 一致即判 UpToDate 跳过 apply，报 applied 成功但内核未变。reconcile.rs。
-  - 修法: drifted() 增查本机私钥 + 适配器实际地址。
+- [x] BUG: 漂移检测不查本机私钥/适配器地址（drifted() 只比对 peer 公钥+allowed-ips 与 ledger 地址 → 手动隧道 peer 恰与 plan 一致即误判 UpToDate）。
+  - 证据: 本 commit · NetworkSnapshot 增 local_public_key/tunnel_address 双读数（Linux wg dump 接口行 + ip -4 addr / Windows wg.exe dump + netsh addresses），drifted() 增两查（读数缺失不判）· network 168 + agent 104 tests
