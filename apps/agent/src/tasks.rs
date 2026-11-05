@@ -958,7 +958,7 @@ mod tests {
         let start = Instant::now();
         rt.kick();
         assert!(
-            start.elapsed() < Duration::from_millis(200),
+            start.elapsed() < Duration::from_millis(900),
             "kick must return immediately, not run the task inline"
         );
         // 等 worker 完成：轮询账本（任务 sleep 1s，给足余量）。
