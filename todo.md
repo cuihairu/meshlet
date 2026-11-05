@@ -27,7 +27,7 @@
 - [x] R-04 设备端到端组网（Linux Agent）：注册、启动恢复、执行回执、重试、升级、真实连接诊断。
   - 证据: docs/implementation/r04-linux-agent-e2e.md · 2026-10-24 跨主机 20/20 双向基线 · 13 项诊断全绿
 - [ ] R-05 Windows 完整客户端：隧道服务、系统路由、防火墙、权限提升、开机恢复。
-  - BLOCKED: 缺一台可实际安装、可重启的 Windows 真机，需用户手动提供
+  - 真机已到位（用户共提供 3 台 Windows）：imac 192.168.5.117（128G，R-05 全链路验收进行中）、openclaw 10.240.0.3（Server 2022，ssh 别名已修直连）、work 10.240.0.5（Win11 Pro，meshlet agent+tray+custos 已装、在线 10.240.0.8）。BLOCKED 口径作废（2026-11-05 修正，曾过期误导）。
 - [x] R-05 权限提升：windows_elevation 计划层与错误分类，全平台编译 + Linux 单测。
   - 证据: 66 tests（未真机实测，未接 SystemBackend）
 - [x] R-05 数据面真机验收（路由/防火墙/服务控制/卸载清理，zh-CN 解码修复）。
