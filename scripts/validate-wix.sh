@@ -56,7 +56,9 @@ PY
 )
 sed "s|\$(var.CargoTargetBinDir)\\\\|$stub/bin/|g" "$wxs" > "$stub/main.wxs"
 
-wixl -a x64 -D "CargoPackageVersion=$version" -o "$stub/out.msi" "$stub/main.wxs"
+# wixl and cargo-wix must agree on the version define: cargo-wix injects
+# `-dVersion=` (not `CargoPackageVersion`), so the wxs uses `$(var.Version)`.
+wixl -a x64 -D "Version=$version" -o "$stub/out.msi" "$stub/main.wxs"
 
 # --- 3. inspect the produced msi -------------------------------------------
 files=$(msiinfo export "$stub/out.msi" File | awk -F '\t' 'NR>2 {print $3}' | sort | tr '\n' ' ')
