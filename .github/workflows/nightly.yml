@@ -132,7 +132,9 @@ jobs:
         # Invoked from the repo root: candle/light resolve the wxs' relative
         # content sources (assets/icons/meshlet.ico) against the inherited cwd,
         # and cargo-wix locates the manifest-relative wix/main.wxs itself.
-        run: cargo wix apps/cli/Cargo.toml
+        # -p is required: in a workspace cargo-wix refuses the bare manifest
+        # path ("Workspace detected. Please pass a package name.").
+        run: cargo wix -p meshlet-cli
       - name: Stage MSI nightly asset
         shell: pwsh
         run: |
