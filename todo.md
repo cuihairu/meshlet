@@ -107,6 +107,7 @@
   - 计划: wix manifest 按 cargo-wix-packaging skill 规则（exe Source 用 $(var.CargoTargetBinDir)；附加 exe 同步 --release --bin 预构建；SVG→ico 用 rsvg-convert+ImageMagick；GUI tray host 加 windows_subsystem）；Linux 侧 wixl 干跑校验 wxs；夜间 workflow 打包步产出 target/wix/*.msi 并上传 release。
 
 ## meshlet P2P 节点直连（2026-10-31 起，分批 ①-⑤）
+> 口径：以下勾=代码+netns 端到端验收。**你的部署后台看不到直连是正常的**：direct_connect 默认关（agent `[dataplane.direct_connect] enabled`），且需真实第二台节点；开法见 docs/guide/toggles.md §direct_connect。双真机走查挂 R-DIAG-2 前置，未走查前不算「用户可用」。
 
 - [x] ① endpoint 上报+API：agent 心跳携带 direct，server 提供 peers/endpoints 查询。
   - 证据: commit 7374f6f/a1111f5 · config 18 + network 102 + agent 60 + peers_endpoints 6 tests
