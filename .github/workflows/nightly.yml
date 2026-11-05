@@ -45,7 +45,7 @@ jobs:
       - run: cargo test --locked --workspace
       - name: Validate installer
         run: |
-          sudo apt-get update && sudo apt-get install -y msitools
+          sudo apt-get update && sudo apt-get install -y msitools wixl wixl-data
           bash -n scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh scripts/validate-wix.sh
           scripts/install.sh --help
           shellcheck scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh
