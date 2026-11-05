@@ -103,6 +103,9 @@ jobs:
       - name: Generate four-state tray fixtures
         run: cargo run -p meshlet-tray-host --example tray_fixture -- tray-fixture
 
+      - name: Build tray host
+        run: cargo build -p meshlet-tray-host
+
       # 托盘宿主有 agent 联动看门狗：无 meshlet-agent.exe 进程时宽限 ~30s 后
       # 自退。stub 常驻进程让截图窗口内托盘保持在线（进程名匹配即满足）。
       - name: Start keep-alive stub agent process
@@ -112,7 +115,8 @@ jobs:
 
       - name: Launch tray host
         run: |
-          Start-Process "target\debug\meshlet-tray-host.exe" `
+          $trayHost = Join-Path (Get-Location) "target\debug\meshlet-tray-host.exe"
+          Start-Process $trayHost `
             -ArgumentList "$(Resolve-Path tray-fixture)\online" `
             -RedirectStandardError tray-host.log -RedirectStandardOutput tray-host.out
 

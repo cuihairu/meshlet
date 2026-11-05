@@ -1,6 +1,6 @@
 //! 托盘 CI 证据夹具（AGENT-WIN-1/3/4）：按 [TraySink] 的**同一 PNG 格式**
 //! （8-bit RGBA、逐行 filter 0、stored deflate 块）产出四态
-//! `{state}/status.json + icon-16.png + icon-24.png`，供 windows-latest CI
+//! `{state}/tray/status.json + icon-16.png + icon-24.png`，供 windows-latest CI
 //! 启动 `meshlet-tray-host` 消费、截图存证（todo.md「CI windows-latest 出
 //! 截图证据」）。
 //!
@@ -57,17 +57,18 @@ fn main() {
     let out_dir = PathBuf::from(out_dir);
     for (idx, (dir, accessible, tooltip)) in STATES.iter().enumerate() {
         let state_dir = out_dir.join(dir);
-        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        let tray_dir = state_dir.join("tray");
+        std::fs::create_dir_all(&tray_dir).expect("create tray dir");
         for (name, size) in [("icon-16.png", 16u32), ("icon-24.png", 24)] {
             let (w, h, rgba) = silhouette_rgba(idx, size);
-            std::fs::write(state_dir.join(name), png_encode(w, h, &rgba)).expect("write icon png");
+            std::fs::write(tray_dir.join(name), png_encode(w, h, &rgba)).expect("write icon png");
         }
         // status.json 字段与 TraySink::publish_with 同构（state/tooltip/
         // accessible_name/icon_16/icon_24）。
         let body = format!(
             "{{\"state\":{accessible:?},\"tooltip\":{tooltip:?},\"accessible_name\":{accessible:?},\"icon_16\":\"icon-16.png\",\"icon_24\":\"icon-24.png\"}}",
         );
-        std::fs::write(state_dir.join("status.json"), body).expect("write status.json");
+        std::fs::write(tray_dir.join("status.json"), body).expect("write status.json");
         println!("{}", state_dir.display());
     }
 }
