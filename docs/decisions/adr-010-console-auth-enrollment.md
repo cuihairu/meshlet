@@ -1,6 +1,6 @@
 # ADR-010: Console Authentication and Device Enrollment Security
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

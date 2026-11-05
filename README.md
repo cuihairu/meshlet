@@ -1,6 +1,6 @@
-<p align="center"><img src="logo-copper.svg" width="64" height="64"></p>
-
 > **English** | [中文](README.zh.md)
+
+<p align="center"><img src="logo-copper.svg" width="64" height="64"></p>
 
 <h1 align="center">meshlet</h1>
 
@@ -8,15 +8,8 @@
 
 Self-hosted private networking on your own VPS — Rust + WireGuard.
 
-> [!NOTE]
-> The control plane, WireGuard hub/agent, LAN routing and Alias NAT, console, authentication,
-> audit, backup and device approval are implemented. This revision adds single-instance network
-> isolation, device apply receipts, hub recovery, last-good-plan rollback, Direct LAN SNAT and
-> service permissions, with local Linux kernel and unprivileged service regression evidence.
-> Windows backend modules are implemented and real-machine verified for routes, firewall, service
-> control and uninstall cleanup; a Windows agent+CLI+tray-host zip and `install.ps1` now ship in the
-> nightly release, while the agent's live data-plane wiring and real-machine installer/tray-host
-> acceptance remain pending (R-05, AGENT-WIN). Long-run soak acceptance also remains pending. See [TODO](todo.md).
+> [!NOTE] > The control plane, WireGuard hub/agent, LAN routing and Alias NAT, console, authentication. > audit, backup and device approval are implemented. This revision adds single-instance network > isolation, device apply receipts, hub recovery, last-good-plan rollback. Direct LAN SNAT and > service permissions, with local Linux kernel and unprivileged service regression evidence.
+> Windows backend modules are implemented and real-machine verified for routes, firewall, service > control and uninstall cleanup. A Windows agent+CLI+tray-host zip and `install.ps1` now ship in the > nightly release, while the agent's live data-plane wiring and real-machine installer/tray-host > acceptance remain pending (R-05, AGENT-WIN). Long-run soak acceptance also remains pending. See [TODO](todo.md).
 
 ## Nightly builds and one-command installation
 
@@ -49,7 +42,7 @@ curl -fsSL https://github.com/cuihairu/meshlet/releases/download/nightly/install
 
 Approve the device in the console, then apply the network's current revision. Hub execution, device receipts and connectivity probes are reported separately.
 
-Re-run the same role to upgrade to the latest successful nightly. Existing TOML files, private keys, device credentials and databases are preserved; installed devices do not automatically upgrade each day. To install a dated release, replace `nightly` in the download URL with its full release tag and pass `--version 'THAT_TAG'`. Use `--no-start` to install without starting the service.
+Re-run the same role to upgrade to the latest successful nightly. Existing TOML files, private keys, device credentials and databases are preserved. Installed devices do not automatically upgrade each day. To install a dated release, replace `nightly` in the download URL with its full release tag and pass `--version 'THAT_TAG'`. Use `--no-start` to install without starting the service.
 
 ```bash
 systemctl status meshlet-server   # use meshlet-agent on a device
@@ -59,7 +52,7 @@ cat /usr/local/share/meshlet/server-build-info
 
 **Install from Linux packages (deb / rpm):**
 
-The nightly release also publishes component-split packages for both architectures — `meshlet-server` (server binary, systemd unit, web console, example config), `meshlet-agent` (agent binary, systemd unit, example config) and `meshlet-cli` (standalone CLI):
+The nightly release also publishes component-split packages for both architectures — `meshlet-server` (server binary. systemd unit, web console, example config), `meshlet-agent` (agent binary. systemd unit, example config) and `meshlet-cli` (standalone CLI):
 
 ```bash
 # Debian / Ubuntu (replace amd64 with arm64 on ARM)
@@ -81,34 +74,26 @@ The workflow must be merged into the default branch and run successfully once be
 Windows is a data-plane target gated behind real-machine acceptance
 ([R-05](docs/implementation/r05-windows-acceptance.md), ADR-008). What the repository ships today:
 
-- **Backend modules, real-machine verified** (Chinese Windows Server 2022, 2026-10-25/26): route
+- Backend modules, real-machine verified (Chinese Windows Server 2022, 2026-10-25/26): route
   management (`netsh interface ipv4`), firewall rules (`netsh advfirewall firewall`), service
   control (`sc`) and uninstall cleanup — add / read-back / delete / idempotent re-delete verified
   on real hardware, including zh-CN output (GBK/CP936) decoded by `windows_console`.
-- **WireGuardNT tunnel plan layer + CI**: `windows_tunnel` renders the `WireGuardTunnel$<name>`
+- WireGuardNT tunnel plan layer + CI: `windows_tunnel` renders the `WireGuardTunnel$<name>`
   service config and builds `wireguard.exe` argv; its file-level test runs on `windows-latest`
   CI. The real-machine tunnel lifecycle is still pending.
-- **Cross-platform evidence**: full-workspace `cargo test` and
-  `cargo clippy --workspace --all-targets -- -D warnings` pass on
-  `stable-x86_64-pc-windows-gnu`; CI runs `cargo test --workspace` natively on `windows-latest`.
+- Cross-platform evidence: full-workspace `cargo test` and
+  `cargo clippy --workspace --all-targets -- -D warnings` pass on `stable-x86_64-pc-windows-gnu`. CI runs `cargo test --workspace` natively on `windows-latest`.
 
-**Still not available on Windows:**
+Still not available on Windows:
 
-- **The agent's live data-plane backend is not wired.** `SystemBackend` on Windows is the explicit
+- The agent's live data-plane backend is not wired. `SystemBackend` on Windows is the explicit
   `unsupported` placeholder until the tunnel lifecycle, elevation exec and boot-recovery items pass
   real-machine acceptance. A Windows agent registers and reports status, but applying a
   tunnel/routes/NAT plan is rejected with an explicit error — nothing pretends to succeed.
-- **MSI is in the nightly; real-machine install acceptance is pending.** The nightly release publishes a
-  Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`), an `install.ps1` installer
-  ([install below](#install-the-agent-on-windows)) and an MSI installer
-  (`meshlet-nightly-windows-x86_64.msi`, built with cargo-wix: server/agent/CLI/tray-host in one
-  package, start-menu shortcuts, Add/Remove Programs entry). Neither installer has been accepted on
-  a real machine yet (AGENT-WIN-2, NIGHTLY-MSI-1 in `todo.md`).
-- **A Windows tray host ships, real-machine acceptance pending.** `apps/tray-host`
-  (`meshlet-tray-host.exe`, a thin Win32 `Shell_NotifyIcon` host) consumes the agent's four-state
-  status PNGs (`TraySink`) and is included in the nightly zip; `install.ps1` does not install or
-  register it yet, and real-machine walkthroughs (icon switching, menus) are tracked as
-  AGENT-WIN-2/3. On Linux the agent writes the same status PNGs and sends D-Bus desktop
+- MSI is in the nightly, and real-machine install acceptance is pending. The nightly release publishes a
+  Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`), an `install.ps1` installer ([install below](#install-the-agent-on-windows)) and an MSI installer (`meshlet-nightly-windows-x86_64.msi`, built with cargo-wix: server/agent/CLI/tray-host in one package, start-menu shortcuts, Add/Remove Programs entry). Neither installer has been accepted on a real machine yet (AGENT-WIN-2, NIGHTLY-MSI-1 in `todo.md`).
+- A Windows tray host ships, real-machine acceptance pending. `apps/tray-host`
+  (`meshlet-tray-host.exe`, a thin Win32 `Shell_NotifyIcon` host) consumes the agent's four-state status PNGs (`TraySink`) and is included in the nightly zip. `install.ps1` does not install or register it yet, and real-machine walkthroughs (icon switching, menus) are tracked as AGENT-WIN-2/3. On Linux the agent writes the same status PNGs and sends D-Bus desktop
   notifications; there is no panel host binary in the repository for either platform's desktop
   shell to consume beyond what ships here.
 
@@ -134,9 +119,7 @@ acceptance passes — see below.
 
 ### Build and run the agent on Windows (from source)
 
-Prefer the installer above; build from source only when you want a local build. Cross-building
-from Linux to `x86_64-pc-windows-msvc` is check/clippy level only; native builds on Windows (MSVC,
-the CI toolchain) are the supported path. Requires Rust (stable) and Git:
+Prefer the installer above; build from source only when you want a local build. Cross-building from Linux to `x86_64-pc-windows-msvc` is check/clippy level only. Native builds on Windows (MSVC, the CI toolchain) are the supported path. Requires Rust (stable) and Git:
 
 ```powershell
 git clone https://github.com/cuihairu/meshlet.git
@@ -144,8 +127,7 @@ cd meshlet
 cargo build --release --bin meshlet-agent
 ```
 
-Create `C:\ProgramData\meshlet\agent.toml` (keys mirror the Linux example in the
-[installation guide](docs/guide/install.md); `interface` is the WireGuardNT tunnel name):
+Create `C:\ProgramData\meshlet\agent.toml` (keys mirror the Linux example in the [installation guide](docs/guide/install.md). `interface` is the WireGuardNT tunnel name):
 
 ```toml
 server_url = "https://meshlet.example.com"
@@ -168,9 +150,7 @@ Run it from an elevated terminal:
 meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 ```
 
-Approve the device in the console, then apply the network's current revision. **Data-plane apply on
-Windows is currently rejected** (backend placeholder) until R-05 acceptance; the control plane
-(registration, heartbeats, status) works. A machine that only has the
+Approve the device in the console, then apply the network's current revision. **Data-plane apply on Windows is currently rejected** (backend placeholder) until R-05 acceptance. The control plane (registration, heartbeats, status) works. A machine that only has the
 `WireGuardTunnel$…` service (e.g. set up by hand) does **not** have the agent running — check for
 `meshlet-agent.exe` in the process list. Real-machine installer and tray-host acceptance are
 tracked as pending work — see [TODO](todo.md).
@@ -184,25 +164,24 @@ Run the meshlet server on a VPS with a public IPv4 address, install agents on yo
 - Alias prefixes for overlapping LAN subnets (e.g. two `192.168.1.0/24`)
 - Web console for networks, devices, routes and diagnostics
 
-Connection strategy: the hub is always on — devices first connect through the hub and exchange peer info, then upgrade to P2P direct (same-LAN links or hole-punch dialing to hub-observed public endpoints, `apps/agent/src/direct.rs`); wide cross-NAT punch scenarios still need real-machine acceptance. Hub relay is the always-available fallback so links never drop.
+Connection strategy: the hub is always on — devices first connect through the hub and exchange peer info, then upgrade to P2P direct (same-LAN links or hole-punch dialing to hub-observed public endpoints. `apps/agent/src/direct.rs`); wide cross-NAT punch scenarios still need real-machine acceptance. Hub relay is the always-available fallback so links never drop.
 
 Not in scope for v1: public relay networks, L2 bridging, internet exit VPN.
 
 ## Documentation
 
-- [Analysis overview](https://cuihairu.github.io/meshlet/analysis/) — structured breakdown by topic
-- [Architecture and TODO review](docs/analysis/architecture-review-2026-10-17.md) — verified implementation gaps and proposed priorities (Chinese)
-- [Personal networking comparison](docs/analysis/personal-networking-comparison.md) — 61 capabilities compared with ZeroTier and Tailscale, with sources and feasibility (Chinese)
-- [External review archive (2026-10-13)](https://cuihairu.github.io/meshlet/review/chatgpt-2026-10-13.html) — verbatim archive of the external conversation; opinions only, verify against code before acting on anything
-- [TODO](todo.md) — tracked items with phase and acceptance criteria
-- [Logo color options](https://cuihairu.github.io/meshlet/design/logo-preview.html)
+| Document | What it covers |
+| --- | --- |
+| [Analysis overview](https://cuihairu.github.io/meshlet/analysis/) | structured breakdown by topic |
+| [Architecture and TODO review](docs/analysis/architecture-review-2026-10-17.md) | verified implementation gaps and proposed priorities (Chinese) |
+| [Personal networking comparison](docs/analysis/personal-networking-comparison.md) | 61 capabilities compared with ZeroTier and Tailscale, with sources and feasibility (Chinese) |
+| [External review archive (2026-10-13)](https://cuihairu.github.io/meshlet/review/chatgpt-2026-10-13.html) | verbatim archive of the external conversation; opinions only, verify against code before acting on anything |
+| [TODO](todo.md) | tracked items with phase and acceptance criteria |
+| [Logo color options](https://cuihairu.github.io/meshlet/design/logo-preview.html) |  |
 
 ## Status
 
-Control plane (networks, invites, device enrollment, LAN routes, Alias mappings, diagnostics,
-backup/restore) and the WireGuard dataplane (hub relay + agent: pull plan → reconcile → apply
-tunnel/routes/NAT → heartbeat) are implemented and covered by the workspace test suite, including
-privileged netns tests that drive a real kernel WireGuard and real iptables. Session auth, CSRF,
+Control plane (networks, invites, device enrollment, LAN routes. Alias mappings, diagnostics, backup/restore) and the WireGuard dataplane (hub relay + agent: pull plan → reconcile → apply tunnel/routes/NAT → heartbeat) are implemented and covered by the workspace test suite, including privileged netns tests that drive a real kernel WireGuard and real iptables. Session auth, CSRF,
 API tokens, audit logging, presence, the config-revision state machine (a DB write never claims
 to be effective until applied), and ZeroTier-style device self-registration (bootstrap token →
 pending → approve/deny) are in place.
@@ -230,7 +209,7 @@ trigger a full build.
 
 1. **Docs-only changes** (`*.md`, `docs/**`, images): no compile. The main CI workflow's
    `paths-ignore` already skips these paths.
-2. **Code changes**: run only the affected subset, never the full suite.
+2. Code changes: run only the affected subset, never the full suite.
    - `cargo test -p <changed crate>`
 3. **Full suite** (`cargo test --workspace`): only for — Cargo.toml / Cargo.lock /
    console/pnpm-lock.yaml, `.github/**`, Docker/Compose config, and pre-release.

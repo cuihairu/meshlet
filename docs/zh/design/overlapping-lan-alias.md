@@ -61,6 +61,9 @@ Alias 模式尚未绑定映射时，不能回退发布真实前缀。发布集�
 1. 先登记 G1/G2 为同一 Network 的有效网关，再创建 Alias 模式 LAN Route 和等长映射。允许不同网关的真实 LAN 重复；可见 Alias 必须独立。
 2. RG-03 检查 Alias 与共享路由域中的 Overlay、Direct、其他 Alias 及已知本地路由冲突。未知客户端的占用保持未知，在上线应用前预检；有冲突时阻止受影响设备应用并报告资源，不覆盖外来路由。
 3. 计划分别表达 hub 转发、目标网关 NAT、客户端路由；展示期望修订、各设备确认和业务探测。只有 hub 已应用不能显示“全部可用”。
+
+路由上线后的离线与删除场景：
+
 4. 网关离线时保留站点绑定并标降级，不把流量改投其他站点。应用失败沿用 AR-04 的恢复边界，不把失败的新计划发布为成功。
 5. 删除一个 Alias 时只清理其自有路由、Peer 前缀和 NAT；另一个站点和本地路由必须保留。存量连接清理与阻止旧计划重放分别由 IM-06/IM-07/IM-08 的契约补齐。
 6. 删除后不再保证该 Alias 可达；私人前缀不得泄漏默认出口的保留丢弃路由/防火墙方案仍由 RG-03 细化，本草案不把现有“删路由”视作这项隔离已完成。
@@ -76,7 +79,7 @@ Alias 模式尚未绑定映射时，不能回退发布真实前缀。发布集�
 | `apps/server/tests/agent_plan.rs` | 已有网关 NAT 与自身 LAN 不回灌的覆盖 | 组合场景、删除单站点、重启和失败恢复 |
 | `apps/server/tests/dual_site_end_to_end.rs` | 正式 API/Agent 流程已包含两个远端 LAN 与客户端本地同前缀 LAN；UDP/TCP 均返回 local/site1/site2，tcpdump 记录三条目标/端口五元组，删除 site1 后其路由与 NAT 消失且 site2/本地保留，server/agent 重启精确重建剩余计划 | 返回模式变化、同网关歧义、业务失败恢复、备份恢复和 RG-03 预检仍未完成 |
 
-以上结论包含本轮实际执行的 `dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites` Linux netns 验收；它只是集成验收，不等同 VPS 部署验收，也不能代表 RG-02 全项完成。
+以上结论包含本轮实际执行的 `dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites` Linux netns 验收。它只是集成验收，不等同 VPS 部署验收，也不能代表 RG-02 全项完成。
 
 ## 7. 验收矩阵
 

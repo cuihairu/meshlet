@@ -1,6 +1,6 @@
 # ADR-001: WireGuard as the Tunnel Foundation
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

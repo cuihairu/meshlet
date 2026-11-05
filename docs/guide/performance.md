@@ -1,11 +1,7 @@
 # Performance Baseline
 
 Measured dataplane throughput baseline for the WireGuard data plane, with the
-tuning knobs that move it. Every number below comes from a real run of the
-reproducible netns harness (`scripts/bench-dataplane.sh`) — no extrapolated or
-hand-written figures. Re-run it any time on any Linux host with passwordless
-sudo, `wg`, `iperf3` and `ethtool`; it builds throwaway network namespaces,
-measures, and cleans up after itself.
+tuning knobs that move it. Every number below comes from a real run of the reproducible netns harness (`scripts/bench-dataplane.sh`). No extrapolation and no hand-written figures. Re-run it any time on any Linux host with passwordless sudo, `wg`, `iperf3` and `ethtool`. It builds throwaway network namespaces, measures, and cleans up after itself.
 
 ## Environment
 
@@ -23,24 +19,20 @@ measures, and cleans up after itself.
 
 Honest caveats: all paths run inside one kernel (veth + netns), so this is a
 shape-accurate but not wire-accurate baseline — no NIC rings, no real RTT.
-`host_busy` counts every core of the **shared VM**, not the benchmark alone;
-run-to-run variance on this host is roughly ±10 %, so treat small deltas as
-noise. The load CPU usage during the recorded run was 52–90 % whole-host.
+`host_busy` counts every core of the **shared VM**, not the benchmark alone. Run-to-run variance on this host is roughly ±10 %, so treat small deltas as noise. The load CPU usage during the recorded run was 52–90 % whole-host.
 
 ## Three paths
 
-1. **Relay** — client A → hub → client B. Kernel forwarding (`ip_forward`) in
+1. Relay — client A → hub → client B. Kernel forwarding (`ip_forward`) in
    the hub netns, both clients hold the hub as their only peer with
    `allowed-ips 10.240.0.0/16`. This is the shape of Meshlet's default path
    (per `docs/architecture/overview.md`, every device pair relays through the
    hub unless a direct link is promoted).
-2. **Direct** — client A → client B as a direct `/32` WireGuard peer over the
+2. Direct — client A → client B as a direct `/32` WireGuard peer over the
    same LAN underlay. This is exactly what `apps/agent/src/direct.rs`
    (`DirectManager::Promote`) installs for same-LAN peers.
-3. **Bare** — plain WireGuard pair over a back-to-back veth (no bridge, no
-   hub, nothing Meshlet-specific). Control: since Meshlet only writes kernel
-   `wg` state, the relay/direct numbers minus this number bound Meshlet's own
-   data-plane overhead (expected ≈ 0; observed costs come from topology).
+3. Bare — plain WireGuard pair over a back-to-back veth (no bridge, no
+   hub, nothing Meshlet-specific). Control: Meshlet only writes kernel `wg` state. The relay/direct numbers minus this number therefore bound Meshlet's own data-plane overhead. The expected cost is ≈ 0; observed costs come from topology.
 
 ## Results (single run, 2026-11-04)
 
@@ -76,20 +68,23 @@ Bitrate in Gbit/s (iperf3 receiver unless noted); UDP offered at 1 Gbit/s.
   underlay** (1500 − 80 B WireGuard overhead). The size to challenge is the
   *underlay*, not the tunnel: on a jumbo-capable underlay, raising the tunnel
   MTU is the single biggest lever (see below).
-- **Jumbo underlay is a 4–6.7× lever.** Relay TCP 4-stream 1.36 → 5.45 Gbit/s;
+- Jumbo underlay is a 4–6.7× lever. Relay TCP 4-stream 1.36 → 5.45 Gbit/s;
   direct TCP 1-stream 1.20 → 8.06 Gbit/s. At 8920 B per packet the packet rate
   drops ~6× at the same bitrate, which also shows up as lower UDP loss
   everywhere.
-- **Meshlet's relay shape costs ~13 % vs bare** (TCP 4-stream 1.36 vs 1.56),
+- Meshlet's relay shape costs ~13 % vs bare (TCP 4-stream 1.36 vs 1.56),
   from double encryption at the hub plus the bridge hop — kernel, not agent:
   there is no userspace data plane. Direct (same LAN) lands between relay and
   bare and shows **zero TCP retransmits** in every run at default MTU, while
   relay retransmits whenever the path is loaded. If both devices sit on the
   same LAN, the promoted direct link is measurably the better path.
-- **Multi-stream does not help.** 4 streams ≈ 1 stream at every MTU (the
+
+Stream count and offloads:
+
+- Multi-stream does not help. 4 streams ≈ 1 stream at every MTU (the
   bottleneck is per-packet crypto/segmentation, not a single flow's window).
   Don't spin up parallel flows expecting more.
-- **Offloads on vs off is within noise on this kernel** except relay
+- Offloads on vs off is within noise on this kernel except relay
   multi-stream TCP (1.36 → 1.17, −14 % with them off). Note:
   `crates/meshlet-network/tests/wg_forwarding.rs` disables all veth offloads
   because a handshake once failed silently with them on; on kernel
@@ -129,7 +124,5 @@ sudo scripts/bench-dataplane.sh            # defaults only
 sudo scripts/bench-dataplane.sh 8 1 1      # + jumbo and offloads-off matrices
 ```
 
-The script prints the environment header, then for each mode × path a
-TCP 1-stream, TCP 4-stream (with retransmits) and UDP 1 Gbit/s block, each
-with a whole-host CPU busy sample taken during the run. Requires: passwordless
+The script prints the environment header. For each mode × path it runs a TCP 1-stream, a TCP 4-stream (with retransmits) and a UDP 1 Gbit/s block. Each block takes a whole-host CPU busy sample during the run. Requires: passwordless
 sudo, `wg`, `iperf3`, `ethtool`; skips cleanly without them.

@@ -1,6 +1,6 @@
 # ADR-012: Network Segments as Trust Groups
 
-**Status:** Accepted as a design contract; policy enforcement has separate acceptance criteria.
+Status: Accepted as a design contract; policy enforcement has separate acceptance criteria.
 
 ## Context
 

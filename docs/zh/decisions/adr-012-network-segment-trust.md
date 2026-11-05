@@ -13,6 +13,9 @@
 - 引入 Network 内 `Segment`：网段是地址前缀和默认信任边界；一台设备一次只属于一个段，地址必须落在段内。
 - 同段默认互信；跨段默认拒绝，只有显式 Applied 的 `SegmentGrant source -> destination` 放行，且方向单向。
 - 策略在 hub 执行两层：设备 AllowedIPs 收窄到 hub、本段与授权目的段及其可见路由；hub FORWARD 按隔离、同段、授权、默认拒绝顺序重放。
+
+路由可见性与存量迁移：
+
 - LAN Route / Alias 的可见性跟随发布网关所属段，不新增路由级授权字段。
 - 存量网络迁移为单一 default 段，单段行为与现有全放行等价；启用多段前必须清空并删除 default 段。
 

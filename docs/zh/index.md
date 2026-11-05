@@ -12,18 +12,15 @@ hero:
       text: 查看架构
       link: /zh/architecture/domain-model
 features:
-  - icon: 🛰️
-    title: 今天在 Linux 上跑着的
+  - title: 今天在 Linux 上跑着的
     details: 控制平面 · WireGuard hub 与 agent · LAN 路由与 Alias NAT · L4/HTTP/DNS 服务发布 · React 控制台 · 会话与 API Token 认证 · 审计 · 备份恢复 · 诊断 · 中心审批的设备自举注册。
     link: /zh/architecture/domain-model
     linkText: 领域模型
-  - icon: 📋
-    title: 真机验收，带数字
+  - title: 真机验收，带数字
     details: 2026-10-24 跨主机验收——三台设备经 bootstrap token 入网、13 项诊断全绿、DF-MTU 边界实测；部署验收覆盖空白容器安装、密钥轮换、备份恢复、原地升级与离线回滚。
     link: /zh/implementation/r04-linux-agent-e2e
     linkText: 验收记录
-  - icon: ⚠️
-    title: 没做到的不打勾
+  - title: 没做到的不打勾
     details: 没有可用 Windows 真机（R-05 未勾）；长期浸泡采集器 2026-10-24 起在跑，需要数周数据；尚无带日期的 release。TODO 里这三项都保持可见。
     link: /zh/implementation/r07-deployment-acceptance
     linkText: 部署验收

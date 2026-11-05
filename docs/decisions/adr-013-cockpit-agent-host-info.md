@@ -4,17 +4,14 @@ Status: Accepted 2026-10-20 (user decision)
 
 ## Context
 
-Cockpit keeps an agent on hosts for inventory and operations. Meshlet needs basic node
-facts (hostname, addresses, OS, network interfaces) to place devices into networks and
-segments. Both projects are user-owned; duplicating host-fact collection in both agents
+Cockpit keeps an agent on hosts for inventory and operations. Meshlet needs basic node facts: hostname, addresses, OS, network interfaces. It uses them to place devices into networks and segments. Both projects are user-owned; duplicating host-fact collection in both agents
 would drift and waste.
 
 ## Decision
 
-- **Mesh networking belongs to Meshlet.** Cockpit does not grow a mesh data plane. Its
-  existing frp/WireGuard overlay stays as observation/legacy integration; any new mesh
-  capability in Cockpit means integrating with Meshlet, not reimplementing it.
-- **Meshlet consumes basic host facts from the local cockpit-agent** (same host,
+- Mesh networking belongs to Meshlet. Cockpit does not grow a mesh data plane. Its
+  existing frp/WireGuard overlay stays as observation/legacy integration. Any new mesh capability in Cockpit means integrating with Meshlet, not reimplementing it.
+- Meshlet consumes basic host facts from the local cockpit-agent (same host,
   read-only local API) instead of collecting them itself. Facts are limited to node
   basics — no secrets, no inventory semantics.
 - cockpit-agent is an **optional source**, never a hard dependency: Meshlet must still

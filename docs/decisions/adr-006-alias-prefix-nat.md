@@ -1,6 +1,6 @@
 # ADR-006: Alias Prefix Mapping and NAT
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

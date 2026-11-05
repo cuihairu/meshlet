@@ -3,12 +3,14 @@
 > 依据[目标架构（草案）](/zh/architecture/target-architecture.md)；实现以本文件+`crates/meshlet-planner` 代码为准。
 
 ## 五种资源（互不混同，决策 4）
-- Network：虚拟网络本体（id、名称、overlay 网段、默认 Segment）。
-- Segment：信任分组（Network 内、策略模板、成员授权）。
-- Route：LAN 路由发布（前缀、所有者、网关、metric、健康条件、故障切换）。
-- Alias：重叠地址空间映射（本地 LAN ↔ 远端站点变换规则）。
-- PortForward：L4 入口（TCP/UDP、入口绑定、目标服务、授权、健康探测）。
-- HttpExposure：域名/路径 → 服务（含 TLS 终结策略）。
+| 类型 | 含义 |
+| --- | --- |
+| Network | 虚拟网络本体（id、名称、overlay 网段、默认 Segment）。 |
+| Segment | 信任分组（Network 内、策略模板、成员授权）。 |
+| Route | LAN 路由发布（前缀、所有者、网关、metric、健康条件、故障切换）。 |
+| Alias | 重叠地址空间映射（本地 LAN ↔ 远端站点变换规则）。 |
+| PortForward | L4 入口（TCP/UDP、入口绑定、目标服务、授权、健康探测）。 |
+| HttpExposure | 域名/路径 → 服务（含 TLS 终结策略）。 |
 
 ## Device 与 NetworkAttachment 分离
 - Device：设备身份（公钥、平台、注册/撤销状态）。

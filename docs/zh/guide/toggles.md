@@ -53,10 +53,10 @@ Meshlet 每个「开启后有效果」的开关，附 off/on 截图与切换动�
 
 以下开关存在，但其效果需要本流水线无法驱动的宿主，故**不在上方 GIF 清单**（强行录制会产生误导性或不可能的捕获）。逐项如实标注可在何处录制：
 
-- **tray 应用：开机自启 / 动效 / 语言** —— 桌面 Tauri 窗口（系统托盘）。需 Windows 或 macOS 图形会话；本 Linux 主机无桌面显示。在桌面宿主运行 tray 应用并捕获其设置窗口（`apps/tray-app`）。
-- **agent `[dataplane] enabled`** —— 效果是 agent 将 WireGuard 配置真正应用到真实接口（需 `NET_ADMIN` 与可达 hub）。用 `MESHLET_REQUIRE_DATAPLANE=1` 且具备数据面的宿主录制（见 ADR-007）。
-- **agent `[dataplane.direct_connect] enabled`** —— P2P 直连需真实第二台 meshlet 节点（见 R-DIAG-2 验收附注；同一双节点场景是前置条件）。
-- **服务通知 / `status_notifier_item`** —— 桌面托盘指示器，宿主限制同上。
+- tray 应用：开机自启 / 动效 / 语言 —— 桌面 Tauri 窗口（系统托盘）。需 Windows 或 macOS 图形会话；本 Linux 主机无桌面显示。在桌面宿主运行 tray 应用并捕获其设置窗口（`apps/tray-app`）。
+- agent `[dataplane] enabled` —— 效果是 agent 将 WireGuard 配置真正应用到真实接口（需 `NET_ADMIN` 与可达 hub）。用 `MESHLET_REQUIRE_DATAPLANE=1` 且具备数据面的宿主录制（见 ADR-007）。
+- agent `[dataplane.direct_connect] enabled` —— P2P 直连需真实第二台 meshlet 节点（见 R-DIAG-2 验收附注；同一双节点场景是前置条件）。
+- 服务通知 / `status_notifier_item` —— 桌面托盘指示器，宿主限制同上。
 
 以上均不冒充通过：列为本机暂不可录制，而非展示为「通过」。
 

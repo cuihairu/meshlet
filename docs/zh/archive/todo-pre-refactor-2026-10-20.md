@@ -2,11 +2,13 @@
 
 当前需求以个人自托管为边界：不同设备、网络内分组、受控的端口转发与 HTTP 服务路由。2026-10-17 静态审查发现，历史条目中部分“已完成”结论超出代码和测试的覆盖范围；不能继续采用“只剩两项环境走查”的汇总。
 
-- 架构与 TODO 审查：代码证据、六项缺口、新需求模型和重新验收条件。
-- Meshlet / ZeroTier / Tailscale 个人组网调研：61 项功能对比、官方来源、个人必要性、开发难度与实测方案。
-- 模块化与库复用提案：依赖边界、公共库与渐进迁移；常规虚拟网卡为主，无网卡服务入口按需评估。
-- 网关、网段冲突与端口转发专题：分网段选网关、Alias 冲突域和 A 端口到 B 服务的完整场景与验收。
-- 网段即信任组设计：ADR-012 已采纳 Network 内 Segment、同段互信、跨段默认拒绝与单向授权契约；IM-01 的模型字段与编译接线、IM-02 的默认段创建/持久化、IM-03 的模型与启动恢复边界校验均已完成；内核策略执行仍由 PN-02 验收。
+| 文档 | 内容 |
+| --- | --- |
+| 架构与 TODO 审查 | 代码证据、六项缺口、新需求模型和重新验收条件。 |
+| Meshlet / ZeroTier / Tailscale 个人组网调研 | 61 项功能对比、官方来源、个人必要性、开发难度与实测方案。 |
+| 模块化与库复用提案 | 依赖边界、公共库与渐进迁移；常规虚拟网卡为主，无网卡服务入口按需评估。 |
+| 网关、网段冲突与端口转发专题 | 分网段选网关、Alias 冲突域和 A 端口到 B 服务的完整场景与验收。 |
+| 网段即信任组设计 | ADR-012 已采纳 Network 内 Segment、同段互信、跨段默认拒绝与单向授权契约；IM-01 的模型字段与编译接线、IM-02 的默认段创建/持久化、IM-03 的模型与启动恢复边界校验均已完成；内核策略执行仍由 PN-02 验收。 |
 
 ## 当前执行清单（2026-10-17）
 
@@ -37,7 +39,7 @@
 | PN-04 | P1 / 待设计 | 路径诊断与实测基线：业务成功率、直连率、首连/恢复时间、吞吐分开报告 | 调研 C11/C13/O01 及实验矩阵；本次未测速 |
 | PN-05 | P1 原型 / 待设计 | 验证 UDP 禁用时 HTTPS/TCP 回退；记录传输、MTU、身份授权和恢复边界 | 调研 C07；新 ADR；不是修改 WG 端口 |
 | PN-06 | P1 原型 / 待设计 | 验证 LAN/已知公网 v4/v6 端点直连，再评估 NAT 穿透与自动切换 | PN-02、PN-04；调研 C02…C05/C08；原型通过后决定正式排期 |
-| PN-07 | P2 / 部分待验证 | TCP/UDP 端口转发：A 入口到 B/站点服务；验本机与远端入站、监听冲突、回环后端、返回路径、UDP 会话和撤销 | **2026-10-17 已落地单主机全端口子集**：`/networks/{id}/host-forwards` 原子创建/删除 `/32` Route+Alias，控制台可管，计划含 NETMAP/SNAT，`routes.rs`/`agent_plan.rs` 测试覆盖创建、冲突、删除与计划；**未勾整项原因**：A 入口监听、回环后端、逐端口映射、UDP 会话实测与 PN-02 策略仍缺 ； AR-02、AR-04、PN-02；NAT/LAN 方案另依赖 AR-05/RG-02；见网关专题与调研 S01/S02 |
+| PN-07 | P2 / 部分待验证 | TCP/UDP 端口转发：A 入口到 B/站点服务；验本机与远端入站、监听冲突、回环后端、返回路径、UDP 会话和撤销 | 2026-10-17 已落地单主机全端口子集：`/networks/{id}/host-forwards` 原子创建/删除 `/32` Route+Alias，控制台可管，计划含 NETMAP/SNAT，`routes.rs`/`agent_plan.rs` 测试覆盖创建、冲突、删除与计划；未勾整项原因：A 入口监听、回环后端、逐端口映射、UDP 会话实测与 PN-02 策略仍缺；AR-02、AR-04、PN-02；NAT/LAN 方案另依赖 AR-05/RG-02；见网关专题与调研 S01/S02 |
 | PN-08 | P2 / 待设计 | Nginx HTTP 域名/路径路由；校验、reload、失败恢复与业务探测分开 | PN-07 的服务模型、AR-02/AR-04；调研 S03/S04 |
 | PN-09 | P2 / 待设计 | 轻量名称解析与服务目录；不覆盖外来 DNS 配置 | 调研 S06/S08；按日常使用频率排期 |
 | PN-10 | 按需 / 暂缓 | 一机多网、macOS/手机、备用中继、访客服务授权 | 调研 N02/P03…P05/C10/A08；以实际设备和场景决定 |
@@ -69,7 +71,7 @@ P0 验收完成前，不以旧的“25/27 有测试证据”口径判断可发�
 | IM-11 | P1 / 已完成（请求路径阻塞隔离） | Apply/rollback 先记录数据库 intent 并在同一网络锁内预留内存状态，再把 backend 快照与内核执行移入 `spawn_blocking`，成功后再收敛/提交结论；重复 apply 不重复调用 backend，同网络串行、不同网络并行。Argon2 哈希/校验在信号量内运行于 `spawn_blocking`。覆盖慢内核、跨网络并行、失败回执、重复 apply、慢登录容量 | MOD-03、MOD-04、IM-08、IM-09；实现 `apps/server/src/revision.rs:640`、`apps/server/src/revision.rs:852`、`apps/server/src/auth.rs:570`、`apps/server/src/auth.rs:637`、`apps/server/src/auth.rs:668`；测试 `apps/server/tests/revisions.rs:504`、`:555`、`:573`、`:611`、`apps/server/tests/auth_console.rs:436`；实测 `cargo test -p meshlet-server -p meshlet-domain -p meshlet-agent --locked` 全绿（server 235、domain 116、agent 55） |
 | IM-12 | P2 / 已完成（console 测试） | 控制台正确展示修订加载失败并刷新收敛状态：401/500 显示错误态而非空列表；最新设备 ACK pending 时周期刷新；切换网络按 React key 重挂载，旧请求由 AbortController 取消并丢弃旧响应；设备失败不误报生效 | AR-02；`console/src/App.tsx:1522`、`console/src/api.ts:222`、`console/src/api.ts:291`；测试 `console/src/revisions.test.tsx:29`（401/500）、`:46`（空列表）、`:55`（设备失败）、`:70`（延迟 ACK）、`:93`（切网）；`pnpm --dir console lint`、`pnpm --dir console test` 6 passed、`pnpm --dir console build`、`pnpm docs:build` 通过 |
 
-建议执行批次：IM-01…IM-03 已完成 Segment 模型与启动边界接线；IM-04…IM-05 已修复现有转发链路；IM-06…IM-08 明确撤销与端点恢复；IM-09…IM-11 收紧一致性和执行边界；IM-12 完成控制台状态闭环。可独立推进的条目按依赖安排，PN-02 的内核策略验收不能因模型或迁移完成而勾选。
+建议执行批次：IM-01…IM-03 已完成 Segment 模型与启动边界接线；IM-04…IM-05 已修复现有转发链路。 IM-06…IM-08 明确撤销与端点恢复；IM-09…IM-11 收紧一致性和执行边界；IM-12 补齐控制台状态展示测试。可独立推进的条目按依赖安排，PN-02 的内核策略验收不能因模型或迁移完成而勾选。
 
 后续能力继续沿用已有条目：逐端口 TCP/UDP 映射与监听入口归 PN-07，Windows 完整后端归 PN-03，共享 DTO/协议归 MOD-02，模块拆分归 MOD-01/MOD-03。多用户逐网络授权维持个人自托管边界，随 PN-10 的访客需求再设计；本次不新增多租户承诺。
 
@@ -89,9 +91,14 @@ Segment 实测：`cargo check --workspace --all-targets --offline` 通过；`car
 - 覆盖率实测（`cargo llvm-cov --workspace --all-targets --offline --summary-only`）：workspace line coverage 90.98%；主要未覆盖项是进程入口、Linux/Windows 外壳、DBus 桌面集成和错误路径。当前未达到 98%，不标已验收；后续需要按可测边界拆出纯逻辑并注入平台依赖，而不是排除源码凑数。
 - 正式 server unit + drop-in 已在隔离 netns 以 uid 65534 执行；私钥 0600、WireGuard、转发、防火墙和应用读回通过。
 - x86_64 musl release 已构建并打包；console / 文档构建、ShellCheck、actionlint 通过。
+
+全仓测试与剩余缺口：
+
 - 全仓严格测试通过：`MESHLET_REQUIRE_DATAPLANE=1 cargo test --locked --workspace -- --test-threads=1`，381 passed / 0 failed / 0 ignored，0 SKIP。首次 hosted nightly 双架构构建与发布已通过，归档和安装脚本下载校验通过；真实空 VPS 一键安装仍待验收。
 - PN / MOD 等后续功能尚未全部实现，保留各项当前状态；Windows / 手机验收环境仍需提供。
 
+远端发布与文档：
+
 - 远端验收：首次 [nightly 发布](https://github.com/cuihairu/meshlet/actions/runs/39023899317)成功；[Windows/Linux CI](https://github.com/cuihairu/meshlet/actions/runs/39024292854) 已在迁移失败显式关闭连接池修复后通过。
 
-- [x] 文档接 VitePress 官方 locales 双语（2026-10-17 用户令）：已配置 `locales.root`（en-US）与 `locales.zh`（`link: '/zh/'`），两种语言各有独立 nav/sidebar；英文编辑页位于 `docs/` 根目录（41 页），中文原稿位于 `docs/zh/`（41 页），未添加自制语言切换链接。`pnpm docs:build`（VitePress 1.6.4）通过，死链与锚点检查通过。
+- [x] 文档接 VitePress 官方 locales 双语（2026-10-17 用户令）：已配置 `locales.root`（en-US）与 `locales.zh`（`link: '/zh/'`）。两种语言各有独立 nav/sidebar；英文编辑页位于 `docs/` 根目录（41 页），中文原稿位于 `docs/zh/`（41 页），未添加自制语言切换链接。`pnpm docs:build`（VitePress 1.6.4）通过，死链与锚点检查通过。

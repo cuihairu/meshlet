@@ -1,6 +1,6 @@
 # ADR-011: Device Self-Registration and Central Approval
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

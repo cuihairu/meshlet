@@ -1,6 +1,6 @@
 # ADR-008: Windows Agent Networking Backend
 
-**Status:** Accepted as a platform direction; complete support remains unverified.
+Status: Accepted as a platform direction; complete support remains unverified.
 
 ## Context
 

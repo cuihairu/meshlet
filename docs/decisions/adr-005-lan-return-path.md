@@ -1,6 +1,6 @@
 # ADR-005: LAN Routes and Return-Path Modes
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

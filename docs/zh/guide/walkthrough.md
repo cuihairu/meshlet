@@ -1,9 +1,9 @@
 # 真机走查手册
 
-> 本手册把 [存档 §22](../review/chatgpt-2026-10-13.md) 中仍缺真实环境的四条验收转成**可执行走查**：
+> 本手册把 [存档 §22](../review/chatgpt-2026-10-13.md) 中仍缺真实环境的四条验收转成可执行走查：
 > #70 空 VPS 部署、#32 两台 Linux 客户端经 VPS 互通、#47 网关发布 LAN、#52 Windows 权限不足与清理。
 >
-> **诚实边界**：本手册是**执行模板**，不是走查结论。四条 TODO 目前**均未勾**——
+> 诚实边界：本手册是**执行模板**，不是走查结论。四条 TODO 目前**均未勾**——
 > 走查结果须按 §5 的模板回写并判定后，对应条目才有资格勾选。本手册不预设任何走查结果。
 
 ## 0. 通用约定
@@ -39,7 +39,7 @@ $PSVersionTable.PSVersion
 - 走查只使用 **RFC 5737 文档保留网段**（`192.0.2.0/24` 等）或测试 overlay 网段，**不得**承载真实业务流量。
 - 每条走查末尾按「清理」小节把环境还原到走查前状态；失败路径同样要清理。
 - 不触碰生产数据面：只删自己创建的对象（自有网络/设备/路由），不做全局性变更。
-- 命令原文照抄到记录表——预期输出不一致时**先记录差异**，不要改命令去迁就。
+- 命令原文照抄到记录表——预期输出不一致时先记录差异，不要改命令去迁就。
 
 ### 0.4 仓内已有证据（不重复走查）
 
@@ -52,14 +52,14 @@ $PSVersionTable.PSVersion
 | Windows netsh 路由 add/读回/delete/幂等 re-delete | `crates/meshlet-network/tests/windows_netsh.rs`（CI windows-latest 真跑 netsh） |
 | 权限不足 / 幂等删除的文本映射 | `crates/meshlet-network/src/windows_routes.rs` 单测（canonical 文案） |
 
-**仍需真机走查的部分**：真实 VPS 上的部署链路、两台真机客户端互通、真实设备上控制台发布 LAN 路由、真实**非提权** shell 的权限拒绝报文。
+仍需真机走查的部分：真实 VPS 上的部署链路、两台真机客户端互通、真实设备上控制台发布 LAN 路由、真实**非提权** shell 的权限拒绝报文。
 
 ---
 
 ## 1. 走查 A — 空 VPS 部署（TODO #70）
 
-**验收口径**：新用户从空 VPS 完成部署。
-**前置条件**：一台空 VPS（Ubuntu LTS），SSH 可达，具备 `sudo`/`root`；本地已按 [安装指南](./install.md) 构建出 `target/release/{meshlet-server,meshlet-agent}`。
+验收口径：新用户从空 VPS 完成部署。
+前置条件：一台空 VPS（Ubuntu LTS），SSH 可达，具备 `sudo`/`root`；本地已按 [安装指南](./install.md) 构建出 `target/release/{meshlet-server,meshlet-agent}`。
 
 ### A.1 安装与自启动
 
@@ -136,8 +136,8 @@ A.1–A.4 全部「符合」→ **#70 可勾**。任一步骤失败或与原安�
 
 ## 2. 走查 B — 两台 Linux 客户端经 VPS 互通（TODO #32）
 
-**验收口径**：互访 / 重启恢复 / 撤销失效 / IP 不重复。
-**前置条件**：走查 A 已完成（VPS 上 server 在跑）；两台 Linux 主机 A、B（agent 可运行，WireGuard 可用）。
+验收口径：互访 / 重启恢复 / 撤销失效 / IP 不重复。
+前置条件：走查 A 已完成（VPS 上 server 在跑）；两台 Linux 主机 A、B（agent 可运行，WireGuard 可用）。
 
 ### B.1 建网与设备加入
 
@@ -202,8 +202,8 @@ systemctl disable --now meshlet-agent
 
 ## 3. 走查 C — 网关发布 LAN（TODO #47）
 
-**验收口径**：发布 CIDR 后远端可访问。
-**前置条件**：走查 B 已完成（A、B 已入网且互通）；一台真实 LAN 网关设备 G（agent 可运行，能配静态路由与防火墙）。
+验收口径：发布 CIDR 后远端可访问。
+前置条件：走查 B 已完成（A、B 已入网且互通）；一台真实 LAN 网关设备 G（agent 可运行，能配静态路由与防火墙）。
 
 ### C.1 选网关并发布路由
 
@@ -227,8 +227,8 @@ ping -c 20 <真实 LAN 主机 IP>              # 预期：0% packet loss   ← �
 
 ### C.3 返回路径核对（按模式二选一）
 
-- **dual_route**：LAN 主机侧 `ip route show <A 的 overlay IP>` 应指向网关自身的 LAN 地址；从 LAN 主机 `ping <A 的 overlay IP>` 应通（双向）。
-- **controlled_snat**：LAN 主机侧 `conntrack -L` 应看到 overlay 源被 SNAT 成网关 LAN 地址（LAN 主机只看到网关地址，这是 §9.5 的已知限制，如实记录，不算失败）。
+- dual_route：LAN 主机侧 `ip route show <A 的 overlay IP>` 应指向网关自身的 LAN 地址；从 LAN 主机 `ping <A 的 overlay IP>` 应通（双向）。
+- controlled_snat：LAN 主机侧 `conntrack -L` 应看到 overlay 源被 SNAT 成网关 LAN 地址（LAN 主机只看到网关地址，这是 §9.5 的已知限制，如实记录，不算失败）。
 
 ### C.4 冲突不静默
 
@@ -246,16 +246,16 @@ ping -c 20 <真实 LAN 主机 IP>              # 预期：0% packet loss   ← �
 
 ### 判定
 
-「远端可访问」符合 **且** 返回路径核对记录完整 **且** 冲突返回 409 不覆盖既有路由 → **#47 可勾**。仅部分符合 → 记录差距，条目保持未勾。
+「远端可访问」符合 **且** 返回路径核对记录完整 **且** 冲突返回 409 不覆盖既有路由 → #47 可勾。仅部分符合 → 记录差距，条目保持未勾。
 
 ---
 
 ## 4. 走查 D — Windows 权限不足与清理（TODO #52）
 
-**验收口径**：权限不足提示明确；失败可清理。
-**前置条件**：一台 Windows 主机；**两个终端**——一个**非提权**（普通 PowerShell）、一个**提权**（以管理员身份运行）。测试前缀用 `192.0.2.0/24`。
+验收口径：权限不足提示明确；失败可清理。
+前置条件：一台 Windows 主机；**两个终端**——一个**非提权**（普通 PowerShell）、一个提权（以管理员身份运行）。测试前缀用 `192.0.2.0/24`。
 
-> 说明：CI windows-latest 全程提权，无法自然产生权限拒绝；本走查是本条**唯一**的真实报文来源。
+> 说明：CI windows-latest 全程提权，无法自然产生权限拒绝；本走查是本条唯一的真实报文来源。
 
 ### D.1 确认提权状态
 
@@ -305,7 +305,7 @@ netsh interface ipv4 delete route prefix=192.0.2.0/24 interface="Loopback Pseudo
 ### D.5 回环怪癖对照（已实测，供参考）
 
 - 回环接口上**不要**带 `nexthop=` 参数——netsh 会报 `The parameter is incorrect.`；可用形式是 **on-link 路由**（无 `nexthop=`）。
-- 含空格的接口名必须是**单个不带内嵌引号**的词元——netsh 分词器不认 `\"` 转义。
+- 含空格的接口名必须是单个不带内嵌引号的词元——netsh 分词器不认 `\"` 转义。
 
 ### 清理
 
@@ -320,17 +320,15 @@ netsh interface ipv4 show route    # 预期：无 192.0.2.0/24
 
 > **SystemBackend 接线决策的完成状态前置审计（2026-10-27，M5）**：
 > [TODO 完成状态审计](../analysis/todo-completion-audit-2026-10-27.md)「重点三 —— Windows
-> 后端」。结论：Windows 隧道实现**整体缺席**（`wireguardnt`/`wintun` 在 `crates/`、`apps/`
-> 下零代码，仅 `windows_routes.rs:13,207` 两处注释提及），而 `apply_tunnel` 正是 agent 的
-> 首个调用（`apps/agent/src/agent.rs:124`）—— 接线需新建隧道子系统，不是改一行 `cfg`。
-> R-05 两个已勾子项的证据分级（权限提升=证据弱，其执行层**仅代码存在**；数据面真机验收=
+> 后端」。结论：Windows 隧道实现整体缺席（`wireguardnt`/`wintun` 在 `crates/`、`apps/` > 下零代码，仅 `windows_routes.rs:13,207` 两处注释提及）。而 `apply_tunnel` 正是 agent 的 > 首个调用（`apps/agent/src/agent.rs:124`）—— 接线需新建隧道子系统，不是改一行 `cfg`。
+> R-05 两个已勾子项的证据分级（权限提升=证据弱，其执行层仅代码存在；数据面真机验收=
 > 有证据）同见该报告。
 
 ---
 
 ## 4.1 走查 FW — 安装即配防火墙（AGENT-FW-1/2）
 
-**验收目标：** 数据面 apply 后无需手工防火墙配置，远端 ping 该机 wg 地址直接通；重复 apply 不产生重复规则（幂等）。背景：2026-10-30 实战 dev→win 的 wg 握手正常但 ping 不通——Windows 把 wg 接口判为 **Public** 档默认挡 ICMP，手工建 `Meshlet-ICMPv4-In` 才通；Linux 侧 ufw/firewalld 同理。
+验收目标：数据面 apply 后无需手工防火墙配置，远端 ping 该机 wg 地址直接通；重复 apply 不产生重复规则（幂等）。背景：2026-10-30 实战 dev→win 的 wg 握手正常但 ping 不通——Windows 把 wg 接口判为 **Public** 档默认挡 ICMP。手工建 `Meshlet-ICMPv4-In` 才通；Linux 侧 ufw/firewalld 同理。
 
 ### FW-1 Windows（AGENT-FW-1）
 
@@ -412,7 +410,7 @@ busctl --user call <AGENT_UNIQUE_NAME> /org/meshlet/StatusNotifierItem \
 #    预期：agent 正常运行，status.json 继续更新，无 panic、不退避数据面。
 ```
 
-**判定**：2–5 全部符合才把 #104 的「真实 OS 托盘显示」标为通过；本机
+判定：2–5 全部符合才把 #104 的「真实 OS 托盘显示」标为通过；本机
 headless 只能给出上述 bus 级/编译期证据，不得把 `status.json` 当作已上托盘。
 
 ## 5. 结果回写模板与判定

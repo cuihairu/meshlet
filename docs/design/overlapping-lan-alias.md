@@ -14,7 +14,7 @@ The home LAN, office LAN, and client's local LAN all use `192.168.1.0/24`. Keep 
 | Home host | `192.168.1.50` | `10.241.1.50` | G1: `10.240.0.2` |
 | Office host | `192.168.1.50` | `10.241.2.50` | G2: `10.240.0.3` |
 
-Client C is `10.240.0.4` in Overlay `10.240.0.0/16`. All addresses are examples requiring conflict checks. Alias translation preserves host bits. Each mapping references one Alias-mode LAN Route, which supplies the target prefix. The gateways represent separate sites. Reject overlapping real destinations behind the same gateway's ordinary routing context; independent VRF/netns support needs a separate design.
+Client C is `10.240.0.4` in Overlay `10.240.0.0/16`. All addresses are examples requiring conflict checks. Alias translation preserves host bits. Each mapping references one Alias-mode LAN Route, which supplies the target prefix. The gateways represent separate sites. Reject overlapping real destinations behind the same gateway's ordinary routing context. Independent VRF/netns support needs a separate design.
 
 ## Packet path and plan contract
 
@@ -40,7 +40,7 @@ The following sets describe approved publication within one default Segment. Wit
 
 Neither repeated real LAN prefix enters C's or the hub's tunnel routes or AllowedIPs. Do not install more-specific real-host routes that override C's local LAN. Publish actual Alias prefixes rather than an aggregate containing unpublished destinations.
 
-An Alias-mode route without a mapping publishes nothing and must never fall back to its real prefix. Reject orphan mappings, cross-network references, and mismatched targets before compilation. Candidate plans can contain pending resources for the selected revision; compilation must not mark resources or acknowledgements successful.
+An Alias-mode route without a mapping publishes nothing and must never fall back to its real prefix. Reject orphan mappings, cross-network references, and mismatched targets before compilation. Candidate plans can contain pending resources for the selected revision. Compilation must not mark resources or acknowledgements successful.
 
 ## Return paths and supported boundaries
 
@@ -55,9 +55,12 @@ Acceptance covers tested IPv4 unicast protocols. Broadcast discovery, embedded-a
 1. Register valid gateways, then create Alias-mode routes and equal-length mappings. Different gateways may publish overlapping real LANs; visible Alias prefixes remain independent.
 2. RG-03 checks the shared forwarding domain and known local routes. An offline client's local occupancy stays unknown until application preflight. Conflicts block the affected device's application without overwriting foreign routes.
 3. Compile hub forwarding, gateway NAT, and client routing separately. Show desired revision, device acknowledgements, and business probes separately; hub success alone is insufficient.
+
+With the route in place, offline and deletion cases:
+
 4. Keep the site binding when a gateway is offline and report degradation. Application failure follows AR-04 recovery rules and cannot publish a failed plan as successful.
 5. Deleting one mapping removes only its owned routes, Peer prefixes, and NAT. Preserve the other site and local LAN. Existing-session cleanup and prevention of stale replay depend on IM-06/07/08.
-6. A deleted Alias is no longer reachable by contract. RG-03 must define retained discard routes or firewall protection against default-egress leakage; ordinary route deletion is insufficient evidence for that guarantee.
+6. A deleted Alias is no longer reachable by contract. RG-03 must define retained discard routes or firewall protection against default-egress leakage. Ordinary route deletion is insufficient evidence for that guarantee.
 
 ## Current source evidence and remaining work
 

@@ -1,6 +1,6 @@
 # ADR-007: Linux Networking Backend
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 
@@ -16,7 +16,7 @@ The host backend must safely handle repeated application, stale-resource cleanup
 
 ## Evidence
 
-Unit and network-namespace tests cover important paths, but they do not equal a clean VPS deployment. Verify the installed service, effective permissions, WireGuard state, forwarding, firewall, and read-back on a real target before claiming deployment acceptance.
+Unit and network-namespace tests cover important paths, but they do not equal a clean VPS deployment. Verify the installed service, effective permissions. WireGuard state, forwarding, firewall, and read-back on a real target before claiming deployment acceptance.
 
 ## Revisit when
 

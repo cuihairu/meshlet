@@ -11,7 +11,7 @@ Every toggle in Meshlet that has a visible on/off effect, with off/on screenshot
 
 ## Console theme (dark ↔ light)
 
-The console follows the OS color scheme until you pick a theme explicitly; the choice is stored in `localStorage['meshlet-theme']` (`console/src/theme/theme-provider.tsx`). Off = dark (the default), on = light.
+The console follows the OS color scheme until you pick a theme explicitly. The choice is stored in `localStorage['meshlet-theme']` (`console/src/theme/theme-provider.tsx`). Off = dark (the default), on = light.
 
 | Off (dark) | On (light) |
 | --- | --- |
@@ -21,7 +21,7 @@ The console follows the OS color scheme until you pick a theme explicitly; the c
 
 ## Console language (English ↔ 中文)
 
-The console follows the browser language (`zh*` → 中文, otherwise English) until changed; the choice is stored in `localStorage['meshlet-lang']` (`console/src/i18n/language-provider.tsx`). Off = English, on = 中文.
+The console follows the browser language (`zh*` → 中文, otherwise English) until changed. The choice is stored in `localStorage['meshlet-lang']` (`console/src/i18n/language-provider.tsx`). Off = English, on = 中文.
 
 | Off (English) | On (中文) |
 | --- | --- |
@@ -53,10 +53,10 @@ When `console_dir` is set, the server hosts the built console at `/`; when unset
 
 These switches exist but their effect requires a host this pipeline cannot drive, so they are **not** in the GIF list above (the pipeline would produce a misleading or impossible capture). Each is recorded honestly where it can be:
 
-- **Tray app: autostart / animations / language** — a desktop Tauri window (system tray). Needs a Windows or macOS GUI session; on this Linux host the tray app has no display. Record by running the tray app on a desktop host and capturing its settings window (`apps/tray-app`).
-- **Agent `[dataplane] enabled`** — the effect is the agent actually applying WireGuard config to a real interface (needs `NET_ADMIN` and a reachable hub). Record with `MESHLET_REQUIRE_DATAPLANE=1` and a data-plane-capable host (see ADR-007).
-- **Agent `[dataplane.direct_connect] enabled`** — P2P direct peers need a real second meshlet node (see the R-DIAG-2 acceptance note; the same 2-node scenario is a prerequisite).
-- **Service notifications / `status_notifier_item`** — desktop tray indicator, same host limitation as the tray app.
+- Tray app: autostart / animations / language — a desktop Tauri window (system tray). Needs a Windows or macOS GUI session; on this Linux host the tray app has no display. Record by running the tray app on a desktop host and capturing its settings window (`apps/tray-app`).
+- Agent `[dataplane] enabled` — the effect is the agent actually applying WireGuard config to a real interface (needs `NET_ADMIN` and a reachable hub). Record with `MESHLET_REQUIRE_DATAPLANE=1` and a data-plane-capable host (see ADR-007).
+- Agent `[dataplane.direct_connect] enabled`. P2P direct peers need a real second meshlet node. See the R-DIAG-2 acceptance note; the same 2-node scenario is a prerequisite.
+- Service notifications / `status_notifier_item` — desktop tray indicator, same host limitation as the tray app.
 
 None of these are faked: they are listed here as not-yet-recordable on this machine rather than shown as passing.
 

@@ -1,6 +1,6 @@
 # Linux VPS Installation Guide
 
-This guide describes the server and agent deployment shape. Automated checks and development-host runs do not replace a clean-VPS acceptance test; confirm the current TODO and walkthrough before treating deployment as production-ready.
+This guide describes the server and agent deployment shape. Automated checks and development-host runs do not replace a clean-VPS acceptance test. Confirm the current TODO and walkthrough before treating deployment as production-ready.
 
 ## Requirements
 
@@ -30,4 +30,4 @@ Backups are disabled until an explicit directory is configured. Store them with 
 
 ## Acceptance boundary
 
-A complete deployment check includes a real agent joining, establishing WireGuard, applying routes, exchanging traffic, restarting both sides, and restoring a backup. The repository's test evidence should be read alongside the real-host status; do not infer a clean-VPS pass from compilation alone.
+A complete deployment check includes a real agent joining, establishing WireGuard, applying routes, exchanging traffic, restarting both sides, and restoring a backup. The repository's test evidence should be read alongside the real-host status. Do not infer a clean-VPS pass from compilation alone.

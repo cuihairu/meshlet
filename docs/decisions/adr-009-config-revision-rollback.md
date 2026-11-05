@@ -1,6 +1,6 @@
 # ADR-009: Configuration Revisions, Application State, and Rollback
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

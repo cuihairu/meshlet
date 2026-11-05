@@ -1,6 +1,6 @@
 # ADR-002: Use a VPS Hub Relay for the First Version
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

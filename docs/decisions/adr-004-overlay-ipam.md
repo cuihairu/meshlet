@@ -1,6 +1,6 @@
 # ADR-004: Overlay IPAM and Address Allocation
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

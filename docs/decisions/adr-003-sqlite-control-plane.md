@@ -1,6 +1,6 @@
 # ADR-003: SQLite for the Initial Control Plane
 
-**Status:** Accepted
+Status: Accepted
 
 ## Context
 

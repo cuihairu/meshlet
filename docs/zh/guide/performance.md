@@ -26,14 +26,14 @@ WireGuard 数据面的实测吞吐基线，以及能推动它的调优旋钮。�
 
 ## 三条路径
 
-1. **Relay（中继）** — 客户端 A → hub → 客户端 B。hub netns 内内核转发
+1. Relay（中继） — 客户端 A → hub → 客户端 B。hub netns 内内核转发
    （`ip_forward`），两个客户端只以 hub 为 peer（`allowed-ips
    10.240.0.0/16`）。这是 Meshlet 默认路径的形状（`docs/zh/architecture/
    overview.md`：未建直连前所有设备两两流量都经 hub 中转）。
-2. **Direct（直连）** — 客户端 A → 客户端 B，同一 LAN 底层上的 `/32`
+2. Direct（直连） — 客户端 A → 客户端 B，同一 LAN 底层上的 `/32`
    WireGuard 直连 peer。这正是 `apps/agent/src/direct.rs`
    （`DirectManager::Promote`）给同 LAN 对端下发的东西。
-3. **Bare（裸 WG 对照）** — 背靠背 veth 上的纯 WireGuard 对（无网桥、无
+3. Bare（裸 WG 对照） — 背靠背 veth 上的纯 WireGuard 对（无网桥、无
    hub、无任何 Meshlet 特有物）。对照组：Meshlet 只写内核 `wg` 状态，
    relay/direct 与这组数字之差就是 Meshlet 自身数据面开销的上界
    （预期 ≈ 0；观测差值来自拓扑形状）。
@@ -68,24 +68,24 @@ WireGuard 数据面的实测吞吐基线，以及能推动它的调优旋钮。�
 
 ## 数字说明什么
 
-- **MTU 1420 不保守——对 1500 字节底层它就是正确值**（1500 − 80B WireGuard
+- MTU 1420 不保守——对 1500 字节底层它就是正确值（1500 − 80B WireGuard
   开销）。该质疑的是*底层* MTU，不是隧道：底层支持 jumbo 时，抬高隧道 MTU
   是最大的单项杠杆（见下）。
-- **Jumbo 底层是 4–6.7 倍杠杆。** Relay TCP 4 流 1.36 → 5.45 Gbit/s；
+- Jumbo 底层是 4–6.7 倍杠杆。Relay TCP 4 流 1.36 → 5.45 Gbit/s；
   Direct TCP 单流 1.20 → 8.06 Gbit/s。同样比特率下单包 8920B 使包率降约
   6 倍，各路径 UDP 丢包同步下降。
-- **Meshlet 中继形状比裸 WG 低约 13%**（TCP 4 流 1.36 vs 1.56），来自 hub
+- Meshlet 中继形状比裸 WG 低约 13%（TCP 4 流 1.36 vs 1.56），来自 hub
   的双重加密加一跳网桥——全在内核里，不在 agent：本数据面没有用户态转发。
   Direct（同 LAN）落在 relay 与 bare 之间，且默认 MTU 下**每一轮 TCP 重传
   都是 0**；relay 只要路径吃满就会出现重传。两台设备同 LAN 时，§12 直连
   链路实测就是更优路径。
-- **多流不涨吞吐。** 所有 MTU 下 4 流 ≈ 单流（瓶颈在每包加密/分段，不在
+
+流数与 offload：
+
+- 多流不涨吞吐。所有 MTU 下 4 流 ≈ 单流（瓶颈在每包加密/分段，不在
   单流窗口）。别指望并发流堆出更高吞吐。
-- **Offload 开关在本内核上基本落在噪声内**，唯一例外是 relay 多流 TCP
-  （关掉后 1.36 → 1.17，−14%）。注意：
-  `crates/meshlet-network/tests/wg_forwarding.rs` 会关掉 veth 全部 offload，
-  因为历史上 offload 全开时握手静默失败；在 7.0.0-38 内核上该失败**不可
-  复现**（offload 全开握手与吞吐都正常）。测试里的处理保留，但不要把
+- Offload 开关在本内核上基本落在噪声内，唯一例外是 relay 多流 TCP
+  （关掉后 1.36 → 1.17，−14%）。注意： `crates/meshlet-network/tests/wg_forwarding.rs` 会关掉 veth 全部 offload。因为历史上 offload 全开时握手静默失败；在 7.0.0-38 内核上该失败**不可复现**（offload 全开握手与吞吐都正常）。测试里的处理保留，但不要把
   「offload 弄挂 WG」当成生产假设往下传。
 
 ## 调优清单

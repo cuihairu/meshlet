@@ -9,11 +9,11 @@ OS、网卡）来把设备放进网络与分段。两个项目同属一人，两
 
 ## 决定
 
-- **mesh 组网归 Meshlet**：Cockpit 不生长 mesh 数据面；既有 frp/WireGuard overlay
+- mesh 组网归 Meshlet：Cockpit 不生长 mesh 数据面；既有 frp/WireGuard overlay
   保留为观测/历史集成，今后 Cockpit 侧的 mesh 能力一律以集成 Meshlet 方式实现。
 - **Meshlet 从本机 cockpit-agent 读取基础事实**（本地只读 API），不再自采；
   范围仅限节点基础信息——不含密钥、不越界到资产语义。
-- cockpit-agent 是**可选来源而非硬依赖**：缺失时 Meshlet 必须仍能自描述网卡与基本信息。
+- cockpit-agent 是可选来源而非硬依赖：缺失时 Meshlet 必须仍能自描述网卡与基本信息。
 - 具体本地只读接口契约随 Cockpit 的 Agent Capability 协议片落地（见 cockpit todo）。
 
 ## 影响
