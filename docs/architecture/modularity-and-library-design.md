@@ -13,7 +13,7 @@ Keep the domain model independent of the HTTP server and operating-system effect
 
 ## Public interfaces
 
-Reusable libraries should expose stable data types and errors while leaving process lifecycle, configuration loading, logging, and privilege decisions to the host application. A coordinator can be injected into an application without taking over its runtime.
+Reusable libraries should expose stable data types and errors. Process lifecycle, configuration loading, logging, and privilege decisions stay with the host application. A coordinator can be injected into an application without taking over its runtime.
 
 ## Virtual network interface
 

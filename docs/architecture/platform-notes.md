@@ -6,7 +6,7 @@ Linux is the first complete networking target. It uses WireGuard and host route/
 
 ## Windows work still needed
 
-A production Windows client needs tunnel service lifecycle, elevation and least privilege, route management, reboot recovery, cleanup after interrupted operations, and clear reporting. Test service install/uninstall, repeated apply, failures at each operation stage, and recovery after restart.
+A production Windows client needs tunnel service lifecycle, elevation and least privilege, and route management. It also needs reboot recovery, cleanup after interrupted operations, and clear reporting. Test service install/uninstall, repeated apply, failures at each operation stage, and recovery after restart.
 
 ## Linux constraints
 

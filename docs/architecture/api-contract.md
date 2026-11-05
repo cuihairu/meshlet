@@ -1,15 +1,17 @@
 # API Contract
 
-This page summarizes the versioned HTTP API. JSON endpoints use `/api/v1`; management writes require an authenticated session or a token with write scope, plus CSRF protection when session-authenticated. Errors use a consistent envelope with a stable status and a human-readable message.
+This page summarizes the versioned HTTP API. JSON endpoints use `/api/v1`. Management writes require an authenticated session or a token with write scope. Session-authenticated writes must also carry CSRF protection. Errors use a consistent envelope with a stable status and a human-readable message.
 
 ## Main endpoint groups
 
-- **Authentication:** bootstrap the first administrator once, then log in, inspect the current session, and log out.
-- **Networks and devices:** create networks, issue invitations or bootstrap tokens, enroll devices, and inspect registrations and device status.
-- **Configuration:** manage LAN routes, Alias mappings, segments, and one-way segment grants; inspect revisions, apply or roll back eligible revisions, and read per-device desired plans.
-- **Operations:** read audit events and metrics, run diagnostics, and create or restore database backups.
-- **Service publishing:** manage L4 forwards, HTTP routes, health probes and internal DNS records per device, plus host port forwards, with agent health reports (`apps/server/src/publish.rs`).
-- **Task dispatch:** assign one-shot tasks to devices, track their assigned→acked→running→done/failed state machine, and confirm or retry completed runs; device labels (`.../devices/{id}/labels`) route assignment (`apps/server/src/task.rs`).
+| Group | What it covers |
+|---|---|
+| Authentication | bootstrap the first administrator once, then log in, inspect the current session, and log out. |
+| Networks and devices | create networks, issue invitations or bootstrap tokens, enroll devices, and inspect registrations and device status. |
+| Configuration | manage LAN routes, Alias mappings, segments, and one-way segment grants. Inspect revisions, apply or roll back eligible revisions, and read per-device desired plans. |
+| Operations | read audit events and metrics, run diagnostics, and create or restore database backups. |
+| Service publishing | manage L4 forwards, HTTP routes, health probes and internal DNS records per device. Also manage host port forwards, with agent health reports (`apps/server/src/publish.rs`). |
+| Task dispatch | assign one-shot tasks to devices and track their assigned→acked→running→done/failed state machine. Confirm or retry completed runs; device labels (`.../devices/{id}/labels`) route assignment (`apps/server/src/task.rs`). |
 
 ## Enrollment and data plane
 
@@ -21,7 +23,7 @@ Segment management has four endpoints: list/create segments, list/create grants,
 
 This grant `apply` transition is not the network-wide revision `apply` operation. It only moves a grant into desired state. The returned `apply_status` always describes the enclosing config revision, so it may remain `pending` until an operator applies that revision. Kernel policy enforcement remains a separate acceptance gate; the API does not claim that traffic has changed until data-plane evidence exists.
 
-The console lists both segments and grants, offers apply/revoke controls for Pending grants, and shows validation errors rather than treating a rejected create as an empty list.
+The console lists both segments and grants, and offers apply/revoke controls for Pending grants. It shows validation errors rather than treating a rejected create as an empty list.
 
 ## State and compatibility
 

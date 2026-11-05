@@ -3,26 +3,28 @@
 > Nature: review transcript of a ChatGPT shared-page refactor plan (2026-10-20; user link `t_6ad791db...`; user directive: use it as the new implementation baseline).
 > Constraint: this document is the source for Meshlet's target design and implementation order. `todo.md` was rewritten from it; the old TODO is archived and is not a premise.
 
-I will design Meshlet from a **Greenfield Target Architecture**: no compatibility with the old API, old database schema, old configuration files, or existing module layout is assumed. The data model, protocols, migration system, and network execution backend may be rebuilt where necessary.
+I will design Meshlet from a **Greenfield Target Architecture**. No compatibility with the old API, old database schema, old configuration files, or existing module layout is assumed. The data model, protocols, migration system, and network execution backend may be rebuilt where necessary.
 
-The design principle is: **establish the correct domain model, security semantics, and state consistency first, then decide how code is organized; do not compromise to preserve the current implementation.**
+The design principle is to establish the correct domain model, security semantics, and state consistency first. Code organization comes second, and the design does not compromise to preserve the current implementation.
 
-Combining the repository's latest `todo.md`, I define the design goal as personal self-hosted network infrastructure: device networking, multiple networks and trust groups, remote LAN access, overlapping prefixes, TCP/UDP port forwarding, HTTP service publication, and reliable network diagnostics.
+Combining the repository's latest `todo.md`, I define the design goal as personal self-hosted network infrastructure. The scope covers device networking, multiple networks and trust groups, remote LAN access, and overlapping prefixes. It also covers TCP/UDP port forwarding, HTTP service publication, and reliable network diagnostics.
 
 Core decisions come first:
 
-- **Separate the control plane from the data plane completely**: the Rust control plane owns identity, policy, network planning, and orchestration; device Agents execute; the operating-system kernel performs the actual forwarding.
-- **Desired state is the single source of truth**: database state fields, caches, and kernel state no longer compete for authority.
-- **Pure-function network planner + declarative executor**: compute a complete plan, check conflicts and security policy, then have executors apply the difference.
-- **Default deny, not default trust**: networks, Segments, devices, service entry points, and forwarding rules all require explicit authorization semantics.
-- **Recoverability over feature count**: partial failure, disconnection, restart, upgrade, and configuration revocation all need verifiable convergence mechanisms.
-- **Unified resource model, separate execution backends**: Overlay, LAN routes, Alias, port forwarding, and HTTP publication share identity, policy, and state management, but not one vague NAT implementation.
+| Decision | Design rule |
+|---|---|
+| Separate the control plane from the data plane completely | the Rust control plane owns identity, policy, network planning, and orchestration. Device Agents execute; the operating-system kernel performs the actual forwarding. |
+| Desired state is the single source of truth | database state fields, caches, and kernel state no longer compete for authority. |
+| Pure-function network planner + declarative executor | compute a complete plan, check conflicts and security policy, then have executors apply the difference. |
+| Default deny, not default trust | networks, Segments, devices, service entry points, and forwarding rules all require explicit authorization semantics. |
+| Recoverability over feature count | partial failure, disconnection, restart, upgrade, and configuration revocation all need verifiable convergence mechanisms. |
+| Unified resource model, separate execution backends | Overlay, LAN routes, Alias, port forwarding, and HTTP publication share identity, policy, and state management. They do not share one vague NAT implementation. |
 
 The complete target design follows.
 
 ## 1. Target architecture: modular-monolith control plane + separate privileged executor
 
-I do not recommend splitting Meshlet into microservices, but I do recommend clear, enforced boundaries between **management authority, network planning, state coordination, and operating-system execution**.
+I do not recommend splitting Meshlet into microservices. The boundaries between management authority, network planning, state coordination, and operating-system execution must be clear and enforced.
 
 ```mermaid
 flowchart TB
@@ -68,13 +70,18 @@ flowchart TB
 
 I specifically recommend adding `meshlet-netd`.
 
-The repository already limits privileges through a dedicated service user and Linux capabilities, but the target design can further separate the web management plane from network-management authority.
+The repository already limits privileges through a dedicated service user and Linux capabilities. The target design would separate the web management plane from network-management authority further.
 
-`meshlet-netd` communicates with the service process over a local Unix domain socket, verifies caller identity and request type, and accepts only explicit operations such as:
+`meshlet-netd` communicates with the service process over a local Unix domain socket. It verifies caller identity and request type, and accepts only explicit operations.
+
+#### Plans, peers, and routes
 
 - Apply a verified HubPlan.
 - Remove a specified managed Peer.
 - Reconcile a specified set of managed routes.
+
+#### Firewall rules, kernel reads, and rollback
+
 - Atomically replace a specified managed firewall rule set.
 - Read actual kernel state.
 - Roll back to a verified safe configuration.
@@ -83,25 +90,27 @@ It never exposes a generic `exec(command)` interface.
 
 Windows uses a corresponding protected Windows Service instead of granting administrator rights directly to the desktop console.
 
-**Establish this security boundary from the beginning; do not wait for a future security incident to split it out.**
+Establish this security boundary from the beginning; do not wait for a future security incident to split it out.
 
 ---
 
 ## 2. Redesign the domain model first
 
-The easiest way for Meshlet to keep growing complicated is to treat networks, trust groups, routes, Aliases, port forwarding, and HTTP service publication as different kinds of "network configuration".
+One easy way for Meshlet to grow complicated is to treat each network object as a different kind of "network configuration". The objects are networks, trust groups, routes, Aliases, port forwarding, and HTTP service publication.
 
 These objects are related, but they are not the same resource type.
 
 ### 2.1 Unified domain model
 
-- **Network** — an independent WireGuard network, address space, network-level policy, and configuration-revision domain.
-  - **Segment** — defines which devices belong to the same trust domain and which cross-group communication is permitted.
-  - **NetworkAttachment** — which network a device joins, what address it receives, which Segment it belongs to, and what gateway role it takes.
-  - **RouteAdvertisement** — which real LAN prefix a gateway publishes, how the path is selected, and how return traffic is routed.
-  - **PrefixTranslation** — resolves address conflicts between different LANs through an Alias prefix, explicitly defining the original target, translated target, and scope.
-  - **Service / Exposure** — describes the target service, listener address, protocol, port, HTTP domain and path, and who may access it.
-- **Policy** — the unified authorization model controlling actual access between devices, Segments, remote LANs, and published services.
+| Type | Definition |
+|---|---|
+| Network | an independent WireGuard network, address space, network-level policy, and configuration-revision domain. |
+| Segment | defines which devices belong to the same trust domain and which cross-group communication is permitted. |
+| NetworkAttachment | which network a device joins, what address it receives, which Segment it belongs to, and what gateway role it takes. |
+| RouteAdvertisement | which real LAN prefix a gateway publishes, how the path is selected, and how return traffic is routed. |
+| PrefixTranslation | resolves address conflicts between different LANs through an Alias prefix. It explicitly defines the original target, translated target, and scope. |
+| Service / Exposure | describes the target service, listener address, protocol, port, HTTP domain and path, and who may access it. |
+| Policy | the unified authorization model controlling actual access between devices, Segments, remote LANs, and published services. |
 
 ### 2.2 Five resource types that must be distinct
 
@@ -117,11 +126,16 @@ This is a key architectural decision.
 
 For example, suppose you have two NAS devices, two VPS instances, and two remote LANs that both use `192.168.1.0/24`.
 
-The correct model is:
+The correct model splits into addressing and access:
+
+#### Addressing
 
 - Two different gateways, each publishing one real LAN prefix.
 - Two independent Alias prefixes, each mapped to its corresponding real LAN.
 - Two independent route targets.
+
+#### Access
+
 - Two access policies that may differ.
 - Per-service port-exposure rules for each target service.
 
@@ -131,11 +145,13 @@ Adding one `Route` or `Alias` record cannot implicitly accomplish all of this.
 
 I recommend separating device identity from device network membership.
 
-- `Device`: a physical or virtual device with a Meshlet Agent and an independent identity.
-- `NetworkAttachment`: this device's participation in one Network.
-- `DeviceCredential`: device authentication credentials.
-- `DeviceAddressAssignment`: the device's address allocation in a specific network.
-- `DeviceCapability`: execution capabilities the device actually supports, such as IPv4, IPv6, LAN routing, or specific firewall features.
+| Object | Definition |
+|---|---|
+| `Device` | a physical or virtual device with a Meshlet Agent and an independent identity. |
+| `NetworkAttachment` | this device's participation in one Network. |
+| `DeviceCredential` | device authentication credentials. |
+| `DeviceAddressAssignment` | the device's address allocation in a specific network. |
+| `DeviceCapability` | execution capabilities the device actually supports, such as IPv4, IPv6, LAN routing, or specific firewall features. |
 
 This way, even when one machine later joins multiple Networks, it does not need to be duplicated into unrelated devices.
 
@@ -152,7 +168,7 @@ This is the most important design in the entire system.
 I recommend dividing system state into four categories and forbidding them from being mixed.
 
 1. **Desired State** — what the user wants the network to become. Stored in the database and the business source of truth.
-2. **Revision / Plan** — immutable configuration revisions and execution plans: the snapshot, hash, execution targets, and operation dependencies for a generation of desired state.
+2. **Revision / Plan** — immutable configuration revisions and execution plans for one generation of desired state. They carry the snapshot, hash, execution targets, and operation dependencies.
 3. **Observed State** — actual observed state read from WireGuard, OS routes, firewalls, and Agents.
 4. **Health State** — whether real traffic is reachable, whether target TCP/UDP services are available, and whether HTTP services are healthy.
 
@@ -160,18 +176,20 @@ I recommend dividing system state into four categories and forbidding them from 
 
 Suppose the user creates a new LAN route.
 
-1. Read the current network desired state and construct a modified candidate state.
-2. Run address-conflict, gateway-selection, and authorization checks.
-3. Compile the candidate state into a deterministic network plan, ensuring planning succeeds.
-4. Commit the resource change, immutable revision snapshot, audit record, and pending task in one transaction.
-5. The background Reconciler invokes the Hub and the relevant device executors.
-6. Executors apply the plan item by item, read actual state, and verify it.
-7. Each target returns an application receipt with the revision number and plan hash.
-8. The system independently verifies end-to-end connectivity and business health.
+| Step | Action |
+|---|---|
+| 1 | Read the current network desired state and construct a modified candidate state. |
+| 2 | Run address-conflict, gateway-selection, and authorization checks. |
+| 3 | Compile the candidate state into a deterministic network plan, ensuring planning succeeds. |
+| 4 | Commit the resource change, immutable revision snapshot, audit record, and pending task in one transaction. |
+| 5 | The background Reconciler invokes the Hub and the relevant device executors. |
+| 6 | Executors apply the plan item by item, read actual state, and verify it. |
+| 7 | Each target returns an application receipt with the revision number and plan hash. |
+| 8 | The system independently verifies end-to-end connectivity and business health. |
 
 A successful database commit means only that the new desired state is stored; it does not mean the network is live.
 
-The repository already implements revision state, device receipts, and rejection of stale receipts; the target design should preserve these principles and unify them into a formal state model.
+The repository already implements revision state, device receipts, and rejection of stale receipts. The target design preserves these principles and unifies them into a formal state model.
 
 ### 3.2 Revision state must not remain a simple `Applied`
 
@@ -189,7 +207,7 @@ Give every Revision an independent execution record:
 
 Business health is recorded separately, for example `Healthy`, `Degraded`, `Unreachable`, or `NotProbed`.
 
-Thus, even if every device has installed the configuration but the target NAS is down, Meshlet can still express accurately that "network configuration converged; business service unavailable".
+Even if every device has installed the configuration, the target NAS may still be down. Meshlet can then state it precisely: "network configuration converged; business service unavailable".
 
 ### 3.3 Rollback must create a new revision
 
@@ -206,7 +224,7 @@ R2 is still a real failed change that occurred. If the user decides to undo it, 
 
 Add an important safety rule:
 
-**Rollback must not restore permissions, device credentials, or authorization relationships that have been explicitly revoked.**
+Rollback must not restore permissions, device credentials, or authorization relationships. Anything explicitly revoked stays revoked.
 
 For example, if a device has been revoked, it must never regain access merely because it still appears in a last-good snapshot.
 
@@ -251,12 +269,20 @@ Desired Network Snapshot
 
 ### 4.1 What the Planner must own
 
+#### Addressing, routing, and policy
+
 - Overlay address allocation and address-conflict checks.
 - Target prefixes, gateways, and priority computation for all LAN routes.
 - Translation rules for overlapping-prefix Aliases.
 - Segment authorization and cross-network access policy.
+
+#### Service publication
+
 - TCP/UDP port-forwarding rules.
 - HTTP domain, path, and upstream target rules.
+
+#### Plan production
+
 - Deciding which operations are executable based on device platform and capabilities.
 - Producing an independent plan for each device.
 - Producing the global Peer, route, and firewall plan required by the Hub.
@@ -270,24 +296,27 @@ I recommend a unified conflict analyzer instead of continuing to write independe
 
 Conflict analysis must consider at least:
 
+#### Prefixes and segments
+
 - Overlay CIDRs within the same Network.
 - Containment between Segments and the Overlay.
+
+#### Routes, aliases, and gateways
+
 - LAN prefixes published by different gateways.
 - Mapping targets of different Aliases.
 - Intersections between Direct routes and Alias routes.
+
+#### Host and listener state
+
 - Local LANs actually connected to the same device.
 - Existing host routes and listening ports.
 - The same listener address, protocol, and port being used by multiple services.
 - Selection and failover rules when multiple gateways publish the same target.
 
-Conflict results should be typed errors, for example:
-
-- `OverlayOverlap`
-- `AliasPrefixConflict`
-- `AmbiguousGateway`
-- `LocalRouteConflict`
-- `ListenerConflict`
-- `UnsupportedBackendCapability`
+Conflict results should be typed errors. Examples are `OverlayOverlap`,
+`AliasPrefixConflict`, and `AmbiguousGateway`. Others include
+`LocalRouteConflict`, `ListenerConflict`, and `UnsupportedBackendCapability`.
 
 Business decisions must not depend on string error messages.
 
@@ -297,17 +326,25 @@ If two gateways both publish `192.168.10.0/24`, the system must not choose one a
 
 The target model should explicitly contain:
 
+#### Ownership and selection
+
 - Route owner.
 - Target prefix.
 - Gateway.
 - Route priority.
+
+#### Health and failover
+
 - Health-check conditions.
 - Failover policy.
+
+#### Mapping and scope
+
 - Return-path mode.
 - Alias mapping relationship.
 - Owning Network and visible Segments.
 
-Deny ambiguity by default; allow multiple gateways to compete for the same target only when the user explicitly configures priority or an unambiguous redundant-route policy.
+Deny ambiguity by default. Multiple gateways may compete for the same target only when the user explicitly configures priority. The alternative is an explicit, unambiguous redundant-route policy.
 
 ---
 
@@ -319,12 +356,14 @@ I recommend splitting security design into three distinct layers.
 
 First device registration:
 
-1. The user generates a one-time Bootstrap Token.
-2. Only the Token digest is stored, with an expiry and usage limit.
-3. The Agent registers over HTTPS and submits its public key.
-4. The server creates a pending device.
-5. The user approves the device; the server establishes an independent device identity and long-lived credential.
-6. Subsequent communication uses device identity authentication and supports credential rotation and revocation.
+| Step | Action |
+|---|---|
+| 1 | The user generates a one-time Bootstrap Token. |
+| 2 | Only the Token digest is stored, with an expiry and usage limit. |
+| 3 | The Agent registers over HTTPS and submits its public key. |
+| 4 | The server creates a pending device. |
+| 5 | The user approves the device; the server establishes an independent device identity and long-lived credential. |
+| 6 | Subsequent communication uses device identity authentication and supports credential rotation and revocation. |
 
 The target design should use HTTPS plus device-level mTLS identity. The initial registration Token is only for establishing identity and should not become the device's long-lived pass.
 
@@ -334,16 +373,24 @@ Neither server nor Agent private keys should enter public configuration snapshot
 
 Keep Segments inside a Network, but formally adopt the following authorization contract:
 
+#### Defaults
+
 - Create a default Segment when creating a Network.
 - The default Segment may use an explicit "trusted group" policy template.
 - Custom Segments do not allow proactive cross-segment access by default.
+
+#### Direction and scope
+
 - Cross-Segment authorization must have an explicit direction.
 - Authorization should support protocol, port, source, and destination restrictions.
+
+#### Revocation
+
 - Revoking authorization must promptly block new unauthorized traffic.
 - When a device is revoked, the Hub must reject its traffic and must not rely on the client to update itself.
 - Existing connections must follow explicit revocation semantics.
 
-I recommend keeping the convenient same-segment-trust mode, but it should be an explicit policy configuration, not an implicit permanent `ACCEPT` in the kernel.
+I recommend keeping the convenient same-segment-trust mode. It should be an explicit policy configuration, not an implicit permanent `ACCEPT` in the kernel.
 
 ### 5.3 Layer 3: the execution layer enforces policy
 
@@ -351,9 +398,14 @@ WireGuard `AllowedIPs` can constrain routes and Peer address ownership, but it c
 
 Therefore:
 
+#### Hub firewall
+
 - The Linux Hub uses a separate managed nftables rule set.
 - Every Network's forwarding path has an explicit identity and policy owner.
 - Cross-segment traffic passes through a stateful firewall.
+
+#### Entry points, hosts, and Windows
+
 - Service entry points enforce separate target and port authorization.
 - Devices may also enforce host-level firewall policy locally when needed.
 - Windows uses real firewall mechanisms such as Windows Filtering Platform, not just route configuration that assumes access is restricted.
@@ -373,7 +425,7 @@ Target proposal:
 | State reading | Query the actual kernel, not only a local ledger |
 | Execution authority | `meshlet-netd`'s restricted operation interface |
 
-I do not recommend rewriting every Linux network operation as a low-level Netlink implementation from day one. What matters most is verifiable execution, atomically updatable rules, clear resource ownership, and recoverability after failure. nftables is the right firewall target for the new architecture, but that does not mean every feature must immediately become a low-level protocol implementation.
+I do not recommend rewriting every Linux network operation as a low-level Netlink implementation from day one. What matters most is verifiable execution and recoverability after failure. Rules must update atomically, and every resource must have a clear owner. nftables is the right firewall target for the new architecture. That does not mean every feature must immediately become a low-level protocol implementation.
 
 ---
 
@@ -387,10 +439,15 @@ Responsibility: let Overlay devices reach remote LANs.
 
 Owns:
 
+#### Routes and gateways
+
 - Route publication and revocation.
 - Gateway selection.
 - Direct routes.
 - Return paths.
+
+#### NAT, health, and conflicts
+
 - Necessary SNAT.
 - Gateway health and failover.
 - Visibility and conflict checks for overlapping prefixes.
@@ -434,12 +491,20 @@ This is a conceptual structure, not the final serialization format.
 
 It is important to distinguish:
 
+#### Endpoints
+
 - Entry listener port.
 - Upstream service port.
 - TCP versus UDP.
+
+#### Target location
+
 - Whether the target is a local service.
 - Whether the target is a remote Overlay device.
 - Whether the target is a remote LAN.
+
+#### Translation and cleanup
+
 - Whether DNAT, SNAT, or a return route is required.
 - Which rules must be cleaned up when the service is revoked.
 
@@ -458,15 +523,17 @@ HTTP publication should not be implemented as a large set of scattered iptables 
 
 I recommend introducing a separate `ServicePublisher` interface responsible for:
 
-1. Validating domain, path, upstream address, and authorization.
-2. Generating the complete target configuration.
-3. Validating configuration correctness.
-4. Atomically updating or safely reloading.
-5. Verifying upstream connectivity.
-6. Retaining the last valid configuration on failure.
-7. Reporting configuration state and business health separately.
+| Step | Action |
+|---|---|
+| 1 | Validating domain, path, upstream address, and authorization. |
+| 2 | Generating the complete target configuration. |
+| 3 | Validating configuration correctness. |
+| 4 | Atomically updating or safely reloading. |
+| 5 | Verifying upstream connectivity. |
+| 6 | Retaining the last valid configuration on failure. |
+| 7 | Reporting configuration state and business health separately. |
 
-For HTTP/HTTPS, first evaluate a Meshlet-managed Caddy instance as the reverse-proxy backend to leverage mature TLS and configuration validation; if Nginx is ultimately selected, keep the same `ServicePublisher` abstraction. Never overwrite a user's existing Nginx/Caddy configuration directly.
+For HTTP/HTTPS, first evaluate a Meshlet-managed Caddy instance as the reverse-proxy backend. It brings mature TLS handling and configuration validation. If Nginx is ultimately selected, keep the same `ServicePublisher` abstraction. Never overwrite a user's existing Nginx/Caddy configuration directly.
 
 ### 6.5 DNS and service catalog
 
@@ -474,9 +541,14 @@ DNS should be an independent feature, not an excuse to modify the system DNS of 
 
 Recommendations:
 
+#### Resolution
+
 - Provide configurable internal domains.
 - Resolve only Meshlet-managed services by default.
 - Support split DNS without overwriting devices' existing public DNS configuration.
+
+#### Lifecycle and visibility
+
 - Delete corresponding records when a service is deleted.
 - DNS results follow Network, Segment, and service visibility policy.
 - The service catalog shows service addresses, target devices, health, and authorization requirements.
@@ -521,21 +593,29 @@ meshlet/
 
 Dependencies between these modules should be unidirectional:
 
+### Pure core
+
 - `domain` does not depend on Axum, SQLite, or the operating system.
 - `ipam`, `policy`, and `planner` perform no side effects.
+
+### Persistence and use cases
+
 - `store` owns only persistence abstractions and transactions.
 - `control` owns business use cases and transaction boundaries.
+
+### Coordination and processes
+
 - `reconciler` owns coordination and recovery.
 - Platform backends perform only concrete network operations.
 - `server`, `agent`, and `netd` own process lifecycle and dependency assembly.
 
-This aligns with the repository's existing modularity proposal, but makes the target dependency boundary a hard constraint rather than prioritizing compatibility with the current crate layout.
+This aligns with the repository's existing modularity proposal. It makes the target dependency boundary a hard constraint. Compatibility with the current crate layout no longer takes priority.
 
 ---
 
 ## 8. Persistence and concurrency: no full event sourcing, but retain immutable history
 
-For Meshlet's current personal self-hosting positioning, I still recommend SQLite and do not recommend introducing PostgreSQL, Redis, message queues, and microservices early for architectural completeness.
+For Meshlet's current personal self-hosting positioning, I still recommend SQLite. PostgreSQL, Redis, message queues, and microservices are not worth introducing early for architectural completeness.
 
 The target data layer should include:
 
@@ -556,14 +636,22 @@ I do not recommend making every operation a full event-sourced stream. For this 
 
 Network changes need explicit concurrency boundaries:
 
+#### Networks
+
 - Changes to the same Network use optimistic version checks or network-level serialization.
 - Different Networks may apply in parallel.
+
+#### Devices and external work
+
 - Local execution on the same device should be serialized so plans do not overwrite each other.
 - External network operations run only after the database transaction commits.
+
+#### Atomicity and failure
+
 - Task writes and business changes are made atomic through the Outbox.
 - Every failure has an explicit retry, timeout, cancellation, and final state.
 
-The database must not wait in a long transaction for kernel commands, and the system must not claim that the whole business transaction is complete before external operations succeed.
+The database must not wait in a long transaction for kernel commands. The system must not claim that the whole business transaction is complete before external operations succeed.
 
 ### Backup and restore
 
@@ -586,18 +674,26 @@ I recommend continuing to use HTTPS + JSON as the initial control protocol; ther
 
 However, protocol definitions must be unified:
 
+### Contracts and schemas
+
 - The public management API uses OpenAPI as its contract source.
 - Agent Plans use a separate, versioned Schema.
 - Generate Rust and TypeScript types from the Schema where possible.
+
+### Plan contents and versioning
+
 - Every Plan contains the protocol version, revision number, target ID, plan hash, and required capabilities.
 - An Agent accepts only protocol versions and plan types it supports.
 - Explicitly reject incompatible versions; silent downgrade is forbidden.
+
+### Receipts and retries
+
 - Device receipts must exactly match the current desired revision and plan hash.
 - Retries use idempotency identifiers and must not repeat irreversible side effects.
 
-Dropping compatibility with the old protocol does not mean protocol versioning can be ignored. **Old versions may be dropped, but version boundaries must not become ambiguous.**
+Dropping compatibility with the old protocol does not mean protocol versioning can be ignored. Old versions may be dropped, but version boundaries must not become ambiguous.
 
-Agents should use jittered exponential backoff and long polling so a large fleet does not request simultaneously after a server restart. Real-time push may be an optimization, but it cannot be the only task-delivery mechanism; even if a push is lost, an Agent must eventually discover new revisions.
+Agents should use jittered exponential backoff and long polling. A large fleet must not request simultaneously after a server restart. Real-time push may be an optimization, but it cannot be the only task-delivery mechanism. Even if a push is lost, an Agent must eventually discover new revisions.
 
 ---
 
@@ -607,10 +703,15 @@ A network change is not an ordinary CRUD operation. It may modify multiple inter
 
 I recommend that every network execution plan support:
 
+### Normal path
+
 - `Prepare`: validate preconditions and resource ownership.
 - `Apply`: execute operations in dependency order.
 - `Verify`: read actual state back from the kernel.
 - `Commit`: record the successful plan and observed results.
+
+### Failure and repair
+
 - `Compensate`: perform bounded compensation and recovery on failure.
 - `Reconcile`: continuously repair differences between desired and actual state.
 
@@ -618,7 +719,7 @@ Compensation is not unconditional restoration of all old rules. Safe revocation 
 
 For example, when revoking a device, first block its forwarding authorization at the Hub, then clean up related state. Even if an Agent is offline, it must not continue reaching revoked targets through the Hub.
 
-Similarly, when expanding access, prepare routes and related resources first and open the actual firewall authorization last, so privileges do not accidentally expand midway through application.
+Similarly, when expanding access, prepare routes and related resources first. Open the actual firewall authorization last, so privileges do not accidentally expand midway through application.
 
 These execution orders must be explicit contracts between the Planner and executors, not accidental call orders in individual handlers.
 
@@ -640,48 +741,56 @@ The repository already has many Linux netns tests and clearly distinguishes loca
 
 I also recommend adding the following automation:
 
+### Determinism
+
 - Property tests for CIDR conflict detection.
 - Tests that the same input always produces the same Plan Hash.
 - Tests that random change order does not alter the final plan.
+
+### Failure and revocation
+
 - Failure injection at every execution stage, verifying the final state.
 - Negative connectivity tests for every revocation operation.
 - Tests that deleting resources leaves no residual routes, Peers, NAT, or listeners.
+
+### Data lifecycle and CI
+
 - Tests for database backup, restore, key rotation, and credential revocation.
 - In strict data-plane CI, missing dependencies must fail; skips cannot count as passes.
 
-Test coverage may be a metric, but it should not be the only acceptance criterion. For network infrastructure, **unauthorized traffic actually failing to pass through the real kernel** matters more than whether a function reaches 100% line coverage.
+Test coverage may be a metric, but it should not be the only acceptance criterion. For network infrastructure, unauthorized traffic must actually fail to pass through the real kernel. That counts more than whether a function reaches 100% line coverage.
 
 ---
 
 ## 12. Final implementation order
 
-Even without compatibility with the old structure, I recommend implementing by dependency rather than rewriting every module simultaneously.
+Compatibility with the old structure is not required. I recommend implementing by dependency rather than rewriting every module simultaneously.
 
-1. **Rebuild the foundation** (highest priority)
+1. Rebuild the foundation (highest priority)
 
    Redefine the domain model, Revision, Plan, Receipt, protocol Schema, and crate dependencies. Build the pure Planner, SQLite transactions and Outbox, and the privileged executor interface.
 
-2. **Reliable Linux network infrastructure**
+2. Reliable Linux network infrastructure
 
-   Rebuild the WireGuard Hub, Peer management, routing, nftables, safe revocation, drift detection, last-good recovery, and single-instance multi-network isolation.
+   Rebuild the WireGuard Hub, Peer management, routing, and nftables. Cover safe revocation, drift detection, last-good recovery, and single-instance multi-network isolation.
 
-3. **Unified network planning and conflict analysis**
+3. Unified network planning and conflict analysis
 
    Complete IPAM, Segment policy, gateway selection, Direct routes, Alias mapping, and global conflict checks.
 
-4. **Complete device end-to-end networking**
+4. Complete device end-to-end networking
 
-   First make the Linux Agent fully support registration, startup recovery, execution receipts, retries, upgrades, and real connection diagnostics.
+   First make the Linux Agent fully support registration, startup recovery, execution receipts, and retries. The same pass covers upgrades and real connection diagnostics.
 
-5. **Complete Windows client**
+5. Complete Windows client
 
    Complete tunnel service, system routes, firewall, privilege elevation, boot recovery, and uninstall cleanup through a real platform backend.
 
-6. **Service publication**
+6. Service publication
 
    Implement TCP/UDP port forwarding, HTTP/HTTPS publication, authorization control, health probes, and an internal DNS service catalog.
 
-7. **Production deployment and long-running acceptance**
+7. Production deployment and long-running acceptance
 
    Complete empty-VPS installation, key rotation, backup/restore, upgrade rollback, performance baselines, and real multi-device acceptance.
 
@@ -689,20 +798,22 @@ Even without compatibility with the old structure, I recommend implementing by d
 
 If this proposal proceeds, I recommend formally adopting the following principles as constraints on all subsequent Meshlet design:
 
-1. **Modular monolith, not microservices.**
-2. **Desired State + immutable Revision + pure Planner + Reconciler are the core of the system.**
-3. **The control plane does not directly own generic privileged command execution.**
-4. **Network, Segment, Route, Alias, PortForward, and HTTP Exposure are distinct domain objects.**
-5. **Access control must take effect in the actual execution layer, not rely only on the configuration UI and WireGuard AllowedIPs.**
-6. **Rollback must not reopen revoked permissions.**
-7. **Every resource change must be verifiable, auditable, retryable, and rebuildable from actual kernel state.**
-8. **SQLite is sufficient for the current personal self-hosting positioning, but the persistence boundary must allow future replacement.**
-9. **Linux and Windows share the domain model, protocol, and planning logic; execution backends are implemented separately.**
-10. **CI passing, kernel tests passing, and real-VPS acceptance passing are three different completion standards.**
+| # | Decision |
+|---|---|
+| 1 | Modular monolith, not microservices. |
+| 2 | Desired State + immutable Revision + pure Planner + Reconciler are the core of the system. |
+| 3 | The control plane does not directly own generic privileged command execution. |
+| 4 | Network, Segment, Route, Alias, PortForward, and HTTP Exposure are distinct domain objects. |
+| 5 | Access control must take effect in the actual execution layer, not rely only on the configuration UI and WireGuard AllowedIPs. |
+| 6 | Rollback must not reopen revoked permissions. |
+| 7 | Every resource change must be verifiable, auditable, retryable, and rebuildable from actual kernel state. |
+| 8 | SQLite is sufficient for the current personal self-hosting positioning, but the persistence boundary must allow future replacement. |
+| 9 | Linux and Windows share the domain model, protocol, and planning logic; execution backends are implemented separately. |
+| 10 | CI passing, kernel tests passing, and real-VPS acceptance passing are three different completion standards. |
 
-I believe this is more valuable than continuing to layer features onto the current structure. What Meshlet should truly become is not a "WireGuard configuration manager", but a **self-hosted network control system with a clear security model, declarative network orchestration, reliable failure recovery, and unified service publication**.
+I believe this is more valuable than continuing to layer features onto the current structure. What Meshlet should truly become is not a "WireGuard configuration manager". It should be a self-hosted network control system with a clear security model and declarative network orchestration. It also needs reliable failure recovery and unified service publication.
 
-The most reasonable next deliverable is to codify this target design in `docs/architecture/target-architecture.md`, redefine the domain model, protocol, data tables, execution state machine, and acceptance criteria, and rewrite the Code Agent-oriented `todo.md` accordingly. This should become the new implementation baseline rather than continuing to treat the module boundaries in the old TODO as immutable premises.
+The most reasonable next deliverable is to codify this target design in `docs/architecture/target-architecture.md`. Then redefine the domain model, protocol, data tables, execution state machine, and acceptance criteria. Rewrite the Code Agent-oriented `todo.md` accordingly. This should become the new implementation baseline. The module boundaries in the old TODO are no longer immutable premises.
 
 If desired, I can:
 

@@ -22,7 +22,7 @@
 
 | 维度 | 行为 |
 |---|---|
-| 触发 | `POST /api/v1/system/backup`（会话或 `write` scope Token + CSRF）🔒；或 `[backup] auto = true` 的定时任务 |
+| 触发 | `POST /api/v1/system/backup`（会话或 `write` scope Token + CSRF）；或 `[backup] auto = true` 的定时任务 |
 | 位置 | `<dir>/meshlet-backup-<UTC 时间戳>.db`（毫秒精度，排序即时间序） |
 | 不覆盖 | 目标文件已存在则拒绝（`409 conflict`），既有备份绝不被静默覆盖 |
 | 权限 | 落盘即收紧为 `0600`（含口令哈希等敏感材料，等价于数据库本体） |

@@ -131,9 +131,9 @@ git stash pop && cargo build --release -p meshlet-server --example bench
 
 ## 结论
 
-1. 控制面读路径的基线瓶颈是**单串行连接**；4 连接 + WAL 把 `/networks` 吞吐提到
+1. 控制面读路径的基线瓶颈是单串行连接；4 连接 + WAL 把 `/networks` 吞吐提到
    **~30k req/s（16 并发 10×、64 并发 5×）**、`/auth/tokens` 提到 **~14k req/s
-   （16 并发 3.5×）**，p50 延迟从毫秒级降到 **0.5–2 ms**。
+   （16 并发 3.5×）**，p50 延迟从毫秒级降到 0.5–2 ms。
 2. `/system/status` 前后同区间，确认瓶颈在 DB 路径而非服务本身；无 DB 路径的
    上限（~1M+ req/s）不受影响。
 3. **并发远超池大小（256）时收益不稳定**（1.5–6×）：请求在 4 连接上排队，

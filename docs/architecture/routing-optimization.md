@@ -10,8 +10,8 @@ Record peer count, each peer's AllowedIPs, relay throughput, round-trip time, MT
 
 ## Candidate changes
 
-Potential optimizations include narrowing peer routes, reducing unnecessary entries, improving relay capacity, and eventually adding direct peer paths. P2P traversal changes topology, firewall assumptions, and failure modes; it is the project's core goal and in active development (lane/nat-punch), with the hub relay remaining the always-available fallback.
+Potential optimizations include narrowing peer routes, reducing unnecessary entries, and improving relay capacity. They also include eventually adding direct peer paths. P2P traversal changes topology, firewall assumptions, and failure modes. It is the project's core goal and is in active development (`lane/nat-punch`). The hub relay remains the always-available fallback.
 
 ## Decision
 
-Keep the hub relay for v1. Optimize only after a reproducible bottleneck is measured. Preserve the existing plan derivation as the baseline and verify that any performance change keeps network isolation, route visibility, and recovery behavior intact.
+Keep the hub relay for v1. Optimize only after a reproducible bottleneck is measured. Preserve the existing plan derivation as the baseline. Verify that any performance change keeps network isolation, route visibility, and recovery behavior intact.

@@ -18,7 +18,7 @@ agent promotes same-LAN peers or dialed candidates (`decide_direct_path` in
 `apps/agent/src/direct.rs`, and falls back to the hub relay through a hysteresis gate when a
 direct link degrades.
 
-**Devices.** One `meshlet-agent` binary per host. It polls the desired plan, applies it with `ip`, `wg`, iptables or nftables, posts the receipt and a heartbeat, and keeps a local ledger (`applied.json`) for drift read-back. A gateway agent additionally publishes LAN routes with owner and metric, does SNAT/DNAT on the device, and runs service publishing for forwarding, HTTP and DNS.
+**Devices.** One `meshlet-agent` binary per host. It polls the desired plan, applies it with `ip`, `wg`, iptables or nftables, posts the receipt and a heartbeat, and keeps a local ledger (`applied.json`) for drift read-back. A gateway agent additionally publishes LAN routes with owner and metric, and does SNAT/DNAT on the device. It also runs service publishing for forwarding, HTTP and DNS.
 
 **`meshlet-cli`** ships info, status, peers, peer dial, agent diag, networks, config and task
 assign/ls/confirm/retry commands (single source of truth: the command catalog in
@@ -26,7 +26,7 @@ assign/ls/confirm/retry commands (single source of truth: the command catalog in
 
 ## Source of truth
 
-The diagram follows the code as it stands, not the earlier documents. Two places where the documents and the source disagree: `apps/agent/src/server.rs` is a client of the hub API, not a local listener, and the hub's `wg0` lives in the server process (`hub_public_key`, `hub_backend_factory`, `hub_deployments`), not in the agent. Where a document and the source disagree, the source wins.
+The diagram follows the code as it stands, not the earlier documents. Two places where the documents and the source disagree: `apps/agent/src/server.rs` is a client of the hub API, not a local listener. The hub's `wg0` lives in the server process (`hub_public_key`, `hub_backend_factory`, `hub_deployments`), not in the agent. Where a document and the source disagree, the source wins.
 
 <details>
 <summary>SVG variants</summary>

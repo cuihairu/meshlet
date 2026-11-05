@@ -5,8 +5,8 @@
 
 ## 定位：只诊断，不修复
 
-13 项检查按**故障层**归类（隧道 / 路由 / 转发 / Alias / 控制面），输出**准确诊断结果 +
-可执行建议**。第一版**不做任何自动修复**——每条 `fail` / `warning` / `unavailable`
+13 项检查按**故障层**归类（隧道 / 路由 / 转发 / Alias / 控制面），输出准确诊断结果 +
+可执行建议。第一版**不做任何自动修复**——每条 `fail` / `warning` / `unavailable`
 都给出一句
 可执行的下一步（多为在目标机器上跑的命令），由运维照做。
 
@@ -57,7 +57,7 @@
 | 端点 | 行为 |
 |---|---|
 | `GET /api/v1/networks/{network_id}/diagnostics` | 返回**最近一次**运行的报告（`DiagnosticsReport` JSON）；从未运行 → `404`（`code: "not_found"`，内部变体 `ServiceError::DiagnosticsNotRun`，消息点名 POST 触发方式） |
-| `POST /api/v1/networks/{network_id}/diagnostics` 🔒 | 计算 13 项检查 → 落一行快照（`diagnostics_runs`）→ 返回报告；记审计 `diagnostics.run`（detail 含 checks/fail/unavailable 计数） |
+| `POST /api/v1/networks/{network_id}/diagnostics`（需认证） | 计算 13 项检查 → 落一行快照（`diagnostics_runs`）→ 返回报告；记审计 `diagnostics.run`（detail 含 checks/fail/unavailable 计数） |
 
 - 门禁同其余管理端点：会话认证；POST 另需 `write` 权限 + CSRF 头；
 - **快照语义**：`GET` 读的是上次 `POST` 落库的同份 JSON（逐字节相同，不是现算）——

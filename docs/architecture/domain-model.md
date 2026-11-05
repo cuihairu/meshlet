@@ -2,7 +2,13 @@
 
 ## Core entities
 
-A **User** manages the console. A **Network** owns an immutable Overlay CIDR, devices, invitations, routes, segments, and configuration revisions. A **Device** has a network-scoped identity, public key, allocated IPv4 address, platform, status, and presence evidence. Private keys never enter the server model.
+| Entity | Description |
+|---|---|
+| User | manages the console |
+| Network | owns an immutable Overlay CIDR, devices, invitations, routes, segments, and configuration revisions |
+| Device | has a network-scoped identity, public key, allocated IPv4 address, platform, status, and presence evidence |
+
+Private keys never enter the server model.
 
 ## Enrollment
 
@@ -18,6 +24,6 @@ Each configuration change creates a monotonic network-scoped **Config Revision**
 
 ## Segment trust
 
-A **Segment** is a network-scoped prefix and trust group. Each device has one segment assignment. A **Segment Grant** opens one directed path from a source segment to a destination segment and starts as `pending`; an explicit apply changes it to `applied`, while revoke changes it to `revoked`. Segment, grant, revision, audit, and SQLite records are committed atomically.
+A **Segment** is a network-scoped prefix and trust group. Each device has one segment assignment. A **Segment Grant** opens one directed path from a source segment to a destination segment and starts as `pending`. An explicit apply changes it to `applied`, while revoke changes it to `revoked`. Segment, grant, revision, audit, and SQLite records are committed atomically.
 
 Only `applied` grants participate in plan visibility and the desired-config hash. `pending` and `revoked` grants still produce revisions but do not change the serialized desired state. This is a control-plane state transition, not a claim that the hub or endpoints have already enforced the new policy. See the segment design for the remaining data-plane acceptance gate.

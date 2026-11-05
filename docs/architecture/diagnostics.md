@@ -4,7 +4,7 @@ Diagnostics report observations and do not repair the system. A run captures a t
 
 ## What is checked
 
-The checks cover network and device presence, revision state, gateway availability, published LAN routes, Alias consistency, tunnel evidence, data-plane reports, and relevant NAT or MTU signals. Each result identifies its layer and distinguishes healthy, failed, not applicable, and unverified conditions.
+The checks cover network and device presence, revision state, gateway availability, and published LAN routes. They also cover Alias consistency, tunnel evidence, data-plane reports, and relevant NAT or MTU signals. Each result identifies its layer and distinguishes healthy, failed, not applicable, and unverified conditions.
 
 ## API and console
 

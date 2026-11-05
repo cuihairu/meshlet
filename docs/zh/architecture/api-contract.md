@@ -4,13 +4,19 @@
 
 ## 约定
 
+### 请求与响应
+
 - 所有 API 使用版本前缀 `/api/v1`；JSON 请求与响应；统一错误响应结构（见下）；
 - 输入验证在服务端执行；有副作用的操作记录审计事件（ADR-010）；
 - 列表接口分页（`limit`/`offset`，响应带 `total`）；
+
+### 错误与状态
+
 - 可区分的错误码：`conflict` / `unauthorized` / `forbidden` / `not_found` / `validation_failed` / `too_many_requests` / `apply_failed` / `backup_not_configured`；
 - 配置修改类响应必须携带 `revision_id` 与 `apply_status`（ADR-009）；
 - 敏感可重试操作提供幂等语义；
-- **Agent API 与管理 API 认证边界清晰分离**（§13.7）。
+
+Agent API 与管理 API 的认证边界清晰分离（§13.7）。
 
 
 > **契约 ↔ 实现对账（2026-10-15，增量注记 2026-11-05）**：本表与 [openapi.yaml](/api/openapi.yaml) 曾与 `apps/server` 当时的 33 条路由逐一对齐——规格先行的端点（网络/设备详情与更新删除、 `rotate-key`、逐网络 `status`、路由 `PATCH`）从未实现且不在第一版验收（§22）内， 已从机器契约移除，避免代码生成出 404 客户端；重复的 `diagnostics` 路径块已去重（保留与实现一致的一份：`POST` 返回 `200` + 报告，非 `202`）。
@@ -24,49 +30,49 @@
 
 ## 端点清单
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/v1/auth/bootstrap` | 空库创建首个管理员（有用户后 409 关闭） |
-| POST | `/api/v1/auth/login` | 登录（限流：每 email 15 分钟 5 次失败，ADR-010） |
-| POST | `/api/v1/auth/logout` | 登出（撤销会话） |
-| GET | `/api/v1/auth/me` | 当前用户 |
-| POST | `/api/v1/auth/tokens` | 签发 API Token（外部机器凭据；原始 Token 仅此一次返回）🔒 |
-| GET | `/api/v1/auth/tokens` | 当前用户的 Token 列表（不含任何 Token 材料）🔒 |
-| DELETE | `/api/v1/auth/tokens/{token_id}` | 撤销 API Token（即失效；仅属主可撤）🔒 |
-| GET/POST | `/api/v1/networks` | 网络列表 / 创建（CIDR 验证，ADR-004）🔒 |
-| GET | `/api/v1/networks/{network_id}/devices` | 设备列表 🔒 |
-| POST | `/api/v1/networks/{network_id}/invites` | 生成一次性邀请（ADR-010）🔒 |
-| DELETE | `/api/v1/networks/{network_id}/invites/{invite_id}` | 撤销邀请（ADR-010）🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/bootstrap-tokens` | 自举码列表 / 签发（设备自举注册入口；原始码仅此一次返回，§11.3）🔒 |
-| DELETE | `/api/v1/networks/{network_id}/bootstrap-tokens/{token_id}` | 撤销自举码（立即失效；重复撤销 409、未知 id 404）🔒 |
-| POST | `/api/v1/enroll` | 设备加入（邀请 Token + 公钥；私钥不出客户端，§11.2） |
-| POST | `/api/v1/device-registrations` | 设备自举注册（ZeroTier 式：自举码 + 公钥 → Pending 待审批；原始 agent 凭证即签即用，§11.6） |
-| GET | `/api/v1/networks/{network_id}/registrations` | 待审批注册申请列表（Pending 心跳证据在此可见）🔒 |
-| POST | `/api/v1/networks/{network_id}/devices/{device_id}/approve` | 批准注册（此刻才分配虚拟 IP + 记修订；沿用注册期凭证，不轮换）🔒 |
-| POST | `/api/v1/networks/{network_id}/devices/{device_id}/deny` | 拒绝注册（纯状态清理：申请与凭证一并作废，不记修订）🔒 |
-| POST | `/api/v1/agent/heartbeat` | Agent 心跳/状态上报（Bearer agent_token；可带 `last_handshake_at`，§14.1） |
-| POST | `/api/v1/agent/device/applied` | 回报当前修订和实际设备计划哈希；旧回执/哈希不符拒绝，错误与成功分别记录 |
-| GET | `/api/v1/agent/device/desired` | 本设备的期望数据面计划（Bearer agent_token；**结构化配置对象**：隧道/路由/NAT + `desired_config_hash`，**绝无 Shell 命令**，§16.4；`private_key` 恒为 `null`，ADR-010；服务端 `[dataplane] enabled = false` → `503 dataplane_not_configured`，agent 重试而非把「未配置」当「已生效」） |
-| POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5）🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/routes` | LAN Route 列表 / 创建（含返回路径模式，ADR-005）；与 overlay/既有路由重叠 → `409 conflict` 且**消息点名冲突对端**（既有路由 id + 网段），拒绝发生在任何状态变更前——既有路由绝不被覆盖，客户端应提示改用 Alias 等长前缀映射（§8.3 不静默）。**例外（ADR-006 旗舰场景）**：新路由与既有路由**均为 Alias 模式**时允许真实前缀重叠——两个站点各有一个 `192.168.1.0/24`，经各自不同 Alias 前缀区分可达；对外可见的转发前缀是 Alias（唯一性由 Alias 创建时的互叠拒绝保证），真实前缀不进隧道转发表面 🔒 |
-| GET/DELETE | `/api/v1/networks/{network_id}/routes/{route_id}` | 详情 / 删除（无更新路径——修改 = 删除后重建，各记一个修订）🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/aliases` | Alias 列表 / 创建（等长前缀校验，ADR-006；**已实现**）：绑定本网络 `alias` 模式路由（每路由一映射）、网关须 Active；`target_cidr` 服务端由绑定路由推导、**客户端不可指定**；前缀不等长或与 target 相同 → `400`；Alias 前缀与 overlay / 既有 Alias / 既有路由目的网段重叠 → `409 conflict` 且**消息点名对端**（计入路由冲突指标，§17.2）；拒绝发生在任何状态变更前。**协议边界**：只覆盖 IP 单播路由层——广播/组播/二层发现（ARP/NDP、mDNS、DHCP 广播域）不跨 Alias 透传，协议负载内嵌 IP 的应用可能失效（§9.6，详见 [ADR-006](../decisions/adr-006-alias-prefix-nat.md)）；内核侧 NAT 执行随数据面（ADR-007），未接线时修订 apply 确定性失败可见（§10.3）🔒 |
-| GET/DELETE | `/api/v1/networks/{network_id}/aliases/{alias_id}` | 详情 / 删除（**已实现**）：删除 = **整单元清理**（§12.6）——映射与其绑定路由同删、记录**一个**修订；内核侧 NAT 规则移除随该修订 apply 交 backend；反向同理：删除绑定路由级联删除 Alias；无更新路径——修改 = 删除后重建（各记一个修订）🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/segments` | Segment 列表 / 创建（ADR-012 控制面；**已实现**）：默认段由建网事务固定且不可改；新段名唯一，CIDR 必须是 overlay 的严格子段且不与已有精确 CIDR 重复；越界、整 overlay、重名或重复 CIDR 均在状态变更前拒绝 🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/segment-grants` | 单向 SegmentGrant 列表 / 创建：源、目标须同网且不同；新建恒为 `pending`；未知段为 `404`，重复活动方向为 `409`；仅 `applied` 授权参与计划可见性与期望哈希 🔒 |
-| POST | `/api/v1/networks/{network_id}/segment-grants/{segment_grant_id}/apply` | 仅把 `pending` 授权改为 `applied` 并记录修订：这是**期望状态跃迁**，不是网络级 revision apply；响应 `apply_status` 表示外层修订状态，仍可为 `pending` 🔒 |
-| DELETE | `/api/v1/networks/{network_id}/segment-grants/{segment_grant_id}` | 撤销 `pending` 或 `applied` 授权：写入 `revoked_at` 并记录修订；撤销后不进入期望哈希，重复撤销 `409` 🔒 |
-| GET/POST | `/api/v1/networks/{network_id}/host-forwards` | 单主机全端口转发列表 / 创建（**已实现**）：服务端把 `target_ipv4`/`alias_ipv4` 固定为等长 `/32`，原子创建 alias 模式 LAN Route + Alias（一个修订）；所有 IPv4 协议/端口随既有 NETMAP 路径转发，**不提供逐端口防火墙规则**；target/Alias 与 overlay、既有 Route 或 Alias 重叠 → `409 conflict` 且拒绝零变更；网关须本网络 Active 🔒 |
-| DELETE | `/api/v1/networks/{network_id}/host-forwards/{alias_id}` | 删除单主机转发（**已实现**）：alias 与绑定 `/32` route 按所有权单元同删，记录一个修订；无更新路径——修改 = 删除后重建 🔒 |
-| GET | `/api/v1/system/status` | 服务端状态（公开） |
-| GET/POST | `/api/v1/networks/{network_id}/diagnostics` | 诊断结果 / 触发诊断（§12.7 十三项检查）🔒 |
-| GET | `/api/v1/networks/{network_id}/config-revisions` | 配置版本列表 🔒 |
-| GET | `/api/v1/networks/{network_id}/config-revisions/{revision}` | 版本详情（含 apply_status）🔒 |
-| POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/apply` | 应用指定版本到实际环境（响应即该版本视图）🔒 |
-| POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/rollback` | 回滚失败版本（仅删除/恢复 Meshlet 自有对象，ADR-007；只允许回滚当前修订，被取代者 409，§10.4）🔒 |
-| GET | `/api/v1/audit` | 审计事件列表（§16.5：敏感操作全记录，秘密材料不入表）🔒 |
-| GET | `/api/v1/system/metrics` | 运行指标（§17.2 八项，Prometheus 文本格式）🔒 |
-| POST | `/api/v1/system/backup` | 一致性本地备份（SQLite 在线备份语义；只写 `[backup] dir`，不覆盖既有文件 → 409；目录未配置 → 503 `backup_not_configured`；响应含备份文件内容摘要）🔒 |
+| 方法 | 路径 | 说明 | 认证方式 |
+|---|---|---|---|
+| POST | `/api/v1/auth/bootstrap` | 空库创建首个管理员（有用户后 409 关闭） | 公开 |
+| POST | `/api/v1/auth/login` | 登录（限流：每 email 15 分钟 5 次失败，ADR-010） | 公开 |
+| POST | `/api/v1/auth/logout` | 登出（撤销会话） | 会话 |
+| GET | `/api/v1/auth/me` | 当前用户 | 会话 |
+| POST | `/api/v1/auth/tokens` | 签发 API Token（外部机器凭据；原始 Token 仅此一次返回） | 管理会话或 Token |
+| GET | `/api/v1/auth/tokens` | 当前用户的 Token 列表（不含任何 Token 材料） | 管理会话或 Token |
+| DELETE | `/api/v1/auth/tokens/{token_id}` | 撤销 API Token（即失效；仅属主可撤） | 管理会话或 Token |
+| GET/POST | `/api/v1/networks` | 网络列表 / 创建（CIDR 验证，ADR-004） | 管理会话或 Token |
+| GET | `/api/v1/networks/{network_id}/devices` | 设备列表 | 管理会话或 Token |
+| POST | `/api/v1/networks/{network_id}/invites` | 生成一次性邀请（ADR-010） | 管理会话或 Token |
+| DELETE | `/api/v1/networks/{network_id}/invites/{invite_id}` | 撤销邀请（ADR-010） | 管理会话或 Token |
+| GET/POST | `/api/v1/networks/{network_id}/bootstrap-tokens` | 自举码列表 / 签发（设备自举注册入口；原始码仅此一次返回，§11.3） | 管理会话或 Token |
+| DELETE | `/api/v1/networks/{network_id}/bootstrap-tokens/{token_id}` | 撤销自举码（立即失效；重复撤销 409、未知 id 404） | 管理会话或 Token |
+| POST | `/api/v1/enroll` | 设备加入（邀请 Token + 公钥；私钥不出客户端，§11.2） | 邀请码 |
+| POST | `/api/v1/device-registrations` | 设备自举注册（ZeroTier 式：自举码 + 公钥 → Pending 待审批；原始 agent 凭证即签即用，§11.6） | 自举码 |
+| GET | `/api/v1/networks/{network_id}/registrations` | 待审批注册申请列表（Pending 心跳证据在此可见） | 管理会话或 Token |
+| POST | `/api/v1/networks/{network_id}/devices/{device_id}/approve` | 批准注册（此刻才分配虚拟 IP + 记修订；沿用注册期凭证，不轮换） | 管理会话或 Token |
+| POST | `/api/v1/networks/{network_id}/devices/{device_id}/deny` | 拒绝注册（纯状态清理：申请与凭证一并作废，不记修订） | 管理会话或 Token |
+| POST | `/api/v1/agent/heartbeat` | Agent 心跳/状态上报（Bearer agent_token；可带 `last_handshake_at`，§14.1） | agent Token |
+| POST | `/api/v1/agent/device/applied` | 回报当前修订和实际设备计划哈希；旧回执/哈希不符拒绝，错误与成功分别记录 | agent Token |
+| GET | `/api/v1/agent/device/desired` | 本设备的期望数据面计划（Bearer agent_token；**结构化配置对象**：隧道/路由/NAT + `desired_config_hash`，**绝无 Shell 命令**，§16.4；`private_key` 恒为 `null`，ADR-010；服务端 `[dataplane] enabled = false` → `503 dataplane_not_configured`，agent 重试而非把「未配置」当「已生效」） | agent Token |
+| POST | `/api/v1/networks/{network_id}/devices/{device_id}/revoke` | 撤销设备（完整链路，§11.5） | 管理会话或 Token |
+| GET/POST | `/api/v1/networks/{network_id}/routes` | LAN Route 列表 / 创建（含返回路径模式，ADR-005）；与 overlay/既有路由重叠 → `409 conflict` 且消息点名冲突对端（既有路由 id + 网段），拒绝发生在任何状态变更前——既有路由绝不被覆盖，客户端应提示改用 Alias 等长前缀映射（§8.3 不静默）。**例外（ADR-006 旗舰场景）**：新路由与既有路由**均为 Alias 模式**时允许真实前缀重叠——两个站点各有一个 `192.168.1.0/24`，经各自不同 Alias 前缀区分可达；对外可见的转发前缀是 Alias（唯一性由 Alias 创建时的互叠拒绝保证），真实前缀不进隧道转发表面 | 管理会话或 Token |
+| GET/DELETE | `/api/v1/networks/{network_id}/routes/{route_id}` | 详情 / 删除（无更新路径——修改 = 删除后重建，各记一个修订） | 管理会话或 Token |
+| GET/POST | `/api/v1/networks/{network_id}/aliases` | Alias 列表 / 创建（等长前缀校验，ADR-006；已实现）：绑定本网络 `alias` 模式路由（每路由一映射）、网关须 Active；`target_cidr` 服务端由绑定路由推导、**客户端不可指定**；前缀不等长或与 target 相同 → `400`；Alias 前缀与 overlay / 既有 Alias / 既有路由目的网段重叠 → `409 conflict` 且消息点名对端（计入路由冲突指标，§17.2）；拒绝发生在任何状态变更前。**协议边界**：只覆盖 IP 单播路由层——广播/组播/二层发现（ARP/NDP、mDNS、DHCP 广播域）不跨 Alias 透传，协议负载内嵌 IP 的应用可能失效（§9.6，详见 [ADR-006](../decisions/adr-006-alias-prefix-nat.md)）；内核侧 NAT 执行随数据面（ADR-007），未接线时修订 apply 确定性失败可见（§10.3） | 管理会话或 Token |
+| GET/DELETE | `/api/v1/networks/{network_id}/aliases/{alias_id}` | 详情 / 删除（**已实现**）：删除 = **整单元清理**（§12.6）——映射与其绑定路由同删、记录一个修订；内核侧 NAT 规则移除随该修订 apply 交 backend；反向同理：删除绑定路由级联删除 Alias；无更新路径——修改 = 删除后重建（各记一个修订） | 管理会话或 Token |
+| GET/POST | `/api/v1/networks/{network_id}/segments` | Segment 列表 / 创建（ADR-012 控制面；**已实现**）：默认段由建网事务固定且不可改；新段名唯一，CIDR 必须是 overlay 的严格子段且不与已有精确 CIDR 重复；越界、整 overlay、重名或重复 CIDR 均在状态变更前拒绝 | 管理会话或 Token |
+| GET/POST | `/api/v1/networks/{network_id}/segment-grants` | 单向 SegmentGrant 列表 / 创建：源、目标须同网且不同；新建恒为 `pending`；未知段为 `404`，重复活动方向为 `409`；仅 `applied` 授权参与计划可见性与期望哈希 | 管理会话或 Token |
+| POST | `/api/v1/networks/{network_id}/segment-grants/{segment_grant_id}/apply` | 仅把 `pending` 授权改为 `applied` 并记录修订：这是**期望状态跃迁**，不是网络级 revision apply；响应 `apply_status` 表示外层修订状态，仍可为 `pending` | 管理会话或 Token |
+| DELETE | `/api/v1/networks/{network_id}/segment-grants/{segment_grant_id}` | 撤销 `pending` 或 `applied` 授权：写入 `revoked_at` 并记录修订；撤销后不进入期望哈希，重复撤销 `409` | 管理会话或 Token |
+| GET/POST | `/api/v1/networks/{network_id}/host-forwards` | 单主机全端口转发列表 / 创建（**已实现**）：服务端把 `target_ipv4`/`alias_ipv4` 固定为等长 `/32`，原子创建 alias 模式 LAN Route + Alias（一个修订）；所有 IPv4 协议/端口随既有 NETMAP 路径转发，**不提供逐端口防火墙规则**；target/Alias 与 overlay、既有 Route 或 Alias 重叠 → `409 conflict` 且拒绝零变更；网关须本网络 Active | 管理会话或 Token |
+| DELETE | `/api/v1/networks/{network_id}/host-forwards/{alias_id}` | 删除单主机转发（**已实现**）：alias 与绑定 `/32` route 按所有权单元同删，记录一个修订；无更新路径——修改 = 删除后重建 | 管理会话或 Token |
+| GET | `/api/v1/system/status` | 服务端状态（公开） | 公开 |
+| GET/POST | `/api/v1/networks/{network_id}/diagnostics` | 诊断结果 / 触发诊断（§12.7 十三项检查） | 管理会话或 Token |
+| GET | `/api/v1/networks/{network_id}/config-revisions` | 配置版本列表 | 管理会话或 Token |
+| GET | `/api/v1/networks/{network_id}/config-revisions/{revision}` | 版本详情（含 apply_status） | 管理会话或 Token |
+| POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/apply` | 应用指定版本到实际环境（响应即该版本视图） | 管理会话或 Token |
+| POST | `/api/v1/networks/{network_id}/config-revisions/{revision}/rollback` | 回滚失败版本（仅删除/恢复 Meshlet 自有对象，ADR-007；只允许回滚当前修订，被取代者 409，§10.4） | 管理会话或 Token |
+| GET | `/api/v1/audit` | 审计事件列表（§16.5：敏感操作全记录，秘密材料不入表） | 管理会话或 Token |
+| GET | `/api/v1/system/metrics` | 运行指标（§17.2 八项，Prometheus 文本格式） | 管理会话或 Token |
+| POST | `/api/v1/system/backup` | 一致性本地备份（SQLite 在线备份语义；只写 `[backup] dir`，不覆盖既有文件 → 409；目录未配置 → 503 `backup_not_configured`；响应含备份文件内容摘要） | 管理会话或 Token |
 
 - 撤销设备语义（§11.5，已实现）：`POST .../devices/{device_id}/revoke`
   返回 `202` + `RevisionRef`（新修订号）；设备状态转 `revoked`（列表可见），
@@ -153,7 +159,7 @@ agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
 
 ## 网络诊断（§12.7，已实现）
 
-- `GET/POST /api/v1/networks/{network_id}/diagnostics`（🔒）：13 项检查按故障层
+- `GET/POST /api/v1/networks/{network_id}/diagnostics`（需认证）：13 项检查按故障层
   归类（控制面 / 隧道 / 路由 / 转发 / Alias）；第一版**只诊断不修复**。
 - **快照语义**：`POST` 计算 → 落一行快照（migration 006 `diagnostics_runs`）→
   返回报告并记审计 `diagnostics.run`；`GET` 返回**最近一次**运行的同一份 JSON
@@ -177,10 +183,10 @@ agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
 
 ## 认证与 CSRF（已实现）
 
-- 🔒 管理端点要求 Cookie 会话：`meshlet_session`（HttpOnly、SameSite=Strict、
+- 管理端点要求 Cookie 会话：`meshlet_session`（HttpOnly、SameSite=Strict、
   Path=/api/v1、Max-Age=12h；生产在 HTTPS 反代后由 `cookie_secure = true` 加 `Secure`）；
   无效/缺失会话 → `401 unauthorized`；
-- 🔒 管理端「写」请求（POST/PUT/PATCH/DELETE）必须携带
+- 管理端「写」请求（POST/PUT/PATCH/DELETE）必须携带
   `X-Requested-With: XMLHttpRequest` 请求头，否则 `403 forbidden`（CSRF 双重防线，
   Console 前端约定）；
 - 登录失败统一 `401`（不区分用户不存在/密码错误，含恒时校验）；
@@ -203,7 +209,7 @@ agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
   `{"id", "token", "name", "scopes", "created_at"}`——原始 Token
   （`mlt_` 前缀 + 64 hex）**仅此一次返回**，服务端只存 SHA-256 摘要
   （`api_tokens` 表，migration 004）；
-- **调用**：`Authorization: Bearer mlt_…` 请求头。管理端点（🔒）接受
+- **调用**：`Authorization: Bearer mlt_…` 请求头。需要认证的管理端点接受
   Cookie 会话或 API Token；请求带会话 Cookie 时按会话校验（无效一律 401，
   不回退到 Bearer），无会话头时按 Bearer 校验；
 - **最小权限**：`read` 可调所有读端点；`write` 可调读写端点并隐含 `read`。
@@ -281,7 +287,42 @@ agent 也绝不执行下发的脚本。响应 `DevicePlan`（serde 形状见
 
 ## 已核验的最小实现
 
-`apps/server` 已实现：`GET /api/v1/system/status`、`GET/POST /api/v1/networks`、`POST /api/v1/networks/{id}/invites`、`DELETE /api/v1/networks/{id}/invites/{invite_id}`、`GET/POST /api/v1/networks/{id}/bootstrap-tokens`、`DELETE /api/v1/networks/{id}/bootstrap-tokens/{token_id}`、`GET /api/v1/networks/{id}/devices`、`POST /api/v1/enroll`、`POST /api/v1/device-registrations`、`GET /api/v1/networks/{id}/registrations`、`POST /api/v1/networks/{id}/devices/{device_id}/approve`、`POST /api/v1/networks/{id}/devices/{device_id}/deny`、`POST /api/v1/auth/bootstrap`、`POST /api/v1/auth/login`、`POST /api/v1/auth/logout`、`GET /api/v1/auth/me`、`GET/POST /api/v1/auth/tokens`、`DELETE /api/v1/auth/tokens/{token_id}`、`POST /api/v1/agent/heartbeat`、`GET /api/v1/agent/device/desired`、`GET/POST /api/v1/networks/{id}/routes`、`GET/DELETE /api/v1/networks/{id}/routes/{route_id}`、`POST /api/v1/networks/{id}/devices/{device_id}/revoke`、`GET /api/v1/audit`、`GET /api/v1/networks/{id}/config-revisions`、`GET/POST /api/v1/networks/{id}/config-revisions/{revision}`、`POST /api/v1/networks/{id}/config-revisions/{revision}/apply`、`POST /api/v1/networks/{id}/config-revisions/{revision}/rollback`、`GET /api/v1/system/metrics`、`POST /api/v1/system/backup`（§17.4）；管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,aliases,agent_plan,device_revoke,device_registration,audit,observability,recovery,backup}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/自举码/注册申请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005/008 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。
+`apps/server` 已实现下列端点：
+
+| 方法 | 路径 |
+|---|---|
+| GET | `/api/v1/system/status` |
+| GET/POST | `/api/v1/networks` |
+| POST | `/api/v1/networks/{id}/invites` |
+| DELETE | `/api/v1/networks/{id}/invites/{invite_id}` |
+| GET/POST | `/api/v1/networks/{id}/bootstrap-tokens` |
+| DELETE | `/api/v1/networks/{id}/bootstrap-tokens/{token_id}` |
+| GET | `/api/v1/networks/{id}/devices` |
+| POST | `/api/v1/enroll` |
+| POST | `/api/v1/device-registrations` |
+| GET | `/api/v1/networks/{id}/registrations` |
+| POST | `/api/v1/networks/{id}/devices/{device_id}/approve` |
+| POST | `/api/v1/networks/{id}/devices/{device_id}/deny` |
+| POST | `/api/v1/auth/bootstrap` |
+| POST | `/api/v1/auth/login` |
+| POST | `/api/v1/auth/logout` |
+| GET | `/api/v1/auth/me` |
+| GET/POST | `/api/v1/auth/tokens` |
+| DELETE | `/api/v1/auth/tokens/{token_id}` |
+| POST | `/api/v1/agent/heartbeat` |
+| GET | `/api/v1/agent/device/desired` |
+| GET/POST | `/api/v1/networks/{id}/routes` |
+| GET/DELETE | `/api/v1/networks/{id}/routes/{route_id}` |
+| POST | `/api/v1/networks/{id}/devices/{device_id}/revoke` |
+| GET | `/api/v1/audit` |
+| GET | `/api/v1/networks/{id}/config-revisions` |
+| GET/POST | `/api/v1/networks/{id}/config-revisions/{revision}` |
+| POST | `/api/v1/networks/{id}/config-revisions/{revision}/apply` |
+| POST | `/api/v1/networks/{id}/config-revisions/{revision}/rollback` |
+| GET | `/api/v1/system/metrics` |
+| POST | `/api/v1/system/backup`（§17.4） |
+
+管理端点已挂会话/Token 认证 + CSRF 提取器（写端点另挂 `WriteUser` scope 检查），agent 端点挂 Bearer 提取器；全部 `/api` 路由另挂访问日志中间件（结构化日志 + HTTP 指标）。测试见 `apps/server/tests/{status,enroll,auth_console,api_token,migrations,presence,revisions,routes,aliases,agent_plan,device_revoke,device_registration,audit,observability,recovery,backup}.rs`。控制平面 Mesh 状态（网络/设备/路由/邀请/自举码/注册申请/配置修订簿记）持久化 SQLite 并在启动时重建（migrations 001/002/003/004/005/008 + `persist` 模块，§17.3：重启后逐字段一致、`applying` 收敛 `failed`、路由 id 不复用、presence 保守判定）；用户/会话/agent/API Token 凭证持久化 SQLite（migrations 001/002/003/004）；审计事件持久化 SQLite（`audit_events`，migration 001，§16.5：敏感操作全记录、秘密材料不入表）。运行指标（§17.2 八项，Prometheus 文本格式，`GET /api/v1/system/metrics`）与结构化日志（§17.1 八字段，JSON 行）见 [可观测性](observability.md)。
 
 ## 2026-10-17 应用确认与恢复
 

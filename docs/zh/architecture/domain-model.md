@@ -112,7 +112,7 @@ Segment、Grant、Config Revision、审计事件与 SQLite 行在同一事务写
 | `requested_at` | 申请时刻（同时是 Pending 期的首次上报） |
 | `last_report_at` / `dataplane_evidence` | **Pending 期心跳证据的唯一落点**——Pending 不进 `devices`，心跳无处可落 |
 
-约束：**Pending 不写入 `devices` 表**（migration 008）——① `devices.virtual_ipv4`
+约束：Pending 不写入 `devices` 表（migration 008）——① `devices.virtual_ipv4`
 为 `NOT NULL` 而 IP 在批准时刻才分配（提前占地址会让可用容量虚低、拒绝后还得回收）；
 ② 不占地址 = 不进期望配置、不进 Peer AllowedIPs（`device_plan` 只读 `devices`），
 Pending 设备对数据面完全不可见。计划端点对 Pending 设备 `404` 且消息点名
@@ -172,12 +172,12 @@ Pending 设备对数据面完全不可见。计划端点对 Pending 设备 `404`
   与 overlay / 既有 Alias / 既有路由目的网段不重叠——重叠拒绝计入路由冲突指标
   （§17.2），拒绝发生在任何状态变更前（§8.3 不静默）。
 
-**协议边界（§9.6）**：Alias 是 **IP 单播路由层的等长前缀映射**，不是二层桥接，也不是
-应用层代理——广播、组播与依赖二层发现的协议**不保证**跨 Alias 工作：ARP/NDP 不跨网段
-（被映射的网关代答或转发与否取决于其实现，第一版不承诺）、mDNS/DHCP 等**广播域流量不
-透传**。协议负载里内嵌自身 IP 的应用（如 SIP、主动模式 FTP、部分 P2P/游戏）在地址
+**协议边界（§9.6）**：Alias 是 IP 单播路由层的等长前缀映射，不是二层桥接，也不是
+应用层代理——广播、组播与依赖二层发现的协议不保证跨 Alias 工作：ARP/NDP 不跨网段
+（被映射的网关代答或转发与否取决于其实现，第一版不承诺）、mDNS/DHCP 等广播域流量不
+透传。协议负载里内嵌自身 IP 的应用（如 SIP、主动模式 FTP、部分 P2P/游戏）在地址
 转换后可能失效；`controlled_snat` 模式下 LAN 侧看到的是网关源 IP，依赖源 IP 的访问
-控制会受影响。**用户侧实际影响**：访问远端 LAN 一律用 **Alias 前缀地址**（不是真实
+控制会受影响。用户侧实际影响：访问远端 LAN 一律用 Alias 前缀地址（不是真实
 LAN IP）；网络发现、自动配对、DHCP 类功能需在各自网段内完成，跨网段请用 IP/域名直连。
 第一版**不宣称对所有协议完全透明**（详见 [ADR-006](../decisions/adr-006-alias-prefix-nat.md)）。
 
@@ -228,9 +228,14 @@ Alias 纳入后扩展；纯函数 + 16 项单测）。
 
 约束：
 
+### 进入 AllowedIPs 的条件
+
 - 只有 `Applied` 状态的 LAN Route / Alias Mapping 进 AllowedIPs；`Pending` / `Failed` 不进。
 - Alias 只有在对应 LAN Route 已发布时才进。
 - 设备虚拟 IP 必须在 Overlay 内（`PeerRouteError::DeviceOutsideOverlay`）。
+
+### 结果生成与 Peer 创建
+
 - 结果去重 + 确定性排序（网络地址、前缀长度）。
 - VPS 为每个设备创建独立 Peer（`hub_device_peers`）。
 

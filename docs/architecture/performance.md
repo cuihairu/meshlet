@@ -1,10 +1,10 @@
 # Performance Plan and Baselines
 
-The benchmark record measures representative control-plane requests against SQLite and records the environment, commands, and repeated observations. Results are useful only when the workload and host conditions are stated.
+The benchmark record measures representative control-plane requests against SQLite. It also records the environment, commands, and repeated observations. Results are useful only when the workload and host conditions are stated.
 
 ## Method
 
-Measure throughput and latency for network and device operations, compare file-backed and in-memory databases, and report memory per server process. Run the same workload before and after a change, use multiple trials, and avoid presenting a single best run as a guarantee.
+Measure throughput and latency for network and device operations. Compare file-backed and in-memory databases, and report memory per server process. Run the same workload before and after a change, use multiple trials, and avoid presenting a single best run as a guarantee.
 
 ## Interpretation
 
@@ -16,7 +16,7 @@ The source record includes the exact commands, baseline environment, and post-ch
 
 ## Baseline 2026-10-24 (R-07 performance acceptance)
 
-Environment: Intel Core i9-10880H @ 2.30GHz (dev laptop), rustc 1.99.0 release build, 10 s per concurrency level. Driven by the in-process oneshot bench (`apps/server/examples/bench.rs`) — **no TCP/TLS stack cost is included**; the numbers are for before/after comparison of handler + SQLite work, not a capacity promise. Zero errors at every point.
+Environment: Intel Core i9-10880H @ 2.30GHz (dev laptop), rustc 1.99.0 release build, 10 s per concurrency level. Driven by the in-process oneshot bench (`apps/server/examples/bench.rs`) — **no TCP/TLS stack cost is included**. The numbers are for before/after comparison of handler + SQLite work, not a capacity promise. Zero errors at every point.
 
 `db = file` (SQLite on disk):
 
@@ -49,8 +49,8 @@ Environment: Intel Core i9-10880H @ 2.30GHz (dev laptop), rustc 1.99.0 release b
 | GET /networks | 256 | 7272 | 34899 | 41759 | 49037 |
 | GET /auth/tokens | 256 | 3712 | 68393 | 80337 | 94844 |
 
-Memory footprint: RSS 11300 KiB → 66496 KiB across the file sweep (includes the load driver and runtime); the footprint run then measured 3.5 KiB/network (500 networks with one revision each: +1740 KiB) and 0.2 KiB/token (500 API tokens: +112 KiB).
+Memory footprint: RSS 11300 KiB → 66496 KiB across the file sweep (includes the load driver and runtime). The footprint run then measured 3.5 KiB/network (500 networks with one revision each: +1740 KiB). It also measured 0.2 KiB/token (500 API tokens: +112 KiB).
 
-Reading: the public status path scales to ~0.9 M req/s because it touches no lock; every authenticated path funnels through the single SQLite connection and saturates in the tens of thousands of req/s, with queueing (not disk) dominating at c=256 — the memory table shows the same collapse, so the bottleneck is the serialized pool, matching the interpretation above. At a realistic self-hosted load (a few agents polling every 30 s plus one console session) these paths sit idle; the numbers exist so future changes can be compared.
+Reading: the public status path scales to ~0.9 M req/s because it touches no lock. Every authenticated path funnels through the single SQLite connection and saturates in the tens of thousands of req/s. With queueing (not disk) dominating at c=256, the memory table shows the same collapse. The bottleneck is the serialized pool, matching the interpretation above. At a realistic self-hosted load (a few agents polling every 30 s plus one console session) these paths sit idle. The numbers exist so future changes can be compared.
 
 Commands: `cargo run --release -p meshlet-server --example bench -- --db file --secs 10 --sweep 1,16,64,256`, then `--db memory`, then `--db file --footprint`. Full raw output: [R-07 Deployment Acceptance](/implementation/r07-deployment-acceptance.md).
