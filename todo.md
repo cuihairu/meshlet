@@ -98,8 +98,9 @@
 
 ## Console 网络拓扑图（2026-11-05 用户令，补账：此前未入账）
 
-- [ ] TOPO-1 [P1] console 新增「拓扑」页：hub 居中，节点环布；连线区分 直连（实线，标注 RTT）与 hub 中继（虚线）；节点卡=设备名/虚拟 IP/在线状态/online_state；数据源=现有 peers/endpoints API + 心跳状态，实时刷新；直连未启用或单节点时如实显示引导（如何开 direct_connect、为什么当前无直连）。中英文案双语（UiStrings 惯例）。
+- [x] TOPO-1 [P1] console 新增「拓扑」页：hub 居中，节点环布；连线区分 直连（实线，标注 RTT）与 hub 中继（虚线）；节点卡=设备名/虚拟 IP/在线状态/online_state；数据源=现有 peers/endpoints API + 心跳状态，实时刷新；直连未启用或单节点时如实显示引导（如何开 direct_connect、为什么当前无直连）。中英文案双语（UiStrings 惯例）。
   - 验收: console 组件测试覆盖拓扑渲染三态（有直连/仅中继/单节点引导）；CI 绿；真机双节点走查挂 R-DIAG-2 同一前置。
+  - 证据: commit e1a66f8/a9401c6 · console 39 tests（含拓扑三态 4 项）+ tsc + oxlint 绿 · CI run 41979273275 全腿绿 · 真机双节点走查仍待 R-DIAG-2 前置（第二节点），不代勾
 
 ## Windows MSI 安装包（2026-11-05 用户追问补账：此前口头承诺未入账，已漏 19 天——账本纪律事故）
 
