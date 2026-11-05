@@ -24,8 +24,11 @@
 //!   [TunnelConfig::private_key] 为 `Some` 时渲染**——agent 本地注入私钥，
 //!   服务端永不携带；`None` = 不写该行（服务沿用现存密钥，幂等重应用），
 //!   与 Linux 侧 `apply_tunnel_sync` 的 `None` 契约同构；
-//! - **幂等 re-apply**：`/installtunnelservice` 在隧道已存在时按官方隧道
-//!   服务模型重装更新（重放即收敛）；卸载不存在隧道按
+//! - **幂等 re-apply 与已存在隧道的重配（BUG 修复）**：安装前先查隧道服务
+//!   是否已存在（[`install_plan`]）——已存在时先停/卸载旧服务再装新 conf
+//!   （`wireguard.exe` 无 setconf 等价 CLI，卸载重建即重配路径）；此前把
+//!   "already installed" 失败文本判成幂等成功是**静默 no-op**（key/地址
+//!   不更新，todo.md Windows 部署发现），已移除。卸载不存在隧道按
 //!   [`NetworkError`] 分类放行——WireGuardNT 隧道由 Windows 服务承载，
 //!   不存在时服务控制管理器返回 1060，复用 [windows_service] 已真机取证的
 //!   `service_absent` 文案；
@@ -49,8 +52,9 @@ use crate::{NetworkError, TunnelConfig, DEFAULT_TUNNEL_MTU};
 /// <tunnel>`、`/starttunnelservice <tunnel>`、`/stoptunnelservice <tunnel>`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireGuardCommand {
-    /// 安装/更新隧道服务：`/installtunnelservice <conf_path>`。隧道已存在时
-    /// 按官方隧道服务模型重装更新（幂等 re-apply）。
+    /// 安装隧道服务：`/installtunnelservice <conf_path>`。**必须**经
+    /// [`install_plan`] 调用（服务已存在时先停/卸载再装，否则 wireguard.exe
+    /// 报 "already installed" 拒绝且旧 conf 不更新）。
     InstallService {
         /// 隧道名（错误消息点名用；与 conf 的 `Name =` 一致）。
         name: String,
@@ -112,6 +116,73 @@ impl WireGuardCommand {
 /// 使卸载按同名 `wireguard.exe /uninstalltunnelservice <name>` 对称。
 pub fn conf_file_name(tunnel_name: &str) -> String {
     format!("{tunnel_name}.conf")
+}
+
+/// 安装策略（BUG 修复：已存在隧道必须重配，不允许静默 no-op）。
+///
+/// `wireguard.exe` 对**已存在**的隧道服务执行 `/installtunnelservice` 会以
+/// "already installed" 失败退出、conf 不生效；此前该失败文本被判成幂等成功，
+/// 导致 apply 对残留/手动隧道永不更新 key/地址（todo.md「Windows 部署发现」
+/// 第一项：openclaw 残留隧道静默 no-op）。`wireguard.exe` 无 setconf 等价
+/// CLI，**卸载重建即重配路径**：
+///
+/// - 服务不存在 → 直接 `[InstallService]`（首装）；
+/// - 服务已存在 → `[StopService, UninstallService, InstallService]`——先停
+///   （1062 按幂等成功，可从「建了服务但从未启动」的半状态重入）、再卸载
+///   （1060 按幂等成功，可从半清理状态重入）、最后装新 conf。短暂断流是
+///   重配的固有代价，换收敛正确性。
+///
+/// 纯函数（跨平台单测）：执行层只按序跑返回的命令，不掺策略。
+pub fn install_plan(
+    existing_service: bool,
+    tunnel_name: &str,
+    conf_path: &std::path::Path,
+) -> Vec<WireGuardCommand> {
+    let name = tunnel_name.to_string();
+    let install = WireGuardCommand::InstallService {
+        name: name.clone(),
+        conf_path: conf_path.to_path_buf(),
+    };
+    if !existing_service {
+        return vec![install];
+    }
+    vec![
+        WireGuardCommand::StopService { name: name.clone() },
+        WireGuardCommand::UninstallService { name },
+        install,
+    ]
+}
+
+/// 受管隧道服务的 SCM 查询名（`WireGuardTunnel$<tunnel>`，官方命名）。
+pub fn tunnel_service_query_name(tunnel_name: &str) -> String {
+    format!("WireGuardTunnel${tunnel_name}")
+}
+
+/// 解析 `sc query <service>` 输出的数字状态码（`STATE`/`状态` 行冒号后的
+/// 首个整数；zh/en 双标签宽匹配）。解析不到 → `None`（fail closed）。
+pub fn parse_sc_query_state_code(output: &str) -> Option<u32> {
+    for line in output.lines() {
+        // 状态行标签 en = `STATE`，zh-CN sc.exe 为 `状态`；双标签宽匹配。
+        if !line.to_uppercase().contains("STATE") && !line.contains("状态") {
+            continue;
+        }
+        // `        STATE              : 4    RUNNING` → 取冒号后的首个数字。
+        if let Some(code) = line
+            .split(':')
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|token| token.parse::<u32>().ok())
+        {
+            return Some(code);
+        }
+    }
+    None
+}
+
+/// 解析 `sc query` 输出：数字状态码 `4 = RUNNING`。数字码系统语言无关
+/// （比状态词更权威）；解析不到 → `false`（读不到运行证据不假装在运行）。
+pub fn sc_query_reports_running(output: &str) -> bool {
+    parse_sc_query_state_code(output) == Some(4)
 }
 
 /// `wireguard.exe` 可执行路径解析。
@@ -256,7 +327,8 @@ pub fn parse_wg_dump_peers(dump: &str) -> Vec<crate::PeerObserved> {
 /// 不以任何 fixture 冒充。
 ///
 /// 权限文案用子串宽匹配（大小写不敏感），覆盖 Windows 版本/语言包差异；
-/// `InstallService` 对 1060 不放行（安装不存在目标不是幂等成功）。
+/// `InstallService` 一律不放行（含 "already installed"——那正是已存在隧道
+/// 未被重配的证据，必须显式失败；重配走 [install_plan] 的停/卸载/装路径）。
 pub fn classify_wireguard_failure(
     exit_code: i32,
     output: &str,
@@ -268,13 +340,6 @@ pub fn classify_wireguard_failure(
     let absent = exit_code == 1060 || crate::windows_service::service_absent(output);
     if operation == "tunnel service uninstall" && absent {
         return Ok(());
-    }
-    // 安装的幂等复乍成: 隧道已安裍且正在运行 = 期望状态，视为成功
-    if operation == "tunnel service install" {
-        let lowered = output.to_lowercase();
-        if lowered.contains("already installed") || lowered.contains("already running") {
-            return Ok(());
-        }
     }
 
     // Stop 的目标状态是「已停止」：服务未运行（1062）＝目标已达成，同归
@@ -698,6 +763,125 @@ mod tests {
             ),
             Err(NetworkError::ApplyRejected(_))
         ));
+    }
+
+    /// 安装不存在目标不是幂等成功：fail closed（含 "already installed" 文本——
+    /// BUG 回归：此前被误判为幂等成功，apply 对已存在隧道静默 no-op、
+    /// key/地址永不更新；重配必须走 `install_plan` 的停/卸载/装路径）。
+    #[test]
+    fn install_failures_are_never_idempotent_success() {
+        for (exit_code, output) in [
+            (
+                1060,
+                "[SC] OpenService 失败 1060:\r\n\r\n指定的服务未安装。\r\n",
+            ),
+            (1, "\r\nAlready installed.\r\n"),
+            (2, "WireGuard tunnel service is already installed."),
+        ] {
+            assert!(
+                matches!(
+                    classify_wireguard_failure(
+                        exit_code,
+                        output,
+                        "tunnel service install",
+                        "meshlet-overlay"
+                    ),
+                    Err(NetworkError::ApplyRejected(_))
+                ),
+                "install failure ({exit_code}, {output:?}) must fail closed"
+            );
+        }
+    }
+
+    /// 安装策略（BUG 回归）：服务已存在 + 换了 key 的新 plan → 必须
+    /// [停, 卸, 装新 conf]，且装步骤携带**新** conf——「隧道实际更新」的
+    /// 计划级模拟。首装则只装一步。
+    #[test]
+    fn install_plan_replaces_an_existing_tunnel_with_the_new_conf() {
+        let name = "meshlet-overlay";
+        let old_conf = PathBuf::from(r"C:\ProgramData\meshlet\meshlet-overlay.conf");
+        let rotated_conf = PathBuf::from(r"C:\ProgramData\meshlet\meshlet-overlay.conf");
+
+        // 首装：单步安装。
+        assert_eq!(
+            install_plan(false, name, &old_conf),
+            vec![WireGuardCommand::InstallService {
+                name: name.into(),
+                conf_path: old_conf.clone(),
+            }]
+        );
+
+        // 已存在 + 换 key：渲染两版 conf（仅私钥不同），断言计划装的是新版。
+        let mut rotated = tunnel();
+        rotated.private_key = Some("ROTATED-PRIVATE-KEY-BASE64==".into());
+        let rotated_conf_text = render_wireguard_conf(&rotated);
+        assert!(rotated_conf_text.contains("ROTATED-PRIVATE-KEY-BASE64=="));
+        assert_ne!(rotated_conf_text, render_wireguard_conf(&tunnel()));
+
+        let plan = install_plan(true, name, &rotated_conf);
+        assert_eq!(
+            plan,
+            vec![
+                WireGuardCommand::StopService { name: name.into() },
+                WireGuardCommand::UninstallService { name: name.into() },
+                WireGuardCommand::InstallService {
+                    name: name.into(),
+                    conf_path: rotated_conf,
+                },
+            ],
+            "existing tunnel must be stopped, uninstalled, then reinstalled with the new conf"
+        );
+        // 顺序即语义：卸载必须先于安装（否则 wireguard.exe 报 already installed）。
+        let uninstall_idx = plan
+            .iter()
+            .position(|c| matches!(c, WireGuardCommand::UninstallService { .. }))
+            .unwrap();
+        let install_idx = plan
+            .iter()
+            .position(|c| matches!(c, WireGuardCommand::InstallService { .. }))
+            .unwrap();
+        assert!(uninstall_idx < install_idx);
+    }
+
+    /// `sc query` 的 STATE 行解析：数字码 4 = RUNNING（系统语言无关）；
+    /// 其余状态 / 缺 STATE 行 / 缺数字一律不算运行（fail closed）。
+    #[test]
+    fn sc_query_running_is_judged_by_the_numeric_state_code() {
+        assert!(sc_query_reports_running(
+            "\r\nSERVICE_NAME: WireGuardTunnel$meshlet\r\n        TYPE               : 10  WIN32_OWN_PROCESS \r\n        STATE              : 4  RUNNING \r\n"
+        ));
+        // zh-CN 文案同构（数字码在冒号后）。
+        assert!(sc_query_reports_running(
+            "        STATE              : 4    RUNNING\r\n"
+        ));
+        // zh-CN 文案同构（数字码在冒号后；zh sc.exe 状态行标签为「状态」）。
+        assert!(sc_query_reports_running(
+            "        状态              : 4    RUNNING\r\n"
+        ));
+        assert!(!sc_query_reports_running(
+            "        状态              : 1    STOPPED\r\n"
+        ));
+        for output in [
+            "        STATE              : 1    STOPPED\r\n",
+            "        STATE              : 2    START_PENDING\r\n",
+            "        STATE              : 3    STOP_PENDING\r\n",
+            "        STATE              : (NO NUMERIC CODE)\r\n",
+            "[SC] OpenService 失败 1060:\r\n指定的服务未安装。\r\n",
+            "",
+        ] {
+            assert!(
+                !sc_query_reports_running(output),
+                "non-running output must not read as running: {output:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tunnel_service_query_name_uses_the_official_prefix() {
+        assert_eq!(
+            tunnel_service_query_name("meshlet"),
+            "WireGuardTunnel$meshlet"
+        );
     }
 
     /// 停止未运行隧道 = 幂等成功（1062 双通道；Stop 目标状态「已停止」）。

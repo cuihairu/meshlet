@@ -97,6 +97,52 @@ impl WindowsNetworkBackend {
             .unwrap_or(false)
     }
 
+    /// 隧道服务安装（重配正确性，BUG 修复）：已存在 → 停/卸载/装新 conf；
+    /// 不存在 → 直接装。装完轮询 `sc query` 直到服务 RUNNING（读不到运行
+    /// 证据即报错，绝不假装生效——apply_device_plan_sync 随后有内核回读，
+    /// 此处只负责「服务确实起来了」）。
+    fn install_tunnel_reconfigured(
+        &self,
+        exe: &std::path::Path,
+        conf_path: &std::path::Path,
+    ) -> Result<(), NetworkError> {
+        let existing = self.tunnel_service_exists(&self.interface);
+        for command in crate::windows_tunnel::install_plan(existing, &self.interface, conf_path) {
+            run_wireguard_command(&command, Some(exe))?;
+        }
+        self.wait_tunnel_service_running(&self.interface)
+    }
+
+    /// 轮询 `sc query WireGuardTunnel$<name>` 直到 RUNNING（装服务后驱动
+    /// 拉起隧道需要一点时间）；超时（约 5s）→ 显式失败。
+    fn wait_tunnel_service_running(&self, tunnel_name: &str) -> Result<(), NetworkError> {
+        let service = crate::windows_tunnel::tunnel_service_query_name(tunnel_name);
+        for _ in 0..20 {
+            if self.sc_query_state_code(&service) == Some(4) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        Err(NetworkError::ApplyRejected(format!(
+            "tunnel service `{service}` did not reach RUNNING within 5s after install"
+        )))
+    }
+
+    /// `sc query <service>` 的数字状态码（zh/en 双标签解析见
+    /// [windows_tunnel::parse_sc_query_state_code]）；命令失败/解析不到 → None。
+    fn sc_query_state_code(&self, service: &str) -> Option<u32> {
+        let output = std::process::Command::new("sc")
+            .args(["query", service])
+            .output()
+            .ok()?;
+        let text = format!(
+            "{}{}",
+            crate::windows_console::decode_output(&output.stdout),
+            crate::windows_console::decode_output(&output.stderr),
+        );
+        crate::windows_tunnel::parse_sc_query_state_code(&text)
+    }
+
     fn read_tunnel_peers(&self, tunnel_name: &str) -> Vec<PeerObserved> {
         // 漂移探测：从 `wg.exe show <name> dump` 读回实际生效的 peer。读不到
         // （wg.exe 缺失 / 隧道未运行 / 输出异常）一律返回空——调用方据存在性
@@ -550,11 +596,7 @@ impl WindowsNetworkBackend {
         let conf_dir = std::env::temp_dir().join("meshlet");
         let conf_path = conf_dir.join(format!("{}.conf", self.interface));
         write_tunnel_conf(&conf_path, &conf)?;
-        let command = WireGuardCommand::InstallService {
-            name: self.interface.clone(),
-            conf_path: conf_path.clone(),
-        };
-        run_wireguard_command(&command, Some(&exe))?;
+        self.install_tunnel_reconfigured(&exe, &conf_path)?;
         for route in &plan.routes {
             let netsh_cmd = crate::windows_routes::NetshRouteCommand::Add {
                 route: route.clone(),
@@ -647,17 +689,14 @@ impl NetworkBackend for WindowsNetworkBackend {
         let exe = self.find_wireguard_exe().ok_or_else(|| {
             NetworkError::Unsupported("WireGuard for Windows is not installed".to_string())
         })?;
-        let command = WireGuardCommand::InstallService {
-            name: config.name.clone(),
-            conf_path: {
-                let conf_dir = std::env::temp_dir().join("meshlet");
-                let conf_path = conf_dir.join(format!("{}.conf", config.name));
-                let conf = render_wireguard_conf(&config);
-                write_tunnel_conf(&conf_path, &conf)?;
-                conf_path
-            },
-        };
-        run_wireguard_command(&command, Some(&exe))
+        let conf_dir = std::env::temp_dir().join("meshlet");
+        let conf_path = conf_dir.join(format!("{}.conf", config.name));
+        let conf = render_wireguard_conf(&config);
+        write_tunnel_conf(&conf_path, &conf)?;
+        // 与 apply_device_plan_sync 同路径：已存在服务必须停/卸载/装新 conf，
+        // 绝不把 "already installed" 当成功（那会静默保留旧 key/地址）。
+        self.install_tunnel_reconfigured(&exe, &conf_path)?;
+        Ok(ApplyResult::ok())
     }
 
     async fn apply_routes(
