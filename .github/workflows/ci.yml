@@ -146,7 +146,7 @@ jobs:
         run: |
           Get-Content tray-host.log | Write-Output
           $log = Get-Content tray-host.log -Raw
-          if ($log -notmatch 'NIM_ADD = true') { Write-Error 'tray icon was not registered (NIM_ADD)'; exit 1 }
+          if ($log -notmatch 'NIM_ADD = (true|1)') { Write-Error 'tray icon was not registered (NIM_ADD)'; exit 1 }
           if ($log -notmatch 'tooltip=') { Write-Error 'tooltip was not applied from status.json'; exit 1 }
 
       - name: Upload tray evidence
