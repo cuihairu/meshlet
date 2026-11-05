@@ -134,7 +134,9 @@ jobs:
         # and cargo-wix locates the manifest-relative wix/main.wxs itself.
         # -p is required: in a workspace cargo-wix refuses the bare manifest
         # path ("Workspace detected. Please pass a package name.").
-        run: cargo wix -p meshlet-cli
+        # --nocapture surfaces candle/light stderr in the log instead of only
+        # the exit code, which is opaque when the MSI leg fails.
+        run: cargo wix -p meshlet-cli --nocapture
       - name: Stage MSI nightly asset
         shell: pwsh
         run: |
