@@ -924,9 +924,16 @@ mod tests {
     /// 拉取待办并 ack→执行→回执，账本最终落盘（幂等语义不变）。
     #[test]
     fn task_runtime_runs_in_background_and_kick_returns_immediately() {
+        // 任务命令按平台 shell 语法（shell_command 用 `sh -c` / `cmd /C`）：
+        // 各睡 1s 再回显——保住「后台执行」的可观测余量，Windows CI 才能真跑。
+        let bg_cmd = if cfg!(windows) {
+            "timeout /t 1 /nobreak >nul & echo bg-done"
+        } else {
+            "sleep 1; echo bg-done"
+        };
         let pending_body = serde_json::json!([{
             "id": "task-bg", "target_node": "dev-1",
-            "payload": { "cmd": "sleep 1; echo bg-done", "workdir": null, "timeout_secs": null },
+            "payload": { "cmd": bg_cmd, "workdir": null, "timeout_secs": null },
             "state": "assigned", "retry_limit": 0, "result_ref": null,
         }])
         .to_string();
@@ -958,7 +965,7 @@ mod tests {
         let start = Instant::now();
         rt.kick();
         assert!(
-            start.elapsed() < Duration::from_millis(900),
+            start.elapsed() < Duration::from_millis(200),
             "kick must return immediately, not run the task inline"
         );
         // 等 worker 完成：轮询账本（任务 sleep 1s，给足余量）。
