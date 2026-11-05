@@ -101,7 +101,9 @@ jobs:
         run: cargo test -p meshlet-tray-host
 
       - name: Generate four-state tray fixtures
-        run: cargo run -p meshlet-tray-host --example tray_fixture -- tray-fixture
+        # TraySink 布局：`{state_dir}/tray/{status.json,icon-*.png}`，tray-host
+        # 按 `<state_dir>\tray` 解析——fixture 直接产进 `state\tray`。
+        run: cargo run -p meshlet-tray-host --example tray_fixture -- tray-fixture\state\tray
 
       - name: Build tray host
         run: cargo build -p meshlet-tray-host
@@ -117,8 +119,8 @@ jobs:
         run: |
           $trayHost = Join-Path (Get-Location) "target\debug\meshlet-tray-host.exe"
           Start-Process $trayHost `
-            -ArgumentList "$(Resolve-Path tray-fixture)\online" `
-            -RedirectStandardError tray-host.log -RedirectStandardOutput tray-host.out
+            -ArgumentList "$(Resolve-Path tray-fixture\state)" `
+            -RedirectStandardError "$PWD\tray-host.log" -RedirectStandardOutput "$PWD\tray-host.out"
 
       - name: Capture desktop screenshot
         run: |
@@ -131,6 +133,14 @@ jobs:
           $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
           $bitmap.Save("$PWD\tray-windows.png")
 
+      # 先停进程再验门禁：重定向日志在进程持有期间被锁，读不到内容（上轮踩坑）。
+      - name: Stop stub and tray host
+        if: always()
+        run: |
+          Get-Process meshlet-tray-host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process meshlet-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+
       # 门禁：托盘图标注册成功（NIM_ADD = true）且 tooltip 随状态 JSON 更新。
       - name: Gate on tray registration evidence
         run: |
@@ -138,12 +148,6 @@ jobs:
           $log = Get-Content tray-host.log -Raw
           if ($log -notmatch 'NIM_ADD = true') { Write-Error 'tray icon was not registered (NIM_ADD)'; exit 1 }
           if ($log -notmatch 'tooltip=') { Write-Error 'tooltip was not applied from status.json'; exit 1 }
-
-      - name: Stop stub and tray host
-        if: always()
-        run: |
-          Get-Process meshlet-tray-host -ErrorAction SilentlyContinue | Stop-Process -Force
-          Get-Process meshlet-agent -ErrorAction SilentlyContinue | Stop-Process -Force
 
       - name: Upload tray evidence
         if: always()
