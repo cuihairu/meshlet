@@ -11,7 +11,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   checks:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
+    # Nightly must not queue for hours behind the single self-hosted runner
+    # (vars.CI_RUNNER); run the pure-build jobs on hosted runners and leave
+    # only the kernel dataplane leg on the private box (see dataplane.yml).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -41,9 +45,12 @@ jobs:
       - run: cargo test --locked --workspace
       - name: Validate installer
         run: |
-          bash -n scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh
+          sudo apt-get update && sudo apt-get install -y msitools
+          bash -n scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh scripts/validate-wix.sh
           scripts/install.sh --help
           shellcheck scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh
+          # Offline wxs gate for the Windows MSI (see apps/cli/wix/main.wxs).
+          scripts/validate-wix.sh
           if command -v pwsh >/dev/null; then
             # shellcheck disable=SC2016  # $f/$_ are PowerShell variables, not shell
             pwsh -NoProfile -Command '
@@ -63,8 +70,14 @@ jobs:
           fi
   dataplane:
     uses: ./.github/workflows/dataplane.yml
+    with:
+      # Hosted runners carry the wireguard kernel module; routing the nightly
+      # dataplane leg there keeps the release independent of the private box
+      # being awake (runs queued 8h+ waiting for it).
+      runner: ubuntu-24.04
   console:
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: pnpm/action-setup@v6.1.0
@@ -86,6 +99,7 @@ jobs:
   windows:
     needs: [checks, dataplane]
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
       # Keep the channel in sync with rust-toolchain.toml (see the build job).
@@ -98,16 +112,47 @@ jobs:
         with:
           key: nightly-windows-msvc
       - name: Build Windows agent, cli and tray host
+        timeout-minutes: 40
         run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin meshlet-agent --bin meshlet-cli --bin meshlet-tray-host
       - name: Package Windows zip
         shell: pwsh
         run: scripts/package-windows-zip.ps1 -Target x86_64-pc-windows-msvc
+      # MSI leg. Per the cargo-wix playbook: no --target triple here (candle/light
+      # resolve relative paths against the repo root, LGHT0103 otherwise), all
+      # four bins pre-built in one release-profile invocation so they land in
+      # the `target/release` dir that CargoTargetBinDir points at.
+      - name: Build release binaries for the MSI
+        timeout-minutes: 40
+        run: cargo build --locked --release --bin meshlet-server --bin meshlet-agent --bin meshlet-cli --bin meshlet-tray-host
+      - name: Install cargo-wix
+        timeout-minutes: 15
+        run: cargo install cargo-wix --version 0.3.9 --locked
+      - name: Build MSI installer
+        timeout-minutes: 30
+        # Invoked from the repo root: candle/light resolve the wxs' relative
+        # content sources (assets/icons/meshlet.ico) against the inherited cwd,
+        # and cargo-wix locates the manifest-relative wix/main.wxs itself.
+        run: cargo wix apps/cli/Cargo.toml
+      - name: Stage MSI nightly asset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # cargo-wix writes the msi to the workspace-root target/wix, not a
+          # package-local target dir.
+          $msis = Get-ChildItem "$PWD\target\wix\*.msi"
+          if ($msis.Count -lt 1) { throw 'no msi produced under target\wix' }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $msis[0].FullName dist\meshlet-nightly-windows-x86_64.msi -Force
+          Get-Item dist\meshlet-nightly-windows-x86_64.msi | Select-Object Name, Length
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: nightly-windows
-          path: dist/meshlet-nightly-windows-x86_64.zip
+          path: |
+            dist/meshlet-nightly-windows-x86_64.zip
+            dist/meshlet-nightly-windows-x86_64.msi
   build:
     needs: [checks, dataplane, console]
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -165,7 +210,8 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/main'
     needs: [build, windows]
-    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
@@ -186,20 +232,20 @@ jobs:
           cp scripts/install.sh dist/install.sh
           cp scripts/install.ps1 dist/install.ps1
           cd dist
-          sha256sum meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip install.sh install.ps1 > SHA256SUMS
+          sha256sum meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 > SHA256SUMS
                     cat > notes.md <<NOTES
           Automated prerelease from commit ${GITHUB_SHA}.
           Linux x86_64 and ARM64 static binaries, web console, systemd units, and per-component deb/rpm packages
-          (meshlet-server / meshlet-agent / meshlet-cli) are included, plus a Windows agent+CLI zip and
-          install.ps1 / install.sh one-command installers.
+          (meshlet-server / meshlet-agent / meshlet-cli) are included, plus a Windows agent+CLI zip, a Windows MSI
+          installer (meshlet-nightly-windows-x86_64.msi) and install.ps1 / install.sh one-command installers.
           SHA256SUMS verifies the downloaded assets. BUILD_INFO inside each archive records the source commit.
           This build passed the workspace checks and required Linux kernel dataplane tests.
           The nightly tag tracks the most recent successful build.
           NOTES
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true
-            gh release upload nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit nightly --repo "$GITHUB_REPOSITORY" --prerelease --title 'Nightly' --notes-file notes.md
           else
-            gh release create nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
+            gh release create nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
           fi
