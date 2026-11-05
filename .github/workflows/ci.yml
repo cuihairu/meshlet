@@ -101,9 +101,9 @@ jobs:
         run: cargo test -p meshlet-tray-host
 
       - name: Generate four-state tray fixtures
-        # TraySink 布局：`{state_dir}/tray/{status.json,icon-*.png}`，tray-host
-        # 按 `<state_dir>\tray` 解析——fixture 直接产进 `state\tray`。
-        run: cargo run -p meshlet-tray-host --example tray_fixture -- tray-fixture\state\tray
+        # TraySink 布局：fixture 产出 `<out>/<state>/tray/{status.json,icon-*}`，
+        # tray-host 以 `<out>\<state>` 为 state_dir（内部拼 `\tray`）。
+        run: cargo run -p meshlet-tray-host --example tray_fixture -- tray-fixture
 
       - name: Build tray host
         run: cargo build -p meshlet-tray-host
@@ -119,7 +119,7 @@ jobs:
         run: |
           $trayHost = Join-Path (Get-Location) "target\debug\meshlet-tray-host.exe"
           Start-Process $trayHost `
-            -ArgumentList "$(Resolve-Path tray-fixture\state)" `
+            -ArgumentList "$(Resolve-Path tray-fixture\online)" `
             -RedirectStandardError "$PWD\tray-host.log" -RedirectStandardOutput "$PWD\tray-host.out"
 
       - name: Capture desktop screenshot

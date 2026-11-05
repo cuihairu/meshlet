@@ -56,6 +56,9 @@ fn main() {
         .expect("usage: tray_fixture <out_dir>");
     let out_dir = PathBuf::from(out_dir);
     for (idx, (dir, accessible, tooltip)) in STATES.iter().enumerate() {
+        // 每个 state 是一份完整的 agent state_dir：`<out>/<state>/tray/`——
+        // 与 TraySink::new(state_dir) 的 `{state_dir}/tray` 布局同构，
+        // tray-host 直接以 `<out>/<state>` 作为 state_dir 参数消费。
         let state_dir = out_dir.join(dir);
         let tray_dir = state_dir.join("tray");
         std::fs::create_dir_all(&tray_dir).expect("create tray dir");
