@@ -96,7 +96,7 @@ Still not available on Windows:
   `unsupported` placeholder until the tunnel lifecycle, elevation exec and boot-recovery items pass
   real-machine acceptance. A Windows agent registers and reports status. Applying a tunnel/routes/NAT plan is rejected with an explicit error; nothing pretends to succeed.
 - MSI is in the nightly, and real-machine install acceptance is pending. The nightly release publishes a Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`). It also publishes an `install.ps1` installer ([install below](#install-the-agent-on-windows)). The MSI installer is `meshlet-nightly-windows-x86_64.msi`, built with cargo-wix. It packages server, agent, CLI and tray-host in one installer. It adds start-menu shortcuts and an Add/Remove Programs entry. Neither installer has been accepted on a real machine yet (AGENT-WIN-2, NIGHTLY-MSI-1 in `todo.md`).
-- A Windows tray host ships, real-machine acceptance pending. `apps/tray-host` (`meshlet-tray-host.exe`) is a thin Win32 `Shell_NotifyIcon` host. It consumes the agent's four-state status PNGs (`TraySink`) and is included in the nightly zip. `install.ps1` does not install or register it yet. Real-machine walkthroughs (icon switching, menus) are tracked as AGENT-WIN-2/3. On Linux the agent writes the same status PNGs and sends D-Bus desktop notifications. The repository holds no panel host binary for either platform's desktop shell beyond what ships here.
+- A Windows tray host ships, real-machine acceptance pending. `apps/tray-host` (`meshlet-tray-host.exe`) is a thin Win32 `Shell_NotifyIcon` host. It consumes the agent's four-state status PNGs (`TraySink`). `install.ps1` copies it, registers HKCU logon autostart with the agent state directory, and starts it unless `-NoStartTray` is passed. Real-machine walkthroughs (icon switching, menus) remain pending. On Linux the agent writes the same status PNGs and sends D-Bus desktop notifications. The repository holds no panel host binary for either platform's desktop shell beyond what ships here.
 
 ### Install the agent on Windows
 
@@ -108,10 +108,10 @@ Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/
 pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken 'TOKEN_FROM_THE_CONSOLE' -DeviceName 'home-windows'
 ```
 
-The installer verifies the zip's SHA-256 against the release `SHA256SUMS`. It installs `meshlet-agent.exe` / `meshlet-cli.exe` into `%LOCALAPPDATA%\meshlet` and adds that directory to the user PATH. It generates an agent key and config once, and registers a hidden HKCU Run autostart entry.
+The installer verifies the zip's SHA-256 against the release `SHA256SUMS`. It installs `meshlet-agent.exe`, `meshlet-cli.exe` and `meshlet-tray-host.exe` into `%LOCALAPPDATA%\meshlet` and adds that directory to the user PATH. It generates an agent key and config once, and registers per-user HKCU Run autostart entries for the hidden agent and tray host.
 Re-run it to upgrade — the existing `agent.toml` and key are preserved, so device credentials
 survive. Offline/staged installs use `$env:MESHLET_INSTALL_ARCHIVE` and
-`$env:MESHLET_INSTALL_SHA256SUMS`. The installer sets up a **background agent without a tray icon**. The tray-host binary ships in the zip but `install.ps1` does not install it yet. Data-plane apply on Windows is still rejected until real-machine acceptance passes — see below.
+`$env:MESHLET_INSTALL_SHA256SUMS`. The installer starts the background agent and tray host by default; pass `-NoStartTray` to skip the tray host's immediate start while keeping its logon autostart entry. Data-plane apply on Windows is still rejected until real-machine acceptance passes — see below.
 
 ### Build and run the agent on Windows (from source)
 

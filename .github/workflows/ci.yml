@@ -161,6 +161,67 @@ jobs:
             tray-fixture/**/*.png
           if-no-files-found: warn
 
+  installer-windows:
+    name: installer / windows-latest
+    runs-on: windows-latest
+    needs: [test]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: Build installer payload
+        timeout-minutes: 20
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin meshlet-agent --bin meshlet-cli --bin meshlet-tray-host
+
+      - name: Package staged archive
+        shell: pwsh
+        run: |
+          scripts/package-windows-zip.ps1 -Target x86_64-pc-windows-msvc
+          $hash = (Get-FileHash dist\meshlet-nightly-windows-x86_64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash *meshlet-nightly-windows-x86_64.zip" | Set-Content dist\SHA256SUMS -Encoding ascii
+
+      - name: Run staged installer
+        shell: pwsh
+        run: |
+          $env:MESHLET_INSTALL_ARCHIVE = "$PWD\dist\meshlet-nightly-windows-x86_64.zip"
+          $env:MESHLET_INSTALL_SHA256SUMS = "$PWD\dist\SHA256SUMS"
+          scripts\install.ps1 `
+            -ServerUrl 'http://127.0.0.1:9' `
+            -HubEndpoint '127.0.0.1:9' `
+            -BootstrapToken 'ci-bootstrap-token' `
+            -DeviceName 'ci-windows-installer'
+
+      - name: Verify tray installation
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:LOCALAPPDATA 'meshlet'
+          $stateDir = Join-Path $installDir 'state'
+          foreach ($name in 'meshlet-agent.exe', 'meshlet-tray-host.exe') {
+            $path = Join-Path $installDir $name
+            if (-not (Test-Path $path)) { throw "installer did not copy $name" }
+          }
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $expectedTray = '"{0}" "{1}"' -f (Join-Path $installDir 'meshlet-tray-host.exe'), $stateDir
+          $trayRun = Get-ItemPropertyValue -Path $runKey -Name 'meshlet-tray-host'
+          if ($trayRun -ne $expectedTray) { throw "unexpected tray Run value: $trayRun" }
+          $deadline = (Get-Date).AddSeconds(30)
+          do {
+            $tray = Get-Process -Name 'meshlet-tray-host' -ErrorAction SilentlyContinue
+            if ($tray) { break }
+            Start-Sleep -Seconds 1
+          } while ((Get-Date) -lt $deadline)
+          if (-not $tray) { throw 'meshlet-tray-host process was not started' }
+          Write-Output "meshlet-tray-host is running (PID $($tray[0].Id))"
+
+      - name: Cleanup installed processes
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process meshlet-tray-host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process meshlet-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+
   console:
     name: console build
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}

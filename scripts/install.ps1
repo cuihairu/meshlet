@@ -13,15 +13,15 @@ zip) and $env:MESHLET_INSTALL_SHA256SUMS (the SHA256SUMS file) before running.
 Install layout (per-user under %LOCALAPPDATA%\meshlet, so no elevation is
 needed; the agent runs in the user session, not as a machine service):
   meshlet-agent.exe, meshlet-cli.exe   binaries, replaced on every run
+  meshlet-tray-host.exe                tray host, replaced on every run
   agent.toml                           created once, then preserved
   agent.key                            generated once, then preserved
   state\                               agent state directory
 
-Autostart: an HKCU Run entry starts the agent hidden at logon. The nightly
-zip also carries meshlet-tray-host.exe (a Windows tray host), but this script
-does not install or register it; data-plane apply is
-rejected until real-machine acceptance passes — the agent registers with the
-hub, heartbeats and reports status only.
+Autostart: HKCU Run entries start both the agent (hidden) and tray host at
+logon. The tray host receives the agent state directory as its only argument.
+Data-plane apply is rejected until real-machine acceptance passes — the agent
+registers with the hub, heartbeats and reports status only.
 #>
 param(
     [string]$Version = 'nightly',
@@ -31,7 +31,8 @@ param(
     [string]$BootstrapToken = '',
     [string]$DeviceName = '',
     [string]$Interface = 'wg-meshlet',
-    [switch]$NoStart
+    [switch]$NoStart,
+    [switch]$NoStartTray
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,13 +108,14 @@ try {
     }
 
     Expand-Archive -Path $archivePath -DestinationPath (Join-Path $work 'package') -Force
-    foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe') {
+    foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray-host.exe') {
         if (-not (Test-Path (Join-Path $work "package\$name"))) {
             Fail "release archive is incomplete: $name missing"
         }
     }
     Copy-Item (Join-Path $work 'package\meshlet-agent.exe') (Join-Path $installDir 'meshlet-agent.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-cli.exe') (Join-Path $installDir 'meshlet-cli.exe') -Force
+    Copy-Item (Join-Path $work 'package\meshlet-tray-host.exe') (Join-Path $installDir 'meshlet-tray-host.exe') -Force
 }
 finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
@@ -162,15 +164,18 @@ if ($pathParts -notcontains $installDir) {
     Write-Host "Added $installDir to the user PATH (new terminals pick it up)."
 }
 
-# --- Autostart (HKCU Run, hidden; tray host ships in the zip but is not installed here) ---
+# --- Autostart (HKCU Run; agent hidden, tray host points at its state directory) ---
 $agentExe = Join-Path $installDir 'meshlet-agent.exe'
+$trayExe = Join-Path $installDir 'meshlet-tray-host.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$cmd = "powershell -NoProfile -WindowStyle Hidden -Command `"& '$agentExe' '$configPath'`""
+$agentCmd = "powershell -NoProfile -WindowStyle Hidden -Command `"& '$agentExe' '$configPath'`""
+$trayCmd = "`"$trayExe`" `"$stateDir`""
 if ($NoStart) {
     Remove-ItemProperty -Path $runKey -Name 'meshlet-agent' -ErrorAction SilentlyContinue
 }
 else {
-    Set-ItemProperty -Path $runKey -Name 'meshlet-agent' -Value $cmd
+    Set-ItemProperty -Path $runKey -Name 'meshlet-agent' -Value $agentCmd
+    Set-ItemProperty -Path $runKey -Name 'meshlet-tray-host' -Value $trayCmd
 }
 
 # --- Start now if it is not already running ---
@@ -180,10 +185,14 @@ if (-not $NoStart -and -not (Get-Process -Name 'meshlet-agent' -ErrorAction Sile
         -WindowStyle Hidden
 }
 
+if (-not $NoStartTray -and -not (Get-Process -Name 'meshlet-tray-host' -ErrorAction SilentlyContinue)) {
+    Start-Process -FilePath $trayExe -ArgumentList $stateDir
+}
+
 Write-Host "Installed Meshlet $Version (agent) into $installDir"
 Write-Host "Configuration: $configPath"
 if ($NoStart) { Write-Host 'Autostart disabled (-NoStart); the agent was not started.' }
-else { Write-Host 'Autostart registered for the current user (runs hidden at logon).' }
+else { Write-Host 'Agent and tray autostart registered for the current user.' }
+if ($NoStartTray) { Write-Host 'The tray host was not started (-NoStartTray); logon autostart remains registered.' }
 Write-Host 'Approve this device in the console, then apply the network revision.'
-Write-Host 'Note: background agent only - tray host ships in the zip but is not installed here,'
-Write-Host 'and data-plane apply is rejected on Windows until real-machine acceptance passes (see README).'
+Write-Host 'Note: data-plane apply is rejected on Windows until real-machine acceptance passes (see README).'
