@@ -12,7 +12,7 @@ Implement the Linux backend as explicit reconciliation operations with attributa
 
 ## Rationale and operational constraints
 
-The host backend must safely handle repeated application, stale-resource cleanup, partial failure, and process restart. A service unit and runtime privilege model must agree: the production account must be able to perform only the required network operations. Ownership markers must prevent cleanup from deleting unrelated host rules.
+The host backend must safely handle repeated application, stale-resource cleanup, partial failure, and process restart. A service unit and runtime privilege model must agree. The production account must be able to perform only the required network operations. Ownership markers must prevent cleanup from deleting unrelated host rules.
 
 ## Evidence
 

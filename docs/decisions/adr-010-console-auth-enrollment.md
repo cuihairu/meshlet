@@ -12,7 +12,7 @@ Bootstrap the first administrator once, then use authenticated sessions with CSR
 
 ## Enrollment
 
-Invitations provide a controlled join path. Bootstrap registration can create a pending device request that an operator reviews before it receives an address or data-plane plan.
+Invitations provide a controlled join path. Bootstrap registration can create a pending device request. An operator reviews it before it receives an address or data-plane plan.
 
 ## Rationale and trade-offs
 

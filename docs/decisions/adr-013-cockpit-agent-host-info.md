@@ -29,5 +29,4 @@ would drift and waste.
 
 ## Revisit
 
-If Meshlet needs richer host facts (services, ports, containers), reopen via Cockpit's
-capability protocol work rather than widening this API ad hoc.
+If Meshlet needs richer host facts (services, ports, containers), reopen via Cockpit's capability protocol work. Do not widen this API ad hoc.

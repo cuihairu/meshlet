@@ -44,11 +44,11 @@ An Alias-mode route without a mapping publishes nothing and must never fall back
 
 ## Return paths and supported boundaries
 
-Controlled SNAT is the compatibility mode: the target sees its gateway's LAN address and needs no added Overlay return route. Explicit source preservation uses DNAT only: the target sees C's Overlay address and requires a return route through the corresponding gateway.
+Controlled SNAT is the compatibility mode. The target sees its gateway's LAN address and needs no added Overlay return route. Explicit source preservation uses DNAT only. The target sees C's Overlay address and requires a return route through the corresponding gateway.
 
-Retain existing `return_path_mode` and `translation_mode` fields. This draft recommends rejecting explicit contradictions: `controlled_snat` corresponds to `dnat_snat`, and `dual_route` to `dnat_only`. Audit inconsistent stored records and require an explicit migration choice rather than silently changing NAT on upgrade. This compatibility work remains unimplemented.
+Retain existing `return_path_mode` and `translation_mode` fields. This draft recommends rejecting explicit contradictions. `controlled_snat` corresponds to `dnat_snat`, and `dual_route` to `dnat_only`. Audit inconsistent stored records and require an explicit migration choice rather than silently changing NAT on upgrade. This compatibility work remains unimplemented.
 
-Acceptance covers tested IPv4 unicast protocols. Broadcast discovery, embedded-address rewriting, unsolicited LAN-originated cross-site connections, gateway access through its own Alias, and cross-network connections require separate designs and tests.
+Acceptance covers tested IPv4 unicast protocols. Broadcast discovery and embedded-address rewriting require separate designs and tests. The same holds for unsolicited LAN-originated cross-site connections. So do gateway access through its own Alias and cross-network connections.
 
 ## Lifecycle and failures
 
@@ -73,7 +73,7 @@ With the route in place, offline and deletion cases:
 | `apps/server/tests/agent_plan.rs` | Gateway NAT and exclusion of its own LAN have coverage | Combined topology, single-site deletion, restart, failure recovery |
 | `apps/server/tests/dual_site_end_to_end.rs` | Formal API/Agent flow covers two remote LANs plus the client-local same-prefix LAN. UDP and TCP return local/site1/site2, packet captures record the three requested destination/port tuples, deletion removes site1 routes and NAT while preserving site2/local paths, and server/agent restart rebuilds the remaining plan | Return-mode variation, same-gateway ambiguity, business-side failure recovery, backup restore, and RG-03 preflight remain open |
 
-These findings include a local Linux netns run of `dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites`. This remains integration acceptance, not VPS deployment or full RG-02 acceptance.
+These findings include a local Linux netns run. Scenario: `dual_same_prefix_lans_published_via_the_control_plane_reach_their_sites`. This remains integration acceptance, not VPS deployment or full RG-02 acceptance.
 
 ## Acceptance matrix
 
@@ -94,4 +94,4 @@ Implementation gates are domain peer-route tests, server plan/API regressions, a
 
 Metrics cannot distinguish sites sharing one destination IP. Hub-side NAT introduces repeated real space into a shared forwarding context. IPv6 site encoding is unnecessary for this increment; retain ADR-006's equal-length IPv4 Alias model.
 
-Next, RG-03 defines the complete conflict matrix, shared validation entry point, device preflight, and protection against default-egress leakage after deletion. RG-02 completion does not complete RG-03 or PN-02.
+Next, RG-03 defines the complete conflict matrix and shared validation entry point. It also defines device preflight and protection against default-egress leakage after deletion. RG-02 completion does not complete RG-03 or PN-02.

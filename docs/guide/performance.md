@@ -17,17 +17,14 @@ tuning knobs that move it. Every number below comes from a real run of the repro
 | Tool | iperf 3.20, 8 s per run, 1 s warm-up skipped |
 | MTU probe payload | 1392 (= 1420 − 28), adaptive since this lane |
 
-Honest caveats: all paths run inside one kernel (veth + netns), so this is a
-shape-accurate but not wire-accurate baseline — no NIC rings, no real RTT.
+Honest caveats: all paths run inside one kernel (veth + netns). The result is shape-accurate but not wire-accurate: no NIC rings, no real RTT.
 `host_busy` counts every core of the **shared VM**, not the benchmark alone. Run-to-run variance on this host is roughly ±10 %, so treat small deltas as noise. The load CPU usage during the recorded run was 52–90 % whole-host.
 
 ## Three paths
 
 1. Relay — client A → hub → client B. Kernel forwarding (`ip_forward`) in
    the hub netns, both clients hold the hub as their only peer with
-   `allowed-ips 10.240.0.0/16`. This is the shape of Meshlet's default path
-   (per `docs/architecture/overview.md`, every device pair relays through the
-   hub unless a direct link is promoted).
+   `allowed-ips 10.240.0.0/16`. This is the shape of Meshlet's default path. Per `docs/architecture/overview.md`, every device pair relays through the hub unless a direct link is promoted.
 2. Direct — client A → client B as a direct `/32` WireGuard peer over the
    same LAN underlay. This is exactly what `apps/agent/src/direct.rs`
    (`DirectManager::Promote`) installs for same-LAN peers.
@@ -65,18 +62,14 @@ Bitrate in Gbit/s (iperf3 receiver unless noted); UDP offered at 1 Gbit/s.
 ## What the numbers say
 
 - **MTU 1420 is not conservative — it is exactly right for a 1500-byte
-  underlay** (1500 − 80 B WireGuard overhead). The size to challenge is the
-  *underlay*, not the tunnel: on a jumbo-capable underlay, raising the tunnel
-  MTU is the single biggest lever (see below).
+  underlay** (1500 − 80 B WireGuard overhead). The size to challenge is the *underlay*, not the tunnel. On a jumbo-capable underlay, raising the tunnel MTU is the single biggest lever (see below).
 - Jumbo underlay is a 4–6.7× lever. Relay TCP 4-stream 1.36 → 5.45 Gbit/s;
   direct TCP 1-stream 1.20 → 8.06 Gbit/s. At 8920 B per packet the packet rate
   drops ~6× at the same bitrate, which also shows up as lower UDP loss
   everywhere.
 - Meshlet's relay shape costs ~13 % vs bare (TCP 4-stream 1.36 vs 1.56),
   from double encryption at the hub plus the bridge hop — kernel, not agent:
-  there is no userspace data plane. Direct (same LAN) lands between relay and
-  bare and shows **zero TCP retransmits** in every run at default MTU, while
-  relay retransmits whenever the path is loaded. If both devices sit on the
+  there is no userspace data plane. Direct (same LAN) lands between relay and bare. It shows **zero TCP retransmits** in every run at default MTU. Relay retransmits whenever the path is loaded. If both devices sit on the
   same LAN, the promoted direct link is measurably the better path.
 
 Stream count and offloads:
@@ -85,11 +78,7 @@ Stream count and offloads:
   bottleneck is per-packet crypto/segmentation, not a single flow's window).
   Don't spin up parallel flows expecting more.
 - Offloads on vs off is within noise on this kernel except relay
-  multi-stream TCP (1.36 → 1.17, −14 % with them off). Note:
-  `crates/meshlet-network/tests/wg_forwarding.rs` disables all veth offloads
-  because a handshake once failed silently with them on; on kernel
-  7.0.0-38 that failure does not reproduce (handshakes and throughput both
-  work with offloads on). Keep the test's workaround, but do not carry the
+  multi-stream TCP (1.36 → 1.17, −14 % with them off). Note: `crates/meshlet-network/tests/wg_forwarding.rs` disables all veth offloads. A handshake once failed silently with them on. On kernel 7.0.0-38 that failure does not reproduce: handshakes and throughput both work with offloads on. Keep the test's workaround, but do not carry the
   "offloads break WG" assumption into production guidance.
 
 ## Tuning checklist
@@ -107,10 +96,7 @@ Stream count and offloads:
 
 - Check the physical adapter MTU: `Get-NetIPInterface -AddressFamily IPv4`.
 - The WireGuard interface MTU is planned by the server (`tunnel_mtu`); the
-  agent enforces it. On a jumbo underlay, set the adapter MTU and the server
-  `tunnel_mtu` to `underlay − 80` and record a new revision so the hub applies
-  it too (the hub's own interface follows the applied revision — see
-  [R-04](/implementation/r04-linux-agent-e2e) for the convergence caveat).
+  agent enforces it. On a jumbo underlay, set the adapter MTU and the server `tunnel_mtu` to `underlay − 80`. Record a new revision so the hub applies it too. The hub's own interface follows the applied revision — see [R-04](/implementation/r04-linux-agent-e2e) for the convergence caveat.
 - Keep adapter offloads (Large Send / Receive Side Scaling) at their Windows
   defaults; the wireguard-windows driver handles segmentation itself.
 - Verify the path from a device after any MTU change:

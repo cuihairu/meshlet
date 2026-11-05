@@ -2,7 +2,11 @@
 
 > 来源：[存档 §19 Phase 5](../review/chatgpt-2026-10-13.md)。目标：从一台空
 > VPS 到 meshlet-server 常驻自启动、控制台可访问、备份可用。
-> > 诚实边界（2026-10-15）：本指南的构建、配置、systemd 单元已在开发机 > 真验（见文末验证清单）。 **真实空 VPS 的端到端部署**（含设备 agent 建立 > WireGuard 隧道、LAN 路由互通）**待真机验证**——agent 数据面已实装并有 > netns 集成测试覆盖（拉计划 → 对账 → 应用 → 心跳，含主机重启后重放）， > 但真机走查尚未做（ADR-007）。相关小节均标注了这一点，不会假装完成。
+>
+> 诚实边界（2026-10-15）：本指南的构建、配置、systemd 单元已在开发机真验（见文末验证清单）；
+> **真实空 VPS 的端到端部署**（含设备 agent 建立 WireGuard 隧道、LAN 路由互通）**待真机验证**。
+> agent 数据面已实装并有 netns 集成测试覆盖（拉计划 → 对账 → 应用 → 心跳，含主机重启后重放），
+> 但真机走查尚未做（ADR-007）。相关小节均标注了这一点，不会假装完成。
 
 ## 0. 已验证 / 待真机验证
 
@@ -140,7 +144,7 @@ device_token = "…enroll 响应里的 agent_token…"
 # poll_interval_secs = 30                        # 轮询间隔（秒）
 ```
 
-**自举注册的凭证解析顺序**（`device_token` → `{state_dir}/device_token` → `bootstrap_token` 注册）：agent 首次启动无凭证时持自举码注册（`POST /api/v1/device-registrations`）。返回的 agent_token 落盘 `{state_dir}/device_token`（0600）后续启动复用——自举码只需配置一次。 WireGuard 密钥对本机生成（已有 `private_key_file` 则只推导公钥，重装不换钥匙，私钥不出设备）。**批准前**设备处于待审批：计划端点 404
+**自举注册的凭证解析顺序**：`device_token` → `{state_dir}/device_token` → `bootstrap_token` 注册。agent 首次启动无凭证时持自举码注册（`POST /api/v1/device-registrations`）。返回的 agent_token 落盘 `{state_dir}/device_token`（0600）后续启动复用——自举码只需配置一次。WireGuard 密钥对本机生成（已有 `private_key_file` 则只推导公钥，重装不换钥匙，私钥不出设备）。**批准前**设备处于待审批：计划端点 404
 `pending approval`，agent 退避重试并继续心跳（证据在待审批列表可见），
 管理员批准后无需任何设备侧操作，下一个轮询周期自动拉到计划。
 
@@ -177,11 +181,9 @@ curl -s http://127.0.0.1:8080/api/v1/system/status
 journalctl -u meshlet-server -f
 ```
 
-开机自启由 `[Install] WantedBy=multi-user.target` + `enable` 保证；进程崩溃
-由 `Restart=on-failure` 拉起；重启后按 §17.3 从 SQLite 重建期望状态（日志见
-`mesh state rebuilt from database`）。
+开机自启由 `[Install] WantedBy=multi-user.target` + `enable` 保证；进程崩溃由 `Restart=on-failure` 拉起。重启后按 §17.3 从 SQLite 重建期望状态（日志见 `mesh state rebuilt from database`）。
 
-**agent 单元**（`deploy/systemd/meshlet-agent.service`）：agent 二进制已实装数据面（拉计划 → 对账 → 应用 → 心跳）。但单元的**真机部署走查尚未做**—— 安装启用前请确认：`[dataplane] enabled = true`、`device_token` 或 `bootstrap_token` 之一已写入 `/etc/meshlet/agent.toml`（0600）、 `private_key_file` 存在（0600；自举注册时可不存在，agent 会生成），并按单元注释授予 `CAP_NET_ADMIN`。启动后核对 `applied.json` 与
+**agent 单元**（`deploy/systemd/meshlet-agent.service`）：agent 二进制已实装数据面（拉计划 → 对账 → 应用 → 心跳）。但单元的**真机部署走查尚未做**。安装启用前请确认：`[dataplane] enabled = true`，`device_token` 或 `bootstrap_token` 之一已写入 `/etc/meshlet/agent.toml`（0600）。`private_key_file` 存在（0600；自举注册时可不存在，agent 会生成），并按单元注释授予 `CAP_NET_ADMIN`。启动后核对 `applied.json` 与
 `wg show` 即可确认是否已按期望重放。此段待真机验证。
 
 ## 6. 反向代理（HTTPS）
@@ -216,10 +218,7 @@ curl -s -X POST https://meshlet.example.com/api/v1/auth/bootstrap \
 随后浏览器打开 `https://meshlet.example.com`：登录 → 创建网络 → 生成邀请 →
 （设备端流程见下）。
 
-设备加入与互通（待真机验证）：控制面流程（邀请 → enroll → 设备入列 →
-虚拟 IP 分配）与 agent 数据面（拉计划 → 对账 → 应用隧道/路由/NAT → 心跳）均
-已实现并有测试覆盖（netns 集成测试真跑 WireGuard 握手与双向互通，含主机重启后
-按账本重放）。设备端流程：
+设备加入与互通（待真机验证）：控制面流程（邀请 → enroll → 设备入列 → 虚拟 IP 分配）与 agent 数据面（拉计划 → 对账 → 应用隧道/路由/NAT → 心跳）均已实现并有测试覆盖。netns 集成测试真跑 WireGuard 握手与双向互通，含主机重启后按账本重放。设备端流程：
 
 ```bash
 # 1. 设备上放好本设备私钥（0600），写 /etc/meshlet/agent.toml（§4）

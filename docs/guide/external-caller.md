@@ -8,11 +8,11 @@ Create an API token through the authenticated console. The raw token is returned
 
 ## Main operations
 
-Call the network and device endpoints to inspect state, create invitations or bootstrap tokens, and review pending registrations. Route and Alias changes update desired configuration and create a revision. Agents retrieve their own desired plan using their device credential. Diagnostics and audit endpoints expose operational evidence to authorized users.
+Call the network and device endpoints to inspect state. The same endpoints create invitations or bootstrap tokens and review pending registrations. Route and Alias changes update desired configuration and create a revision. Agents retrieve their own desired plan using their device credential. Diagnostics and audit endpoints expose operational evidence to authorized users.
 
 ## Errors and concurrency
 
-Errors use a JSON envelope with an HTTP status and a stable message. Treat `401` as authentication failure, `403` as insufficient scope or CSRF failure, `404` as a missing or intentionally hidden resource, and `409` as a state or conflict rejection. Do not retry a write blindly after an ambiguous network failure; first inspect the resource and revision state.
+Errors use a JSON envelope with an HTTP status and a stable message. Treat `401` as authentication failure and `403` as insufficient scope or CSRF failure. Treat `404` as a missing or intentionally hidden resource. Treat `409` as a state or conflict rejection. Do not retry a write blindly after an ambiguous network failure; first inspect the resource and revision state.
 
 ## Data-plane effects
 
@@ -20,4 +20,4 @@ A successful management response means the control-plane operation was accepted 
 
 ## Integration checklist
 
-Keep tokens out of logs, request only required scopes, handle non-2xx responses, use stable resource IDs, and distinguish desired state from applied state. Never submit private keys to the server.
+Keep tokens out of logs and request only required scopes. Handle non-2xx responses and use stable resource IDs. Distinguish desired state from applied state. Never submit private keys to the server.

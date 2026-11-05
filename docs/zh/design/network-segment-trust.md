@@ -6,7 +6,7 @@
 
 本文是静态核对既有实现后写的增量设计，不重写既有路由模型：LAN Route / Alias / 网关 / IPAM 实体全部保留，分段只增加「地址归属」和「hub 转发点的来源校验」两件事。
 
-实现状态更新（2026-10-20）：旧文“仓内没有 Segment、授权代码”的判断已过时。本文保留当时核对证据，另见当前实现与测试：`apps/server/src/segment.rs`、`apps/server/src/service.rs::create_segment/create_segment_grant/apply_segment_grant/revoke_segment_grant`、`apps/server/src/persist.rs::commit_segment/commit_segment_grant/commit_segment_grant_status`、`apps/server/tests/segments.rs`。内核策略仍不视为已验收。
+实现状态更新（2026-10-20）：旧文“仓内没有 Segment、授权代码”的判断已过时。本文保留当时核对证据，另见当前实现与测试。服务端实现见 `apps/server/src/segment.rs`。Segment 的 create、apply、revoke 入口在 `apps/server/src/service.rs`。函数为 `create_segment`、`create_segment_grant`、`apply_segment_grant`、`revoke_segment_grant`。持久化入口在 `apps/server/src/persist.rs::commit_segment/commit_segment_grant/commit_segment_grant_status`。测试见 `apps/server/tests/segments.rs`。内核策略仍不视为已验收。
 
 ## 1. 范围
 
@@ -47,11 +47,11 @@
 ### 2.2 身份与授权现状
 
 - 设备身份是每设备一把 WireGuard 静态公钥（`Device.public_key`），经邀请入会或自举注册+中心审批进入；私钥不离开设备（ADR-010；`apps/server/src/device_plan.rs:27`）。仓内**没有 CA、没有组密钥、没有每段 PSK**——文档层面查无按组组织密钥的机制。
-- 控制台用户与设备身份是两套体系：用户登录 Argon2id + session（`crates/meshlet-domain/src/auth.rs:91`）；设备靠 agent token / 自举码（`migrations/003_agent_tokens.sql`、`migrations/008_device_registrations.sql`）。
+- 控制台用户与设备身份是两套体系。用户登录走 Argon2id + session（`crates/meshlet-domain/src/auth.rs:91`）。设备靠 agent token / 自举码（`migrations/003_agent_tokens.sql`、`migrations/008_device_registrations.sql`）。
 - 既有的「授权」只有两级：
   1. Network 成员资格：非成员的公钥不在 hub peer 列表中，密码学上不可达（真实内核证据见 `crates/meshlet-network/tests/wg_forwarding.rs`，未授权 C 无 peer、ping 失败）。
   2. 路由发布状态：只有 `Applied` 的 LanRoute/Alias 进入计划（`crates/meshlet-domain/src/peer_routes.rs:31`）。
-- Network 内部 Overlay 默认全互通：客户端到 hub 的 AllowedIPs 直接给整个 Overlay CIDR（`crates/meshlet-domain/src/peer_routes.rs:101`，`client_hub_peer_allowed_ips` 首行即 `vec![overlay_cidr]`）。这正是本设计要收窄的点。
+- Network 内部 Overlay 默认全互通：客户端到 hub 的 AllowedIPs 直接给整个 Overlay CIDR。依据是 `crates/meshlet-domain/src/peer_routes.rs:101`，`client_hub_peer_allowed_ips` 首行即 `vec![overlay_cidr]`。这正是本设计要收窄的点。
 
 ### 2.3 计划编译与执行点（本设计改动的接缝）
 
@@ -66,13 +66,13 @@
 | 外来路由冲突 | 目的前缀已指向其他接口时 fail-closed 拒绝 | `crates/meshlet-network/src/linux.rs:483` |
 | Windows | 只有 netsh 路由**计划层**（任意平台可编译单测），执行层 `#[cfg(windows)]` 未实测；非 Linux 的 `SystemBackend` 是显式 Unsupported 占位；ADR-008 定 Windows v1 仅 Overlay 客户端，不做网关/NAT | `crates/meshlet-network/src/windows_routes.rs:37`；`crates/meshlet-network/src/lib.rs:40`；`docs/decisions/adr-008-windows-network-backend.md` |
 
-另：端口转发提案（网关专题 §4）出现过 `allowed_sources`（设备/组）字样，但没有 group 实体与 API（`docs/architecture/gateways-conflicts-and-port-forwarding.md` §4）。本设计落地后，该字段的「组」主语即 Segment，不再另造分组概念。
+另：端口转发提案（网关专题 §4）出现过 `allowed_sources`（设备/组）字样，但没有 group 实体与 API。出处见 `docs/architecture/gateways-conflicts-and-port-forwarding.md` §4。本设计落地后，该字段的「组」主语即 Segment，不再另造分组概念。
 
 ## 3. 网段分配
 
 ### 3.1 模型
 
-- `Segment` 隶属于一个 Network，持有一个 CIDR，该 CIDR 必须是 Network `overlay_cidr` 的真子集（或相等，见默认段）；同一 Network 内各 Segment CIDR 不得重叠（复用 `Ipv4Cidr::overlaps`，`crates/meshlet-domain/src/cidr.rs:75`）。
+- `Segment` 隶属于一个 Network，持有一个 CIDR。该 CIDR 必须是 Network `overlay_cidr` 的真子集，或与之相等，见默认段。同一 Network 内各 Segment CIDR 不得重叠，复用 `Ipv4Cidr::overlaps`（`crates/meshlet-domain/src/cidr.rs:75`）。
 - 一个设备同一时刻**只属于一个 Segment**。设备的 `virtual_ipv4` 必须落在所属段 CIDR 内。
 - 不要求段 CIDR 拼接后等于整个 Overlay：允许存在未分配的间隙地址，间隙地址不属于任何段，因而不被任何 FORWARD 规则覆盖（默认拒绝，见 §4）。
 - LAN Route / Alias 不新增归属字段：其可见性由**发布网关设备所属的段**推导（见 §5）。
@@ -104,7 +104,7 @@ SegmentGrant     { id, network_id, source_segment_id, destination_segment_id,
   1. 是 Overlay 的真子集（default 段例外，允许相等）；
   2. 与同 Network 其他段不重叠；
   3. 可用地址数 ≥ 2（hub 之外至少容纳一个成员；复用 `Ipv4Cidr::usable_addresses`）；
-  4. 段 CIDR 不得与本 Network 已发布的 Alias 前缀重叠（Alias 前缀是隧道可见地址，与 Overlay 成员地址共用 cryptkey 路由空间；现有检查 `crates/meshlet-domain/src/conflict.rs:58` 同口径扩展到段）。
+  4. 段 CIDR 不得与本 Network 已发布的 Alias 前缀重叠。Alias 前缀是隧道可见地址，与 Overlay 成员地址共用 cryptkey 路由空间；现有检查 `crates/meshlet-domain/src/conflict.rs:58` 同口径扩展到段。
 - 段内地址分配：Network 级仍保留现有 `Ipam`，负责全局已用地址集合与段 CIDR 占用（段 CIDR 中的地址不能再分配给设备）；每个 Segment 另持有一个池为该段 CIDR 的 `Ipam` 实例，负责段内成员地址分配。Network 级与段级池在批准事务里同步更新；因为段 CIDR 互不重叠，现有「IP 不重复」验收（`DeviceRegistry::add`，`entities.rs:468`）天然保持，不需要新的唯一性机制。
 - 批准注册（`service.rs:1007`）增加必填语义：**批准时指定目标段**，地址从该段的 IPAM 分配并登记到 Network 级池；邀请入会同理。不允许先批准进网络再「补充分组」——无段成员在模型中不存在（控制台可把 default 段作为预选默认值）。
 
@@ -204,7 +204,7 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
 结论：**段模型在 Windows 上同样成立，且不依赖 Windows 端做任何策略动作**，但 Windows 在 v1 不能承担段网关职责。
 
 - 策略执行点全在 Linux hub：FORWARD 段策略与 peer 编排对流量来源不区分平台。一台 Windows 设备属于段 A，它发出的流量在 hub 上与 Linux 设备走同一条 `-s 10.x.A.0/dd` 匹配路径。
-- Windows 客户端侧唯一相关的是 AllowedIPs——而它由官方 WireGuard for Windows 隧道配置直接生效（ADR-008 的既定路线：优先隧道自身 AllowedIPs 生成的路由，`netsh`/API 补充）。计划收窄到「本段 + 授权段」后，Windows 端无需新增过滤组件。 `windows_routes.rs` 的计划层（`crates/meshlet-network/src/windows_routes.rs:37`）也只需按收窄后的 `RouteConfig` 集合工作，无新增命令种类。
+- Windows 客户端侧唯一相关的是 AllowedIPs，它由官方 WireGuard for Windows 隧道配置直接生效。这是 ADR-008 的既定路线：优先隧道自身 AllowedIPs 生成的路由，`netsh`/API 补充。计划收窄到「本段 + 授权段」后，Windows 端无需新增过滤组件。`windows_routes.rs` 的计划层（`crates/meshlet-network/src/windows_routes.rs:37`）也只需按收窄后的 `RouteConfig` 集合工作，无新增命令种类。
 - 边界：ADR-008 定 Windows v1 仅 Overlay 客户端，不做 LAN 网关与 Alias NAT。因此一个「成员全是 Windows」的段可以正常做 Overlay 同段互通与被跨段授权访问，但**不能发布 LAN 路由**。 PN-03（Windows 完整 Overlay 客户端，隧道服务/提权/开机恢复）完成前，Windows 甚至还没有完整数据面。段设计不要求 PN-03 先行，PN-03 落地时按本文 AllowedIPs 口径实现即天然在段内。
 - Windows 上不安装、也不需要安装本地段防火墙规则；若未来出现 P2P 直连（v2），端点执行才成为问题——那是 PN-02 的前置项，本文的 hub 单点模型不预付这笔复杂度。
 
@@ -218,14 +218,14 @@ v1 所有成员流量都经 hub（ADR-002），因此**只需要在 hub 一个�
 
 实现状态：
 
-- 已实现 API：`GET/POST /networks/{id}/segments`、`GET/POST /networks/{id}/segment-grants`、`POST .../segment-grants/{grant_id}/apply`、`DELETE .../segment-grants/{grant_id}`。创建 Grant 恒为 `pending`；apply 后才参与期望哈希；撤销 `pending` 或 `applied` 授权；重复/同向活动授权拒绝。
+- 已实现 API：`GET/POST /networks/{id}/segments` 与 `GET/POST /networks/{id}/segment-grants`。Grant 的 `POST .../segment-grants/{grant_id}/apply` 与 `DELETE .../segment-grants/{grant_id}` 也可用。创建 Grant 恒为 `pending`；apply 后才参与期望哈希；撤销 `pending` 或 `applied` 授权；重复/同向活动授权拒绝。
 - 未实现 API：删除 Segment、隔离/解除隔离、设备批准指定 `segment_id` 与设备改派。不要把这些旧草案当成当前能力。
 
 扩展点与接线：
 
-- 冲突检查扩展点：`conflict.rs` 的 `check_network`（`crates/meshlet-domain/src/conflict.rs:182`）增加段间重叠、段/Alias 重叠、段/Overlay 包含关系三类，沿用 `ConflictKind` 严重度分类。
-- 后端执行扩展点：`NetworkBackend` trait（`crates/meshlet-network/src/lib.rs:173`）增加一个 `apply_segment_policy(rules)` 之类的受控方法（规则由域层纯函数渲染，参数化 argv，与 `nat.rs` 同纪律）。 `NetworkSnapshot` 增加段规则计数用于漂移对账（AR-03）。
-- 已接线模块化 Router：`apps/server/src/segment.rs::routes()` 在 `apps/server/src/lib.rs::router()` merge；控制台入口在 `console/src/App.tsx::SegmentGrantsSection`，API client 在 `console/src/api.ts`。控制台展示段与单向授权，提供 Pending 授权 Apply、非撤销授权 Revoke，并把校验错误内联显示；拒绝创建不会把既有列表清空。
+- 冲突检查扩展点：`conflict.rs` 的 `check_network`（`crates/meshlet-domain/src/conflict.rs:182`）增加三类检查。三类是段间重叠、段/Alias 重叠、段/Overlay 包含关系，沿用 `ConflictKind` 严重度分类。
+- 后端执行扩展点：`NetworkBackend` trait（`crates/meshlet-network/src/lib.rs:173`）增加受控方法，如 `apply_segment_policy(rules)`。规则由域层纯函数渲染，参数化 argv，与 `nat.rs` 同纪律。`NetworkSnapshot` 增加段规则计数用于漂移对账（AR-03）。
+- 已接线模块化 Router：`apps/server/src/segment.rs::routes()` 在 `apps/server/src/lib.rs::router()` merge。控制台入口在 `console/src/App.tsx::SegmentGrantsSection`，API client 在 `console/src/api.ts`。控制台展示段与单向授权，提供 Pending 授权 Apply、非撤销授权 Revoke，并把校验错误内联显示；拒绝创建不会把既有列表清空。
 
 ## 9. 与既有待办条目的衔接
 

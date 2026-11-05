@@ -18,4 +18,4 @@ These records capture durable choices and the conditions that could justify revi
 | [ADR-012](/decisions/adr-012-network-segment-trust) | Network segment trust groups |
 | [ADR-013](/decisions/adr-013-cockpit-agent-host-info) | Cockpit agent as local host-info source |
 | [ADR-014](/decisions/adr-014-coexistence-personal-positioning) | Coexistence with ZeroTier-class meshes, personal-network positioning |
-| [Blocked-item decisions, 2026-10-30 (Chinese)](/decisions/2026-10-30-decisions) | Blocked-item decisions, 2026-10-30 |
+| [Blocked-item decisions](/decisions/2026-10-30-decisions) | 2026-10-30 blocked-item decisions, Chinese source |

@@ -8,7 +8,7 @@ Meshlet needs encrypted IP connectivity between user-controlled devices and a se
 
 ## Decision
 
-Use WireGuard for the encrypted tunnel. Meshlet manages peer identity, addressing, and desired configuration around it rather than inventing a transport protocol.
+Use WireGuard for the encrypted tunnel. Meshlet manages peer identity, addressing, and desired configuration around it. It does not invent a transport protocol.
 
 ## Rationale and trade-offs
 
@@ -16,4 +16,4 @@ WireGuard provides a compact, well-understood cryptographic data plane and is av
 
 ## Revisit when
 
-Reconsider only if a supported platform cannot meet the required lifecycle or if a measured product requirement cannot be met with WireGuard and its existing platform implementations.
+Reconsider only if a supported platform cannot meet the required lifecycle. It also applies if a measured product requirement cannot be met by WireGuard and its existing platform implementations.

@@ -16,4 +16,4 @@ SQLite keeps installation and backup simple and supports transactional state cha
 
 ## Revisit when
 
-A measured deployment requirement exceeds the single-instance model, or high availability and multi-writer operation become explicit product requirements. Such a change must preserve transaction, backup, and recovery guarantees.
+A measured deployment requirement exceeds the single-instance model. The same applies when high availability and multi-writer operation become explicit product requirements. Such a change must preserve transaction, backup, and recovery guarantees.

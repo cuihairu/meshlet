@@ -273,7 +273,7 @@ netsh interface ipv4 add route prefix=192.0.2.0/24 interface="Loopback Pseudo-In
 # 预期（canonical 文案）：The requested operation requires elevation.   退出码 1
 ```
 
-**把实际输出的原文照抄到记录表。** 对照计划层 `classify_netsh_route_failure`：子串 `requires elevation` 命中 → 映射为 `InsufficientPrivileges`，消息应点名操作（`route add`）与接口名，并携带 netsh 原文。
+**把实际输出的原文照抄到记录表。** 对照计划层 `classify_netsh_route_failure`：子串 `requires elevation` 命中 → 映射为 `InsufficientPrivileges`。消息应点名操作（`route add`）与接口名，并携带 netsh 原文。
 
 > **若实际文案与 canonical 不同**（如中文系统）：以实际原文为准，并在 `crates/meshlet-network/src/windows_routes.rs` 的匹配表补上该文案 + 单测。这是本条残留缺口的唯一代码动作，不虚构。
 
@@ -320,7 +320,10 @@ netsh interface ipv4 show route    # 预期：无 192.0.2.0/24
 
 > **SystemBackend 接线决策的完成状态前置审计（2026-10-27，M5）**：
 > [TODO 完成状态审计](../analysis/todo-completion-audit-2026-10-27.md)「重点三 —— Windows
-> 后端」。结论：Windows 隧道实现整体缺席（`wireguardnt`/`wintun` 在 `crates/`、`apps/` > 下零代码，仅 `windows_routes.rs:13,207` 两处注释提及）。而 `apply_tunnel` 正是 agent 的 > 首个调用（`apps/agent/src/agent.rs:124`）—— 接线需新建隧道子系统，不是改一行 `cfg`。
+> 后端」。结论：Windows 隧道实现整体缺席（`wireguardnt`/`wintun` 在 `crates/`、`apps/`
+> 下零代码，仅 `windows_routes.rs:13,207` 两处注释提及）。
+> 而 `apply_tunnel` 正是 agent 的首个调用（`apps/agent/src/agent.rs:124`）——
+> 接线需新建隧道子系统，不是改一行 `cfg`。
 > R-05 两个已勾子项的证据分级（权限提升=证据弱，其执行层仅代码存在；数据面真机验收=
 > 有证据）同见该报告。
 

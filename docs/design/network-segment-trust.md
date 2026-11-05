@@ -12,19 +12,19 @@ Devices in the same active segment may communicate. Cross-segment communication 
 
 ## Two enforcement layers
 
-1. Device plans narrow peer AllowedIPs to the hub, the device's own segment, and destinations authorized for that source segment.
-2. The hub forwarding policy isolates peers, permits same-segment traffic, applies directional grants, and denies the remainder.
+1. Device plans narrow peer AllowedIPs to the hub and the device's own segment. They also narrow it to destinations authorized for that source segment.
+2. The hub forwarding policy isolates peers and permits same-segment traffic. It applies directional grants and denies the remainder.
 
-Both layers are required. Peer routes alone are not a sufficient security boundary, and a hub firewall without correct device plans can still expose unintended routes.
+Both layers are required. Peer routes alone are not a sufficient security boundary. A hub firewall without correct device plans can still expose unintended routes.
 
 ## Route visibility and revisions
 
-LAN routes and Alias mappings are visible according to the segment of their publishing gateway. A segment change, route change, or grant change must create a desired-state revision and wait for the required application evidence. Revocation and recovery must not re-open traffic accidentally.
+LAN routes and Alias mappings are visible according to the segment of their publishing gateway. A segment change, route change, or grant change must create a desired-state revision. It then waits for the required application evidence. Revocation and recovery must not re-open traffic accidentally.
 
 ## Console behavior
 
-The console lists network segments and grants together, shows source-to-destination direction and grant status, offers an explicit Apply only for Pending grants, and offers Revoke for Pending or Applied grants. Client and server validation errors are displayed inline. A rejected create never turns an existing list into an empty list. Because grant Apply is a desired-state transition, the console may still show the enclosing config revision as Pending after that operation.
+The console lists network segments and grants together. It shows source-to-destination direction and grant status. An explicit Apply is offered only for Pending grants; Revoke is offered for Pending or Applied grants. Client and server validation errors are displayed inline. A rejected create never turns an existing list into an empty list. Grant Apply is a desired-state transition. After that operation the console may still show the enclosing config revision as Pending.
 
 ## Migration and open work
 
-Existing networks receive one default segment and their device assignments are backfilled. Segment ID generation, creation, and persistence are defined by the current migrations and server code. Prefix containment, all boundary cases, policy compilation, kernel execution, and real traffic tests remain separate acceptance work.
+Existing networks receive one default segment and their device assignments are backfilled. Segment ID generation, creation, and persistence are defined by the current migrations and server code. Prefix containment and all boundary cases remain separate acceptance work. So do policy compilation, kernel execution and real traffic tests.

@@ -11,12 +11,16 @@
 > [!NOTE]
 > 已实现控制面、WireGuard hub/agent、LAN 路由与 Alias NAT、React 控制台、认证、审计、备份和设备审批。
 > 本轮补充单实例多网络隔离、设备应用回执、hub 恢复、成功计划回滚、Direct LAN SNAT 和正式服务权限，
-> 已有 Linux 真实内核与非 root 服务回归证据。Windows 后端模块已实现并完成路由、防火墙、服务控制 > 与卸载清理的真机验收；nightly 现已附带 Windows agent+CLI+tray-host zip 与 `install.ps1`。而 agent 数据面接线 > 与安装包/托盘真机验收仍待完成（R-05、AGENT-WIN）。空 VPS 安装和真实设备
+> 已有 Linux 真实内核与非 root 服务回归证据。
+> Windows 后端模块已实现并完成路由、防火墙、服务控制与卸载清理的真机验收。
+> nightly 现已附带 Windows agent+CLI+tray-host zip 与 `install.ps1`。
+> agent 数据面接线与安装包/托盘真机验收仍待完成（R-05、AGENT-WIN）。
+> 空 VPS 安装和真实设备
 > 走查也仍待完成。每日构建与一键安装见下节，当前验收范围见 [TODO](todo.md)。
 
 ## 每日构建与一键安装
 
-[每日构建](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) 每天北京时间 **03:17** 触发，也可在 Actions 中手动运行。全部检查与 Linux 内核数据面测试通过后，发布 [nightly 预发布版本](https://github.com/cuihairu/meshlet/releases/tag/nightly)，同时保留带日期的不可变版本。发布包含 Linux x86_64 / ARM64 静态 tar 归档、按组件拆分的 `deb`/`rpm` 包（`meshlet-server` / `meshlet-agent` / `meshlet-cli`）、Windows agent+CLI+tray-host zip，以及 `install.sh` / `install.ps1` 一键安装脚本。
+[每日构建](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) 每天北京时间 **03:17** 触发，也可在 Actions 中手动运行。全部检查与 Linux 内核数据面测试通过后，发布 [nightly 预发布版本](https://github.com/cuihairu/meshlet/releases/tag/nightly)，同时保留带日期的不可变版本。发布包含 Linux x86_64 / ARM64 静态 tar 归档，以及按组件拆分的 `deb`/`rpm` 包（`meshlet-server` / `meshlet-agent` / `meshlet-cli`）。Windows agent+CLI+tray-host zip 与 `install.sh` / `install.ps1` 一键安装脚本同时发布。
 在 VPS 安装服务端：
 
 ```bash
@@ -53,7 +57,7 @@ cat /usr/local/share/meshlet/server-build-info
 
 用 Linux 包（deb / rpm）安装：
 
-nightly 同时按组件发布两种架构的包——`meshlet-server`（服务端二进制、systemd 单元、Web 控制台、示例配置）、`meshlet-agent`（agent 二进制、systemd 单元、示例配置）、`meshlet-cli`（独立 CLI）：
+nightly 同时按组件发布两种架构的包。`meshlet-server` 含服务端二进制、systemd 单元、Web 控制台与示例配置；`meshlet-agent` 含 agent 二进制、systemd 单元与示例配置；`meshlet-cli` 是独立 CLI：
 
 ```bash
 # Debian / Ubuntu（ARM 平台把 amd64 换成 arm64）
@@ -76,12 +80,12 @@ Windows 是数据面目标平台，受真机验收门禁（[R-05](docs/implement
 
 - 后端模块，已真机验收（中文 Windows Server 2022，2026-10-25/26）。路由（`netsh interface ipv4`）、防火墙规则（`netsh advfirewall firewall`）、服务控制（`sc`）与卸载清理——增/读回/删/幂等重删均真机走通。含 zh-CN 输出（GBK/CP936）由 `windows_console` 解码。
 - WireGuardNT 隧道计划层 + CI：`windows_tunnel` 渲染 `WireGuardTunnel$<name>` 服务配置并构造 `wireguard.exe` argv；其文件级测试在 `windows-latest` CI 真跑。隧道真机全生命周期仍待完成。
-- 跨平台证据：全 workspace `cargo test` 与 `cargo clippy --workspace --all-targets -- -D warnings` 在 `stable-x86_64-pc-windows-gnu` 绿；CI 在 `windows-latest` 原生跑 `cargo test --workspace`。
+- 跨平台证据：全 workspace `cargo test` 通过。`cargo clippy --workspace --all-targets -- -D warnings` 在 `stable-x86_64-pc-windows-gnu` 上同样绿。CI 在 `windows-latest` 原生跑 `cargo test --workspace`。
 
 Windows 上仍未就绪：
 
 - agent 活动数据面后端未接线。Windows 的 `SystemBackend` 仍是显式 `unsupported` 占位，直到隧道生命周期、提权执行层与开机恢复通过真机验收。Windows agent 可注册、上报状态，但应用隧道/路由/NAT 计划被显式拒绝——没有任何假装成功。
-- MSI 已入 nightly，安装包真机验收未做。nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）、`install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)），以及 MSI 安装包（`meshlet-nightly-windows-x86_64.msi`，cargo-wix 构建：server/agent/CLI/tray-host 单包，含开始菜单项与卸载项）；两类安装包均未经真机验收（AGENT-WIN-2、`todo.md` NIGHTLY-MSI-1）。
+- MSI 已入 nightly，安装包真机验收未做。nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）。MSI 安装包为 `meshlet-nightly-windows-x86_64.msi`，由 cargo-wix 构建。该 MSI 把 server、agent、CLI 与 tray-host 打进一个包，含开始菜单项与卸载项。两类安装包均未经真机验收（AGENT-WIN-2、`todo.md` NIGHTLY-MSI-1）。
 - Windows 托盘宿主已随包发布，真机验收待做。`apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`）。已随 nightly zip 发布；`install.ps1` 尚不安装/注册它，图标换图与菜单的真机走查按 AGENT-WIN-2/3 跟踪。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知；仓库内没有面向任一平台桌面壳的面板宿主二进制。
 
 ### 在 Windows 安装 agent

@@ -8,12 +8,12 @@ A useful cross-platform client needs more than invoking a tunnel command. It mus
 
 ## Decision
 
-Keep Windows-specific operations behind a dedicated backend while sharing domain rules and desired-plan semantics with other platforms. Do not claim Windows support until the lifecycle and acceptance matrix is complete.
+Keep Windows-specific operations behind a dedicated backend. Domain rules and desired-plan semantics stay shared with other platforms. Do not claim Windows support until the lifecycle and acceptance matrix is complete.
 
 ## Rationale and trade-offs
 
-A backend boundary avoids spreading platform checks through the domain and API layers. Windows privilege and service behavior differ materially from Linux, so sharing low-level command assumptions would be unsafe.
+A backend boundary avoids spreading platform checks through the domain and API layers. Windows privilege and service behavior differ materially from Linux. Sharing low-level command assumptions would be unsafe.
 
 ## Revisit when
 
-A supported Windows environment and test plan are available. Acceptance must cover installation, elevation, repeated apply, partial failure, uninstall, route cleanup, and reboot recovery.
+A supported Windows environment and test plan are available. Acceptance must cover installation, elevation and repeated apply. It must also cover partial failure, uninstall, route cleanup and reboot recovery.

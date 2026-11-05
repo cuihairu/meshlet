@@ -59,21 +59,16 @@ Linux 侧需要管理 WireGuard 接口、路由、IP 转发、防火墙与 Alias
 实现细节与扩展：
 
 - 已知坑（固化进实现）：`sudo -n ip netns exec` 下 `wg` 打开
-  `/dev/stdin` 与 0600 临时文件都报 `fopen: Permission denied`，唯一可行通
-  道是 bash 进程替换——`wg set wg0 private-key <(cat)`，密钥经 stdin 管道
-  递入、不进 argv、不落盘（`run_bash_stdin`）；veth offload、endpoint 指
-  netns 侧地址等坑位见 `wg_forwarding.rs` 头注。
+  `/dev/stdin` 与 0600 临时文件都报 `fopen: Permission denied`。唯一可行通道是 bash 进程替换：`wg set wg0 private-key <(cat)`。密钥经 stdin 管道递入、不进 argv、不落盘（`run_bash_stdin`）。veth offload、endpoint 指 netns 侧地址等坑位见 `wg_forwarding.rs` 头注。
 - trait 扩展（随接线需要）：`apply_nat(rules, gateway_lan_addr)` /
-  `remove_nat(owner)`；`TunnelConfig` 增 `address_prefix` 与
-  `private_key: Option`（`None` = 保留接口现有私钥，幂等重应用；首装必须
-  提供，否则无法握手——错误如实报出）；`RouteConfig` 增 `gateway`。
+  `remove_nat(owner)`；`TunnelConfig` 增 `address_prefix` 与 `private_key: Option`。`None` 表示保留接口现有私钥，幂等重应用；首装必须提供，否则无法握手——错误如实报出。`RouteConfig` 增 `gateway`。
 - server 接线（`apps/server/src/revision.rs`）：`[dataplane] enabled =
   true` 才启用 `HubDataPlaneBackend`，默认仍是显式失败的 `UnconfiguredBackend`（升级不悄悄接管内核）；hub 私钥只从 `private_key_file` 文件读、不落库（ADR-010）。 hub 侧只下隧道与转发路由，网关侧 NAT 在网关设备上执行、随 agent 数据面交付（ADR-006）。
 
 验证与未落地：
 
 - 验证：`crates/meshlet-network/tests/backend_wiring.rs`（真实内核 +
-  netns，**全部数据面操作走 `LinuxNetworkBackend`** 而非裸命令）。覆盖 A↔B 互通、Alias 经 NAT 打到真实 LAN、幂等重应用、`remove_nat` 所有权边界（用户规则幸存）、Overlay 源保留（§7.4，UDP echo 观测源地址）、撤销即失效、回滚只删自有对象；SKIP 纪律与既有 netns 测试一致（CI 无 root 全绿）。
+  netns，**全部数据面操作走 `LinuxNetworkBackend`** 而非裸命令）。覆盖 A↔B 互通、Alias 经 NAT 打到真实 LAN、幂等重应用、`remove_nat` 所有权边界（用户规则幸存）、Overlay 源保留（§7.4，UDP echo 观测源地址）、撤销即失效、回滚只删自有对象。SKIP 纪律与既有 netns 测试一致（CI 无 root 全绿）。
 - 未落地：nftables 独立 table/chain（现为 iptables + 所有权注释，依赖
   内核 nft 后端；发行版 iptables/nft 混用兼容层保留为本 ADR 已记录风
   险）；`wg syncconf` 增量应用与最小 AllowedIPs（见
@@ -89,11 +84,7 @@ hub 侧接线落地后，设备侧走同一条 `LinuxNetworkBackend` 路径，**
   取回**自身**的结构化计划 `DevicePlan`（隧道 / 路由 / 网关侧 NAT 规则 + `desired_config_hash`，`private_key` 恒 `null`）。服务端 hub 公钥在请求时从 `[dataplane] private_key_file` 现算（`wg pubkey`，不落库、不出站）。
   推导与 hub 侧同源（域层 `peer_routes::client_hub_peer_allowed_ips`），
   两端不会漂移（`apps/server/src/device_plan.rs`）。
-- 对账与重放（`apps/agent/src/reconcile.rs`，纯逻辑）：比较账本
-  哈希 / 内核实际快照 / 服务端期望三者的差异——期望哈希变了、无账本
-  （首装或状态文件损坏）、或内核漂移（隧道没了、路由缺失、peer 减少、
-  NAT 规则消失）任一成立即重放 `apply_device_plan_sync`；都不成立则
-  **不重放**（有变更才改，§10.1）。这覆盖了「主机重启后隧道消失但账本仍
+- - 对账与重放（`apps/agent/src/reconcile.rs`，纯逻辑）：比较账本哈希 / 内核实际快照 / 服务端期望三者的差异。期望哈希变了、无账本（首装或状态文件损坏），或内核漂移（隧道没了、路由缺失、peer 减少、NAT 规则消失），任一成立即重放 `apply_device_plan_sync`。都不成立则 **不重放**，有变更才改，见 §10.1。这覆盖了「主机重启后隧道消失但账本仍
   记 applied」的现场（TODO #32）。
 - 所有权清理：账本记 `nat_owners`（`meshlet alias {id}`）；映射从计划里
   消失时按注释精确移除该单元规则，绝不触碰非 Meshlet 规则（§12.6）。
@@ -108,7 +99,7 @@ hub 侧接线落地后，设备侧走同一条 `LinuxNetworkBackend` 路径，**
 - 心跳：每轮对账后带本地 `wg show` 握手时间上报（§14.1）；上报失败
   不影响数据面（计划对账是唯一事实源）。
 - 验证：`apps/agent/tests/agent_reconcile.rs`（真实内核 + netns，对象名
-  `mlg<pid>`——前缀既不与既有 netns 测试互删。也不与崩溃残留/并行进程撞名）覆盖：首装应用 → A↔B 互通 → 无变更不重放 → 新修订重放 → **模拟主机重启（删隧道）后按账本重放并恢复互通** → 网关侧 Alias NAT 下发与映射删除后的整单元清理（用户规则幸存）。
+  `mlg<pid>`——前缀既不与既有 netns 测试互删。也不与崩溃残留/并行进程撞名）覆盖：首装应用 → A↔B 互通 → 无变更不重放 → 新修订重放 → 模拟主机重启（删隧道）后按账本重放并恢复互通 → 网关侧 Alias NAT 下发与映射删除后的整单元清理（用户规则幸存）。
   纯逻辑部分另有 15 项单测（`reconcile` / `server` / `agent`）。
 - 未落地：真机部署走查（systemd 单元 + 真实设备）未做，见
   [安装指南](../guide/install.md) 的诚实边界与 TODO。

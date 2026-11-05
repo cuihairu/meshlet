@@ -8,7 +8,7 @@ A user needs to install an agent before an operator can add its device record. D
 
 ## Decision
 
-A device presents a one-time bootstrap token and its public identity. The server creates a pending registration, issues a device-bound agent credential, and keeps the request outside the active registry. An operator approves or denies it. Approval reuses the request's device ID, allocates an Overlay address, creates a revision, and makes the device eligible for a plan.
+A device presents a one-time bootstrap token and its public identity. The server creates a pending registration and issues a device-bound agent credential. The request stays outside the active registry. An operator approves or denies it. Approval reuses the request's device ID and allocates an Overlay address. It also creates a revision and makes the device eligible for a plan.
 
 ## Rationale and trade-offs
 
