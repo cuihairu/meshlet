@@ -431,4 +431,20 @@ export const zh: Dict = {
   'publish.plain': '明文',
   'publish.devicePlaceholder': '设备',
   'publish.pending': '待定',
+
+  'nav.topology': '拓扑',
+  'page.topology': '拓扑',
+  'topology.hub': 'Hub',
+  'topology.legendTitle': '图例',
+  'topology.legendDirect': '实线 —— P2P 直连（标注 = RTT）',
+  'topology.legendRelay': '虚线 —— 经 hub 中继',
+  'topology.stateDirect': '存在直连链路。',
+  'topology.stateRelayOnly': '暂无直连——所有节点流量均经 hub 中继。',
+  'topology.stateSingle': '单节点——没有第二个可拨的对端，因此不可能存在直连。',
+  'topology.guideTitle': '为什么当前无直连，以及如何开启',
+  'topology.guideOff':
+    '直连（P2P）在每个 agent 上默认关闭。要开启，请在各 agent 配置文件中设置以下内容并重启 agent：',
+  'topology.guideWhy':
+    '在开启直连（且登记第二台节点）之前，agent 的全部对端流量都走 hub 中继。本页只展示设备真实上报的数据——绝不臆测节点在线。',
+  'topology.updated': '刷新于 {time}',
 };

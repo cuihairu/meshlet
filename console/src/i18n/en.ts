@@ -435,6 +435,22 @@ export const en = {
   'publish.plain': 'plain',
   'publish.devicePlaceholder': 'device',
   'publish.pending': 'pending',
+
+  'nav.topology': 'Topology',
+  'page.topology': 'Topology',
+  'topology.hub': 'Hub',
+  'topology.legendTitle': 'Legend',
+  'topology.legendDirect': 'solid line — direct P2P link (label = RTT)',
+  'topology.legendRelay': 'dashed line — relayed via hub',
+  'topology.stateDirect': 'Direct links active.',
+  'topology.stateRelayOnly': 'No direct links — all peer traffic relays through the hub.',
+  'topology.stateSingle': 'Single node — there is no second peer to dial, so no direct link can exist.',
+  'topology.guideTitle': 'Why no direct links, and how to enable them',
+  'topology.guideOff':
+    'Direct connect (P2P) is off by default on every agent. To enable it, set the following in each agent config file and restart the agent:',
+  'topology.guideWhy':
+    'Until it is enabled (and a second node is enrolled), agents keep every peer on the hub relay. This page shows only what devices actually reported — it never assumes a peer is online.',
+  'topology.updated': 'refreshed {time}',
 } as const;
 
 export type MessageKey = keyof typeof en;
