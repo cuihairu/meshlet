@@ -47,9 +47,24 @@ GET 即刷新（文件变更即刷新）。
   `build_menu_contains_status_direct_dial_local_panel_console_and_quit` —— 菜单共 10 项，
   第 6 项 `本地面板`、第 7 项 `控制台(网页)`、第 9 项 `退出`。
 - **面板门禁**（同作业新增）：从 `local-panel.json` 取 URL（有界重试直到解析出 loopback
-  URL）→ `curl` 必须 200 + 三块 section id → `POST` 必须 405；随后在 CI 桌面会话打开该页
-  并截 `tray-panel.png`，连同 `tray-panel.html` 一起作为 `tray-windows-evidence` 工件。
-- 门禁运行：CI run `42261037474`（push `3cf4a26`）——结果见下。
+  URL）→ 响应按**原始字节**校验：状态行完整匹配 `200`、`Content-Length` 与正文字节数
+  一致、正文以 `</html>` 结尾、三块 section id 都在正文里（截断的 early-EOF 响应不再
+  能假绿）；curl 用 `-sS --noproxy '*'` 且 stderr 落盘，失败时裸 TCP fallback 直连同一
+  端口再验一遍；`POST` 必须 405 + 完整性校验。随后在 CI 桌面会话打开该页并截
+  `tray-panel.png`，连同 `tray-panel.html`（正文原始字节，无 BOM）作为
+  `tray-windows-evidence` 工件。
+- **tray-host 跨步被回收的自愈**（run `42261037474`/`42267986109` 两轮红的真根因）：
+  tray-host 在 launch 步与门禁步之间会被 CI 会话静默回收（stderr 日志无 panic、进程
+  消失、连接拒绝被旧门禁 `-s` 吞成空串）。门禁步检测进程死则就地重拉：先删旧
+  `local-panel.json`（删除失败即红），`Start-Process -PassThru` 拿新进程 PID，有界等待
+  新交接文件且**pid 必须等于刚拉起的进程**——pid 复用/旧文件残留都不可能假绿。
+- 门禁运行：CI run `42272101696`（push `27418e3`）**全绿**（8/8 作业）。真机日志实测
+  自愈路径生效：`tray-host alive: False` → 重拉 → `relaunched tray-host:
+  http://127.0.0.1:57452/ (pid 664)` → `GET via curl: HTTP/1.1 200 OK` + 三块齐全 +
+  `POST via curl: 405`。
+- 本机（Linux，pwsh 7.4.6）对**同一段门禁脚本逐字提取**做过行为级验证：截断响应
+  fixture（真响应切尾 200 字节，`Content-Length 3623` 实发 `3423`）→ exit 1 带
+  early-EOF 诊断；curl 不可用 → TCP fallback 全绿；重拉缺 pid 的交接文件 → exit 1。
 
 ## 未覆盖 / 待用户亲验
 
