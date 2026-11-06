@@ -42,6 +42,8 @@ $installDir = Join-Path $env:LOCALAPPDATA 'meshlet'
 $configPath = Join-Path $installDir 'agent.toml'
 $keyPath = Join-Path $installDir 'agent.key'
 $stateDir = Join-Path $installDir 'state'
+$agentExe = Join-Path $installDir 'meshlet-agent.exe'
+$trayExe = Join-Path $installDir 'meshlet-tray-host.exe'
 
 function Fail([string]$Message) {
     throw "meshlet installer: $Message"
@@ -66,6 +68,31 @@ function Select-Checksum([string]$ChecksumFile, [string]$Name) {
 function Verify-FileHash([string]$Path, [string]$Expected) {
     $actual = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
     if ($actual -ne $Expected.ToLowerInvariant()) { Fail "checksum failed for $Path" }
+}
+
+function Stop-AgentLaunchers([string]$ExecutablePath) {
+    try {
+        Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" |
+            Where-Object {
+                $_.CommandLine -and
+                $_.CommandLine.IndexOf($ExecutablePath, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+    catch {
+        Write-Warning "could not enumerate agent launcher processes: $($_.Exception.Message)"
+    }
+}
+
+function Stop-InstalledProcess([string]$Name) {
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        $processes = @(Get-Process -Name $Name -ErrorAction SilentlyContinue)
+        if (-not $processes) { return }
+        $processes | Stop-Process -Force
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    Fail "could not stop the running $Name process"
 }
 
 # --- Validate new-install parameters before touching anything ---
@@ -113,6 +140,9 @@ try {
             Fail "release archive is incomplete: $name missing"
         }
     }
+    Stop-AgentLaunchers $agentExe
+    Stop-InstalledProcess 'meshlet-agent'
+    Stop-InstalledProcess 'meshlet-tray-host'
     Copy-Item (Join-Path $work 'package\meshlet-agent.exe') (Join-Path $installDir 'meshlet-agent.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-cli.exe') (Join-Path $installDir 'meshlet-cli.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-tray-host.exe') (Join-Path $installDir 'meshlet-tray-host.exe') -Force
@@ -165,8 +195,6 @@ if ($pathParts -notcontains $installDir) {
 }
 
 # --- Autostart (HKCU Run; agent hidden, tray host points at its state directory) ---
-$agentExe = Join-Path $installDir 'meshlet-agent.exe'
-$trayExe = Join-Path $installDir 'meshlet-tray-host.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $agentCmd = "powershell -NoProfile -WindowStyle Hidden -Command `"& '$agentExe' '$configPath'`""
 $trayCmd = "`"$trayExe`" `"$stateDir`""
@@ -183,8 +211,8 @@ else {
 
 # --- Start now if it is not already running ---
 if (-not $NoStart -and -not (Get-Process -Name 'meshlet-agent' -ErrorAction SilentlyContinue)) {
-    Start-Process -FilePath 'powershell' `
-        -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-Command', "& '$agentExe' '$configPath'" `
+    Start-Process -FilePath $agentExe `
+        -ArgumentList $configPath `
         -WindowStyle Hidden
 }
 
