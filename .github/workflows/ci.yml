@@ -171,22 +171,25 @@ jobs:
           if (-not $alive) {
             $exe = Join-Path (Get-Location) 'target\debug\meshlet-tray-host.exe'
             if (-not (Test-Path $exe)) { Write-Error 'meshlet-tray-host.exe missing (build step did not run?)'; exit 1 }
-            $oldPid = $panel.pid
             Write-Host "tray-host died between steps; relaunching $exe"
-            Start-Process $exe `
+            # `-PassThru`：拿到新进程的真实 PID，交接文件里的 pid 必须与它相等
+            # 才算「观察到新进程」——不等旧 pid 比较（旧 pid 可能缺失/畸形），
+            # 直接锚定进程身份。
+            $proc = Start-Process $exe `
               -ArgumentList "$(Resolve-Path tray-fixture\online)" `
               -WindowStyle Hidden `
-              -RedirectStandardError "$PWD\tray-host-relaunch.log" -RedirectStandardOutput "$PWD\tray-host-relaunch.out"
+              -RedirectStandardError "$PWD\tray-host-relaunch.log" -RedirectStandardOutput "$PWD\tray-host-relaunch.out" `
+              -PassThru
             $panel = $null
             for ($i = 0; $i -lt 20; $i++) {
               Start-Sleep -Seconds 1
               if (Test-Path $urlFile) {
                 try { $p2 = Get-Content $urlFile -Raw | ConvertFrom-Json -ErrorAction Stop } catch { $p2 = $null }
-                # pid 必须是 >0 的整数且与旧 pid 不同——JSON 缺 pid（$null）或
-                # 畸形 pid 都不算「观察到新进程」，继续等，不吃半截交接文件。
+                # 交接 pid 必须是 >0 的整数且等于刚拉起进程的 PID——JSON 缺
+                # pid、畸形 pid 或旧文件残留都不算「观察到新进程」，继续等。
                 $newPid = $p2.pid
                 if ($p2 -and $p2.url -match '^http://127\.0\.0\.1:\d+/' -and
-                    ($newPid -is [int] -or $newPid -is [long]) -and $newPid -gt 0 -and $newPid -ne $oldPid) { $panel = $p2; break }
+                    ($newPid -is [int] -or $newPid -is [long]) -and $newPid -gt 0 -and $newPid -eq $proc.Id) { $panel = $p2; break }
               }
             }
             if (-not $panel) { Write-Error 'tray-host relaunch did not publish a new local-panel.json'; exit 1 }
