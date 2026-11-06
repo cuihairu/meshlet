@@ -203,7 +203,57 @@ async fn heartbeat(
     listen_port: u16,
     src: &str,
 ) -> StatusCode {
-    heartbeat_with_links(app, token, lan, listen_port, src, serde_json::json!([])).await
+    heartbeat_with_headers(
+        app,
+        token,
+        lan,
+        listen_port,
+        src,
+        None,
+        None,
+        serde_json::json!([]),
+    )
+    .await
+}
+
+/// [heartbeat] + TODO-116 反代头注入（`X-Forwarded-For`/`X-Real-IP`）与链路状态。
+#[allow(clippy::too_many_arguments)]
+async fn heartbeat_with_headers(
+    app: &Router,
+    token: &str,
+    lan: &[&str],
+    listen_port: u16,
+    src: &str,
+    xff: Option<&str>,
+    x_real_ip: Option<&str>,
+    direct_links: serde_json::Value,
+) -> StatusCode {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/agent/heartbeat")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json");
+    if let Some(v) = xff {
+        builder = builder.header("x-forwarded-for", v);
+    }
+    if let Some(v) = x_real_ip {
+        builder = builder.header("x-real-ip", v);
+    }
+    let mut req = builder
+        .body(Body::from(
+            serde_json::json!({
+                "last_handshake_at": null,
+                "dataplane": null,
+                "direct": { "listen_port": listen_port, "lan_addrs": lan },
+                "direct_links": direct_links,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    req.extensions_mut().insert(axum::extract::ConnectInfo(
+        src.parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    app.clone().oneshot(req).await.unwrap().status()
 }
 
 /// 同 [heartbeat]，另带 §12.3 链路状态上报（`direct_links`）。
@@ -582,4 +632,136 @@ async fn heartbeat_link_statuses_surface_in_the_devices_view() {
             "{devices}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// TODO-116：可信反代头解析三态（安全口径：仅可信代理来源采信头部）。
+// ---------------------------------------------------------------------------
+
+/// 取设备行（管理端设备列表）中 B 设备的 observed/public endpoint。
+async fn endpoint_of_device(
+    app: &Router,
+    cookie: &str,
+    network_id: &str,
+    device_id: &str,
+) -> (Option<String>, Option<String>) {
+    let list = admin_get(
+        app,
+        cookie,
+        &format!("/api/v1/networks/{network_id}/devices"),
+    )
+    .await;
+    let d = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == device_id)
+        .expect("device in list");
+    let observed = d["observed_endpoint"].as_str().map(|s| s.to_string());
+    let public = d["public_endpoint"].as_str().map(|s| s.to_string());
+    (observed, public)
+}
+
+#[tokio::test]
+async fn trusted_proxy_forwarded_for_is_honored() {
+    let (ctx, _a_token) = bootstrap("edge-trust-xff", "pub-edge-trust-xff").await;
+    let (b_id, b_token) = enroll(&ctx, "peer-trust-xff", "pub-peer-trust-xff").await;
+    // 请求直接来自可信反代（默认可信集合 = 回环 127.0.0.1/::1）。
+    // X-Forwarded-For = 「客户端, 代理」；最右是可信代理（127.0.0.1）被跳过，
+    // 取最右侧非可信地址 203.0.113.7 = 真实客户端 → 公网候选。
+    assert_eq!(
+        heartbeat_with_headers(
+            &ctx.app,
+            &b_token,
+            &["192.168.1.51"],
+            51820,
+            "127.0.0.1:40001",
+            Some("203.0.113.7, 127.0.0.1"),
+            None,
+            serde_json::json!([]),
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (observed, public) =
+        endpoint_of_device(&ctx.app, &ctx.cookie, &ctx.network_id, &b_id).await;
+    assert_eq!(observed.as_deref(), Some("203.0.113.7:51820"));
+    assert_eq!(public.as_deref(), Some("203.0.113.7:51820"));
+}
+
+#[tokio::test]
+async fn trusted_proxy_real_ip_fallback_when_no_forwarded_for() {
+    let (ctx, _a_token) = bootstrap("edge-trust-xri", "pub-edge-trust-xri").await;
+    let (b_id, b_token) = enroll(&ctx, "peer-trust-xri", "pub-peer-trust-xri").await;
+    // X-Forwarded-For 缺失时回落 X-Real-IP（仅可信来源）。
+    assert_eq!(
+        heartbeat_with_headers(
+            &ctx.app,
+            &b_token,
+            &["192.168.1.51"],
+            51820,
+            "127.0.0.1:40001",
+            None,
+            Some("203.0.113.8"),
+            serde_json::json!([]),
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (observed, public) =
+        endpoint_of_device(&ctx.app, &ctx.cookie, &ctx.network_id, &b_id).await;
+    assert_eq!(observed.as_deref(), Some("203.0.113.8:51820"));
+    assert_eq!(public.as_deref(), Some("203.0.113.8:51820"));
+}
+
+#[tokio::test]
+async fn untrusted_source_ignores_forwarded_headers() {
+    let (ctx, _a_token) = bootstrap("edge-untrusted", "pub-edge-untrusted").await;
+    let (b_id, b_token) = enroll(&ctx, "peer-untrusted", "pub-peer-untrusted").await;
+    // 请求直接来自**不可信**来源（192.168.1.11 不在默认可信回环集合）：
+    // 即使带 X-Forwarded-For 伪造公网地址，也必须完全忽略头部 → 观测回落到
+    // socket 私网地址，不伪造公网候选。
+    assert_eq!(
+        heartbeat_with_headers(
+            &ctx.app,
+            &b_token,
+            &["192.168.1.51"],
+            51820,
+            "192.168.1.11:40001",
+            Some("203.0.113.99, 192.168.1.11"),
+            Some("203.0.113.98"),
+            serde_json::json!([]),
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (observed, public) =
+        endpoint_of_device(&ctx.app, &ctx.cookie, &ctx.network_id, &b_id).await;
+    assert_eq!(observed.as_deref(), Some("192.168.1.11:51820"));
+    assert_eq!(public, None, "不可信来源必须忽略头部，不得伪造公网候选");
+}
+
+#[tokio::test]
+async fn no_forwarded_header_falls_back_to_socket() {
+    let (ctx, _a_token) = bootstrap("edge-no-headers", "pub-edge-no-headers").await;
+    let (b_id, b_token) = enroll(&ctx, "peer-no-headers", "pub-peer-no-headers").await;
+    // 可信来源但无任何反代头：回落 socket（127.0.0.1 回环；不是公网候选）。
+    assert_eq!(
+        heartbeat_with_headers(
+            &ctx.app,
+            &b_token,
+            &["192.168.1.51"],
+            51820,
+            "127.0.0.1:40001",
+            None,
+            None,
+            serde_json::json!([]),
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (observed, public) =
+        endpoint_of_device(&ctx.app, &ctx.cookie, &ctx.network_id, &b_id).await;
+    assert_eq!(observed.as_deref(), Some("127.0.0.1:51820"));
+    assert_eq!(public, None, "回环观测不构成公网候选");
 }

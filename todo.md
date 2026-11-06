@@ -138,7 +138,8 @@
   - 缺陷（新）ZeroTier ↔ meshlet 互相封装自环: meshlet 直连 peer 的 endpoint 是对端 ZeroTier 地址（10.147.19.97），而 ZeroTier 又学到「该节点可经 meshlet overlay 到达」（path `10.240.0.5:34551`）→ WG→ZT→overlay→WG 逐层包裹，包长超过 MTU 后内层包全部丢弃（ping 黑洞），同时放大约 80 GB 隧道流量（真机取证 16:20–16:47，`wg show` tx 37→79 GiB）。修复: `/usr/local/sbin/meshlet-zt-separation.sh`（OUTPUT 按 uid 拦 ZeroTier 出 wg-mlt + INPUT 拦其本地端口入 wg-mlt），systemd `meshlet-zt-separation.service` 已 enable、`zerotier-one.service` 加 `ExecStartPost` 重启即重放；拦掉后 ZeroTier 回落真实公网 path `180.152.54.66/9993`，直连与 `10.240.0.8` 全部恢复。
   - 归因（本轮 workspace `cargo test` 唯一失败，与 P2P 改动无关）: `meshlet-server --test backup::concurrent_backup_contains_only_complete_business_commits` 报 `database is locked (code 5)`——测试用 70 万行递归 CTE 触发器故意持写锁 ≈5 s，`backup_once` 里 `VACUUM INTO` 后的 audit INSERT 受 `busy_timeout = 5000`（store.rs）限制，机器负载 45 时触发器超 5 s 即 BUSY。单跑 3/3 绿、全 suite 2×10/10 绿（负载 9）；负载敏感 flake，非回归。
 
-- [ ] TODO-116 [P3] server 解析反代头（`X-Forwarded-For`/`X-Real-IP`）：nginx 域名入口下 `ConnectInfo` 只见 127.0.0.1，hub 观测公网候选退化为回环（2026-11-06 真机取证，cuihaitao 走查中曾因此无公网候选；当前以 agent 直连 hub 地址绕过）。改法：`direct_observed_ip` 先取可信反代头再回落 socket；须同时收紧「仅可信代理来源才采信头部」，并补集成测试。
+- [x] TODO-116 [P3] server 解析反代头（`X-Forwarded-For`/`X-Real-IP`）：nginx 域名入口下 `ConnectInfo` 只见 127.0.0.1，hub 观测公网候选退化为回环（2026-11-06 真机取证，cuihaitao 走查中曾因此无公网候选；当前以 agent 直连 hub 地址绕过）。改法：`direct_observed_ip` 先取可信反代头再回落 socket；须同时收紧「仅可信代理来源才采信头部」，并补集成测试。
+  - 证据: commit `ee7e36d`；server 集成测试 `peers_endpoints` 15/15 全绿（三态：可信代理头生效 `203.0.113.7` / 不可信来源头被忽略回落 socket `192.168.1.11` 且不伪造公网 / 无头回落 socket `127.0.0.1`），`meshlet-config` lib 27/27 全绿（默认仅回环、CIDR/地址解析、主机位归并、拒绝非法条目）；`cargo check --workspace`、`cargo fmt --all -- --check` 通过。
   - 证据: 2026-11-06 直连走查 devices API `observed_endpoint=127.0.0.1:51820`（域名入口）vs `180.152.54.66:51820`（直连地址）。
 
 ## 诊断与托盘（2026-11-01 用户令）

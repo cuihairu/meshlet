@@ -2,8 +2,11 @@
 //!
 //! Overlay CIDR 默认 `10.240.0.0/16` 仅为默认值，**可配置**（ADR-004）。
 
+pub mod trusted_proxy;
+
 use meshlet_domain::Ipv4Cidr;
 use serde::Deserialize;
+pub use trusted_proxy::{TrustedProxyConfig, TrustedProxyParseError, TrustedProxySource};
 
 pub const DEFAULT_OVERLAY_CIDR: &str = "10.240.0.0/16";
 
@@ -43,6 +46,7 @@ struct RawServerConfig {
     backup: Option<RawBackupConfig>,
     tunnel_mtu: Option<u32>,
     dataplane: Option<RawDataPlaneConfig>,
+    trusted_proxies: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -130,6 +134,9 @@ pub struct ServerConfig {
     pub tunnel_mtu: Option<u32>,
     /// 数据面（ADR-007）：本机 WireGuard/路由接线，默认关闭。
     pub dataplane: DataPlaneConfig,
+    /// 可信反代来源（TODO-116）：仅当请求**直接来自**这些地址/网段时才采信
+    /// `X-Forwarded-For`/`X-Real-IP`（默认仅回环 127.0.0.1/::1，可配 CIDR/地址）。
+    pub trusted_proxies: TrustedProxyConfig,
 }
 
 impl Default for ServerConfig {
@@ -145,6 +152,7 @@ impl Default for ServerConfig {
             backup: BackupConfig::default(),
             tunnel_mtu: None,
             dataplane: DataPlaneConfig::default(),
+            trusted_proxies: TrustedProxyConfig::default(),
         }
     }
 }
@@ -176,6 +184,11 @@ impl ServerConfig {
                 return Err(ConfigError::InvalidTunnelMtu(mtu));
             }
             other => other,
+        };
+        let trusted_proxies = match raw.trusted_proxies {
+            Some(entries) => TrustedProxyConfig::from_strings(entries)
+                .map_err(|e| ConfigError::InvalidDataPlane(e.to_string()))?,
+            None => TrustedProxyConfig::default(),
         };
         let dataplane = match raw.dataplane {
             Some(raw_dp) => {
@@ -217,6 +230,7 @@ impl ServerConfig {
             backup,
             tunnel_mtu,
             dataplane,
+            trusted_proxies,
         })
     }
 }
@@ -709,6 +723,33 @@ interface = "  "
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
         let err = ServerConfig::from_toml("[dataplane]\nlisten_port = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+    }
+
+    #[test]
+    fn trusted_proxies_default_loopback_and_parse() {
+        // TODO-116：默认仅回环（nginx 同主机反代）；不可信来源不采信头部。
+        let d = ServerConfig::default().trusted_proxies;
+        assert!(d.is_trusted("127.0.0.1".parse().unwrap()));
+        assert!(d.is_trusted("::1".parse().unwrap()));
+        assert!(!d.is_trusted("203.0.113.9".parse().unwrap()));
+
+        let c = ServerConfig::from_toml("trusted_proxies = [\"10.0.0.0/8\", \"203.0.113.10\"]")
+            .unwrap();
+        assert!(c.trusted_proxies.is_trusted("10.1.2.3".parse().unwrap()));
+        assert!(c
+            .trusted_proxies
+            .is_trusted("203.0.113.10".parse().unwrap()));
+        assert!(!c.trusted_proxies.is_trusted("192.168.1.1".parse().unwrap()));
+
+        // 空列表 = 不信任任何代理（不采信任何头部）。
+        let c = ServerConfig::from_toml("trusted_proxies = []").unwrap();
+        assert!(!c.trusted_proxies.is_trusted("127.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn trusted_proxies_rejects_invalid_entry() {
+        let err = ServerConfig::from_toml("trusted_proxies = [\"not-an-ip\"]").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
     }
 

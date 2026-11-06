@@ -75,6 +75,9 @@ pub struct AppState {
     pub dataplane: meshlet_config::DataPlaneConfig,
     /// 同一网络的 apply/rollback 串行门（§10.4）；不同网络仍可并行执行。
     pub revision_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// 可信反代来源（TODO-116）：仅当请求直接来自可信代理时才采信
+    /// `X-Forwarded-For`/`X-Real-IP`；默认仅回环 127.0.0.1/::1。
+    pub trusted_proxies: meshlet_config::TrustedProxyConfig,
     /// 密码哈希/校验阻塞任务并发上限（§11.4）。
     pub auth_blocking: Arc<tokio::sync::Semaphore>,
 }
@@ -107,6 +110,7 @@ impl AppState {
             backup_dir: None,
             tunnel_mtu: None,
             dataplane: meshlet_config::DataPlaneConfig::default(),
+            trusted_proxies: meshlet_config::TrustedProxyConfig::default(),
         }
     }
 
@@ -132,6 +136,16 @@ impl AppState {
     /// 验证设备计划下发与未配置分支）。
     pub fn with_dataplane(mut self, dataplane: meshlet_config::DataPlaneConfig) -> Self {
         self.dataplane = dataplane;
+        self
+    }
+
+    /// 注入可信反代来源（TODO-116；生产来自 `config.trusted_proxies`，测试注入
+    /// 验证「仅可信来源采信头部」安全口径）。
+    pub fn with_trusted_proxies(
+        mut self,
+        trusted_proxies: meshlet_config::TrustedProxyConfig,
+    ) -> Self {
+        self.trusted_proxies = trusted_proxies;
         self
     }
 

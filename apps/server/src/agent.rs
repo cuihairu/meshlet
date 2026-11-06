@@ -111,8 +111,64 @@ pub fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
 
 /// §12 P2P：观测源地址 → 公网候选 IP。连接来自 IPv6（无 IPv4 地址）或
 /// 无地址时返回 `None`——meshlet 是 IPv4 overlay，v6 观测不构成 IPv4 公网候选。
-fn direct_observed_ip(addr: &SocketAddr) -> Option<std::net::Ipv4Addr> {
+///
+/// TODO-116 安全口径：仅当请求**直接来自可信反代**时才采信 `X-Forwarded-For`/
+/// `X-Real-IP`；不可信来源完全忽略头部（防伪造）。`X-Forwarded-For` 是
+/// 「客户端, 代理1, 代理2…」链，取**最右侧非可信代理**地址（从右往左跳过所有
+/// 可信代理地址，取第一个非可信地址——即真实客户端）。
+fn direct_observed_ip(
+    addr: &SocketAddr,
+    headers: &HeaderMap,
+    trusted_proxies: &meshlet_config::TrustedProxyConfig,
+) -> Option<std::net::Ipv4Addr> {
+    // 仅当请求来源（socket 直连对端）是可信代理时才采信头部。
+    if trusted_proxies.is_trusted(addr.ip()) {
+        if let Some(ip) = forwarded_for_client(headers, trusted_proxies) {
+            return Some(ip);
+        }
+        if let Some(ip) = real_ip_client(headers) {
+            return Some(ip);
+        }
+    }
+    // 回落 socket 地址。
     match addr.ip() {
+        std::net::IpAddr::V4(ip) => Some(ip),
+        std::net::IpAddr::V6(_) => None,
+    }
+}
+
+/// `X-Forwarded-For` 取最右侧非可信代理地址。从右往左跳过所有属于可信代理
+/// 的条目；第一个非可信条目即真实客户端。若整条链都是可信代理（或空），
+/// 返回 `None`（无真实客户端可证，回落 socket）。
+fn forwarded_for_client(
+    headers: &HeaderMap,
+    trusted_proxies: &meshlet_config::TrustedProxyConfig,
+) -> Option<std::net::Ipv4Addr> {
+    let raw = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())?;
+    let mut parts = raw.split(',');
+    // 从右往左跳过可信代理地址。若整条链可被可信集合覆盖（含空链），None。
+    while let Some(entry) = parts.next_back() {
+        let ip = entry.trim().parse::<std::net::IpAddr>().ok()?;
+        // 最右侧非可信代理地址 = 真实客户端。
+        if !trusted_proxies.is_trusted(ip) {
+            // IPv6 观测不构成 IPv4 公网候选（与 socket 回落同口径）。
+            return match ip {
+                std::net::IpAddr::V4(ip) => Some(ip),
+                std::net::IpAddr::V6(_) => None,
+            };
+        }
+    }
+    // 链全部是可信代理（或空）：无法证明真实客户端，回落 socket。调用方
+    // 已把关「直接对端 ∈ 可信集合」，此处无需再校验。
+    None
+}
+
+/// `X-Real-IP`：单地址头部，仅在可信代理来源下由调用方把关后使用。
+fn real_ip_client(headers: &HeaderMap) -> Option<std::net::Ipv4Addr> {
+    let ip = headers.get("x-real-ip")?.to_str().ok()?.parse().ok()?;
+    match ip {
         std::net::IpAddr::V4(ip) => Some(ip),
         std::net::IpAddr::V6(_) => None,
     }
@@ -226,6 +282,7 @@ pub async fn heartbeat_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<HeartbeatRequest>,
 ) -> Result<Json<HeartbeatResponse>, AgentApiError> {
     if let Some(ts) = &req.last_handshake_at {
@@ -260,7 +317,7 @@ pub async fn heartbeat_handler(
                 service::record_direct_state(
                     &mut guard,
                     &device_id,
-                    direct_observed_ip(&addr),
+                    direct_observed_ip(&addr, &headers, &state.trusted_proxies),
                     req.direct.clone(),
                     req.direct_links.clone(),
                 );
