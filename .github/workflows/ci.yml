@@ -198,14 +198,21 @@ jobs:
         run: |
           $installDir = Join-Path $env:LOCALAPPDATA 'meshlet'
           $stateDir = Join-Path $installDir 'state'
-          foreach ($name in 'meshlet-agent.exe', 'meshlet-tray-host.exe') {
+          foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray-host.exe') {
             $path = Join-Path $installDir $name
             if (-not (Test-Path $path)) { throw "installer did not copy $name" }
           }
+
           $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $agentExe = Join-Path $installDir 'meshlet-agent.exe'
+          $configPath = Join-Path $installDir 'agent.toml'
+          $expectedAgent = 'powershell -NoProfile -WindowStyle Hidden -Command "& ''{0}'' ''{1}''"' -f $agentExe, $configPath
           $expectedTray = '"{0}" "{1}"' -f (Join-Path $installDir 'meshlet-tray-host.exe'), $stateDir
+          $agentRun = Get-ItemPropertyValue -Path $runKey -Name 'meshlet-agent'
+          if ($agentRun -ne $expectedAgent) { throw "unexpected agent Run value: $agentRun" }
           $trayRun = Get-ItemPropertyValue -Path $runKey -Name 'meshlet-tray-host'
           if ($trayRun -ne $expectedTray) { throw "unexpected tray Run value: $trayRun" }
+
           $deadline = (Get-Date).AddSeconds(30)
           do {
             $tray = Get-Process -Name 'meshlet-tray-host' -ErrorAction SilentlyContinue
@@ -214,6 +221,20 @@ jobs:
           } while ((Get-Date) -lt $deadline)
           if (-not $tray) { throw 'meshlet-tray-host process was not started' }
           Write-Output "meshlet-tray-host is running (PID $($tray[0].Id))"
+
+      - name: Verify NoStartTray skips immediate launch
+        shell: pwsh
+        run: |
+          Get-Process meshlet-tray-host -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process meshlet-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+          $env:MESHLET_INSTALL_ARCHIVE = "$PWD\dist\meshlet-nightly-windows-x86_64.zip"
+          $env:MESHLET_INSTALL_SHA256SUMS = "$PWD\dist\SHA256SUMS"
+          scripts\install.ps1 -NoStartTray
+          Start-Sleep -Seconds 3
+          if (Get-Process -Name 'meshlet-tray-host' -ErrorAction SilentlyContinue) {
+            throw 'meshlet-tray-host was started despite -NoStartTray'
+          }
 
       - name: Cleanup installed processes
         if: always()
