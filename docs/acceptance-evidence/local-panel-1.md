@@ -31,7 +31,7 @@ CI 菜单/面板门禁」，但「人在交互式会话里右键托盘 → 点�
 | 只读语义 | `POST /` → `HTTP/1.1 405 Method Not Allowed` |
 | 页面截图 | Edge headless → `local-panel.png`（75,855 B，1400×1900）：三块齐全、深色主题、无重叠/截断 |
 
-同目录证据：[`local-panel.html`](local-panel.html)（页面原文，curl 原始字节）、
+同目录证据：[`local-panel-raw.txt`](local-panel-raw.txt)（页面原文，curl 原始字节）、
 [`local-panel.png`](local-panel.png)（截图）。
 
 ## 本机（Linux）同批实测
