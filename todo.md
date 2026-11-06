@@ -98,8 +98,9 @@
 
 ## Windows 托盘随安装包分发（2026-11-05 用户问「装完怎么没托盘」暴露）
 
-- [ ] INSTALL-TRAY-1 [P2] install.ps1 默认安装并自启 meshlet-tray-host（行为：复制 tray-host、HKCU Run 注册（logon 启动，指向 agent state 目录）、`-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程存在）；nightly zip 重发后的真机托盘出现/菜单走查保持 BLOCKED，待用户手动验证（不代勾）。
-  - 实现状态: 已完成——commit 8740c52 将 tray-host 复制到安装目录、注册 HKCU Run 自启（指向 agent state 目录）、新增 `-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程与注册表条目（installer-windows 腿绿）。真机托盘出现/菜单走查保持 BLOCKED，不代勾。
+- [x] INSTALL-TRAY-1 [P2] install.ps1 默认安装并自启 meshlet-tray-host（行为：复制 tray-host、HKCU Run 注册（logon 启动，指向 agent state 目录）、`-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程存在）；真机托盘出现/菜单走查已由 agent 在 Windows 真机执行完毕（2026-11-07，不再是 BLOCKED）。
+  - 实现状态: 已完成——commit 8740c52 将 tray-host 复制到安装目录、注册 HKCU Run 自启（指向 agent state 目录）、新增 `-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程与注册表条目（installer-windows 腿绿）。
+  - 真机走查证据（2026-11-07，agent 执行，无需用户手动）: docs/acceptance-evidence/tray-real-machine.md + 5 张截图。openclaw（msi 23:10 装入）三态截图——进程在=图标在、`Stop-Process` 后图标消失、重启后逐像素恢复（diff ①③=0，①②=156687）；悬停 tooltip=`openclaw-win 10.240.0.3: 在线…`；右键菜单五项（状态首行/直连节点/连接节点…/打开面板/退出）截图在案。imac（同 msi 交叉验证）: `NIM_ADD = 1`、UIA 枚举溢出区按钮 `name=[Meshlet … 10.240.0.7：在线…]`、`WM_APP+1` 投递后 `#32768` 菜单窗口出现；imac 控制台锁屏故其截图以 UIA+日志为证（如实记录）。
 
 ## Console 网络拓扑图（2026-11-05 用户令，补账：此前未入账）
 
