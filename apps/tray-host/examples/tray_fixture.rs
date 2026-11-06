@@ -70,8 +70,10 @@ fn main() {
         // accessible_name/icon_16/icon_24）。
         // `version` / `env` 与 `TraySink::publish_with` 同步（本地面板展示
         // agent 版本与 EnvProbe 关键项；旧 agent 不带这两项，面板按未知/回落）。
+        // `updated_at` 与 `TraySink::publish_with` 同步（RFC3339）；本地面板
+        // 「当前节点」展示它——fixture 不带它会让 CI 面板证据该行恒为「—」。
         let body = format!(
-            "{{\"state\":{accessible:?},\"tooltip\":{tooltip:?},\"accessible_name\":{accessible:?},\"icon_16\":\"icon-16.png\",\"icon_24\":\"icon-24.png\",\"version\":\"fixture\",\"env\":{{\"display\":null,\"wayland_display\":null,\"session_type\":null,\"session_name\":\"CI\",\"console_session\":true}}}}"
+            "{{\"state\":{accessible:?},\"tooltip\":{tooltip:?},\"accessible_name\":{accessible:?},\"icon_16\":\"icon-16.png\",\"icon_24\":\"icon-24.png\",\"updated_at\":\"2026-11-06T00:00:00Z\",\"version\":\"fixture\",\"env\":{{\"display\":null,\"wayland_display\":null,\"session_type\":null,\"session_name\":\"CI\",\"console_session\":true}}}}"
         );
         std::fs::write(tray_dir.join("status.json"), body).expect("write status.json");
         // 本地面板另两块的数据源（与 agent 发布的文件同形）：直连节点视图 +

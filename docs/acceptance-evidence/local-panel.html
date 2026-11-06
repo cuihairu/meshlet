@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="5">
+<title>Meshlet 本地面板</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: #14171a; color: #e6e8ea;
+  font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline;
+  justify-content: space-between; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0; }
+.sub { margin: 0; color: #98a2ab; font-size: 12px; }
+.console a { color: #e0a458; text-decoration: none; font-size: 13px; }
+section { background: #1c2126; border: 1px solid #2a3138; border-radius: 10px;
+  padding: 16px 18px; margin-bottom: 16px; }
+h2 { font-size: 15px; margin: 0 0 10px; color: #f0f2f4; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #262c33;
+  vertical-align: top; }
+th { color: #98a2ab; font-weight: 600; white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+code, .mono { font-family: ui-monospace, Consolas, monospace; }
+.key { word-break: break-all; font-size: 12px; color: #b9c2ca; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 6px; vertical-align: middle; }
+.caption { color: #98a2ab; font-size: 12px; margin: 0 0 8px; }
+.empty { color: #98a2ab; font-style: italic; }
+footer { color: #6f7a83; font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Meshlet 本地面板</h1>
+  <p class="sub">本机自托管 · 数据来自本机状态文件 · 不依赖服务端可达 · 每 5 秒自动刷新</p>
+  <p class="console"><a href="http://106.14.216.177:8080">控制台（网页）↗</a></p>
+</header>
+<main>
+<section id="node">
+  <h2>当前节点</h2>
+  <p class="caption"><span class="dot" style="background:#c97b2e"></span>在线（Meshlet online） — Meshlet「imac」 10.240.0.7：在线：控制通道正常，数据面与服务端期望一致（流量经 VPS 中继）</p>
+  <table><tr><th>设备名</th><td class="mono">imac</td></tr><tr><th>虚拟 IP</th><td class="mono">10.240.0.7</td></tr><tr><th>节点公钥指纹</th><td class="mono">—（agent 未记录公钥指纹）</td></tr><tr><th>hub / 控制通道</th><td class="mono">已连接（控制通道正常）</td></tr><tr><th>版本</th><td class="mono">agent 未知（agent 未上报，可能早于本地面板版本） · 面板 meshlet-tray-host 0.1.0</td></tr><tr><th>状态更新时间</th><td class="mono">2026-11-03T17:22:41.864351300+00:00</td></tr><tr><th>计划应用时间</th><td class="mono">2026-11-05T08:24:17Z</td></tr><tr><th>控制台</th><td class="mono">http://106.14.216.177:8080</td></tr><tr><th>XDG_SESSION_TYPE</th><td class="mono">—</td></tr><tr><th>DISPLAY (X11)</th><td class="mono">—</td></tr><tr><th>WAYLAND_DISPLAY</th><td class="mono">—</td></tr><tr><th>SESSIONNAME (Windows)</th><td class="mono">—</td></tr></table>
+</section>
+<section id="direct">
+  <h2>直连节点</h2>
+  <table>
+    <tr><th>名称</th><th>Overlay IP</th><th>链路模式</th><th>RTT</th><th>Endpoint</th><th>最近握手</th><th>公钥</th></tr>
+    <tr><td colspan="7" class="empty">（暂无直连节点 — agent 尚未发布 direct-peers.json）</td></tr>
+  </table>
+</section>
+<section id="routes">
+  <h2>本地路由</h2>
+  <p class="caption">计划修订 rev31 · 账本 applied.json · 应用于 2026-11-05T08:24:17Z</p>
+  <table>
+    <tr><th>目标网段</th><th>下一跳</th><th>接口</th><th>来源</th></tr>
+    <tr><td colspan="4" class="empty">（计划未下发任何路由项）</td></tr>
+  </table>
+</section>
+</main>
+<footer>数据源：tray/status.json · direct-peers.json · applied.json · agent.toml（C:\Users\cui\AppData\Local\meshlet\state）</footer>
+</body>
+</html>
