@@ -118,8 +118,12 @@ jobs:
       - name: Launch tray host
         run: |
           $trayHost = Join-Path (Get-Location) "target\debug\meshlet-tray-host.exe"
+          # `-WindowStyle Hidden`：让进程带自己的（隐藏）控制台，不挂在 runner
+          # 本步的 console 上——实测（run 42267986109）无此参数时 tray-host 会在
+          # launch 步与后续步之间被静默回收（日志无 panic、进程消失）。
           Start-Process $trayHost `
             -ArgumentList "$(Resolve-Path tray-fixture\online)" `
+            -WindowStyle Hidden `
             -RedirectStandardError "$PWD\tray-host.log" -RedirectStandardOutput "$PWD\tray-host.out"
 
       - name: Capture desktop screenshot
@@ -158,6 +162,33 @@ jobs:
           Write-Output "local panel: $url (pid $($panel.pid))"
           $alive = [bool](Get-Process meshlet-tray-host -ErrorAction SilentlyContinue)
           Write-Output "tray-host alive: $alive"
+          # 实测（run 42267986109）：tray-host 会在 launch 步与门禁步之间被 CI
+          # 会话静默回收（stderr 日志无 panic、进程消失、连接拒绝），上一轮旧门
+          # 禁的「curl 空输出」即连接被拒被 `-s` 吞掉。门禁自愈：死了就地重拉一
+          # 份再验——启动与探测在同一 step 内，进程不再跨 step 存活。重拉后
+          # `local-panel.json` 被新进程原子覆盖（新端口/pid），等 pid 变化即拿到
+          # 新 URL；等不到新 pid 判失败，不吃旧 URL 假绿。
+          if (-not $alive) {
+            $exe = Join-Path (Get-Location) 'target\debug\meshlet-tray-host.exe'
+            if (-not (Test-Path $exe)) { Write-Error 'meshlet-tray-host.exe missing (build step did not run?)'; exit 1 }
+            $oldPid = $panel.pid
+            Write-Host "tray-host died between steps; relaunching $exe"
+            Start-Process $exe `
+              -ArgumentList "$(Resolve-Path tray-fixture\online)" `
+              -WindowStyle Hidden `
+              -RedirectStandardError "$PWD\tray-host-relaunch.log" -RedirectStandardOutput "$PWD\tray-host-relaunch.out"
+            $panel = $null
+            for ($i = 0; $i -lt 20; $i++) {
+              Start-Sleep -Seconds 1
+              if (Test-Path $urlFile) {
+                try { $p2 = Get-Content $urlFile -Raw | ConvertFrom-Json -ErrorAction Stop } catch { $p2 = $null }
+                if ($p2 -and $p2.url -match '^http://127\.0\.0\.1:\d+/' -and $p2.pid -ne $oldPid) { $panel = $p2; break }
+              }
+            }
+            if (-not $panel) { Write-Error 'tray-host relaunch did not publish a new local-panel.json'; exit 1 }
+            $url = $panel.url
+            Write-Output "relaunched tray-host: $url (pid $($panel.pid))"
+          }
           # 请求面板：curl 先行（`--noproxy '*'` 绕过 runner 的代理环境，上一轮
           # curl 静默失败只留下空串）；curl 不通就用裸 TCP 直连同一端口——门禁验的
           # 必须是面板本身，不是本机 curl 的环境；两条路径的失败原因都打进日志。
@@ -318,6 +349,7 @@ jobs:
             tray-panel.png
             tray-host-out/tray-panel.html
             tray-host.log
+            tray-host-relaunch.log
             tray-fixture/**/status.json
             tray-fixture/**/local-panel.json
             tray-fixture/**/*.png
