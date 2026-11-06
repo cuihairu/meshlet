@@ -173,8 +173,12 @@ jobs:
             if (-not (Test-Path $exe)) { Write-Error 'meshlet-tray-host.exe missing (build step did not run?)'; exit 1 }
             Write-Host "tray-host died between steps; relaunching $exe"
             # `-PassThru`：拿到新进程的真实 PID，交接文件里的 pid 必须与它相等
-            # 才算「观察到新进程」——不等旧 pid 比较（旧 pid 可能缺失/畸形），
-            # 直接锚定进程身份。
+            # 才算「观察到新进程」。先删旧交接文件再拉起：pid 可能被内核复用，
+            # 旧文件里的 pid 有概率撞上新进程 PID——删掉后只剩「重拉之后新写
+            # 出的文件」可能通过等式检查，旧文件残留不再构成假绿路径。
+            Remove-Item $urlFile -ErrorAction SilentlyContinue
+            # `-PassThru`：拿到新进程的真实 PID，交接文件里的 pid 必须与它相等
+            # 才算「观察到新进程」。
             $proc = Start-Process $exe `
               -ArgumentList "$(Resolve-Path tray-fixture\online)" `
               -WindowStyle Hidden `
