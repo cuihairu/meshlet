@@ -256,3 +256,13 @@
   - 证据: commit a66fe18 · NetworkSnapshot 增 local_public_key/tunnel_address 双读数（Linux wg dump 接口行 + ip -4 addr / Windows wg.exe dump + netsh addresses），drifted() 增两查（读数缺失不判）· network 168 + agent 104 tests
 - [x] BUG: CI windows 腿两处测试脆断（task runtime 测试用 Unix shell 语法在 cmd /C 下必挂；live firewall 测试未处理 runner 接口别名含空格）→ 按平台语法/改名后实跑通过。
   - 证据: commit 321a3d3/c0610a3/8bd2351 · run 41976760018 windows 腿绿
+
+## Dependabot 安全告警（2026-11-06 处理 GHSA-wrw7-89jp-8q8g）
+
+- [x] DEPENDABOT-10 [P2] glib >=0.15,<0.20 unsoundness（GHSA-wrw7-89jp-8q8g, medium, VariantStrIter Iterator/DoubleEndedIterator UB）dismissed as fix_not_planned。
+  - 依赖链: meshlet-tray → tauri 2.12.5 → tray-icon 0.25.1 → libappindicator 0.9.0 → gtk 0.18.2 → glib 0.18.5；tao 0.37.2/muda 0.20.0/wry 0.57.1/webkit2gtk 2.0.2 亦经 gtk 0.18 连 glib。
+  - 上游上限: libappindicator 0.9.0（最新）钉 gtk ^0.18；gtk 0.19.0 需 glib ^0.22（已修复），但 tauri 2.12.5/wry 0.57.1/tao 0.37.2/tray-icon 0.26.1 最新均钉 gtk 0.18；glib 0.18 线最末 0.18.5（无补丁版）。
+  - 可达性: 本仓代码无 glib::VariantStrIter/GVariant 直接使用（rg 零命中）；glib 仅 Linux target 编译（cargo tree -i glib --target x86_64-pc-windows-msvc 空），Windows 产物不含 glib，仅 Linux CI 编译该栈。
+  - 为何 fix_not_planned: 修复版 glib >=0.20 与整条 GTK 栈（libappindicator/tauri/wry/tao/tray-icon 全部钉 gtk 0.18）不兼容，无升级路径。
+  - 复查条件: tauri/wry/tao 迁移 gtk >=0.19 栈时重查本告警。
+  - 证据: gh api dependabot/alerts/10 state=dismissed reason=fix_not_planned（本 commit）
