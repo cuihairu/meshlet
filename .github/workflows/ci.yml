@@ -140,6 +140,7 @@ jobs:
       # 读不到（本作业上轮踩坑），而面板必须在托盘进程活着时访问。
       - name: Gate on local panel (loopback 200 + three sections)
         run: |
+          $ErrorActionPreference = 'Stop'
           $urlFile = "tray-fixture\online\local-panel.json"
           # 有界重试：等文件出现**且能解析出合法 URL**（写入已原子化，但读方
           # 仍按「可能撞见旧文件/半截 JSON」防御，只解析一次会假红）。
@@ -155,17 +156,125 @@ jobs:
           if (-not $panel) { Write-Error "no valid $urlFile (panel did not start)"; exit 1 }
           $url = $panel.url
           Write-Output "local panel: $url (pid $($panel.pid))"
-          $resp = (curl.exe -s -i "$url") -join "`n"
-          if ($resp -notmatch '^HTTP/1\.1 200') { Write-Error "local panel not 200: $($resp.Substring(0, [Math]::Min(200, $resp.Length)))"; exit 1 }
-          foreach ($id in 'id="node"', 'id="direct"', 'id="routes"') {
-            if (-not $resp.Contains($id)) { Write-Error "local panel missing section $id"; exit 1 }
+          $alive = [bool](Get-Process meshlet-tray-host -ErrorAction SilentlyContinue)
+          Write-Output "tray-host alive: $alive"
+          # 请求面板：curl 先行（`--noproxy '*'` 绕过 runner 的代理环境，上一轮
+          # curl 静默失败只留下空串）；curl 不通就用裸 TCP 直连同一端口——门禁验的
+          # 必须是面板本身，不是本机 curl 的环境；两条路径的失败原因都打进日志。
+          # 诊断一律走 Write-Host：Write-Output 会污染成功流，把函数返回值变成数组。
+          # curl 的 stderr 走 `--stderr <file>`（Actions 默认 EAP=Stop，`2>&1` 会先抛；
+          # PS 的 `2>` 重定向在 5.1 下还会把 stderr 变成 ErrorRecord 字符串）。
+          function Read-PanelRaw([string]$u, [string]$method, [string]$outFile, [string]$errFile) {
+            $eap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+              & curl.exe -sS --noproxy '*' -i --max-time 10 -X $method --stderr $errFile -o $outFile $u
+              $exit = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $eap }
+            if ($exit -eq 0) { return @{ ok = $true; via = 'curl' } }
+            $curlErr = ''
+            if (Test-Path $errFile) { $curlErr = (Get-Content $errFile -Raw) }
+            Write-Host "curl failed (exit $exit): $curlErr"
+            $c = $null
+            try {
+              $c = New-Object System.Net.Sockets.TcpClient
+              $ar = $c.BeginConnect('127.0.0.1', ([uri]$u).Port, $null, $null)
+              if (-not $ar.AsyncWaitHandle.WaitOne(3000, $false)) { throw 'connect timeout after 3000ms' }
+              $c.EndConnect($ar)
+              $s = $c.GetStream()
+              $s.ReadTimeout = 5000
+              $s.WriteTimeout = 5000
+              $target = [uri]$u
+              $req = "$method $($target.PathAndQuery) HTTP/1.1`r`nHost: 127.0.0.1`r`nConnection: close`r`n`r`n"
+              $b = [Text.Encoding]::ASCII.GetBytes($req)
+              $s.Write($b, 0, $b.Length)
+              # 总读超时（ReadTimeout 只是单次读的空闲上限， trickle-feeding 的
+              # 对端能一直占着这一步）——整体 5s 拿不到完整响应就判失败。
+              # 按字节收（MemoryStream），不按字符解码——正文含多字节 UTF-8。
+              $ms = New-Object System.IO.MemoryStream
+              $buf = New-Object byte[] 4096
+              $deadline = [DateTime]::UtcNow.AddSeconds(5)
+              while ($true) {
+                $remaining = [int]([Math]::Floor(($deadline - [DateTime]::UtcNow).TotalMilliseconds))
+                if ($remaining -le 0) { throw 'response timeout after 5000ms' }
+                $s.ReadTimeout = [Math]::Min($remaining, 5000)
+                $n = $s.Read($buf, 0, $buf.Length)
+                if ($n -le 0) { break }
+                $ms.Write($buf, 0, $n)
+              }
+              [IO.File]::WriteAllBytes($outFile, $ms.ToArray())
+              Write-Host "raw TCP fallback used for $method"
+              return @{ ok = $true; via = 'tcp' }
+            } catch {
+              Write-Host "panel unreachable ($method): curl exit $exit ($curlErr); raw TCP: $_"
+              return @{ ok = $false; via = 'none' }
+            } finally {
+              if ($c -ne $null) { $c.Close() }
+            }
           }
+          # 状态行与正文分开断言：状态码必须完整匹配（`2000` 不能算 200），section id
+          # 只在正文里找（命中响应头就是假绿）。按原始字节切头/正文——正文含多字节
+          # UTF-8，字符级切分会在多字节边界上错位。
+          function Split-ResponseBytes([byte[]]$bytes) {
+            for ($i = 0; $i -le $bytes.Length - 4; $i++) {
+              if ($bytes[$i] -eq 13 -and $bytes[$i + 1] -eq 10 -and $bytes[$i + 2] -eq 13 -and $bytes[$i + 3] -eq 10) {
+                $body = New-Object byte[] ($bytes.Length - $i - 4)
+                [Array]::Copy($bytes, $i + 4, $body, 0, $body.Length)
+                return @{ header = [Text.Encoding]::ASCII.GetString($bytes, 0, $i); body = $body }
+              }
+            }
+            return $null
+          }
+          # early-EOF 假通过守卫（审核意见）：截断响应曾能同时满足「200 + 三
+          # section」——现在必须 (1) Content-Length 与正文**字节数**一致（截断即
+          # 失配），(2) 正文以 </html> 结尾。两条全过才算完整响应。
+          function Assert-ResponseComplete([hashtable]$parts, [string]$label) {
+            $cl = $null
+            foreach ($line in ($parts.header -split "`r`n")) {
+              if ($line -match '(?i)^Content-Length: *(\d+) *$') { $cl = [long]$matches[1] }
+            }
+            if ($null -eq $cl) { Write-Error "$label response has no Content-Length header"; return $false }
+            if ($cl -ne $parts.body.Length) {
+              Write-Error "$label response truncated (early EOF): Content-Length $cl but body is $($parts.body.Length) bytes"
+              return $false
+            }
+            $bodyText = [Text.Encoding]::UTF8.GetString($parts.body)
+            if ($bodyText.TrimEnd() -notmatch '</html>$') { Write-Error "$label body does not end with </html> (truncated?)"; return $false }
+            return $true
+          }
+          function Assert-Sections([byte[]]$body, [string]$label) {
+            $bodyText = [Text.Encoding]::UTF8.GetString($body)
+            foreach ($id in 'id="node"', 'id="direct"', 'id="routes"') {
+              if (-not $bodyText.Contains($id)) { Write-Error "$label body missing section $id"; return $false }
+            }
+            return $true
+          }
+          $rawFile = Join-Path $PWD 'tray-http.raw'
+          $errFile = Join-Path $PWD 'tray-http.err'
+          $got = Read-PanelRaw $url 'GET' $rawFile $errFile
+          if (-not $got.ok) { exit 1 }
+          $bytes = [IO.File]::ReadAllBytes($rawFile)
+          $parts = Split-ResponseBytes $bytes
+          if ($null -eq $parts) { Write-Error "malformed response (no header/body separator): $([Text.Encoding]::ASCII.GetString($bytes, 0, [Math]::Min(300, $bytes.Length)))"; exit 1 }
+          $status = ($parts.header -split "`r`n")[0]
+          Write-Output "GET via $($got.via): $status"
+          if ($status -notmatch '^HTTP/1\.1 200(?:\s|$)') { Write-Error "local panel not 200: $status"; exit 1 }
+          if (-not (Assert-ResponseComplete $parts 'GET')) { exit 1 }
+          if (-not (Assert-Sections $parts.body 'GET')) { exit 1 }
           New-Item -ItemType Directory -Force tray-host-out | Out-Null
-          curl.exe -s "$url" -o tray-host-out\tray-panel.html
-          if ($LASTEXITCODE -ne 0) { Write-Error 'failed to save tray-panel.html'; exit 1 }
+          # 工件存正文原始字节（不含响应头、不带 BOM）：fallback 路径不能把头当
+          # HTML 存下来，`Set-Content -Encoding UTF8` 在 5.1 下还会加 BOM。
+          [IO.File]::WriteAllBytes("$PWD\tray-host-out\tray-panel.html", $parts.body)
           # 非 GET 只读语义：写操作必须被拒绝。
-          $post = (curl.exe -s -i -X POST "$url") -join "`n"
-          if ($post -notmatch '^HTTP/1\.1 405') { Write-Error 'local panel accepted a write method'; exit 1 }
+          $post = Read-PanelRaw $url 'POST' $rawFile $errFile
+          if (-not $post.ok) { exit 1 }
+          $postBytes = [IO.File]::ReadAllBytes($rawFile)
+          $postParts = Split-ResponseBytes $postBytes
+          if ($null -eq $postParts) { Write-Error "malformed POST response"; exit 1 }
+          $postStatus = ($postParts.header -split "`r`n")[0]
+          Write-Output "POST via $($post.via): $postStatus"
+          if ($postStatus -notmatch '^HTTP/1\.1 405(?:\s|$)') { Write-Error "local panel accepted a write method: $postStatus"; exit 1 }
+          if (-not (Assert-ResponseComplete $postParts 'POST')) { exit 1 }
 
       # 桌面会话里真实打开面板页并截屏（best-effort：浏览器启动时序不受控，
       # 失败不红 CI——硬门禁在上一步的 curl 断言）。
