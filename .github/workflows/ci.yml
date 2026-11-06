@@ -182,7 +182,11 @@ jobs:
               Start-Sleep -Seconds 1
               if (Test-Path $urlFile) {
                 try { $p2 = Get-Content $urlFile -Raw | ConvertFrom-Json -ErrorAction Stop } catch { $p2 = $null }
-                if ($p2 -and $p2.url -match '^http://127\.0\.0\.1:\d+/' -and $p2.pid -ne $oldPid) { $panel = $p2; break }
+                # pid 必须是 >0 的整数且与旧 pid 不同——JSON 缺 pid（$null）或
+                # 畸形 pid 都不算「观察到新进程」，继续等，不吃半截交接文件。
+                $newPid = $p2.pid
+                if ($p2 -and $p2.url -match '^http://127\.0\.0\.1:\d+/' -and
+                    ($newPid -is [int] -or $newPid -is [long]) -and $newPid -gt 0 -and $newPid -ne $oldPid) { $panel = $p2; break }
               }
             }
             if (-not $panel) { Write-Error 'tray-host relaunch did not publish a new local-panel.json'; exit 1 }
