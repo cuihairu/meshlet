@@ -170,6 +170,9 @@ $trayExe = Join-Path $installDir 'meshlet-tray-host.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $agentCmd = "powershell -NoProfile -WindowStyle Hidden -Command `"& '$agentExe' '$configPath'`""
 $trayCmd = "`"$trayExe`" `"$stateDir`""
+# Set-ItemProperty cannot create a registry key; ensure it exists (a clean
+# image may not have created HKCU Run yet) before writing autostart entries.
+New-Item -Path $runKey -Force | Out-Null
 if ($NoStart) {
     Remove-ItemProperty -Path $runKey -Name 'meshlet-agent' -ErrorAction SilentlyContinue
 }
