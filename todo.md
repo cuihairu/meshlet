@@ -114,7 +114,7 @@
   - 计划: wix manifest 按 cargo-wix-packaging skill 规则（exe Source 用 $(var.CargoTargetBinDir)；附加 exe 同步 --release --bin 预构建；SVG→ico 用 rsvg-convert+ImageMagick；GUI tray host 加 windows_subsystem）；Linux 侧 wixl 干跑校验 wxs；夜间 workflow 打包步产出 target/wix/*.msi 并上传 release。
 
 ## meshlet P2P 节点直连（2026-10-31 起，分批 ①-⑤）
-> 口径：以下勾=代码+netns 端到端验收。**你的部署后台看不到直连是正常的**：direct_connect 默认关（agent `[dataplane.direct_connect] enabled`），且需真实第二台节点；开法见 docs/guide/toggles.md §direct_connect。双真机走查挂 R-DIAG-2 前置，未走查前不算「用户可用」。
+> 口径：以下勾=代码+netns 端到端验收。**direct_connect 自 2026-11-06 起默认开启**（agent `[dataplane.direct_connect] enabled`，显式 `false` 关闭）；效果需真实第二台节点才可见，开法与效果说明见 docs/guide/toggles.md §direct_connect。双真机走查已完成（见 ⑥），直连属「用户可用」。
 
 - [x] ① endpoint 上报+API：agent 心跳携带 direct，server 提供 peers/endpoints 查询。
   - 证据: commit 7374f6f/a1111f5 · config 18 + network 102 + agent 60 + peers_endpoints 6 tests
@@ -122,10 +122,19 @@
   - 证据: commit c1f4b63 · 全 workspace cargo test 0 FAILED（network 104 + agent 67）
 - [x] ③ 探测+状态上报（直连/中继状态随心跳上报，console 展示）。
   - 证据: commit 4fc5aa7 · 域层 161 + agent 68 + peers_endpoints 9 tests
-- [x] ④ 防火墙联动（直连 UDP 端口放行，幂等；direct_connect 默认保持关闭）。
+- [x] ④ 防火墙联动（直连 UDP 端口放行，幂等；默认值 2026-11-06 起改开，见 ⑥）。
   - 证据: commit 923c4dc · meshlet-network 106 lib + netns 2 tests
 - [x] P2P-⑤ 暴露 hub 观测的节点公网端点（observed/public endpoint 入 API 与 console）。
-  - 证据: commit 1c5df30/8e89856/168c1c5 · server 2 集成 + console 2 tests（真机 2-peer 未跑）
+  - 证据: commit 1c5df30/8e89856/168c1c5 · server 2 集成 + console 2 tests
+- [x] ⑥ 双真机直连走查 + 直连三缺陷修复（2026-11-06）：coding-vm（10.240.0.4，Linux）↔ cuihaitao（10.240.0.8，Windows）经 Tailscale underlay 建立直连边，拓扑 API 报 `connection_mode=p2p_direct` RTT 18ms，ping 15–19ms，直连 peer 计数器 GB 级增长。
+  - 修复 1（Windows 候选端点缺失）：部署的 exe 早于 `lan_addresses_sync`/`handshake_ages_sync` Windows 接线——重编重发。
+  - 修复 2（hub 观测到 127.0.0.1）：Windows agent 走 nginx 反代域名，hub `ConnectInfo` 只见本机回环 → 公网候选丢失；agent.toml `server_url` 改指 hub 直连地址（`http://106.14.216.177:8080`）后观测到真实公网 180.152.54.66。真因：server 不解析 `X-Forwarded-For`（记 TODO-116）。
+  - 修复 3（直连每 ~90s 抖动）：`DIRECT_HEALTH_WINDOW_SECS=35` < WireGuard 重新握手节拍（~120–180s，`latest-handshake` 不随 keepalive 刷新）→ 健康空闲链路被误判 Unhealthy 反复 demote/promote；窗口改 240s（真机取证在案）。
+  - 附带修复（Windows 重配拒发）：`wireguard.exe` CLI 无 `/stoptunnelservice`（真机 Usage 取证）——`install_plan` 改为卸载重建两步；`NetworkSnapshot.tunnel_listen_port` 入漂移判定（Windows 侧钉端口 51820 生效 + 防火墙 `Meshlet-Direct-UDP-In` 自动放行）。
+  - 测试: network 172 lib（+listen-port 漂移 3 例）· domain 178（+窗口 240 断言）· single_instance 8/8（默认开直连下 port 钉入引入的 ≤25s 收敛竞态改用既有 `reconnects` 有界等待）
+
+- [ ] TODO-116 [P3] server 解析反代头（`X-Forwarded-For`/`X-Real-IP`）：nginx 域名入口下 `ConnectInfo` 只见 127.0.0.1，hub 观测公网候选退化为回环（2026-11-06 真机取证，cuihaitao 走查中曾因此无公网候选；当前以 agent 直连 hub 地址绕过）。改法：`direct_observed_ip` 先取可信反代头再回落 socket；须同时收紧「仅可信代理来源才采信头部」，并补集成测试。
+  - 证据: 2026-11-06 直连走查 devices API `observed_endpoint=127.0.0.1:51820`（域名入口）vs `180.152.54.66:51820`（直连地址）。
 
 ## 诊断与托盘（2026-11-01 用户令）
 

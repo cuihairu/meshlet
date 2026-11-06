@@ -483,6 +483,15 @@ impl WindowsNetworkBackend {
         } else {
             None
         };
+        // 实际监听端口（直连钉端口的漂移判定输入）：同一 dump 接口行第 3 列
+        // （读不到 → None，证据缺失不判）。
+        let tunnel_listen_port = if tunnel_exists {
+            self.read_tunnel_dump(&self.interface)
+                .as_deref()
+                .and_then(crate::parse_wg_dump_listen_port)
+        } else {
+            None
+        };
         Ok(NetworkSnapshot {
             tunnel_exists,
             forwarding_enabled,
@@ -492,6 +501,7 @@ impl WindowsNetworkBackend {
             tunnel_mtu,
             local_public_key,
             tunnel_address,
+            tunnel_listen_port,
         })
     }
 
@@ -510,16 +520,65 @@ impl WindowsNetworkBackend {
         Ok(Vec::new())
     }
 
+    /// 本机 RFC1918 局域网地址（§12 P2P 候选端点上报）。Windows 读数走
+    /// `Get-NetIPAddress` JSON（字段名英文、locale 无关；netsh 输出按活动
+    /// 代码页本地化，解析脆弱）。排除本受管接口 / 回环 / Hyper-V vEthernet /
+    /// Tailscale / 其余 wg 接口；RFC1918 过滤掉 APIPA（169.254）与 CGNAT
+    /// （100.64/10，Tailscale 地址），ZeroTier 等私有网段**保留**（与 Linux
+    /// `is_lan_interface` 口径一致：可路由的私有网段都是候选）。
     pub fn lan_addresses_sync(&self) -> Result<Vec<Ipv4Addr>, NetworkError> {
-        Err(NetworkError::Unsupported(
-            "LAN address enumeration on Windows is not yet implemented".to_string(),
-        ))
+        let mut addrs: Vec<Ipv4Addr> = self
+            .lan_ip_entries()?
+            .into_iter()
+            .filter(|(alias, _, _)| is_windows_lan_interface(alias, &self.interface))
+            .map(|(_, addr, _)| addr)
+            .filter(|addr| meshlet_domain::is_private_ip(*addr))
+            .collect();
+        addrs.sort_unstable();
+        addrs.dedup();
+        Ok(addrs)
     }
 
-    pub fn lan_subnets_sync(&self) -> Result<Vec<Ipv4Cidr>, NetworkError> {
-        Err(NetworkError::Unsupported(
-            "LAN subnet enumeration on Windows is not yet implemented".to_string(),
-        ))
+    /// 枚举本机 RFC1918 局域网**子网**：与 [`Self::lan_addresses_sync`] 同一
+    /// 来源，但保留前缀长度（同网段判定需要网段）。
+    pub fn lan_subnets_sync(&self) -> Result<Vec<meshlet_domain::Ipv4Cidr>, NetworkError> {
+        let mut subnets: Vec<meshlet_domain::Ipv4Cidr> = self
+            .lan_ip_entries()?
+            .into_iter()
+            .filter(|(alias, _, _)| is_windows_lan_interface(alias, &self.interface))
+            .filter(|(_, addr, _)| meshlet_domain::is_private_ip(*addr))
+            // 接口地址+前缀 → 所属网段（from_host_address 掩掉主机位）；前缀
+            // 越界（JSON 读数畸形）按无子网处理，不吞掉其余读数。
+            .filter_map(|(_, addr, prefix)| {
+                meshlet_domain::Ipv4Cidr::from_host_address(addr, prefix).ok()
+            })
+            .collect();
+        subnets.sort();
+        subnets.dedup();
+        Ok(subnets)
+    }
+
+    /// `Get-NetIPAddress` JSON 读数（locale 无关）：`(别名, 地址, 前缀)` 列表。
+    /// PowerShell 单结果输出对象、多结果输出数组——按 `Value` 统一归一。
+    fn lan_ip_entries(&self) -> Result<Vec<(String, Ipv4Addr, u8)>, NetworkError> {
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-NetIPAddress -AddressFamily IPv4 | \
+                 Select-Object IPAddress,InterfaceAlias,PrefixLength | \
+                 ConvertTo-Json -Compress",
+            ])
+            .output()
+            .map_err(|error| NetworkError::Io(format!("spawn powershell: {error}")))?;
+        if !output.status.success() {
+            return Err(NetworkError::ApplyRejected(format!(
+                "Get-NetIPAddress failed: {}",
+                crate::windows_console::decode_output(&output.stderr)
+            )));
+        }
+        parse_lan_ip_json(&crate::windows_console::decode_output(&output.stdout))
     }
 
     pub fn remove_nat_sync(&self, _owner: &str) -> Result<ApplyResult, NetworkError> {
@@ -646,6 +705,13 @@ impl WindowsNetworkBackend {
         // 置于隧道与路由之后（档位命令需接口已存在）；失败显式报错，不假装
         // 生效——真机「ping 直接通」属验收走查，见 todo.md AGENT-FW-1。
         self.ensure_mesh_reachability_sync(plan.tunnel.address)?;
+        // P2P 批次④ Windows 接线：直连开启时计划把数据面隧道钉到固定监听
+        // 端口（plan.tunnel.listen_port = Some(port)），防火墙联动放行该 UDP
+        // 端口——无规则则对端入站握手包被 Public 档默认策略丢弃。与 Linux
+        // ensure_direct_udp_firewall_sync 同条件、同幂等纪律。
+        if let Some(port) = plan.tunnel.listen_port {
+            self.ensure_direct_udp_firewall_sync(port)?;
+        }
         Ok(())
     }
 
@@ -672,44 +738,155 @@ impl WindowsNetworkBackend {
         None
     }
 
-    /// P2P 直连执行层（§12）Windows 尚未接线：显式拒绝，不假装直连成功。
+    /// P2P 直连执行层（§12）：`wg.exe show <if> latest-handshakes` →
+    /// 公钥 → 秒龄。与 Linux 同一解析器（[crate::parse_handshake_ages]）。
     pub fn handshake_ages_sync(
         &self,
     ) -> Result<std::collections::BTreeMap<String, u64>, NetworkError> {
-        Err(NetworkError::Unsupported(
-            "direct-connect handshake ages on Windows are not yet implemented".to_string(),
+        let exe = self.find_wg_exe().ok_or_else(|| {
+            NetworkError::Unsupported(
+                "wg.exe not found. Install WireGuard for Windows.".to_string(),
+            )
+        })?;
+        let out = std::process::Command::new(&exe)
+            .args(["show", &self.interface, "latest-handshakes"])
+            .output()
+            .map_err(|error| NetworkError::Io(format!("spawn wg.exe: {error}")))?;
+        if !out.status.success() {
+            return Err(NetworkError::ApplyRejected(format!(
+                "wg show {} latest-handshakes: {}",
+                self.interface,
+                crate::windows_console::decode_output(&out.stderr)
+            )));
+        }
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok(crate::parse_handshake_ages(
+            &crate::windows_console::decode_output(&out.stdout),
+            now_secs,
         ))
     }
 
-    /// P2P 直连 peer 下发（§12）Windows 尚未接线：显式拒绝。
+    /// P2P 直连 peer 下发（§12）：`wg.exe set <if> peer …`——与 Linux
+    /// [`crate::linux::LinuxNetworkBackend::set_direct_peer_sync`] 同参数形状
+    /// （allowed-ips 对端 overlay /32 + endpoint + persistent-keepalive）。
+    /// WireGuardNT 适配器支持运行期 `wg set`（wireguard.exe 隧道服务创建的
+    /// 适配器同样适用），无需重装隧道；写入要求提升权限（agent 以管理员运行）。
+    /// 幂等：重复调用结果一致。
+    ///
+    /// 注意：隧道重装（apply）会重置运行期 peer——调用方（agent）按 tick 重推，
+    /// 与 Linux 的 reconcile 语义一致。
     pub fn set_direct_peer_sync(
         &self,
-        _public_key: &str,
-        _allowed_ips: &[Ipv4Cidr],
-        _endpoint: std::net::SocketAddrV4,
-        _persistent_keepalive_secs: u32,
+        public_key: &str,
+        allowed_ips: &[Ipv4Cidr],
+        endpoint: std::net::SocketAddrV4,
+        persistent_keepalive_secs: u32,
     ) -> Result<(), NetworkError> {
-        Err(NetworkError::Unsupported(
-            "direct-connect peer setup on Windows is not yet implemented".to_string(),
-        ))
+        let allowed = allowed_ips
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let endpoint = endpoint.to_string();
+        let keepalive = persistent_keepalive_secs.to_string();
+        self.run_wg_set(&[
+            "peer",
+            public_key,
+            "allowed-ips",
+            &allowed,
+            "endpoint",
+            &endpoint,
+            "persistent-keepalive",
+            &keepalive,
+        ])
     }
 
-    /// P2P 直连 peer 移除（§12）Windows 尚未接线：显式拒绝。
-    pub fn remove_peer_sync(&self, _public_key: &str) -> Result<(), NetworkError> {
-        Err(NetworkError::Unsupported(
-            "direct-connect peer removal on Windows is not yet implemented".to_string(),
-        ))
+    /// P2P 直连 peer 移除（回退 hub，§12）：`wg.exe set <if> peer <key> remove`。
+    /// 幂等：不存在也成功（WireGuard 对缺失 peer 的 remove 是 no-op）。
+    pub fn remove_peer_sync(&self, public_key: &str) -> Result<(), NetworkError> {
+        self.run_wg_set(&["peer", public_key, "remove"])
     }
 
-    /// SEL-002 直连 endpoint 漫游（Windows 尚未接线）：显式拒绝。
+    /// SEL-002 直连 endpoint 漫游：`wg.exe set <if> peer <key> endpoint <ip:port>`。
+    /// WireGuard 在同一 peer 上改 endpoint 是无缝的（不断开已有握手）。幂等。
     pub fn set_direct_endpoint_sync(
         &self,
-        _public_key: &str,
-        _endpoint: std::net::SocketAddrV4,
+        public_key: &str,
+        endpoint: std::net::SocketAddrV4,
     ) -> Result<(), NetworkError> {
-        Err(NetworkError::Unsupported(
-            "direct-connect endpoint roam on Windows is not yet implemented".to_string(),
-        ))
+        let endpoint = endpoint.to_string();
+        self.run_wg_set(&["peer", public_key, "endpoint", &endpoint])
+    }
+
+    /// `wg.exe set <if> <args>`：运行期变更受管适配器（成功静默；失败携带
+    /// wg.exe stderr 文本——权限不足/适配器不存在都在其中可读）。
+    fn run_wg_set(&self, args: &[&str]) -> Result<(), NetworkError> {
+        let exe = self.find_wg_exe().ok_or_else(|| {
+            NetworkError::Unsupported(
+                "wg.exe not found. Install WireGuard for Windows.".to_string(),
+            )
+        })?;
+        let out = std::process::Command::new(&exe)
+            .arg("set")
+            .arg(&self.interface)
+            .args(args)
+            .output()
+            .map_err(|error| NetworkError::Io(format!("spawn wg.exe: {error}")))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        Err(NetworkError::ApplyRejected(format!(
+            "wg set {}: {}",
+            self.interface,
+            crate::windows_console::decode_output(&out.stderr)
+        )))
+    }
+
+    /// 直连 UDP 端口入站放行（批次④ Windows 接线）：`Meshlet-Direct-UDP-In`
+    /// 规则（protocol=udp / localport=<port> / profile=any），先探
+    /// [crate::windows_firewall::firewall_rule_present] 再 add（netsh 重复
+    /// add 同名规则会叠出重复项，探测是幂等性的一半）。
+    fn ensure_direct_udp_firewall_sync(&self, port: u16) -> Result<(), NetworkError> {
+        if self.direct_udp_rule_present(port) {
+            return Ok(());
+        }
+        let command = crate::windows_firewall::FirewallRuleCommand::Add {
+            rule: crate::windows_firewall::direct_udp_rule(port),
+        };
+        let result = crate::windows_firewall::exec::run_firewall_command(&command)?;
+        if result.applied {
+            return Ok(());
+        }
+        Err(NetworkError::ApplyRejected(format!(
+            "direct UDP firewall rule not applied: {}",
+            result.error.as_deref().unwrap_or("unknown")
+        )))
+    }
+
+    /// `netsh advfirewall firewall show rule name=Meshlet-Direct-UDP-In` 探测。
+    fn direct_udp_rule_present(&self, port: u16) -> bool {
+        let output = std::process::Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "show",
+                "rule",
+                &format!("name={}", crate::windows_firewall::DIRECT_UDP_RULE_NAME),
+            ])
+            .output()
+            .map(|out| {
+                format!(
+                    "{}{}",
+                    crate::windows_console::decode_output(&out.stdout),
+                    crate::windows_console::decode_output(&out.stderr),
+                )
+            })
+            .unwrap_or_default();
+        crate::windows_firewall::firewall_rule_present(&output)
+            && crate::windows_firewall::rule_output_mentions_port(&output, port)
     }
 }
 
@@ -949,6 +1126,57 @@ fn parse_windows_interfaces_json(text: &str) -> Vec<InterfaceDiagnostic> {
         .collect()
 }
 
+/// Windows 局域网接口判定（§12 P2P 候选口径，镜像 Linux `is_lan_interface`）：
+/// 排除本受管 wg 接口、回环、Hyper-V vEthernet、Tailscale 与其余 wg 接口；
+/// ZeroTier 等私有网段**保留**（可路由的私有网段都是直连候选）。别名比对
+/// 大小写不敏感（Windows 接口别名如 `Tailscale`、`vEthernet (WSL …)`）。
+fn is_windows_lan_interface(alias: &str, wg_interface: &str) -> bool {
+    let lower = alias.to_ascii_lowercase();
+    if alias == wg_interface || lower.starts_with("loopback") {
+        return false;
+    }
+    for prefix in ["vethernet", "tailscale", "wg", "docker", "veth"] {
+        if lower.starts_with(prefix) {
+            return false;
+        }
+    }
+    true
+}
+
+/// `Get-NetIPAddress … | ConvertTo-Json -Compress` 解析：`(别名, 地址, 前缀)`
+/// 列表。PowerShell **单结果**输出对象、多结果输出数组——按 `Value` 统一归一
+/// （[parse_windows_interfaces_json] 同惯例）。畸形行（缺字段/解析失败）
+/// 逐条跳过，不吞掉整批读数。
+fn parse_lan_ip_json(text: &str) -> Result<Vec<(String, Ipv4Addr, u8)>, NetworkError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|error| NetworkError::ApplyRejected(format!("Get-NetIPAddress json: {error}")))?;
+    let items: Vec<&serde_json::Value> = match &value {
+        serde_json::Value::Array(arr) => arr.iter().collect(),
+        serde_json::Value::Object(_) => vec![&value],
+        _ => return Ok(Vec::new()),
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|item| {
+            let alias = item.get("InterfaceAlias").and_then(|v| v.as_str())?;
+            let addr: Ipv4Addr = item
+                .get("IPAddress")
+                .and_then(|v| v.as_str())?
+                .parse()
+                .ok()?;
+            let prefix = item
+                .get("PrefixLength")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u8::try_from(n).ok())?;
+            Some((alias.to_string(), addr, prefix))
+        })
+        .collect())
+}
+
 /// 当前 UTC 时刻的 ISO-8601 字符串（Windows；不引 chrono）。用
 /// `powershell` 读取，失败回退纪元秒。
 fn now_iso_utc() -> String {
@@ -978,6 +1206,45 @@ fn now_iso_utc() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lan_ip_json_parses_single_object_and_array() {
+        // 多结果：PowerShell 输出数组。
+        let arr = r#"[{"IPAddress":"192.168.88.51","InterfaceAlias":"WLAN 7","PrefixLength":24},{"IPAddress":"10.147.19.97","InterfaceAlias":"ZeroTier One [db64858fedb29f06]","PrefixLength":24},{"IPAddress":"169.254.209.18","InterfaceAlias":"WLAN 9","PrefixLength":16}]"#;
+        let entries = parse_lan_ip_json(arr).expect("array");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].1, "192.168.88.51".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(entries[0].2, 24);
+        // 单结果：PowerShell 输出裸对象。
+        let obj = r#"{"IPAddress":"10.0.0.5","InterfaceAlias":"以太网","PrefixLength":24}"#;
+        let one = parse_lan_ip_json(obj).expect("object");
+        assert_eq!(one.len(), 1);
+        // 空与畸形。
+        assert!(parse_lan_ip_json("").unwrap().is_empty());
+        assert!(parse_lan_ip_json("not json").is_err());
+    }
+
+    #[test]
+    fn windows_lan_interface_filter_keeps_lan_and_zerotier_drops_virtual() {
+        // 受管接口 / 回环 / Hyper-V / Tailscale / 其余 wg → 排除。
+        assert!(!is_windows_lan_interface("wg-meshlet", "wg-meshlet"));
+        assert!(!is_windows_lan_interface(
+            "Loopback Pseudo-Interface 1",
+            "wg-meshlet"
+        ));
+        assert!(!is_windows_lan_interface(
+            "vEthernet (WSL (Hyper-V firewall))",
+            "wg-meshlet"
+        ));
+        assert!(!is_windows_lan_interface("Tailscale", "wg-meshlet"));
+        assert!(!is_windows_lan_interface("wg-newapi", "wg-meshlet"));
+        // 物理 LAN 与 ZeroTier → 保留（候选口径与 Linux 一致）。
+        assert!(is_windows_lan_interface("WLAN 7", "wg-meshlet"));
+        assert!(is_windows_lan_interface(
+            "ZeroTier One [db64858fedb29f06]",
+            "wg-meshlet"
+        ));
+    }
 
     #[test]
     fn parse_ping_rtt_windows_supports_english_and_chinese() {

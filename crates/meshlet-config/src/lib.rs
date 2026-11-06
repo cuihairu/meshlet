@@ -347,11 +347,11 @@ pub struct DataplaneConfig {
     pub hub_endpoint: Option<String>,
     /// 轮询间隔（秒）：到期向 server 拉取期望配置，有变更才重放（§10.1）。
     pub poll_interval_secs: u64,
-    /// P2P 直连（§12 P2P）：agent 每轮心跳上报候选端点，数据面尝试绕过 hub
-    /// 直连对端；不可达时自动回退 hub 中继。**默认关闭**，显式开启
-    /// （`[dataplane.direct_connect] enabled = true`）才生效——批次④（防火墙
-    /// 联动放行 UDP 端口）落地前直连链路不完整，且开启会把数据面 wg 接口
-    /// 绑定到固定监听端口，静默改变既有部署行为。
+    /// P2P 直连（§12 P2P）：agent 每帧心跳上报候选端点，数据面尝试绕过 hub
+    /// 直连对端；不可达时自动回退 hub 中继。**默认开启**（批次④防火墙联动
+    /// 已落地、双真机走查通过后的产品决策——直连是核心目标，hub 中继只是
+    /// 兜底）：开直连会把数据面 wg 接口钉到固定监听端口并放行该 UDP 端口。
+    /// 显式关闭：`[dataplane.direct_connect] enabled = false`。
     pub direct_connect: DirectConnectConfig,
     /// SEL-001 候选端点探测：对每 peer 全部候选端点发 ICMP 轻量探测，采集
     /// RTT / 丢包 / 抖动滑动窗口。**默认关闭**（数据面子功能默认全关惯例）；
@@ -370,7 +370,7 @@ pub struct DirectConnectConfig {
 impl Default for DirectConnectConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             listen_port: 51820,
         }
     }
@@ -863,15 +863,16 @@ interface = "  "
     }
 
     #[test]
-    fn agent_direct_connect_defaults_off_and_parses_section() {
-        // §12 P2P：直连链路在批次④（防火墙联动放行 UDP 端口）落地前不完整，默认关闭；
-        // 显式 [dataplane.direct_connect] enabled = true 才开启。监听端口默认 51820。
+    fn agent_direct_connect_defaults_on_and_parses_section() {
+        // §12 P2P：直连是核心目标，批次④防火墙联动已落地、双真机走查通过后
+        // 默认改开。显式 [dataplane.direct_connect] enabled = false 才关闭。
+        // 监听端口默认 51820。
         let d = AgentConfig::default().dataplane.direct_connect;
-        assert!(!d.enabled);
+        assert!(d.enabled);
         assert_eq!(d.listen_port, 51820);
-        // 缺 [dataplane] 段同样默认关闭。
+        // 缺 [dataplane] 段同样默认开启。
         assert!(
-            !AgentConfig::from_toml("")
+            AgentConfig::from_toml("")
                 .unwrap()
                 .dataplane
                 .direct_connect

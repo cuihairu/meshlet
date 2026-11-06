@@ -29,6 +29,7 @@ use std::net::Ipv4Addr;
 use std::str::FromStr;
 
 use crate::nat::{NatAction, NatChain, NatRule};
+use crate::parse_handshake_ages;
 use crate::{
     ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkDiagnostics, NetworkError,
     NetworkSnapshot, PeerObserved, RouteConfig, TunnelConfig, WgPeerDiagnostic, DEFAULT_TUNNEL_MTU,
@@ -278,32 +279,6 @@ pub(crate) fn parse_wg_dump_diag_line(line: &str) -> Option<WgPeerDiagnostic> {
         rx_bytes,
         tx_bytes,
     })
-}
-
-/// 解析 `wg show <if> latest-handshakes` 输出（每行 `公钥 握手unix时间 距今秒`）：
-/// 公钥 → 距今秒数。第三列优先（WireGuard 自己算好的年龄）；缺第三列时按
-/// `now - 握手时间` 兜底。握手时间为 0（从未握手）的 peer 不在输出里——
-/// 调用方按「无读数」处理（§12 `classify_probe` 的 Unknown/Unhealthy 之别）。
-fn parse_handshake_ages(text: &str, now_secs: u64) -> BTreeMap<String, u64> {
-    text.lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let key = fields.next()?;
-            // 公钥 44 字符 base64 且以 `=` 结尾（与 dump 行解析同一判据）。
-            if key.len() != 44 || !key.ends_with('=') {
-                return None;
-            }
-            let ts: u64 = fields.next()?.parse().ok()?;
-            if ts == 0 {
-                return None;
-            }
-            let age = fields
-                .next()
-                .and_then(|ago| ago.parse::<u64>().ok())
-                .unwrap_or_else(|| now_secs.saturating_sub(ts));
-            Some((key.to_string(), age))
-        })
-        .collect()
 }
 
 /// Kernel-selected source for the actual destination, not an address inside its prefix.
@@ -780,6 +755,13 @@ impl LinuxNetworkBackend {
         } else {
             None
         };
+        let tunnel_listen_port = if tunnel_exists {
+            self.wg_dump_on_interface()
+                .ok()
+                .and_then(|dump| crate::parse_wg_dump_listen_port(&dump))
+        } else {
+            None
+        };
         Ok(NetworkSnapshot {
             tunnel_exists,
             forwarding_enabled,
@@ -789,6 +771,7 @@ impl LinuxNetworkBackend {
             tunnel_mtu,
             local_public_key,
             tunnel_address,
+            tunnel_listen_port,
         })
     }
 

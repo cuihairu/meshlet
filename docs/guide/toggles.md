@@ -55,7 +55,7 @@ These switches exist, but their effect requires a host this pipeline cannot driv
 
 - Tray app: autostart / animations / language — a desktop Tauri window (system tray). Needs a Windows or macOS GUI session; on this Linux host the tray app has no display. Record by running the tray app on a desktop host and capturing its settings window (`apps/tray-app`).
 - Agent `[dataplane] enabled` — the effect is the agent actually applying WireGuard config to a real interface. It needs `NET_ADMIN` and a reachable hub. Record with `MESHLET_REQUIRE_DATAPLANE=1` and a data-plane-capable host (see ADR-007).
-- Agent `[dataplane.direct_connect] enabled`. P2P direct peers need a real second meshlet node. See the R-DIAG-2 acceptance note; the same 2-node scenario is a prerequisite.
+- Agent `[dataplane.direct_connect] enabled` — **on by default** (since 2026-11-06; set `enabled = false` to turn off). Effect = a **solid direct edge with an RTT label** on the console topology page (data source: `devices` API, `direct_links[].connection_mode = p2p_direct`), plus a `/32` direct peer visible in `wg show` on each end. Recording needs a real second meshlet node, which this single-host loopback pipeline cannot drive; the two-real-node walkthrough is done: coding-vm ↔ cuihaitao (Windows) established a direct link over the Tailscale underlay with the topology API reporting RTT 18 ms (2026-11-06, evidence in todo.md's P2P ledger).
 - Service notifications / `status_notifier_item` — desktop tray indicator, same host limitation as the tray app.
 
 None of these are faked: they are listed here as not-yet-recordable on this machine rather than shown as passing.

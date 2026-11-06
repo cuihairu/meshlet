@@ -31,6 +31,39 @@
 //! [DevicePlan] 是 server → agent 的**结构化配置对象**（§16.4）：agent 只消费
 //! 类型化的隧道/路由/NAT 计划，绝不执行服务端下发的任意 Shell 命令。
 
+/// 解析 `wg show <if> latest-handshakes` 输出（每行 `公钥 握手unix时间 距今秒`）：
+/// 公钥 → 距今秒数。第三列优先（WireGuard 自己算好的年龄）；缺第三列时按
+/// `now - 握手时间` 兜底。握手时间为 0（从未握手）的 peer 不在输出里——
+/// 调用方按「无读数」处理（§12 `classify_probe` 的 Unknown/Unhealthy 之别）。
+///
+/// 放在本 crate 根（而非 [linux] 模块）：双平台共享的**纯解析逻辑**，
+/// Windows 执行层（`windows` 模块，`#[cfg(windows)]`）与 Linux 执行层各取
+/// 所需——解析本身不依赖平台，二进制格式两侧一致。
+pub(crate) fn parse_handshake_ages(
+    text: &str,
+    now_secs: u64,
+) -> std::collections::BTreeMap<String, u64> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let key = fields.next()?;
+            // 公钥 44 字符 base64 且以 `=` 结尾（与 dump 行解析同一判据）。
+            if key.len() != 44 || !key.ends_with('=') {
+                return None;
+            }
+            let ts: u64 = fields.next()?.parse().ok()?;
+            if ts == 0 {
+                return None;
+            }
+            let age = fields
+                .next()
+                .and_then(|ago| ago.parse::<u64>().ok())
+                .unwrap_or_else(|| now_secs.saturating_sub(ts));
+            Some((key.to_string(), age))
+        })
+        .collect()
+}
+
 pub mod diag;
 pub mod dial;
 pub mod keys;
@@ -227,6 +260,11 @@ pub struct NetworkSnapshot {
     /// 受管接口适配器的实际 IPv4 地址。漂移判定比对计划地址——手动隧道
     /// 换了地址也必须重放纠回；读不到 → `None`（证据缺失不判）。
     pub tunnel_address: Option<std::net::Ipv4Addr>,
+    /// 受管接口的 WireGuard 实际监听端口（`wg show dump` 接口行第 3 列）。
+    /// 直连开启时计划钉住固定端口（`plan.tunnel.listen_port`）——实际端口
+    /// 与计划不符必须判不匹配（否则对端按上报端口发包，本机收不到，
+    /// 打洞静默失败）；读不到 → `None`（证据缺失不判，不进重放死循环）。
+    pub tunnel_listen_port: Option<u16>,
 }
 
 /// 受管接口上读出的一个 WireGuard peer（身份级事实：公钥 + allowed-ips）。
@@ -246,6 +284,13 @@ pub fn parse_wg_dump_local_public_key(dump: &str) -> Option<String> {
         return None;
     }
     Some(public_key.to_string())
+}
+
+/// 解析 `wg show <if> dump` 接口行的实际监听端口（字段 2）。Linux `wg` 与
+/// Windows `wg.exe` 同一 dump 格式，共享本解析；解析不出（空/残行）→
+/// `None`（调用方按证据缺失处理，不判漂移）。
+pub fn parse_wg_dump_listen_port(dump: &str) -> Option<u16> {
+    dump.lines().next()?.split_whitespace().nth(2)?.parse().ok()
 }
 
 /// 网络诊断信息面（R-DIAG，2026-11-01 用户令）：agent 本地路由表 / 接口
@@ -381,6 +426,15 @@ pub(crate) fn device_plan_matches(
             return false;
         }
     }
+    // ⑦ 实际监听端口：直连钉住的固定端口与内核读数不符（手动 `wg set
+    //    listen-port` / 半应用状态）→ 判不匹配，重放纠回。读数缺失不判。
+    if let Some(port) = plan.tunnel.listen_port {
+        if let Some(actual) = snapshot.tunnel_listen_port {
+            if actual != port {
+                return false;
+            }
+        }
+    }
     true
 }
 
@@ -447,6 +501,7 @@ mod device_plan_matches_tests {
             tunnel_mtu: mtu,
             local_public_key: None,
             tunnel_address: None,
+            tunnel_listen_port: None,
         }
     }
 
@@ -472,6 +527,36 @@ mod device_plan_matches_tests {
         let p = plan(&["pk-a", "pk-b"], &["10.240.0.0/24"], Some(1420));
         let s = snapshot(true, &["pk-a", "pk-b"], &["10.240.0.0/24"], Some(1420));
         assert!(device_plan_matches(&p, &empty_extra(), &s));
+    }
+
+    #[test]
+    fn pinned_listen_port_mismatch_reads_as_not_matching() {
+        // 直连钉住的固定端口与内核读数不符（手动 wg set listen-port /
+        // 半应用）→ 必须判不匹配，重放纠回；读数缺失（None）不判。
+        let mut p = plan(&["pk-a"], &["10.240.0.0/24"], None);
+        p.tunnel.listen_port = Some(51820);
+        let mut drifted = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
+        drifted.tunnel_listen_port = Some(60736);
+        assert!(!device_plan_matches(&p, &empty_extra(), &drifted));
+        let mut matching = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
+        matching.tunnel_listen_port = Some(51820);
+        assert!(device_plan_matches(&p, &empty_extra(), &matching));
+        // 证据缺失不判（不进重放死循环）。
+        let mut unreadable = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
+        unreadable.tunnel_listen_port = None;
+        assert!(device_plan_matches(&p, &empty_extra(), &unreadable));
+    }
+
+    #[test]
+    fn wg_dump_listen_port_parses_interface_line() {
+        // 接口行形状：私钥 本机公钥 监听端口 …
+        let dump = format!("{} {} 51820\n", "x".repeat(32), "A".repeat(43) + "=");
+        assert_eq!(crate::parse_wg_dump_listen_port(&dump), Some(51820));
+        let no_port = format!("{} {}\n", "x".repeat(32), "A".repeat(43) + "=");
+        assert_eq!(crate::parse_wg_dump_listen_port(&no_port), None);
+        assert_eq!(crate::parse_wg_dump_listen_port(""), None);
+        let junk = format!("{} {} not-a-port\n", "x".repeat(32), "A".repeat(43) + "=");
+        assert_eq!(crate::parse_wg_dump_listen_port(&junk), None);
     }
 
     #[test]
@@ -615,6 +700,7 @@ mod tests {
                 tunnel_mtu: Some(1420),
                 local_public_key: None,
                 tunnel_address: None,
+                tunnel_listen_port: None,
             })
         }
 

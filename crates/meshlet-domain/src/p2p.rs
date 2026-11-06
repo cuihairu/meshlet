@@ -319,9 +319,17 @@ pub fn direct_peer_allowed_ips(
 pub const DIRECT_PROBE_INTERVAL_SECS: u64 = 30;
 /// 直连建立容忍的最大 pending 探测周期数（任务书「3 次握手周期」）。
 pub const MAX_PROMOTE_ATTEMPTS: u8 = 3;
-/// 直连健康窗口（秒）：直接 peer 最近握手年龄超过此值视为不健康
-/// （keepalive 15s + 一个周期裕量）。
-pub const DIRECT_HEALTH_WINDOW_SECS: u64 = 35;
+/// 直连健康窗口（秒）：直接 peer 最近握手年龄超过此值视为不健康。
+///
+/// **不能按 keepalive 周期取小值**：`latest-handshake` 只在**完成的重新
+/// 握手**时刷新，keepalive/数据包不刷新它。WireGuard 对活跃会话按
+/// REKEY_AFTER_TIME（发起方 ~120s，响应方 ~180s）节拍重新握手，健康但
+/// 空闲的直连链路握手年龄会周期性涨到 ~180s——窗口若小于该节拍（曾取
+/// 35s），健康链路被误判 Unhealthy → demote → promote 每 ~90s 抖动一次
+/// （真机 2026-11-06 coding-vm↔cuihaitao 取证）。窗口须大于重新握手
+/// 节拍上限；失效链路（对端死、重握手不再成功）的握手年龄会持续增长
+/// 超过此窗口，仍能被兜住。
+pub const DIRECT_HEALTH_WINDOW_SECS: u64 = 240;
 /// 直连 peer 的 persistent-keepalive（秒）：让 wg 主动发包——既是 NAT
 /// 打洞的「洞」，也是健康探测的心跳来源。
 pub const DIRECT_PERSISTENT_KEEPALIVE_SECS: u32 = 15;
@@ -985,13 +993,19 @@ mod tests {
             classify_probe(PeerLinkState::Direct, None, DIRECT_HEALTH_WINDOW_SECS),
             ProbeResult::Unhealthy
         );
-        // 窗口内 = 健康；窗口外 = 失效。
+        // 窗口内 = 健康；窗口外 = 失效。窗口必须大于 WireGuard 重新握手
+        // 节拍（活跃会话 ~120–180s 重新握手一次，keepalive 不刷新
+        // latest-handshake）——健康空闲链路的握手年龄会合法涨到 ~180s。
         assert_eq!(
             classify_probe(PeerLinkState::Direct, Some(20), DIRECT_HEALTH_WINDOW_SECS),
             ProbeResult::Healthy
         );
         assert_eq!(
-            classify_probe(PeerLinkState::Direct, Some(90), DIRECT_HEALTH_WINDOW_SECS),
+            classify_probe(PeerLinkState::Direct, Some(180), DIRECT_HEALTH_WINDOW_SECS),
+            ProbeResult::Healthy
+        );
+        assert_eq!(
+            classify_probe(PeerLinkState::Direct, Some(241), DIRECT_HEALTH_WINDOW_SECS),
             ProbeResult::Unhealthy
         );
     }

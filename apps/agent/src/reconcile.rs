@@ -430,6 +430,7 @@ mod tests {
             tunnel_mtu: Some(1420),
             local_public_key: None,
             tunnel_address: Some(plan.tunnel.address),
+            tunnel_listen_port: plan.tunnel.listen_port,
         }
     }
 

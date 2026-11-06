@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn stale_handshake_demotes_but_stale_peer_removed_from_wanted_demotes_too() {
-        // 直连过期（握手 90s > 窗口 35s）→ 回退。
+        // 直连过期（握手年龄超过健康窗口）→ 回退。
         let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
         let mut current = BTreeMap::new();
         current.insert(
@@ -571,7 +571,7 @@ mod tests {
             direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
         );
         let mut ages = BTreeMap::new();
-        ages.insert("dev-b".into(), 90u64);
+        ages.insert("dev-b".into(), DIRECT_HEALTH_WINDOW_SECS.saturating_add(1));
         let updates = plan_updates(
             &wanted,
             &[cidr(HOME)],

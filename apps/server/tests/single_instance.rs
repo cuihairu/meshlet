@@ -515,7 +515,11 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
         agent.reconcile(&plan).unwrap().reason,
         meshlet_agent::reconcile::Reason::KernelDrift
     );
-    assert!(ping(&sandbox.names[2], "192.168.61.5"));
+    // direct_connect 默认开启后，首次 apply 把数据面 wg 监听端口钉到 51820；
+    // 端口迁移后 hub 侧记录的对端 endpoint 是旧源端口，须等网关下一轮
+    // keepalive（≤25s）才收敛——与上方 reconnects 注释同一收敛竞态，用
+    // 有界等待而非单次 ping。
+    assert!(reconnects(&sandbox.names[2], "192.168.61.5"));
     net(
         &sandbox.names[1],
         &["sysctl", "-w", "net.ipv4.ip_forward=0"],

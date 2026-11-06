@@ -61,12 +61,11 @@ pub enum WireGuardCommand {
         /// 渲染好的 conf 文件路径（agent 本地受保护状态目录）。
         conf_path: std::path::PathBuf,
     },
-    /// `wireguard.exe /starttunnelservice <name>`。
-    StartService { name: String },
-    /// `wireguard.exe /stoptunnelservice <name>`。
-    StopService { name: String },
     /// `wireguard.exe /uninstalltunnelservice <name>`；隧道已不存在按幂等
-    /// 成功（卸载可从半清理状态重入）。
+    /// 成功（卸载可从半清理状态重入）。卸载同时停止运行中的服务——CLI 无
+    /// 独立的 stop/start 隧道命令（真机取证 2026-11-06：`/stoptunnelservice`
+    /// `/starttunnelservice` 不在 wireguard.exe 的 Usage 列表，传入即打印
+    /// Usage 退出 1）。
     UninstallService { name: String },
 }
 
@@ -79,12 +78,6 @@ impl WireGuardCommand {
                 "/installtunnelservice".into(),
                 conf_path.display().to_string(),
             ],
-            WireGuardCommand::StartService { name } => {
-                vec!["/starttunnelservice".into(), name.clone()]
-            }
-            WireGuardCommand::StopService { name } => {
-                vec!["/stoptunnelservice".into(), name.clone()]
-            }
             WireGuardCommand::UninstallService { name } => {
                 vec!["/uninstalltunnelservice".into(), name.clone()]
             }
@@ -95,8 +88,6 @@ impl WireGuardCommand {
     pub fn operation(&self) -> &'static str {
         match self {
             WireGuardCommand::InstallService { .. } => "tunnel service install",
-            WireGuardCommand::StartService { .. } => "tunnel service start",
-            WireGuardCommand::StopService { .. } => "tunnel service stop",
             WireGuardCommand::UninstallService { .. } => "tunnel service uninstall",
         }
     }
@@ -105,8 +96,6 @@ impl WireGuardCommand {
     pub fn name(&self) -> &str {
         match self {
             WireGuardCommand::InstallService { name, .. }
-            | WireGuardCommand::StartService { name }
-            | WireGuardCommand::StopService { name }
             | WireGuardCommand::UninstallService { name } => name,
         }
     }
@@ -127,10 +116,10 @@ pub fn conf_file_name(tunnel_name: &str) -> String {
 /// CLI，**卸载重建即重配路径**：
 ///
 /// - 服务不存在 → 直接 `[InstallService]`（首装）；
-/// - 服务已存在 → `[StopService, UninstallService, InstallService]`——先停
-///   （1062 按幂等成功，可从「建了服务但从未启动」的半状态重入）、再卸载
-///   （1060 按幂等成功，可从半清理状态重入）、最后装新 conf。短暂断流是
-///   重配的固有代价，换收敛正确性。
+/// - 服务已存在 → `[UninstallService, InstallService]`——卸载同时停止运行
+///   中的服务（wireguard.exe CLI 无独立 stop 命令；1060 按幂等成功，可从
+///   半清理状态重入），最后装新 conf。短暂断流是重配的固有代价，换收敛
+///   正确性。
 ///
 /// 纯函数（跨平台单测）：执行层只按序跑返回的命令，不掺策略。
 pub fn install_plan(
@@ -146,11 +135,7 @@ pub fn install_plan(
     if !existing_service {
         return vec![install];
     }
-    vec![
-        WireGuardCommand::StopService { name: name.clone() },
-        WireGuardCommand::UninstallService { name },
-        install,
-    ]
+    vec![WireGuardCommand::UninstallService { name }, install]
 }
 
 /// 受管隧道服务的 SCM 查询名（`WireGuardTunnel$<tunnel>`，官方命名）。
@@ -320,8 +305,8 @@ pub fn parse_wg_dump_peers(dump: &str) -> Vec<crate::PeerObserved> {
 /// 其余 fail closed。
 ///
 /// WireGuardNT 隧道由 Windows 服务承载（`WireGuardTunnel$<name>`）：卸载
-/// 不存在隧道、停止未运行隧道时由服务控制管理器返回 1060 / 1062，复用
-/// [windows_service] 已真机取证的 `service_absent` / `service_not_active`
+/// 不存在隧道时由服务控制管理器返回 1060，复用
+/// [windows_service] 已真机取证的 `service_absent`
 /// 文案与退出码双通道。**wireguard.exe 是否原样透传服务控制管理器文案，
 /// 属仍缺的真机全生命周期验证**——本分类器只断言已真机取证的事实类别，
 /// 不以任何 fixture 冒充。
@@ -339,14 +324,6 @@ pub fn classify_wireguard_failure(
     // service_absent 文本分类是同一事实的宽匹配双通道（zh-CN 文案见其注记）。
     let absent = exit_code == 1060 || crate::windows_service::service_absent(output);
     if operation == "tunnel service uninstall" && absent {
-        return Ok(());
-    }
-
-    // Stop 的目标状态是「已停止」：服务未运行（1062）＝目标已达成，同归
-    // 幂等成功——卸载可从「建了服务但从未启动」的半状态重入。
-    if operation == "tunnel service stop"
-        && (exit_code == 1062 || crate::windows_service::service_not_active(output))
-    {
         return Ok(());
     }
 
@@ -654,26 +631,6 @@ mod tests {
                 "meshlet-overlay".to_string(),
             ]
         );
-        assert_eq!(
-            WireGuardCommand::StartService {
-                name: "meshlet-overlay".into(),
-            }
-            .args(),
-            vec![
-                "/starttunnelservice".to_string(),
-                "meshlet-overlay".to_string(),
-            ]
-        );
-        assert_eq!(
-            WireGuardCommand::StopService {
-                name: "meshlet-overlay".into(),
-            }
-            .args(),
-            vec![
-                "/stoptunnelservice".to_string(),
-                "meshlet-overlay".to_string(),
-            ]
-        );
     }
 
     #[test]
@@ -685,18 +642,6 @@ mod tests {
                     conf_path: PathBuf::from("meshlet-overlay.conf"),
                 },
                 "tunnel service install",
-            ),
-            (
-                WireGuardCommand::StartService {
-                    name: "meshlet-overlay".into(),
-                },
-                "tunnel service start",
-            ),
-            (
-                WireGuardCommand::StopService {
-                    name: "meshlet-overlay".into(),
-                },
-                "tunnel service stop",
             ),
             (
                 WireGuardCommand::UninstallService {
@@ -822,14 +767,13 @@ mod tests {
         assert_eq!(
             plan,
             vec![
-                WireGuardCommand::StopService { name: name.into() },
                 WireGuardCommand::UninstallService { name: name.into() },
                 WireGuardCommand::InstallService {
                     name: name.into(),
                     conf_path: rotated_conf,
                 },
             ],
-            "existing tunnel must be stopped, uninstalled, then reinstalled with the new conf"
+            "existing tunnel must be uninstalled (uninstall stops a running service), then reinstalled with the new conf"
         );
         // 顺序即语义：卸载必须先于安装（否则 wireguard.exe 报 already installed）。
         let uninstall_idx = plan
@@ -884,24 +828,17 @@ mod tests {
         );
     }
 
-    /// 停止未运行隧道 = 幂等成功（1062 双通道；Stop 目标状态「已停止」）。
+    /// CLI 无 stop 命令（真机取证 2026-11-06）：重配 = 卸载重建；1062（服务
+    /// 未运行）不再是任何操作的幂等成功通道——卸载只认 1060 / 服务不存在文案。
     #[test]
-    fn stop_not_active_is_idempotent_only_for_stop() {
+    fn service_not_active_is_rejected_for_every_operation() {
         let output = "[SC] ControlService 失败 1062:\r\n\r\n服务尚未启动。\r\n";
-        assert!(
-            classify_wireguard_failure(1062, output, "tunnel service stop", "meshlet-overlay")
-                .is_ok()
-        );
-        assert!(classify_wireguard_failure(
-            1,
-            "[SC] ControlService failed 1062:\r\n\r\nThe service has not been started.\r\n",
-            "tunnel service stop",
-            "meshlet-overlay"
-        )
-        .is_ok());
-        // 1062 宽容只归 Stop。
         assert!(matches!(
             classify_wireguard_failure(1062, output, "tunnel service uninstall", "meshlet-overlay"),
+            Err(NetworkError::ApplyRejected(_))
+        ));
+        assert!(matches!(
+            classify_wireguard_failure(1062, output, "tunnel service install", "meshlet-overlay"),
             Err(NetworkError::ApplyRejected(_))
         ));
     }

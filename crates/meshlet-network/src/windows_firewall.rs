@@ -256,6 +256,52 @@ fn validate_tunnel_interface(interface: &str) -> Result<(), NetworkError> {
     Ok(())
 }
 
+/// 直连 UDP 放行规则名（批次④ Windows 接线）。固定名是幂等探测的一半：
+/// `netsh advfirewall firewall show rule name=<此名>` + 端口双重核对。
+pub const DIRECT_UDP_RULE_NAME: &str = "Meshlet-Direct-UDP-In";
+
+/// 直连 UDP 端口入站放行规则（P2P §12 批次④ Windows 侧）：inbound / allow /
+/// `protocol=udp` / `localport=<port>`，profile 不绑（any）——wg 适配器被
+/// Windows 判为 Public 档，直连握手入站包在默认入站策略下会被丢弃。
+/// 与 [mesh_icmp_rule] 同纪律：受控命名参数，调用方先探在场再 add。
+pub fn direct_udp_rule(port: u16) -> FirewallRule {
+    FirewallRule {
+        name: DIRECT_UDP_RULE_NAME.into(),
+        direction: FirewallDirection::Inbound,
+        action: FirewallAction::Allow,
+        protocol: FirewallProtocol::Udp,
+        local_port: port.to_string(),
+        remote_port: "any".into(),
+        profiles: None,
+        description: Some(
+            "meshlet direct connect: inbound UDP on the data-plane listen port".into(),
+        ),
+        local_ip: None,
+    }
+}
+
+/// `netsh … show rule` 输出里是否出现该端口的 `LocalPort` 词元。
+/// 规则名固定而端口可变（配置改端口后旧规则在场但端口不符）：名字在场
+/// **不**代表端口放行，需逐条核对 `LocalPort: <port>` 行。
+pub fn rule_output_mentions_port(output: &str, port: u16) -> bool {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        // 标签大小写不敏感匹配（zh-CN netsh 的字段词形可能随版本变化），
+        // 值按 `标签: 值` 拆分后精确比对端口。
+        if !trimmed.to_ascii_lowercase().starts_with("localport") {
+            continue;
+        }
+        if trimmed
+            .split_once(':')
+            .map(|(_, v)| v.trim() == port.to_string())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// mesh 入站 ICMP 放行规则（`Meshlet-ICMPv4-In`）：inbound / allow /
 /// `icmpv4:8,any`，`localip` 限定到设备 overlay 地址——netsh 无按接口限定，
 /// `localip=<设备地址>` 等价且带安全边界（只匹配发往该 mesh 地址的包）。
@@ -488,6 +534,32 @@ pub mod exec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_udp_rule_renders_inbound_udp_allow_on_the_port() {
+        let rule = direct_udp_rule(51820);
+        assert_eq!(rule.name, DIRECT_UDP_RULE_NAME);
+        assert_eq!(rule.direction, FirewallDirection::Inbound);
+        assert_eq!(rule.action, FirewallAction::Allow);
+        assert_eq!(rule.protocol, FirewallProtocol::Udp);
+        assert_eq!(rule.local_port, "51820");
+        let args = FirewallRuleCommand::Add { rule: rule.clone() }.args();
+        let joined = args.join(" ");
+        assert!(joined.contains("dir=in"), "{joined}");
+        assert!(joined.contains("action=allow"), "{joined}");
+        assert!(joined.contains("protocol=udp"), "{joined}");
+        assert!(joined.contains("localport=51820"), "{joined}");
+    }
+
+    #[test]
+    fn rule_output_mentions_port_matches_only_that_port() {
+        let output = "规则名称: Meshlet-Direct-UDP-In\r\nLocalPort:\t20000\r\nRemotePort:\tany\r\n";
+        assert!(rule_output_mentions_port(output, 20000));
+        assert!(!rule_output_mentions_port(output, 51820));
+        assert!(!rule_output_mentions_port("", 51820));
+        // 无冒号/畸形行按不匹配处理，不 panic。
+        assert!(!rule_output_mentions_port("LocalPort garbage", 51820));
+    }
 
     #[cfg(target_os = "windows")]
     mod exec_tests {
