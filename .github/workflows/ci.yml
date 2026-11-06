@@ -133,6 +133,56 @@ jobs:
           $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
           $bitmap.Save("$PWD\tray-windows.png")
 
+      # 本地面板门禁（LOCAL-PANEL-1）：tray-host 自托管的 loopback 只读页必须
+      # 200 且三块齐全（当前节点 / 直连节点 / 本地路由）——数据来自 fixture 的
+      # 状态文件，证明面板不依赖 server 可达。
+      # URL 走 `local-panel.json` 交接文件而非日志：重定向的日志在进程存活期间
+      # 读不到（本作业上轮踩坑），而面板必须在托盘进程活着时访问。
+      - name: Gate on local panel (loopback 200 + three sections)
+        run: |
+          $urlFile = "tray-fixture\online\local-panel.json"
+          # 有界重试：等文件出现**且能解析出合法 URL**（写入已原子化，但读方
+          # 仍按「可能撞见旧文件/半截 JSON」防御，只解析一次会假红）。
+          $panel = $null
+          for ($i = 0; $i -lt 20; $i++) {
+            if (Test-Path $urlFile) {
+              try { $panel = Get-Content $urlFile -Raw | ConvertFrom-Json -ErrorAction Stop } catch { $panel = $null }
+              if ($panel -and $panel.url -match '^http://127\.0\.0\.1:\d+/') { break }
+            }
+            $panel = $null
+            Start-Sleep -Seconds 1
+          }
+          if (-not $panel) { Write-Error "no valid $urlFile (panel did not start)"; exit 1 }
+          $url = $panel.url
+          Write-Output "local panel: $url (pid $($panel.pid))"
+          $resp = (curl.exe -s -i "$url") -join "`n"
+          if ($resp -notmatch '^HTTP/1\.1 200') { Write-Error "local panel not 200: $($resp.Substring(0, [Math]::Min(200, $resp.Length)))"; exit 1 }
+          foreach ($id in 'id="node"', 'id="direct"', 'id="routes"') {
+            if (-not $resp.Contains($id)) { Write-Error "local panel missing section $id"; exit 1 }
+          }
+          New-Item -ItemType Directory -Force tray-host-out | Out-Null
+          curl.exe -s "$url" -o tray-host-out\tray-panel.html
+          if ($LASTEXITCODE -ne 0) { Write-Error 'failed to save tray-panel.html'; exit 1 }
+          # 非 GET 只读语义：写操作必须被拒绝。
+          $post = (curl.exe -s -i -X POST "$url") -join "`n"
+          if ($post -notmatch '^HTTP/1\.1 405') { Write-Error 'local panel accepted a write method'; exit 1 }
+
+      # 桌面会话里真实打开面板页并截屏（best-effort：浏览器启动时序不受控，
+      # 失败不红 CI——硬门禁在上一步的 curl 断言）。
+      - name: Open local panel in desktop session and capture
+        continue-on-error: true
+        run: |
+          $panel = Get-Content "tray-fixture\online\local-panel.json" -Raw | ConvertFrom-Json
+          Start-Process $panel.url
+          Start-Sleep -Seconds 8
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+          $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
+          $bitmap.Save("$PWD\tray-panel.png")
+
       # 先停进程再验门禁：重定向日志在进程持有期间被锁，读不到内容（上轮踩坑）。
       - name: Stop stub and tray host
         if: always()
@@ -156,8 +206,11 @@ jobs:
           name: tray-windows-evidence
           path: |
             tray-windows.png
+            tray-panel.png
+            tray-host-out/tray-panel.html
             tray-host.log
             tray-fixture/**/status.json
+            tray-fixture/**/local-panel.json
             tray-fixture/**/*.png
           if-no-files-found: warn
 
