@@ -39,12 +39,19 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 /// 右键菜单命令 ID（`TPM_RETURNCMD` 下 `TrackPopupMenuEx` 的返回值）。
 #[cfg(windows)]
 const CMD_QUIT: usize = 1;
+/// 「控制台(网页)」：浏览器打开 server 根路径托管的控制台（原「打开面板」
+/// 行为）。本地面板另立一项，见 [`CMD_OPEN_LOCAL_PANEL`]——定案 2026-11-06：
+/// 托盘「打开面板」必须开本地面板，控制台是另一个入口。
 #[cfg(windows)]
-const CMD_OPEN_PANEL: usize = 2;
+const CMD_OPEN_CONSOLE: usize = 2;
 /// 菜单首行「设备名 + 虚拟 IP + 状态」展示项（禁用态；随 `status.json`
 /// tooltip 重建——① 用户要求首行 = 设备名 + 虚拟 IPv4 + 状态）。
 #[cfg(windows)]
 const CMD_STATUS: usize = 3;
+/// 「本地面板」：打开 tray-host 自托管的 loopback 只读页（当前节点 / 直连
+/// 节点 / 本地路由，见 `meshlet_tray_host::panel`）。
+#[cfg(windows)]
+const CMD_OPEN_LOCAL_PANEL: usize = 4;
 /// 「连接节点…」子菜单项命令基址：第 i 个候选 = `CMD_DIAL_BASE + i`。
 #[cfg(windows)]
 const CMD_DIAL_BASE: usize = 100;
@@ -79,9 +86,13 @@ static G_NID: AtomicPtr<NOTIFYICONDATAW> = AtomicPtr::new(std::ptr::null_mut());
 static G_MENU: AtomicIsize = AtomicIsize::new(0);
 #[cfg(windows)]
 static G_EXIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// agent 状态目录（「打开面板」据此定位 agent.toml / config.toml）。
+/// agent 状态目录（「控制台(网页)」据此定位 agent.toml / config.toml，
+/// 「本地面板」据此读状态文件）。
 #[cfg(windows)]
 static G_STATE_DIR: std::sync::OnceLock<&'static std::path::Path> = std::sync::OnceLock::new();
+/// 本地面板 URL（启动时绑定 loopback 端口后写入；菜单点击直接打开）。
+#[cfg(windows)]
+static G_PANEL_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 #[cfg(windows)]
 fn main() {
@@ -98,14 +109,21 @@ fn main() {
     // `_log_guard` 必须绑定到 main 生命周期：non-blocking 写线程随 guard 存活。
     let _log_guard = init_tray_logging();
 
+    // 本地面板：**先于托盘图标**绑定 loopback（定案 2026-11-06：托盘打开的是
+    // 本地面板，数据只读本机状态文件——server 挂了、agent 还没写出状态图，面板
+    // 照样开，缺数据只显示空态文案）。
+    start_local_panel(&state_dir);
+
     tracing::info!("watching {}", tray_dir.display());
 
     while !tray_dir.exists() {
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    // 「打开面板」需要 agent 配置文件（`{state_dir}/..` 下）里的 server_url。
-    let _ = G_STATE_DIR.set(Box::leak(state_dir.into_boxed_path()));
+    // 「控制台(网页)」需要 agent 配置文件（`{state_dir}/..` 下）里的
+    // server_url；菜单数据（状态首行 / 直连节点）读 state_dir 下的状态文件。
+    let state_dir: &'static std::path::Path = Box::leak(state_dir.into_boxed_path());
+    let _ = G_STATE_DIR.set(state_dir);
 
     unsafe {
         let class_name: Vec<u16> = "MeshletTrayHost\0".encode_utf16().collect();
@@ -556,17 +574,56 @@ fn terminate_agent() {
     }
 }
 
-/// 「打开面板」：默认浏览器打开面板 URL（server 根路径托管的控制台）。
+/// 启动本地面板服务（只绑 `127.0.0.1` 随机端口）并记下 URL。失败只记日志：
+/// 托盘其余功能不受影响，菜单项届时按「未启动」提示，绝不假装打开成功。
 #[cfg(windows)]
-fn open_panel(hwnd: HWND) {
+fn start_local_panel(state_dir: &std::path::Path) {
+    match meshlet_tray_host::panel::start(state_dir.to_path_buf()) {
+        Ok(port) => {
+            let url = meshlet_tray_host::panel::url(port);
+            tracing::info!(%url, "local panel listening (loopback only)");
+            // URL 交接文件：进程存活期间日志被重定向句柄锁住读不到（Windows），
+            // CI / 运维改读这个写完即关的文件拿端口。
+            if let Err(error) = meshlet_tray_host::panel::write_url_file(state_dir, &url) {
+                tracing::warn!(%error, "local panel url file not written");
+            }
+            let _ = G_PANEL_URL.set(url);
+        }
+        Err(error) => tracing::warn!(%error, "local panel failed to start"),
+    }
+}
+
+/// 「本地面板」：浏览器打开 tray-host 自托管的 loopback 只读页——当前节点 /
+/// 直连节点 / 本地路由三块，数据只读本机状态文件（不依赖 server 可达）。
+#[cfg(windows)]
+fn open_local_panel(hwnd: HWND) {
+    match G_PANEL_URL.get() {
+        Some(url) => {
+            // 日志留痕：真机验收据此证明「菜单项 → 本地面板 URL」这条链路。
+            tracing::info!(%url, "opening local panel from tray menu");
+            shell_open(hwnd, url);
+        }
+        None => tracing::warn!("local panel not running, cannot open it"),
+    }
+}
+
+/// 「控制台(网页)」：默认浏览器打开 `server_url`（server 根路径托管的控制台）。
+#[cfg(windows)]
+fn open_console(hwnd: HWND) {
     let Some(state_dir) = G_STATE_DIR.get() else {
-        tracing::warn!("state dir unknown, cannot open panel");
+        tracing::warn!("state dir unknown, cannot open console");
         return;
     };
     let Some(url) = panel_url(state_dir) else {
-        tracing::warn!("no panel URL (server_url missing from agent.toml)");
+        tracing::warn!("no console URL (server_url missing from agent.toml)");
         return;
     };
+    shell_open(hwnd, &url);
+}
+
+/// 用系统默认浏览器打开 `url`（`ShellExecuteW` verb=open）。
+#[cfg(windows)]
+fn shell_open(hwnd: HWND, url: &str) {
     let op: Vec<u16> = "open\0".encode_utf16().collect();
     let wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
@@ -581,33 +638,13 @@ fn open_panel(hwnd: HWND) {
     }
 }
 
-/// 面板 URL：agent 配置文件（`{state_dir}/..`）的 `server_url`。控制台由
-/// server 根路径托管（`router_with_console` 的 `ServeDir` 兜底），故
-/// `server_url` 即面板入口。本地 API/面板（ADR-013）尚未实现，无法提供
-/// 本地面板 URL。兼容旧部署的 `config.toml` 文件名。
+/// 控制台 URL：agent 配置文件（`{state_dir}/..`）的 `server_url`。控制台由
+/// server 根路径托管（`router_with_console` 的 `ServeDir` 兜底），故 `server_url`
+/// 即控制台入口。**本地面板不走这条链路**（见 `meshlet_tray_host::panel`）：
+/// 它由 tray-host 自托管，只读本机状态文件。兼容旧部署的 `config.toml` 文件名。
 #[cfg(any(windows, test))]
 fn panel_url(state_dir: &std::path::Path) -> Option<String> {
-    let parent = state_dir.parent()?;
-    for name in ["agent.toml", "config.toml"] {
-        let Ok(text) = std::fs::read_to_string(parent.join(name)) else {
-            continue;
-        };
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
-                continue;
-            }
-            if let Some((k, v)) = line.split_once('=') {
-                if k.trim() == "server_url" {
-                    let value = v.trim().trim_matches('"');
-                    if !value.is_empty() {
-                        return Some(value.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
+    meshlet_tray_host::panel::config_value(state_dir, "server_url")
 }
 
 /// 托盘宿主日志初始化。
@@ -696,8 +733,10 @@ unsafe extern "system" fn tray_wnd_proc(
                     terminate_agent();
                     do_exit();
                 }
-                // 打开面板：浏览器打开 server_url（server 根路径托管控制台）。
-                CMD_OPEN_PANEL => open_panel(hwnd),
+                // 本地面板：浏览器打开 tray-host 自托管的 loopback 只读页。
+                CMD_OPEN_LOCAL_PANEL => open_local_panel(hwnd),
+                // 控制台(网页)：浏览器打开 server_url（server 根路径托管控制台）。
+                CMD_OPEN_CONSOLE => open_console(hwnd),
                 // ④ 连接节点…：点击候选 → spawn `meshlet-cli peer dial <node>`
                 //（`<node>` 用可解析的名称/IP，非菜单展示串）。
                 id if id >= CMD_DIAL_BASE => {
@@ -724,6 +763,10 @@ unsafe extern "system" fn tray_wnd_proc(
 fn do_exit() {
     if G_EXIT.swap(true, Ordering::SeqCst) {
         return;
+    }
+    // 清面板 URL 交接文件（best-effort：避免托盘已退出仍留下旧 URL）。
+    if let Some(state_dir) = G_STATE_DIR.get() {
+        meshlet_tray_host::panel::remove_url_file(state_dir);
     }
     let nid_ptr = G_NID.load(Ordering::SeqCst) as *mut NOTIFYICONDATAW;
     if !nid_ptr.is_null() {
@@ -817,16 +860,9 @@ impl DirectPeerView {
     }
 }
 
-/// 直连模式 → 中文短名（② 模式列；未知模式原样展示，不吞数据）。
+/// 直连模式 → 中文短名（② 模式列）：与本地面板共用同一份映射（单一来源）。
 #[cfg(any(windows, test))]
-fn mode_label(mode: &str) -> &str {
-    match mode {
-        "p2p_direct" => "直连",
-        "direct_pending" => "拨号中",
-        "hub_relay" => "中继",
-        other => other,
-    }
-}
+use meshlet_tray_host::panel::mode_label;
 
 /// 把 agent 发布的直连视图一分为二（②「直连节点」 / ④「连接节点…」）：
 /// 已直连/拨号中 → direct；候选但走中继（`hub_relay`）→ relay（可拨目标）。
@@ -878,8 +914,8 @@ unsafe fn append_popup(menu: HMENU, text: &str, sub: HMENU) {
 }
 
 /// 按当前快照重建整个右键菜单（首行状态 + 直连节点/连接节点… 子菜单 +
-/// 打开面板 + 退出）。返回新建的 HMENU；调用方（`tray_wnd_proc`）在用毕后
-/// 立即销毁。①②④ 的数据都来自本函数被调时的文件快照，非缓存。
+/// 本地面板 + 控制台(网页) + 退出）。返回新建的 HMENU；调用方（`tray_wnd_proc`）
+/// 在用毕后立即销毁。①②④ 的数据都来自本函数被调时的文件快照，非缓存。
 #[cfg(windows)]
 fn build_menu(status_line: &str, direct: &[&DirectPeerView], relay: &[&DirectPeerView]) -> HMENU {
     unsafe {
@@ -912,7 +948,10 @@ fn build_menu(status_line: &str, direct: &[&DirectPeerView], relay: &[&DirectPee
         append_popup(hmenu, "连接节点…", sub);
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
 
-        append_item(hmenu, MF_STRING, CMD_OPEN_PANEL, "打开面板");
+        // 入口分流（定案 2026-11-06）：本地面板 = 本机自托管只读页（默认入口，
+        // 数据在本机，不依赖 server）；控制台(网页) = 原 dashboard 行为。
+        append_item(hmenu, MF_STRING, CMD_OPEN_LOCAL_PANEL, "本地面板");
+        append_item(hmenu, MF_STRING, CMD_OPEN_CONSOLE, "控制台(网页)");
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
         append_item(hmenu, MF_STRING, CMD_QUIT, "退出");
         hmenu
@@ -1195,7 +1234,7 @@ mod tests {
         assert!(!exe_name_matches(&empty));
     }
 
-    // ── 面板 URL（打开面板）───────────────────────────────────────────────
+    // ── 控制台 URL（控制台(网页) 菜单项）＋本地面板数据──────────────────
 
     /// 建一个 `<base>/state` 结构（与 `install.ps1` 的
     /// `%LOCALAPPDATA%\meshlet\{agent.toml,state}` 同形），返回 state 目录。
@@ -1373,7 +1412,7 @@ mod tests {
         }
 
         #[test]
-        fn build_menu_contains_status_direct_dial_panel_and_quit() {
+        fn build_menu_contains_status_direct_dial_local_panel_console_and_quit() {
             let peers = vec![
                 DirectPeerView::sample("nas", "10.240.0.2", "p2p_direct", Some(12)),
                 DirectPeerView::sample("", "10.240.0.4", "hub_relay", None),
@@ -1382,8 +1421,8 @@ mod tests {
             let hmenu = build_menu("Meshlet「dev」 10.240.0.5：在线", &direct, &relay);
             unsafe {
                 // 结构：首行 / sep / 直连节点 / sep / 连接节点… / sep /
-                // 打开面板 / sep / 退出。
-                assert_eq!(GetMenuItemCount(hmenu), 9, "menu layout must be intact");
+                // 本地面板 / 控制台(网页) / sep / 退出。
+                assert_eq!(GetMenuItemCount(hmenu), 10, "menu layout must be intact");
 
                 // ① 首行 = 设备名 + 虚拟 IP + 状态（禁用展示项）。
                 assert_eq!(menu_string(hmenu, 0), "Meshlet「dev」 10.240.0.5：在线");
@@ -1407,9 +1446,10 @@ mod tests {
                     "dial candidates must be clickable"
                 );
 
-                // ③ 打开面板 / 退出。
-                assert_eq!(menu_string(hmenu, 6), "打开面板");
-                assert_eq!(menu_string(hmenu, 8), "退出");
+                // 入口分流（定案 2026-11-06）：本地面板是默认入口，控制台另列。
+                assert_eq!(menu_string(hmenu, 6), "本地面板");
+                assert_eq!(menu_string(hmenu, 7), "控制台(网页)");
+                assert_eq!(menu_string(hmenu, 9), "退出");
 
                 DestroyMenu(hmenu);
             }

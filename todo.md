@@ -266,3 +266,11 @@
   - 为何 fix_not_planned: 修复版 glib >=0.20 与整条 GTK 栈（libappindicator/tauri/wry/tao/tray-icon 全部钉 gtk 0.18）不兼容，无升级路径。
   - 复查条件: tauri/wry/tao 迁移 gtk >=0.19 栈时重查本告警。
   - 证据: gh api dependabot/alerts/10 state=dismissed reason=fix_not_planned（本 commit）
+
+## 本地面板（2026-11-06 用户定案）
+
+- [ ] LOCAL-PANEL-1 [P1] 托盘入口分流：「本地面板」默认打开 tray-host 自托管的 loopback 只读页（`127.0.0.1` 随机端口，三块 = 当前节点 / 直连节点 / 本地路由；数据只读 `{state_dir}` 下的 `tray/status.json`、`direct-peers.json`、`applied.json`，**server 不可达照样打开**）；「控制台(网页)」保留原 dashboard 行为。菜单文案、README 中英、decisions-actions 同步；URL 另落 `local-panel.json` 交接文件（Windows 重定向日志在进程存活期间读不到）。
+  - 来源: 2026-11-06 用户定案（23:29 已入反馈台账）——「托盘打开面板必须打开本地面板，不是 dashboard/控制台」
+  - 证据: 本批 commits（`feat: add read-only local tray panel` / `ci: verify local tray panel on Windows`）· meshlet-tray-host 9 lib + 15 bin tests · `cargo test --workspace` exit 0 · clippy `-D warnings` + fmt 绿 · 本机 curl 实测：200 + `id="node"`/`id="direct"`/`id="routes"` 三块 + 12/12 内容探针 + POST/PUT 405 + 改 `direct-peers.json` 下一次 GET 即刷新 · CI windows-latest 新增面板门禁（loopback 200 + 三块 + POST 405）
+- [ ] LOCAL-PANEL-2 [P2] 真机验证：imac（192.168.5.117）装 `meshlet-tray-host.exe` → 托盘菜单点「本地面板」→ 截图三块信息。**待用户亲验**——该机 console 会话为「断开」态，自动化只能覆盖「装包 + 面板 200 + 页面截图」，交互式手点留给用户。
+  - 证据: docs/acceptance-evidence/local-panel-1.md（待真机回填）

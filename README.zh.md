@@ -86,7 +86,7 @@ Windows 上仍未就绪：
 
 - agent 活动数据面后端未接线。Windows 的 `SystemBackend` 仍是显式 `unsupported` 占位，直到隧道生命周期、提权执行层与开机恢复通过真机验收。Windows agent 可注册、上报状态，但应用隧道/路由/NAT 计划被显式拒绝——没有任何假装成功。
 - MSI 已入 nightly，安装包真机验收未做。nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）。MSI 安装包为 `meshlet-nightly-windows-x86_64.msi`，由 cargo-wix 构建。该 MSI 把 server、agent、CLI 与 tray-host 打进一个包，含开始菜单项与卸载项。两类安装包均未经真机验收（AGENT-WIN-2、`todo.md` NIGHTLY-MSI-1）。
-- Windows 托盘宿主已随包发布，真机验收待做。`apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`）。已随 nightly zip 发布；`install.ps1` 尚不安装/注册它，图标换图与菜单的真机走查按 AGENT-WIN-2/3 跟踪。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知；仓库内没有面向任一平台桌面壳的面板宿主二进制。
+- Windows 托盘宿主已随包发布，真机验收待做。`apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`）。已随 nightly zip 发布；`install.ps1` 会把它装进 `%LOCALAPPDATA%\meshlet`、注册 HKCU 登录自启并默认启动（`-NoStartTray` 只跳过立即启动），图标换图与菜单的真机走查按 AGENT-WIN-2/3 跟踪。菜单分两个入口：**本地面板**（tray-host 自己在 `127.0.0.1` 上托管的只读页，读本机状态文件展示当前节点 / 直连节点 / 本地路由，**server 挂了也照样打开**）与**控制台(网页)**（打开 `server_url` 托管的控制台）。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知，但 Linux 侧尚无对应的桌面托盘宿主二进制。
 
 ### 在 Windows 安装 agent
 
@@ -97,7 +97,7 @@ Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/
 pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken '控制台里的TOKEN' -DeviceName 'home-windows'
 ```
 
-安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` 装进 `%LOCALAPPDATA%\meshlet`。把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器装的是**无托盘图标的后台 agent**（tray-host 二进制随 zip 发布，但脚本不安装它），且 Windows 上数据面 apply 在真机验收通过前仍被拒绝——见下文。
+安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` / `meshlet-tray-host.exe` 装进 `%LOCALAPPDATA%\meshlet`。把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器同时安装并注册托盘宿主 `meshlet-tray-host.exe`（`-NoStartTray` 可跳过立即启动，登录自启仍在），托盘菜单提供**本地面板**与**控制台(网页)**两个入口；且 Windows 上数据面 apply 在真机验收通过前仍被拒绝——见下文。
 
 ### 在 Windows 从源码构建并运行 agent
 

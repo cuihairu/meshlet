@@ -68,10 +68,42 @@ fn main() {
         }
         // status.json 字段与 TraySink::publish_with 同构（state/tooltip/
         // accessible_name/icon_16/icon_24）。
+        // `version` / `env` 与 `TraySink::publish_with` 同步（本地面板展示
+        // agent 版本与 EnvProbe 关键项；旧 agent 不带这两项，面板按未知/回落）。
         let body = format!(
-            "{{\"state\":{accessible:?},\"tooltip\":{tooltip:?},\"accessible_name\":{accessible:?},\"icon_16\":\"icon-16.png\",\"icon_24\":\"icon-24.png\"}}",
+            "{{\"state\":{accessible:?},\"tooltip\":{tooltip:?},\"accessible_name\":{accessible:?},\"icon_16\":\"icon-16.png\",\"icon_24\":\"icon-24.png\",\"version\":\"fixture\",\"env\":{{\"display\":null,\"wayland_display\":null,\"session_type\":null,\"session_name\":\"CI\",\"console_session\":true}}}}"
         );
         std::fs::write(tray_dir.join("status.json"), body).expect("write status.json");
+        // 本地面板另两块的数据源（与 agent 发布的文件同形）：直连节点视图 +
+        // 已应用计划（含 last_good_plan.routes）。CI 面板证据据此展示三块全量。
+        std::fs::write(
+            state_dir.join("direct-peers.json"),
+            concat!(
+                "[{\"name\":\"peer-b\",\"virtual_ipv4\":\"10.240.0.3\",",
+                "\"public_key\":\"cGF1bGJrZXk=\",\"mode\":\"p2p_direct\",",
+                "\"rtt_ms\":12,\"endpoint\":\"203.0.113.7:51820\",",
+                "\"last_handshake_at\":null},",
+                "{\"name\":\"\",\"virtual_ipv4\":\"10.240.0.4\",",
+                "\"public_key\":\"cmVsYXlrZXk=\",\"mode\":\"hub_relay\",",
+                "\"rtt_ms\":null,\"endpoint\":\"\",\"last_handshake_at\":null}]"
+            ),
+        )
+        .expect("write direct-peers.json");
+        std::fs::write(
+            state_dir.join("applied.json"),
+            concat!(
+                "{\"desired_config_hash\":\"fixture\",\"tunnel_address\":\"10.240.0.2\",",
+                "\"routes\":[\"10.240.0.0/16\"],\"nat_rules\":[],\"nat_owners\":[],",
+                "\"applied_at\":\"2026-11-06T00:00:00Z\",",
+                "\"local_public_key\":\"cHVibGlja2V5RmluZ2VycHJpbnQwMTIzNDU2Nzg5\",",
+                "\"last_good_plan\":{\"desired_revision\":3,",
+                "\"tunnel\":{\"address\":\"10.240.0.2\"},",
+                "\"routes\":[{\"destination\":\"10.240.0.0/16\",\"interface\":\"wg-meshlet\",\"gateway\":null},",
+                "{\"destination\":\"192.168.8.0/24\",\"interface\":\"wg-meshlet\",\"gateway\":\"10.240.0.3\"}],",
+                "\"nat_rules\":[],\"desired_config_hash\":\"fixture\"}}"
+            ),
+        )
+        .expect("write applied.json");
         println!("{}", state_dir.display());
     }
 }

@@ -85,12 +85,19 @@ canonical asset.)
 
 ### Menu and actions (v1)
 
-- **打开面板**: open the panel. The agent has a local API (see `docs/analysis/agent-local-api-2026-10-19`);
-  the v1 action opens the local panel URL, falling back to the server console if unset.
+- **入口分流（2026-11-06 用户定案，取代上一版「打开本地 panel URL，缺省回落 server 控制台」的口径）**:
+  - **本地面板** — tray-host 自托管的 loopback 只读页（`127.0.0.1` 随机端口，
+    `apps/tray-host/src/panel.rs`），三块内容：当前节点（名称 / 虚拟 IP / 公钥指纹 /
+    状态灯 / hub 控制通道 / 版本 / EnvProbe）、直连节点（`direct-peers.json` 全量）、
+    本地路由（`applied.json` 计划路由）。数据只读 `{state_dir}` 下的状态文件，
+    **server 不可达时照样打开**。这是托盘的默认入口。
+  - **控制台(网页)** — 原 v1 行为：浏览器打开 `server_url`（server 根路径托管的控制台）。
+    本地 API（`docs/analysis/agent-local-api-2026-10-19`）仍只读鉴权那一支，与本页无关。
 - **退出**: stop the current user-session agent (graceful shutdown of the reconcile loop). Per the
   decision, exit does **not** remove the persistent tunnel — the `WireGuardTunnel$<name>` service and
   routes stay. Menu copy must state this: 「退出仅停止当前用户会话的 agent，不删除已安装的隧道」.
-- Two items only; no settings center / desktop panel / multi-platform GUI in v1 (decision: 明确不做).
+- No settings center / desktop panel / multi-platform GUI in v1 (decision: 明确不做). The live menu is
+  first-row status + 「直连节点」/「连接节点…」 submenus + 「本地面板」/「控制台(网页)」 + 「退出」.
 
 ### Single instance
 
