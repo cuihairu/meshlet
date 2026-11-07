@@ -406,7 +406,7 @@ pub struct AgentConfig {
 }
 
 /// agent 侧 SSH alias 同步开关（默认全关）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SshConfigSyncConfig {
     /// 总开关：关 = 不写任何 `~/.ssh` 文件（默认）。
     pub enabled: bool,
@@ -414,15 +414,6 @@ pub struct SshConfigSyncConfig {
     /// `~/.ssh/config`（缺失时追加、原文件先备份）。关 = 只写 fragment，
     /// 面板提示需手动加 Include。
     pub manage_include: bool,
-}
-
-impl Default for SshConfigSyncConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            manage_include: false,
-        }
-    }
 }
 
 impl SshConfigSyncConfig {
