@@ -384,12 +384,12 @@ fn write_fragment(fragment: &Path, hosts: &[SshHost]) -> Result<(), String> {
     // 幂等：内容一致不重写（mtime 稳定，同步监控/备份不被打搅）。
     if let Ok(existing) = std::fs::read_to_string(fragment) {
         if existing == content {
-            let meta = std::fs::metadata(fragment)
+            let _meta = std::fs::metadata(fragment)
                 .map_err(|e| format!("stat {}: {e}", fragment.display()))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if meta.permissions().mode() & 0o777 != 0o600 {
+                if _meta.permissions().mode() & 0o777 != 0o600 {
                     set_mode(fragment, 0o600)?;
                 }
             }
