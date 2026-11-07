@@ -168,7 +168,7 @@ pub fn config_includes_fragment(config: &Path) -> bool {
         return false;
     };
     text.lines().any(|line| {
-        let mut tokens = line.trim_start().split_whitespace();
+        let mut tokens = line.split_whitespace();
         tokens
             .next()
             .is_some_and(|t| t.eq_ignore_ascii_case("Include"))
@@ -400,18 +400,15 @@ fn write_fragment(fragment: &Path, hosts: &[SshHost]) -> Result<(), String> {
 }
 
 fn write_status(status_path: &Path, status: &SyncStatus) {
-    match serde_json::to_string_pretty(status) {
-        Ok(body) => {
-            if let Some(parent) = status_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let tmp = status_path.with_extension("json.tmp");
-            if std::fs::write(&tmp, body).is_ok() {
-                let _ = std::fs::rename(&tmp, status_path);
-            }
+    if let Ok(body) = serde_json::to_string_pretty(status) {
+        if let Some(parent) = status_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-        Err(_) => {} // 状态文件尽力而为：失败不影响数据面，也不重试
-    }
+        let tmp = status_path.with_extension("json.tmp");
+        if std::fs::write(&tmp, body).is_ok() {
+            let _ = std::fs::rename(&tmp, status_path);
+        }
+    } // 状态文件尽力而为：失败不影响数据面，也不重试
 }
 
 /// `{state_dir}/ssh-sync.json` 路径。

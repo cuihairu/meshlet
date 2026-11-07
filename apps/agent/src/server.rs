@@ -123,6 +123,7 @@ pub fn report_apply(
 /// 心跳上报：返回服务端在线判定回执（仅用于日志/排查）。
 ///
 /// 失败一律以 `Err` 报出（含 401/503 等分类），由调用方决定是否重试。
+#[allow(clippy::too_many_arguments)] // 心跳字段多，与 direct.rs/peers_endpoints.rs 惯例一致
 pub fn heartbeat(
     server_url: &str,
     token: &str,
