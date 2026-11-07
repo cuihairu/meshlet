@@ -21,7 +21,7 @@
 - [x] LAY-002 [P1] 拆分 `apps/server/src/persist.rs`（2703 行）——同时承载 SQLite 重建、实体写入、任务加载、备份、恢复与诊断快照，恢复安全和逐表映射可各自成为边界。（`apps/server/src/persist.rs:1307`）
 - [x] LAY-003 [P1] 拆分 `apps/server/src/publish.rs`（2546 行）——发布对象结构、四类 CRUD、认证解析、健康回报与设备计划投影在同一模块，控制器与领域规则可分离。（`apps/server/src/publish.rs:1214`）
 - [x] LAY-004 [P1] 拆分 `crates/meshlet-network/src/linux.rs`（2507 行）——Linux 后端把接口探测、命令运行、隧道/路由/NAT/防火墙、诊断和解析器集中在一个实现内。（`crates/meshlet-network/src/linux.rs:1606`）
-- [ ] LAY-005 [P1] 拆分 `apps/server/tests/single_instance.rs`（2211 行）——集成测试把实例锁、备份/恢复、心跳、修订与多进程生命周期铺在同一文件。（`apps/server/tests/single_instance.rs:1`）
+- [x] LAY-005 [P1] 拆分 `apps/server/tests/single_instance.rs`（2211 行）——集成测试把实例锁、备份/恢复、心跳、修订与多进程生命周期铺在同一文件。（`apps/server/tests/single_instance.rs:1`）
 - [ ] LAY-006 [P1] 拆分 `apps/agent/src/agent.rs`（1913 行）——`Agent` 同时驱动对账、回执、心跳、直连、RTT、任务 kick、托盘、SSH 同步、自升级和发布。（`apps/agent/src/agent.rs:43`）
 - [ ] LAY-007 [P1] 拆分 `apps/tray-host/src/panel.rs`（1738 行）——本地面板把快照读取、HTML 渲染、JS 注入、HTTP server 与本地协议文案合并。（`apps/tray-host/src/panel.rs:313`）
 - [ ] LAY-008 [P1] 拆分 `apps/server/tests/dual_site_end_to_end.rs`（1690 行）——跨站点端到端用例覆盖注册、路由、NAT、收敛和备份恢复，适合按业务场景拆分。（`apps/server/tests/dual_site_end_to_end.rs:1`）
