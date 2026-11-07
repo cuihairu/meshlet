@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meshlet 本地面板</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: #14171a; color: #e6e8ea;
+  font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline;
+  justify-content: space-between; margin-bottom: 20px; }
+h1 { font-size: 20px; margin: 0; }
+.sub { margin: 0; color: #98a2ab; font-size: 12px; }
+.console a { color: #e0a458; text-decoration: none; font-size: 13px; }
+section { background: #1c2126; border: 1px solid #2a3138; border-radius: 10px;
+  padding: 16px 18px; margin-bottom: 16px; }
+h2 { font-size: 15px; margin: 0 0 10px; color: #f0f2f4; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #262c33;
+  vertical-align: top; }
+th { color: #98a2ab; font-weight: 600; white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+code, .mono { font-family: ui-monospace, Consolas, monospace; }
+.key { word-break: break-all; font-size: 12px; color: #b9c2ca; }
+.copy { margin-left: 8px; padding: 1px 8px; font-size: 12px; cursor: pointer;
+  background: #262c33; color: #b9c2ca; border: 1px solid #3a424b; border-radius: 6px; }
+.copy:hover { background: #31383f; color: #e6e8ea; }
+.copy.copied { background: #1d3a2a; color: #6fd08c; border-color: #2f5e42; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 6px; vertical-align: middle; }
+.caption { color: #98a2ab; font-size: 12px; margin: 0 0 8px; }
+.empty { color: #98a2ab; font-style: italic; }
+footer { color: #6f7a83; font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Meshlet 本地面板</h1>
+  <p class="sub">本机自托管 · 数据来自本机状态文件 · 不依赖服务端可达 · 每 5 秒局部更新（不整页刷新）</p>
+  <p class="console"><a href="http://106.14.216.177:8080">控制台（网页）↗</a></p>
+</header>
+<main>
+<section id="node">
+  <h2>当前节点</h2>
+  <p class="caption"><span class="dot" id="node-dot" data-dot="#c97b2e" style="background:#c97b2e"></span><span data-f="node-state">在线（Meshlet online） — Meshlet「imac」 10.240.0.7：在线：控制通道正常，数据面与服务端期望一致（流量经 VPS 中继）</span></p>
+  <table><tbody id="node-body"><tr><th>设备名</th><td class="mono"><span data-f="node.0">imac</span></td></tr><tr><th>虚拟 IP</th><td class="mono"><span data-f="node.1">10.240.0.7</span><button type="button" class="copy" data-copy="10.240.0.7">复制</button></td></tr><tr><th>节点公钥指纹</th><td class="mono"><span data-f="node.2">QmAFaSKbFqm3qGql/DH+…</span></td></tr><tr><th>hub / 控制通道</th><td class="mono"><span data-f="node.3">已连接（控制通道正常）</span></td></tr><tr><th>版本</th><td class="mono"><span data-f="node.4">agent 0.1.0 · 面板 meshlet-tray-host 0.1.0</span></td></tr><tr><th>状态更新时间</th><td class="mono"><span data-f="node.5">2026-11-07T08:13:52.852184+00:00</span></td></tr><tr><th>计划应用时间</th><td class="mono"><span data-f="node.6">2026-11-07T08:13:33Z</span></td></tr><tr><th>控制台</th><td class="mono"><span data-f="node.7">http://106.14.216.177:8080</span></td></tr><tr><th>XDG_SESSION_TYPE</th><td class="mono"><span data-f="node.8">—</span></td></tr><tr><th>DISPLAY (X11)</th><td class="mono"><span data-f="node.9">—</span></td></tr><tr><th>WAYLAND_DISPLAY</th><td class="mono"><span data-f="node.10">—</span></td></tr><tr><th>SESSIONNAME (Windows)</th><td class="mono"><span data-f="node.11">—</span></td></tr><tr><th>活动控制台会话</th><td class="mono"><span data-f="node.12">是</span></td></tr></tbody></table>
+</section>
+<section id="direct">
+  <h2>直连节点</h2>
+  <table>
+    <tr><th>名称</th><th>Overlay IP</th><th>链路模式</th><th>RTT</th><th>Endpoint</th><th>最近握手</th><th>公钥</th></tr>
+    <tbody id="peers-body"><tr><td><span data-f="peer.0.name">cuihaitao</span></td><td class="mono"><span data-f="peer.0.ip">10.240.0.8</span><button type="button" class="copy" data-copy="10.240.0.8">复制</button></td><td><span data-f="peer.0.mode">拨号中</span></td><td class="mono" title="来源：未测（对端无直连路径或探测尚未完成）"><span data-f="peer.0.rtt">—</span></td><td class="mono"><span data-f="peer.0.endpoint">10.147.19.97:51820</span></td><td class="mono"><span data-f="peer.0.handshake">—</span></td><td class="mono key"><span data-f="peer.0.key">qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE=</span></td></tr><tr><td><span data-f="peer.1.name">coding-vm</span></td><td class="mono"><span data-f="peer.1.ip">10.240.0.4</span><button type="button" class="copy" data-copy="10.240.0.4">复制</button></td><td><span data-f="peer.1.mode">拨号中</span></td><td class="mono" title="来源：未测（对端无直连路径或探测尚未完成）"><span data-f="peer.1.rtt">—</span></td><td class="mono"><span data-f="peer.1.endpoint">10.147.19.130:51820</span></td><td class="mono"><span data-f="peer.1.handshake">80 秒前</span></td><td class="mono key"><span data-f="peer.1.key">b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=</span></td></tr><tr><td><span data-f="peer.2.name">windows-desktop</span></td><td class="mono"><span data-f="peer.2.ip">10.240.0.5</span><button type="button" class="copy" data-copy="10.240.0.5">复制</button></td><td><span data-f="peer.2.mode">拨号中</span></td><td class="mono" title="来源：未测（对端无直连路径或探测尚未完成）"><span data-f="peer.2.rtt">—</span></td><td class="mono"><span data-f="peer.2.endpoint">10.147.19.97:51821</span></td><td class="mono"><span data-f="peer.2.handshake">—</span></td><td class="mono key"><span data-f="peer.2.key">JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs=</span></td></tr><tr><td><span data-f="peer.3.name">openclaw-win</span></td><td class="mono"><span data-f="peer.3.ip">10.240.0.3</span><button type="button" class="copy" data-copy="10.240.0.3">复制</button></td><td><span data-f="peer.3.mode">拨号中</span></td><td class="mono" title="来源：未测（对端无直连路径或探测尚未完成）"><span data-f="peer.3.rtt">—</span></td><td class="mono"><span data-f="peer.3.endpoint">10.147.19.49:51820</span></td><td class="mono"><span data-f="peer.3.handshake">80 秒前</span></td><td class="mono key"><span data-f="peer.3.key">FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=</span></td></tr></tbody>
+  </table>
+</section>
+<section id="routes">
+  <h2>本地路由</h2>
+  <p class="caption"><span data-f="routes-caption">计划修订 rev31 · 账本 applied.json · 应用于 2026-11-07T08:13:33Z</span></p>
+  <table>
+    <tr><th>目标网段</th><th>下一跳</th><th>接口</th><th>来源</th></tr>
+    <tbody id="routes-body"><tr><td colspan="4" class="empty">（计划未下发任何路由项）</td></tr></tbody>
+  </table>
+</section>
+</main>
+<footer>数据源：tray/status.json · direct-peers.json · applied.json · agent.toml（C:\Users\cui\AppData\Local\meshlet\state）</footer>
+<script type="application/json" id="panel-state">{"node":{"dot":"#c97b2e","state_display":"在线（Meshlet online） — Meshlet「imac」 10.240.0.7：在线：控制通道正常，数据面与服务端期望一致（流量经 VPS 中继）","fields":[["设备名","imac"],["虚拟 IP","10.240.0.7"],["节点公钥指纹","QmAFaSKbFqm3qGql/DH+…"],["hub / 控制通道","已连接（控制通道正常）"],["版本","agent 0.1.0 · 面板 meshlet-tray-host 0.1.0"],["状态更新时间","2026-11-07T08:13:52.852184+00:00"],["计划应用时间","2026-11-07T08:13:33Z"],["控制台","http://106.14.216.177:8080"],["XDG_SESSION_TYPE","—"],["DISPLAY (X11)","—"],["WAYLAND_DISPLAY","—"],["SESSIONNAME (Windows)","—"],["活动控制台会话","是"]],"copy_index":1},"peers":{"rows":[{"name":"cuihaitao","ip":"10.240.0.8","mode":"拨号中","rtt":"—","rtt_title":"来源：未测（对端无直连路径或探测尚未完成）","endpoint":"10.147.19.97:51820","handshake":"—","public_key":"qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE=","ip_copyable":true},{"name":"coding-vm","ip":"10.240.0.4","mode":"拨号中","rtt":"—","rtt_title":"来源：未测（对端无直连路径或探测尚未完成）","endpoint":"10.147.19.130:51820","handshake":"80 秒前","public_key":"b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=","ip_copyable":true},{"name":"windows-desktop","ip":"10.240.0.5","mode":"拨号中","rtt":"—","rtt_title":"来源：未测（对端无直连路径或探测尚未完成）","endpoint":"10.147.19.97:51821","handshake":"—","public_key":"JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs=","ip_copyable":true},{"name":"openclaw-win","ip":"10.240.0.3","mode":"拨号中","rtt":"—","rtt_title":"来源：未测（对端无直连路径或探测尚未完成）","endpoint":"10.147.19.49:51820","handshake":"80 秒前","public_key":"FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=","ip_copyable":true}],"html":"\u003ctr>\u003ctd>\u003cspan data-f=\"peer.0.name\">cuihaitao\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.0.ip\">10.240.0.8\u003c/span>\u003cbutton type=\"button\" class=\"copy\" data-copy=\"10.240.0.8\">复制\u003c/button>\u003c/td>\u003ctd>\u003cspan data-f=\"peer.0.mode\">拨号中\u003c/span>\u003c/td>\u003ctd class=\"mono\" title=\"来源：未测（对端无直连路径或探测尚未完成）\">\u003cspan data-f=\"peer.0.rtt\">—\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.0.endpoint\">10.147.19.97:51820\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.0.handshake\">—\u003c/span>\u003c/td>\u003ctd class=\"mono key\">\u003cspan data-f=\"peer.0.key\">qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE=\u003c/span>\u003c/td>\u003c/tr>\u003ctr>\u003ctd>\u003cspan data-f=\"peer.1.name\">coding-vm\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.1.ip\">10.240.0.4\u003c/span>\u003cbutton type=\"button\" class=\"copy\" data-copy=\"10.240.0.4\">复制\u003c/button>\u003c/td>\u003ctd>\u003cspan data-f=\"peer.1.mode\">拨号中\u003c/span>\u003c/td>\u003ctd class=\"mono\" title=\"来源：未测（对端无直连路径或探测尚未完成）\">\u003cspan data-f=\"peer.1.rtt\">—\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.1.endpoint\">10.147.19.130:51820\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.1.handshake\">80 秒前\u003c/span>\u003c/td>\u003ctd class=\"mono key\">\u003cspan data-f=\"peer.1.key\">b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=\u003c/span>\u003c/td>\u003c/tr>\u003ctr>\u003ctd>\u003cspan data-f=\"peer.2.name\">windows-desktop\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.2.ip\">10.240.0.5\u003c/span>\u003cbutton type=\"button\" class=\"copy\" data-copy=\"10.240.0.5\">复制\u003c/button>\u003c/td>\u003ctd>\u003cspan data-f=\"peer.2.mode\">拨号中\u003c/span>\u003c/td>\u003ctd class=\"mono\" title=\"来源：未测（对端无直连路径或探测尚未完成）\">\u003cspan data-f=\"peer.2.rtt\">—\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.2.endpoint\">10.147.19.97:51821\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.2.handshake\">—\u003c/span>\u003c/td>\u003ctd class=\"mono key\">\u003cspan data-f=\"peer.2.key\">JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs=\u003c/span>\u003c/td>\u003c/tr>\u003ctr>\u003ctd>\u003cspan data-f=\"peer.3.name\">openclaw-win\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.3.ip\">10.240.0.3\u003c/span>\u003cbutton type=\"button\" class=\"copy\" data-copy=\"10.240.0.3\">复制\u003c/button>\u003c/td>\u003ctd>\u003cspan data-f=\"peer.3.mode\">拨号中\u003c/span>\u003c/td>\u003ctd class=\"mono\" title=\"来源：未测（对端无直连路径或探测尚未完成）\">\u003cspan data-f=\"peer.3.rtt\">—\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.3.endpoint\">10.147.19.49:51820\u003c/span>\u003c/td>\u003ctd class=\"mono\">\u003cspan data-f=\"peer.3.handshake\">80 秒前\u003c/span>\u003c/td>\u003ctd class=\"mono key\">\u003cspan data-f=\"peer.3.key\">FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=\u003c/span>\u003c/td>\u003c/tr>"},"routes":{"caption":"计划修订 rev31 · 账本 applied.json · 应用于 2026-11-07T08:13:33Z","rows":["（计划未下发任何路由项）"],"html":"\u003ctr>\u003ctd colspan=\"4\" class=\"empty\">（计划未下发任何路由项）\u003c/td>\u003c/tr>"}}</script>
+<script>
+// 局部更新：每 5s fetch /state.json，与内联快照做 JSON diff——
+// 值有变才 patch 对应单元格（保留滚动 / 焦点 / 复制钮状态）；行数变化
+// （节点增删 / 占位切换）才整体替换 tbody。绝不 location.reload。
+(function () {
+  var INTERVAL = 5 * 1000;
+  var last = null;
+  function setText(key, text) {
+    var el = document.querySelector('[data-f="' + key + '"]');
+    if (el && el.textContent !== text) { el.textContent = text; }
+  }
+  function applyNode(n) {
+    var dot = document.getElementById('node-dot');
+    if (dot && dot.getAttribute('data-dot') !== n.dot) {
+      dot.setAttribute('data-dot', n.dot);
+      dot.style.background = n.dot;
+    }
+    setText('node-state', n.state_display);
+    for (var i = 0; i < n.fields.length; i++) { setText('node.' + i, n.fields[i][1]); }
+  }
+  function applyPeers(p) {
+    var body = document.getElementById('peers-body');
+    if (!body) { return; }
+    if (body.children.length !== p.rows.length) { body.innerHTML = p.html; return; }
+    for (var i = 0; i < p.rows.length; i++) {
+      var r = p.rows[i];
+      setText('peer.' + i + '.name', r.name);
+      setText('peer.' + i + '.ip', r.ip);
+      setText('peer.' + i + '.mode', r.mode);
+      setText('peer.' + i + '.rtt', r.rtt);
+      setText('peer.' + i + '.endpoint', r.endpoint);
+      setText('peer.' + i + '.handshake', r.handshake);
+      setText('peer.' + i + '.key', r.key);
+      var span = document.querySelector('[data-f="peer.' + i + '.rtt"]');
+      if (span && span.parentNode && span.parentNode.getAttribute('title') !== r.rtt_title) {
+        span.parentNode.setAttribute('title', r.rtt_title);
+      }
+    }
+  }
+  function applyRoutes(rs) {
+    setText('routes-caption', rs.caption);
+    var body = document.getElementById('routes-body');
+    if (!body) { return; }
+    if (body.children.length !== rs.rows.length) { body.innerHTML = rs.html; return; }
+    for (var i = 0; i < rs.rows.length; i++) {
+      if (typeof rs.rows[i] === 'string') { continue; } // 占位行，不 diff
+      setText('routes.' + i + '.dest', rs.rows[i][0]);
+      setText('routes.' + i + '.next', rs.rows[i][1]);
+      setText('routes.' + i + '.iface', rs.rows[i][2]);
+      setText('routes.' + i + '.src', rs.rows[i][3]);
+    }
+  }
+  function poll() {
+    fetch('/state.json', { cache: 'no-store' }).then(function (res) {
+      if (!res.ok) { throw new Error('HTTP ' + res.status); }
+      return res.json();
+    }).then(function (state) {
+      if (last && JSON.stringify(state) !== JSON.stringify(last)) {
+        applyNode(state.node);
+        applyPeers(state.peers);
+        applyRoutes(state.routes);
+      }
+      last = state;
+    }).catch(function () {
+      // 拉取失败下个周期重试（面板数据链路只读本机，失败不致命）。
+    });
+  }
+  var seed = document.getElementById('panel-state');
+  if (seed) { try { last = JSON.parse(seed.textContent); } catch (e) { last = null; } }
+  setInterval(poll, INTERVAL);
+
+  // 复制按钮：纯客户端行为，不新增任何网络请求（面板仍是 GET/HEAD 只读页）。
+  // 事件委托——行被 JS 重建后按钮依旧可用；navigator.clipboard 不可用降级
+  // execCommand，再不行给出「复制失败」反馈。
+  function flash(button, ok) {
+    button.classList.add('copied');
+    button.textContent = ok ? '已复制' : '复制失败';
+    setTimeout(function () {
+      button.classList.remove('copied');
+      button.textContent = '复制';
+    }, 1500);
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    return ok;
+  }
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    var button = target && target.closest ? target.closest('button.copy') : null;
+    if (!button) { return; }
+    var text = button.getAttribute('data-copy');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { flash(button, true); },
+        function () { flash(button, fallbackCopy(text)); }
+      );
+    } else {
+      flash(button, fallbackCopy(text));
+    }
+  });
+})();
+</script>
+</body>
+</html>
