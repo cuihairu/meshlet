@@ -17,7 +17,7 @@
 
 ### 超大文件候选（>1000 行）
 
-- [ ] LAY-001 [P1] 拆分 `apps/server/src/service.rs`（3045 行）——混合 `MeshState` 聚合、错误映射、生命周期、网络/设备/邀请/路由/alias/网段/诊断与视图转换，单一文件已横跨策略与接口契约。（`apps/server/src/service.rs:485`）
+- [x] LAY-001 [P1] 拆分 `apps/server/src/service.rs`（3045 行）——混合 `MeshState` 聚合、错误映射、生命周期、网络/设备/邀请/路由/alias/网段/诊断与视图转换，单一文件已横跨策略与接口契约。（`apps/server/src/service.rs:485`）
 - [ ] LAY-002 [P1] 拆分 `apps/server/src/persist.rs`（2703 行）——同时承载 SQLite 重建、实体写入、任务加载、备份、恢复与诊断快照，恢复安全和逐表映射可各自成为边界。（`apps/server/src/persist.rs:1307`）
 - [ ] LAY-003 [P1] 拆分 `apps/server/src/publish.rs`（2546 行）——发布对象结构、四类 CRUD、认证解析、健康回报与设备计划投影在同一模块，控制器与领域规则可分离。（`apps/server/src/publish.rs:1214`）
 - [ ] LAY-004 [P1] 拆分 `crates/meshlet-network/src/linux.rs`（2507 行）——Linux 后端把接口探测、命令运行、隧道/路由/NAT/防火墙、诊断和解析器集中在一个实现内。（`crates/meshlet-network/src/linux.rs:1606`）
