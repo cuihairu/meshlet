@@ -1144,6 +1144,7 @@ mod tests {
             public_key: "AbCdEfGh1234==".into(),
             mode: "hub_relay".into(),
             rtt_ms: None,
+            rtt_source: None,
             endpoint: String::new(),
             last_handshake_at: None,
         }];
@@ -1179,6 +1180,7 @@ mod tests {
             public_key: "k==".into(),
             mode: "hub_relay".into(),
             rtt_ms: None,
+            rtt_source: None,
             endpoint: String::new(),
             last_handshake_at: None,
         }];

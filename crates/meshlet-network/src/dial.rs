@@ -70,6 +70,11 @@ pub struct DirectPeerView {
     pub mode: String,
     /// 最近一次直连路径实测 RTT（毫秒）；未测为 `None`。
     pub rtt_ms: Option<u64>,
+    /// RTT 读数来源（`overlay` / `endpoint` / `unreachable`；未测 / 旧 agent
+    /// 为 `None`）。托盘/面板据此标注 RTT 列的来源（见 `meshlet-domain`
+    /// `DirectLinkStatus::rtt_source`）。
+    #[serde(default)]
+    pub rtt_source: Option<String>,
     /// 当前直连 endpoint（`ip:port`）；未建立 / 无候选为空。
     pub endpoint: String,
     /// 最近握手 Unix 秒；未握手为 `None`。
@@ -252,6 +257,7 @@ mod tests {
             public_key: "abc==".into(),
             mode: "hub_relay".into(),
             rtt_ms: None,
+            rtt_source: None,
             endpoint: String::new(),
             last_handshake_at: None,
         }];

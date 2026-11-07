@@ -6,16 +6,21 @@
 //! - **三块信息**：① 当前节点（设备名 / 虚拟 IP / 公钥指纹 / 状态灯 / hub 控制
 //!   通道 / 版本 / EnvProbe 关键项）② 直连节点（`direct-peers.json` 全量）③
 //!   本地路由（`applied.json` 的计划路由，缺省回落账本前缀）。
-//! - **只读本机文件**：每次请求重读 → 文件变更即刷新；页面另带 5s 自动刷新。
+//! - **只读本机文件**：每次请求重读 → 文件变更即刷新；页面初始服务端预渲染
+//!   （无 JS 也见三块），有 JS 时每 5s `fetch /state.json` 做**局部更新**——
+//!   值 diff 只 patch 变化单元格，保留滚动位置 / 焦点 / 复制钮状态，不再
+//!   `<meta refresh>` 整页重载（整页刷新会闪屏丢滚动，用户可见抖动）。
 //!   数据链路完全不经过 server，**server 挂了本地面板照样开**。
 //! - **只绑 loopback**：`127.0.0.1:0`（内核分配端口，避开冲突），只应答
-//!   `GET/HEAD /`；纯展示无写操作，页面不含私钥 / token 等敏感数据。
+//!   `GET/HEAD /`（页面）与 `GET/HEAD /state.json`（局部更新数据源）；纯展示
+//!   无写操作，页面不含私钥 / token 等敏感数据。
 //! - **复制按钮是纯客户端行为**：overlay IP 旁的「复制」点击后写剪贴板
 //!   （`navigator.clipboard`，`file://` 等无该 API 的环境降级
 //!   `execCommand`，再失败给「复制失败」反馈），不新增任何网络请求，
 //!   只读纪律（GET/HEAD）不变；`data-copy` 属性值经 `esc` 转义。
 //! - **零新增依赖**：`std::net` 起一个后台线程，tray-host 保持
-//!   windows-sys + serde 的零数据面依赖纪律。
+//!   windows-sys + serde 的零数据面依赖纪律；页面无构建链（单二进制内联
+//!   JS，fetch + 单元格 patch，不上 React）。
 //!
 //! 数据源（全部现成，无新采集）：
 //!
@@ -24,7 +29,7 @@
 //! | 当前节点 | `{state}/tray/status.json` | `state` / `tooltip` / `updated_at` / `version` / `env` |
 //! | 当前节点 | `{state}/applied.json` | `tunnel_address` / `local_public_key` / `applied_at` |
 //! | 当前节点 | `{state}/../agent.toml` | `device_name` / `server_url`（控制台入口） |
-//! | 直连节点 | `{state}/direct-peers.json` | 名称 / overlay IP / 模式 / RTT / endpoint / 最近握手 |
+//! | 直连节点 | `{state}/direct-peers.json` | 名称 / overlay IP / 模式 / RTT（含来源）/ endpoint / 最近握手 |
 //! | 本地路由 | `{state}/applied.json` | `last_good_plan.routes`（目标网段 / 下一跳 / 接口） |
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -32,7 +37,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// 页面自动刷新间隔（秒）。每次刷新都重读状态文件，文件变更即可见。
+/// 页面局部更新轮询间隔（秒）。页面每间隔 `fetch /state.json`，值有变才
+/// patch 对应单元格——不再整页重载（无闪屏、滚动/焦点不丢）。
 pub const REFRESH_SECS: u32 = 5;
 /// 单请求读取上限（请求行），超长请求直接断开，不占服务线程。
 const REQUEST_LIMIT: u64 = 8 * 1024;
@@ -106,7 +112,8 @@ fn serve(listener: TcpListener, state_dir: PathBuf) {
     }
 }
 
-/// 处理一次请求：只放行 `GET|HEAD /`（`/index.html` 同义），其余 404/405。
+/// 处理一次请求：只放行 `GET|HEAD /`（页面）与 `GET|HEAD /state.json`
+/// （局部更新数据源），其余 404/405。
 fn handle(state_dir: &Path, stream: TcpStream) -> std::io::Result<()> {
     let reader = BufReader::new(&stream);
     let mut line = String::new();
@@ -121,6 +128,7 @@ fn handle(state_dir: &Path, stream: TcpStream) -> std::io::Result<()> {
             return respond(
                 stream,
                 "405 Method Not Allowed",
+                CONTENT_HTML,
                 &error_page("仅支持 GET"),
                 false,
             )
@@ -128,27 +136,45 @@ fn handle(state_dir: &Path, stream: TcpStream) -> std::io::Result<()> {
     };
     let path = target.split('?').next().unwrap_or_default();
     match path {
-        "/" | "/index.html" => respond(stream, "200 OK", &render(state_dir), head_only),
+        "/" | "/index.html" => respond(
+            stream,
+            "200 OK",
+            CONTENT_HTML,
+            &render(state_dir),
+            head_only,
+        ),
+        "/state.json" => respond(
+            stream,
+            "200 OK",
+            CONTENT_JSON,
+            &state_json(state_dir),
+            head_only,
+        ),
         _ => respond(
             stream,
             "404 Not Found",
-            &error_page("页面不存在（本地面板只有 /）"),
+            CONTENT_HTML,
+            &error_page("页面不存在（本地面板只有 / 与 /state.json）"),
             head_only,
         ),
     }
 }
 
+const CONTENT_HTML: &str = "text/html; charset=utf-8";
+const CONTENT_JSON: &str = "application/json; charset=utf-8";
+
 /// 写响应（`Connection: close`：一请求一连接，浏览器无需 keep-alive）。
 fn respond(
     mut stream: TcpStream,
     status: &str,
+    content_type: &str,
     body: &str,
     head_only: bool,
 ) -> std::io::Result<()> {
     let bytes = body.as_bytes();
     let header = format!(
         "HTTP/1.1 {status}\r\n\
-         Content-Type: text/html; charset=utf-8\r\n\
+         Content-Type: {content_type}\r\n\
          Content-Length: {}\r\n\
          Cache-Control: no-store\r\n\
          X-Content-Type-Options: nosniff\r\n\
@@ -201,8 +227,85 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&text).ok()
 }
 
-/// 渲染整页 HTML（每次请求现读现渲染，无缓存）。
-pub fn render(state_dir: &Path) -> String {
+/// 面板快照：render（服务端预渲染 HTML）与 state_json（局部更新数据源）
+/// 的**唯一**数据源——两路同源，页面上任一单元格都能被 JS 用同一个键 diff。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PanelSnapshot {
+    pub node: NodeSnapshot,
+    pub peers: PeersSnapshot,
+    pub routes: RoutesSnapshot,
+}
+
+/// ① 当前节点：状态灯 + 状态行 + (label, value) 字段表。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NodeSnapshot {
+    /// 状态灯色（`data-dot` 键，JS 变色前先比对）。
+    pub dot: &'static str,
+    /// 状态行展示文本（状态 + tooltip，服务端拼好，JS 只做文本 diff）。
+    pub state_display: String,
+    /// 字段行（label, value）；value 落在 `data-f="node.{i}"`。
+    pub fields: Vec<(String, String)>,
+    /// 携带复制按钮的字段下标（虚拟 IP）；`None` = 无可复制值。
+    pub copy_index: Option<usize>,
+}
+
+/// ② 直连节点单行。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PeerRow {
+    pub name: String,
+    pub ip: String,
+    pub mode: String,
+    /// RTT 展示文本（`12 ms` / `—`）。
+    pub rtt: String,
+    /// RTT 来源 tooltip（overlay / endpoint / 不可测），落在 RTT 单元格 title。
+    pub rtt_title: String,
+    pub endpoint: String,
+    pub handshake: String,
+    pub public_key: String,
+    /// overlay IP 是否带复制按钮（占位符 `—` 不带）。
+    pub ip_copyable: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PeersSnapshot {
+    pub rows: Vec<PeerRow>,
+    /// 整段 tbody HTML。常态走单元格 diff；行数变化（节点增删 / 数据不可用
+    /// 占位切换）时 JS 整体替换——html 与页面由同一 Rust 代码生成，不分叉。
+    pub html: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RoutesSnapshot {
+    pub caption: String,
+    /// 数据行 `[目标网段, 下一跳, 接口, 来源]` 或占位行（字符串，跨列提示）。
+    /// JS 对数据行走单元格 diff，占位行只随整体替换出现。
+    pub rows: Vec<RouteRow>,
+    pub html: String,
+}
+
+/// 本地路由一行：数据行（4 列）或占位行（跨列提示）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(untagged)]
+pub enum RouteRow {
+    Cells([String; 4]),
+    Placeholder(String),
+}
+
+/// RTT 来源 → 人话 tooltip。「最近握手」列始终保留为链路活性主证据——
+/// overlay/endpoint 都测不出 RTT 不代表链路死了（WireGuard 常不答 ICMP）。
+fn rtt_source_label(source: Option<&str>) -> &'static str {
+    match source {
+        Some("overlay") => "来源：overlay 实测（对端 overlay VIP 直测）",
+        Some("endpoint") => "来源：endpoint 实测（overlay 不通，回退 underlay endpoint）",
+        Some("unreachable") => {
+            "来源：不可测（overlay 与 endpoint 均无响应，以「最近握手」为活性证据）"
+        }
+        _ => "来源：未测（对端无直连路径或探测尚未完成）",
+    }
+}
+
+/// 读三块数据 → 面板快照（render 与 state_json 都走这里）。
+pub fn snapshot(state_dir: &Path) -> PanelSnapshot {
     let status = read_json(&state_dir.join("tray").join("status.json"))
         .unwrap_or_else(|| serde_json::json!({}));
     let ledger = read_json(&state_dir.join("applied.json"));
@@ -222,9 +325,91 @@ pub fn render(state_dir: &Path) -> String {
         .get("tooltip")
         .and_then(|v| v.as_str())
         .unwrap_or("状态说明不可用");
-    let node_rows = node_rows(state_dir, &status, &applied);
-    let direct_rows = direct_rows(state_dir);
-    let (route_rows, route_caption) = route_rows(&applied, ledger_ok);
+    let state_display = format!("{state_line} — {tooltip}");
+    let (fields, copy_index) = node_fields(state_dir, &status, &applied);
+    let peers = peers_snapshot(state_dir);
+    let (routes, route_caption) = route_rows(&applied, ledger_ok);
+    let routes_html = routes_html(&routes);
+
+    PanelSnapshot {
+        node: NodeSnapshot {
+            dot,
+            state_display,
+            fields,
+            copy_index,
+        },
+        peers,
+        routes: RoutesSnapshot {
+            caption: route_caption,
+            rows: routes,
+            html: routes_html,
+        },
+    }
+}
+
+/// 局部更新数据源：`GET /state.json` 的响应体（与页面同一快照函数）。
+pub fn state_json(state_dir: &Path) -> String {
+    serde_json::to_string(&snapshot(state_dir)).unwrap_or_else(|_| "{}".into())
+}
+
+/// 直连节点单行 HTML（与 `PeersSnapshot::html` 同源；`data-f` 键供 JS diff）。
+fn peer_row_html(index: usize, row: &PeerRow) -> String {
+    let button = if row.ip_copyable {
+        copy_button_html(&row.ip)
+    } else {
+        String::new()
+    };
+    format!(
+        "<tr><td><span data-f=\"peer.{i}.name\">{name}</span></td>\
+         <td class=\"mono\"><span data-f=\"peer.{i}.ip\">{ip}</span>{button}</td>\
+         <td><span data-f=\"peer.{i}.mode\">{mode}</span></td>\
+         <td class=\"mono\" title=\"{rtt_title}\"><span data-f=\"peer.{i}.rtt\">{rtt}</span></td>\
+         <td class=\"mono\"><span data-f=\"peer.{i}.endpoint\">{endpoint}</span></td>\
+         <td class=\"mono\"><span data-f=\"peer.{i}.handshake\">{handshake}</span></td>\
+         <td class=\"mono key\"><span data-f=\"peer.{i}.key\">{key}</span></td></tr>",
+        i = index,
+        name = esc(&row.name),
+        ip = esc(&row.ip),
+        button = button,
+        mode = esc(&row.mode),
+        rtt_title = esc(&row.rtt_title),
+        rtt = esc(&row.rtt),
+        endpoint = esc(&row.endpoint),
+        handshake = esc(&row.handshake),
+        key = esc(&row.public_key),
+    )
+}
+
+/// 本地路由单行 HTML（`rows[i]` = [目标网段, 下一跳, 接口, 来源]）。
+fn route_row_html(index: usize, cells: &[String; 4]) -> String {
+    format!(
+        "<tr><td class=\"mono\"><span data-f=\"routes.{i}.dest\">{dest}</span></td>\
+         <td class=\"mono\"><span data-f=\"routes.{i}.next\">{next}</span></td>\
+         <td class=\"mono\"><span data-f=\"routes.{i}.iface\">{iface}</span></td>\
+         <td><span data-f=\"routes.{i}.src\">{src}</span></td></tr>",
+        i = index,
+        dest = esc(&cells[0]),
+        next = esc(&cells[1]),
+        iface = esc(&cells[2]),
+        src = esc(&cells[3]),
+    )
+}
+
+/// 路由表整段 HTML（占位行与数据行都由此生成）。
+fn routes_html(rows: &[RouteRow]) -> String {
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| match row {
+            RouteRow::Cells(cells) => route_row_html(i, cells),
+            RouteRow::Placeholder(message) => empty_row(4, message),
+        })
+        .collect()
+}
+
+/// 渲染整页 HTML（每次请求现读现渲染，无缓存；初始预渲染 + 内联快照供
+/// JS 做局部更新基线，无 JS 时三块照常可见）。
+pub fn render(state_dir: &Path) -> String {
+    let snap = snapshot(state_dir);
 
     let console_link = config_value(state_dir, "server_url").map(|server_url| {
         format!(
@@ -234,13 +419,42 @@ pub fn render(state_dir: &Path) -> String {
     });
     let console_link = console_link.unwrap_or_default();
 
+    // 当前节点字段表（服务端预渲染，与 state.json 同一数据）。
+    let node_rows: String = snap
+        .node
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            // 复制按钮只挂在携带真值的行（当前仅虚拟 IP）；按钮是仅有的
+            // 非转义片段，其 data-copy 属性值在 copy_button_html 内转义。
+            let button = snap
+                .node
+                .copy_index
+                .filter(|ci| *ci == i)
+                .map(|_| copy_button_html(value))
+                .unwrap_or_default();
+            format!(
+                "<tr><th>{label}</th><td class=\"mono\"><span data-f=\"node.{i}\">{value}</span>{button}</td></tr>",
+                label = esc(label),
+                value = esc(value),
+                button = button,
+            )
+        })
+        .collect();
+
+    // 内联初始快照：JS 的 diff 基线（`<` 转义防 `</script>` 提前闭合；
+    // HTML 不解析 script 内容里的实体，JSON.parse 吃 `\u003c`）。
+    let seed = serde_json::to_string(&snap)
+        .unwrap_or_else(|_| "{}".into())
+        .replace('<', "\\u003c");
+
     format!(
         r#"<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="{refresh}">
 <title>Meshlet 本地面板</title>
 <style>
 :root {{ color-scheme: dark; }}
@@ -276,37 +490,107 @@ footer {{ color: #6f7a83; font-size: 12px; margin-top: 8px; }}
 <body>
 <header>
   <h1>Meshlet 本地面板</h1>
-  <p class="sub">本机自托管 · 数据来自本机状态文件 · 不依赖服务端可达 · 每 {refresh} 秒自动刷新</p>
+  <p class="sub">本机自托管 · 数据来自本机状态文件 · 不依赖服务端可达 · 每 {refresh} 秒局部更新（不整页刷新）</p>
   {console_link}
 </header>
 <main>
 <section id="node">
   <h2>当前节点</h2>
-  <p class="caption"><span class="dot" style="background:{dot}"></span>{state_line} — {tooltip}</p>
-  <table>{node_rows}</table>
+  <p class="caption"><span class="dot" id="node-dot" data-dot="{dot}" style="background:{dot}"></span><span data-f="node-state">{state_display}</span></p>
+  <table><tbody id="node-body">{node_rows}</tbody></table>
 </section>
 <section id="direct">
   <h2>直连节点</h2>
   <table>
     <tr><th>名称</th><th>Overlay IP</th><th>链路模式</th><th>RTT</th><th>Endpoint</th><th>最近握手</th><th>公钥</th></tr>
-    {direct_rows}
+    <tbody id="peers-body">{peers_html}</tbody>
   </table>
 </section>
 <section id="routes">
   <h2>本地路由</h2>
-  <p class="caption">{route_caption}</p>
+  <p class="caption"><span data-f="routes-caption">{route_caption}</span></p>
   <table>
     <tr><th>目标网段</th><th>下一跳</th><th>接口</th><th>来源</th></tr>
-    {route_rows}
+    <tbody id="routes-body">{routes_html}</tbody>
   </table>
 </section>
 </main>
 <footer>数据源：tray/status.json · direct-peers.json · applied.json · agent.toml（{state_dir}）</footer>
+<script type="application/json" id="panel-state">{seed}</script>
 <script>
-// 复制按钮：纯客户端行为，不新增任何网络请求（面板仍是 GET/HEAD 只读页）。
-// navigator.clipboard 在 http://127.0.0.1（安全上下文）可用；不可用（file://
-// 或旧引擎）降级 execCommand，再不行给出「复制失败」反馈。
+// 局部更新：每 {refresh}s fetch /state.json，与内联快照做 JSON diff——
+// 值有变才 patch 对应单元格（保留滚动 / 焦点 / 复制钮状态）；行数变化
+// （节点增删 / 占位切换）才整体替换 tbody。绝不 location.reload。
 (function () {{
+  var INTERVAL = {refresh} * 1000;
+  var last = null;
+  function setText(key, text) {{
+    var el = document.querySelector('[data-f="' + key + '"]');
+    if (el && el.textContent !== text) {{ el.textContent = text; }}
+  }}
+  function applyNode(n) {{
+    var dot = document.getElementById('node-dot');
+    if (dot && dot.getAttribute('data-dot') !== n.dot) {{
+      dot.setAttribute('data-dot', n.dot);
+      dot.style.background = n.dot;
+    }}
+    setText('node-state', n.state_display);
+    for (var i = 0; i < n.fields.length; i++) {{ setText('node.' + i, n.fields[i][1]); }}
+  }}
+  function applyPeers(p) {{
+    var body = document.getElementById('peers-body');
+    if (!body) {{ return; }}
+    if (body.children.length !== p.rows.length) {{ body.innerHTML = p.html; return; }}
+    for (var i = 0; i < p.rows.length; i++) {{
+      var r = p.rows[i];
+      setText('peer.' + i + '.name', r.name);
+      setText('peer.' + i + '.ip', r.ip);
+      setText('peer.' + i + '.mode', r.mode);
+      setText('peer.' + i + '.rtt', r.rtt);
+      setText('peer.' + i + '.endpoint', r.endpoint);
+      setText('peer.' + i + '.handshake', r.handshake);
+      setText('peer.' + i + '.key', r.key);
+      var span = document.querySelector('[data-f="peer.' + i + '.rtt"]');
+      if (span && span.parentNode && span.parentNode.getAttribute('title') !== r.rtt_title) {{
+        span.parentNode.setAttribute('title', r.rtt_title);
+      }}
+    }}
+  }}
+  function applyRoutes(rs) {{
+    setText('routes-caption', rs.caption);
+    var body = document.getElementById('routes-body');
+    if (!body) {{ return; }}
+    if (body.children.length !== rs.rows.length) {{ body.innerHTML = rs.html; return; }}
+    for (var i = 0; i < rs.rows.length; i++) {{
+      if (typeof rs.rows[i] === 'string') {{ continue; }} // 占位行，不 diff
+      setText('routes.' + i + '.dest', rs.rows[i][0]);
+      setText('routes.' + i + '.next', rs.rows[i][1]);
+      setText('routes.' + i + '.iface', rs.rows[i][2]);
+      setText('routes.' + i + '.src', rs.rows[i][3]);
+    }}
+  }}
+  function poll() {{
+    fetch('/state.json', {{ cache: 'no-store' }}).then(function (res) {{
+      if (!res.ok) {{ throw new Error('HTTP ' + res.status); }}
+      return res.json();
+    }}).then(function (state) {{
+      if (last && JSON.stringify(state) !== JSON.stringify(last)) {{
+        applyNode(state.node);
+        applyPeers(state.peers);
+        applyRoutes(state.routes);
+      }}
+      last = state;
+    }}).catch(function () {{
+      // 拉取失败下个周期重试（面板数据链路只读本机，失败不致命）。
+    }});
+  }}
+  var seed = document.getElementById('panel-state');
+  if (seed) {{ try {{ last = JSON.parse(seed.textContent); }} catch (e) {{ last = null; }} }}
+  setInterval(poll, INTERVAL);
+
+  // 复制按钮：纯客户端行为，不新增任何网络请求（面板仍是 GET/HEAD 只读页）。
+  // 事件委托——行被 JS 重建后按钮依旧可用；navigator.clipboard 不可用降级
+  // execCommand，再不行给出「复制失败」反馈。
   function flash(button, ok) {{
     button.classList.add('copied');
     button.textContent = ok ? '已复制' : '复制失败';
@@ -327,36 +611,34 @@ footer {{ color: #6f7a83; font-size: 12px; margin-top: 8px; }}
     document.body.removeChild(ta);
     return ok;
   }}
-  Array.prototype.forEach.call(
-    document.querySelectorAll('button.copy'),
-    function (button) {{
-      button.addEventListener('click', function () {{
-        var text = button.getAttribute('data-copy');
-        if (navigator.clipboard && navigator.clipboard.writeText) {{
-          navigator.clipboard.writeText(text).then(
-            function () {{ flash(button, true); }},
-            function () {{ flash(button, fallbackCopy(text)); }}
-          );
-        }} else {{
-          flash(button, fallbackCopy(text));
-        }}
-      }});
+  document.addEventListener('click', function (event) {{
+    var target = event.target;
+    var button = target && target.closest ? target.closest('button.copy') : null;
+    if (!button) {{ return; }}
+    var text = button.getAttribute('data-copy');
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      navigator.clipboard.writeText(text).then(
+        function () {{ flash(button, true); }},
+        function () {{ flash(button, fallbackCopy(text)); }}
+      );
+    }} else {{
+      flash(button, fallbackCopy(text));
     }}
-  );
+  }});
 }})();
 </script>
 </body>
 </html>
 "#,
         refresh = REFRESH_SECS,
-        dot = dot,
-        state_line = esc(&state_line),
-        tooltip = esc(tooltip),
+        dot = snap.node.dot,
+        state_display = esc(&snap.node.state_display),
         node_rows = node_rows,
-        direct_rows = direct_rows,
-        route_rows = route_rows,
-        route_caption = esc(&route_caption),
+        peers_html = snap.peers.html,
+        route_caption = esc(&snap.routes.caption),
+        routes_html = snap.routes.html,
         console_link = console_link,
+        seed = seed,
         state_dir = esc(&state_dir.display().to_string()),
     )
 }
@@ -408,11 +690,15 @@ fn copy_button_html(value: &str) -> String {
     )
 }
 
-/// ① 当前节点表行（label, value）。
-fn node_rows(state_dir: &Path, status: &serde_json::Value, applied: &serde_json::Value) -> String {
+/// ① 当前节点字段（label, value），及携带复制按钮的行下标。
+fn node_fields(
+    state_dir: &Path,
+    status: &serde_json::Value,
+    applied: &serde_json::Value,
+) -> (Vec<(String, String)>, Option<usize>) {
     let mut rows: Vec<(String, String)> = Vec::new();
     // 虚拟 IP 的复制值：有真值才出复制按钮（占位符「—」没有可复制的东西）。
-    let mut copy_value: Option<(String, String)> = None;
+    let mut copy_index: Option<usize> = None;
 
     // 设备名：agent.toml 优先，缺省从 tooltip「…」里取，再兜底 unknown。
     let device_name = config_value(state_dir, "device_name").unwrap_or_else(|| {
@@ -433,7 +719,7 @@ fn node_rows(state_dir: &Path, status: &serde_json::Value, applied: &serde_json:
         .map(str::to_string);
     let tunnel_cell = match &tunnel_address {
         Some(ip) => {
-            copy_value = Some(("虚拟 IP".into(), ip.clone()));
+            copy_index = Some(rows.len());
             ip.clone()
         }
         None => "—".into(),
@@ -490,22 +776,7 @@ fn node_rows(state_dir: &Path, status: &serde_json::Value, applied: &serde_json:
         rows.push((label, value));
     }
 
-    rows.into_iter()
-        .map(|(label, value)| {
-            // 复制按钮只挂在携带真值的行（当前仅虚拟 IP）；按钮是仅有的
-            // 非转义片段，其 data-copy 属性值在 copy_button_html 内转义。
-            let button = copy_value
-                .as_ref()
-                .filter(|(row, _)| *row == label)
-                .map(|(_, ip)| copy_button_html(ip))
-                .unwrap_or_default();
-            format!(
-                "<tr><th>{label}</th><td class=\"mono\">{value}{button}</td></tr>",
-                label = esc(&label),
-                value = esc(&value)
-            )
-        })
-        .collect()
+    (rows, copy_index)
 }
 
 /// tooltip「Meshlet「name」 ip：…」里的设备名。
@@ -575,19 +846,30 @@ fn env_rows(env: Option<&serde_json::Value>) -> Vec<(String, String)> {
     ]
 }
 
-/// ② 直连节点表行（`direct-peers.json` 全量，含中继候选）。
-fn direct_rows(state_dir: &Path) -> String {
+/// ② 直连节点快照（`direct-peers.json` 全量，含中继候选）。RTT 值带来源
+/// tooltip（overlay / endpoint / 不可测），「最近握手」保留为活性主证据。
+fn peers_snapshot(state_dir: &Path) -> PeersSnapshot {
     let views = match read_json(&state_dir.join("direct-peers.json")) {
         Some(serde_json::Value::Array(items)) => items,
         // 缺失 / 损坏 / 形状不符：**不能**说成「没有直连节点」，只能说数据不可用
         //（面板照样出，不阻塞另两块）。
-        _ => return empty_row(7, "（直连节点数据不可用 — direct-peers.json 缺失或损坏）"),
+        _ => {
+            let html = empty_row(7, "（直连节点数据不可用 — direct-peers.json 缺失或损坏）");
+            return PeersSnapshot {
+                rows: Vec::new(),
+                html,
+            };
+        }
     };
     if views.is_empty() {
         // 文件在、也是数组，只是没记录 —— 这才是「没有节点记录」。
-        return empty_row(7, "（没有节点记录）");
+        let html = empty_row(7, "（没有节点记录）");
+        return PeersSnapshot {
+            rows: Vec::new(),
+            html,
+        };
     }
-    views
+    let rows: Vec<PeerRow> = views
         .iter()
         .map(|v| {
             let name = v
@@ -600,17 +882,19 @@ fn direct_rows(state_dir: &Path) -> String {
             let ip = v
                 .get("virtual_ipv4")
                 .and_then(|x| x.as_str())
-                .unwrap_or("—");
+                .unwrap_or("—")
+                .to_string();
             let mode = v.get("mode").and_then(|x| x.as_str()).unwrap_or("");
-            let rtt = match v.get("rtt_ms").and_then(|x| x.as_u64()) {
-                Some(ms) => format!("{ms} ms"),
-                None => "—".into(),
-            };
+            let rtt_ms = v.get("rtt_ms").and_then(|x| x.as_u64());
+            // RTT 来源：agent 探测结果（overlay / endpoint / unreachable）；
+            // 字段缺失（旧 agent / 无直连路径）按「未测」标注。
+            let rtt_title = rtt_source_label(v.get("rtt_source").and_then(|x| x.as_str()));
             let endpoint = v
                 .get("endpoint")
                 .and_then(|x| x.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or("—");
+                .unwrap_or("—")
+                .to_string();
             let handshake = v
                 .get("last_handshake_at")
                 .and_then(|x| x.as_u64())
@@ -621,28 +905,30 @@ fn direct_rows(state_dir: &Path) -> String {
                 .get("public_key")
                 .and_then(|x| x.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or("—");
-            // Overlay IP 复制按钮：仅在 IP 是真值时出（占位符「—」无可复制）。
-            let ip_button = if ip == "—" {
-                String::new()
-            } else {
-                copy_button_html(ip)
-            };
-            format!(
-                "<tr><td>{name}</td><td class=\"mono\">{ip}{ip_button}</td><td>{mode}</td>\
-                 <td class=\"mono\">{rtt}</td><td class=\"mono\">{endpoint}</td>\
-                 <td class=\"mono\">{handshake}</td>\
-                 <td class=\"mono key\">{public_key}</td></tr>",
-                name = esc(&name),
-                ip = esc(ip),
-                mode = esc(mode_label(mode)),
-                rtt = esc(&rtt),
-                endpoint = esc(endpoint),
-                handshake = esc(&handshake),
-                public_key = esc(public_key),
-            )
+                .unwrap_or("—")
+                .to_string();
+            PeerRow {
+                name,
+                ip_copyable: ip != "—",
+                ip,
+                mode: mode_label(mode).into(),
+                rtt: match rtt_ms {
+                    Some(ms) => format!("{ms} ms"),
+                    None => "—".into(),
+                },
+                rtt_title: rtt_title.to_string(),
+                endpoint,
+                handshake,
+                public_key,
+            }
         })
-        .collect()
+        .collect();
+    let html = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| peer_row_html(i, row))
+        .collect();
+    PeersSnapshot { rows, html }
 }
 
 /// 直连模式 → 中文短名（未知模式原样展示，不吞数据）。
@@ -678,9 +964,11 @@ fn age_text(unix_secs: u64) -> String {
     }
 }
 
-/// ③ 本地路由表行 + 说明。优先 `last_good_plan.routes`（服务端下发计划的本机
-/// 改写版），缺省回落账本 `routes` 前缀（旧账本 / 计划段缺失时仍能展示）。
-fn route_rows(applied: &serde_json::Value, ledger_ok: bool) -> (String, String) {
+/// ③ 本地路由数据行 + 说明。优先 `last_good_plan.routes`（服务端下发计划的
+/// 本机改写版），缺省回落账本 `routes` 前缀（旧账本 / 计划段缺失时仍能展示）。
+/// 行 = [目标网段, 下一跳, 接口, 来源]；占位情况（无计划路由 / 账本不可用
+/// 等）返回单条占位行，HTML 侧统一处理。
+fn route_rows(applied: &serde_json::Value, ledger_ok: bool) -> (Vec<RouteRow>, String) {
     // 「应用于 <时间>」只在真有时间戳时才这么说（`applied.json` 缺失时只是
     // 占位符，不能拿它当一次应用事件）。
     let applied_at = applied
@@ -707,7 +995,10 @@ fn route_rows(applied: &serde_json::Value, ledger_ok: bool) -> (String, String) 
             // 计划**已应用**且显式没有路由项（纯叶子节点，真机 imac 即此形态）：
             // 如实说「计划没下发路由」，绝不能说成「agent 尚未应用计划」。
             Some(routes) if routes.is_empty() => {
-                return (empty_row(4, "（计划未下发任何路由项）"), caption);
+                return (
+                    vec![RouteRow::Placeholder("（计划未下发任何路由项）".into())],
+                    caption,
+                );
             }
             Some(routes) => {
                 let rows = routes
@@ -716,11 +1007,13 @@ fn route_rows(applied: &serde_json::Value, ledger_ok: bool) -> (String, String) 
                         let dest = r
                             .get("destination")
                             .and_then(|d| d.as_str())
-                            .unwrap_or("—");
+                            .unwrap_or("—")
+                            .to_string();
                         let iface = r
                             .get("interface")
                             .and_then(|i| i.as_str())
-                            .unwrap_or("—");
+                            .unwrap_or("—")
+                            .to_string();
                         // 「直连」只留给显式 `null`（RouteConfig 的 Option 序列化）；
                         // 字段缺失 / 形状不对一律 `—`，不猜成直连路由。
                         let next_hop = match r.get("gateway") {
@@ -728,15 +1021,15 @@ fn route_rows(applied: &serde_json::Value, ledger_ok: bool) -> (String, String) 
                             Some(serde_json::Value::Null) => format!("直连（{iface}）"),
                             _ => "—".to_string(),
                         };
-                        format!(
-                            "<tr><td class=\"mono\">{dest}</td><td class=\"mono\">{next}</td>\
-                             <td class=\"mono\">{iface}</td><td>服务端计划 · applied.json</td></tr>",
-                            dest = esc(dest),
-                            next = esc(&next_hop),
-                            iface = esc(iface),
-                        )
+                        [
+                            dest,
+                            next_hop,
+                            iface,
+                            "服务端计划 · applied.json".to_string(),
+                        ]
                     })
-                    .collect::<String>();
+                    .map(RouteRow::Cells)
+                    .collect();
                 return (rows, caption);
             }
             // `routes` 缺失 / 形状不对：不猜「计划没下发路由」，落到账本分支。
@@ -747,29 +1040,41 @@ fn route_rows(applied: &serde_json::Value, ledger_ok: bool) -> (String, String) 
     if !ledger_ok {
         // 账本根本读不到（缺失 / 损坏）——与「账本可用但没有路由」分开陈述。
         return (
-            empty_row(4, "（本地账本不可用 — applied.json 缺失或损坏）"),
+            vec![RouteRow::Placeholder(
+                "（本地账本不可用 — applied.json 缺失或损坏）".into(),
+            )],
             "本地账本不可用".to_string(),
         );
     }
     let caption = format!("本地账本 applied.json · {time_clause}");
     let prefixes = match applied.get("routes") {
-        Some(serde_json::Value::Array(items)) => items.clone(),
+        Some(serde_json::Value::Array(items)) if !items.is_empty() => items.clone(),
         // 字段缺失 / 形状不对（`null`、`{}`、`"invalid"`）：不能说「没有路由记录」。
-        _ => return (empty_row(4, "（本地账本路由数据不可用）"), caption),
+        Some(serde_json::Value::Array(items)) if items.is_empty() => {
+            // 真的是空数组 + 账本可读：陈述账本事实，不反推有没有应用过计划。
+            let _ = items;
+            return (
+                vec![RouteRow::Placeholder("（本地账本没有路由记录）".into())],
+                caption,
+            );
+        }
+        _ => {
+            return (
+                vec![RouteRow::Placeholder("（本地账本路由数据不可用）".into())],
+                caption,
+            )
+        }
     };
-    if prefixes.is_empty() {
-        // 真的是空数组 + 账本可读：陈述账本事实，不反推有没有应用过计划。
-        return (empty_row(4, "（本地账本没有路由记录）"), caption);
-    }
     let rows = prefixes
         .iter()
         .map(|p| {
-            let dest = p.as_str().unwrap_or("—");
-            format!(
-                "<tr><td class=\"mono\">{dest}</td><td>—</td><td>—</td>\
-                 <td>本地账本 · applied.json</td></tr>",
-                dest = esc(dest)
-            )
+            let dest = p.as_str().unwrap_or("—").to_string();
+            RouteRow::Cells([
+                dest,
+                "—".to_string(),
+                "—".to_string(),
+                "本地账本 · applied.json".to_string(),
+            ])
         })
         .collect();
     (rows, caption)
@@ -837,8 +1142,8 @@ mod tests {
         .unwrap();
         std::fs::write(
             state.join("direct-peers.json"),
-            r#"[{"name":"peer-b","virtual_ipv4":"10.240.0.3","public_key":"abc==","mode":"p2p_direct","rtt_ms":12,"endpoint":"203.0.113.7:51820","last_handshake_at":1793980000},
-               {"name":"","virtual_ipv4":"10.240.0.4","public_key":"def==","mode":"hub_relay","rtt_ms":null,"endpoint":"","last_handshake_at":null}]"#,
+            r#"[{"name":"peer-b","virtual_ipv4":"10.240.0.3","public_key":"abc==","mode":"p2p_direct","rtt_ms":12,"rtt_source":"overlay","endpoint":"203.0.113.7:51820","last_handshake_at":1793980000},
+               {"name":"","virtual_ipv4":"10.240.0.4","public_key":"def==","mode":"hub_relay","rtt_ms":null,"rtt_source":"unreachable","endpoint":"","last_handshake_at":null}]"#,
         )
         .unwrap();
         std::fs::write(
@@ -1077,7 +1382,7 @@ mod tests {
             .nth(1)
             .expect("route with missing gateway renders");
         assert!(
-            missing.contains("</td><td class=\"mono\">—</td>"),
+            missing.contains("<span data-f=\"routes.1.next\">—</span>"),
             "missing gateway must show —"
         );
         assert!(html.contains("10.9.9.9"));
@@ -1231,10 +1536,159 @@ mod tests {
         // 只读面板：非 GET/HEAD 一律拒绝。
         let post = get("/", "POST");
         assert!(post.starts_with("HTTP/1.1 405"));
-        // 只有根路径是页面。
+        // 只有根路径与 state.json 是端点。
         let missing = get("/etc/passwd", "GET");
         assert!(missing.starts_with("HTTP/1.1 404"));
 
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    /// 局部更新数据源：`GET /state.json` 200 + 三块 JSON（与页面同一数据源）；
+    /// 写方法 405、未知路径 404、HEAD 无 body（只读纪律不变）。
+    #[test]
+    fn state_json_route_serves_three_sections_and_stays_read_only() {
+        let state = temp_state_dir("state-json");
+        write_mock_data(&state);
+        let port = start(state.clone()).expect("bind loopback");
+
+        let get = |target: &str, method: &str| -> String {
+            let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            let mut stream = stream;
+            write!(
+                stream,
+                "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut out = String::new();
+            std::io::Read::read_to_string(&mut stream, &mut out).unwrap();
+            out
+        };
+
+        let response = get("/state.json", "GET");
+        let (headers, body) = response
+            .split_once("\r\n\r\n")
+            .expect("response splits into headers and body");
+        assert!(
+            headers.starts_with("HTTP/1.1 200 OK"),
+            "status line: {}",
+            &headers[..40]
+        );
+        assert!(
+            headers.contains("Content-Type: application/json"),
+            "state.json must be served as JSON: {headers}"
+        );
+        assert!(headers.contains("Cache-Control: no-store"));
+
+        // 三块齐全：node / peers / routes（与 render 同一快照函数）。
+        let json: serde_json::Value = serde_json::from_str(body).expect("valid JSON body");
+        let node = json.get("node").expect("node block");
+        assert_eq!(node.get("dot").and_then(|v| v.as_str()), Some("#c97b2e"));
+        assert!(
+            node.get("state_display")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .contains("Meshlet online"),
+            "state_display carries the raw agent state"
+        );
+        let fields = node.get("fields").and_then(|v| v.as_array()).unwrap();
+        assert!(
+            fields.iter().any(|f| f.as_array().unwrap()[0] == "设备名"),
+            "node fields carry (label, value) pairs"
+        );
+        let peers = json
+            .get("peers")
+            .and_then(|p| p.get("rows"))
+            .and_then(|v| v.as_array())
+            .expect("peers rows");
+        assert_eq!(peers.len(), 2, "both mock peers present");
+        assert_eq!(peers[0].get("rtt").and_then(|v| v.as_str()), Some("12 ms"));
+        assert_eq!(
+            peers[0].get("rtt_title").and_then(|v| v.as_str()),
+            Some("来源：overlay 实测（对端 overlay VIP 直测）"),
+            "rtt source tooltip rides the row"
+        );
+        assert_eq!(
+            peers[1].get("rtt_title").and_then(|v| v.as_str()),
+            Some("来源：不可测（overlay 与 endpoint 均无响应，以「最近握手」为活性证据）"),
+        );
+        let routes = json
+            .get("routes")
+            .and_then(|r| r.get("rows"))
+            .and_then(|v| v.as_array())
+            .expect("routes rows");
+        assert_eq!(routes.len(), 2, "both plan routes present");
+
+        // 只读纪律：/state.json 同样只放行 GET/HEAD。
+        let post = get("/state.json", "POST");
+        assert!(post.starts_with("HTTP/1.1 405"));
+        let head = get("/state.json", "HEAD");
+        assert!(head.starts_with("HTTP/1.1 200 OK"));
+        assert!(head.ends_with("\r\n\r\n"), "HEAD must not carry a body");
+        let missing = get("/state.json.bak", "GET");
+        assert!(missing.starts_with("HTTP/1.1 404"));
+
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    /// 门禁：页面不再整页刷新（无 meta refresh、无 reload 调用），改用
+    /// fetch /state.json + 单元格 diff（滚动/焦点/复制钮状态不丢）。
+    #[test]
+    fn page_polls_state_json_and_never_full_page_reloads() {
+        let state = temp_state_dir("no-refresh");
+        write_mock_data(&state);
+        let html = render(&state);
+
+        assert!(
+            !html.contains("http-equiv=\"refresh\""),
+            "meta refresh must be gone (it caused the visible flicker)"
+        );
+        assert!(
+            !html.contains("location.reload("),
+            "full page reload is forbidden in the panel script"
+        );
+        assert!(
+            html.contains("fetch('/state.json'"),
+            "page must poll /state.json for partial updates"
+        );
+        assert!(html.contains("setInterval(poll"), "poll loop present");
+        // 初始快照内联（无 JS 也见三块——服务端预渲染仍在）。
+        assert!(html.contains("id=\"panel-state\""));
+        assert!(html.contains("id=\"peers-body\""));
+        // 单元格 diff 键：节点字段、直连节点行、路由行都有 data-f。
+        assert!(html.contains("data-f=\"node."), "node field diff keys");
+        assert!(html.contains("data-f=\"peer.0.rtt\""), "peer rtt diff key");
+        assert!(html.contains("data-f=\"routes-caption\""));
+        // 页面自身说明不再宣称「自动刷新」整页语义。
+        assert!(html.contains("局部更新（不整页刷新）"));
+
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    /// RTT 来源标注：overlay / endpoint / unreachable / 旧数据（无来源字段）
+    /// 各得对应的 tooltip；「最近握手」列保留（活性主证据）。
+    #[test]
+    fn rtt_column_labels_its_source() {
+        let state = temp_state_dir("rtt-source");
+        std::fs::write(
+            state.join("direct-peers.json"),
+            r#"[{"name":"a","virtual_ipv4":"10.240.0.3","mode":"p2p_direct","rtt_ms":12,"rtt_source":"endpoint","endpoint":"203.0.113.7:51820"},
+               {"name":"b","virtual_ipv4":"10.240.0.4","mode":"p2p_direct","rtt_ms":5,"rtt_source":"overlay"},
+               {"name":"c","virtual_ipv4":"10.240.0.5","mode":"p2p_direct","rtt_ms":null,"rtt_source":"unreachable"},
+               {"name":"d","virtual_ipv4":"10.240.0.6","mode":"p2p_direct","rtt_ms":9}]"#,
+        )
+        .unwrap();
+        let html = render(&state);
+        assert!(html.contains("来源：endpoint 实测（overlay 不通，回退 underlay endpoint）"));
+        assert!(html.contains("来源：overlay 实测（对端 overlay VIP 直测）"));
+        assert!(
+            html.contains("来源：不可测（overlay 与 endpoint 均无响应，以「最近握手」为活性证据）")
+        );
+        assert!(html.contains("来源：未测（对端无直连路径或探测尚未完成）"));
+        // 数值照常显示；不可测显示占位符。
+        assert!(html.contains("12 ms"));
+        assert!(html.contains(">—</span>"));
+        // 最近握手表头仍在（活性主证据）。
+        assert!(html.contains("最近握手"));
         let _ = std::fs::remove_dir_all(state.parent().unwrap());
     }
 

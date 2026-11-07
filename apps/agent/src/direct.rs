@@ -44,6 +44,8 @@ pub struct DirectPeer {
     pub endpoint: String,
     /// 最近一次直连路径实测 RTT（毫秒）。
     pub rtt_ms: Option<u64>,
+    /// RTT 读数来源（`overlay` / `endpoint` / `unreachable`；`None` = 未测）。
+    pub rtt_source: Option<String>,
     /// 最近一次握手 Unix 时间戳（秒）。
     pub last_handshake_at: Option<u64>,
     /// 累计接收字节（wg 读数）。
@@ -185,6 +187,7 @@ impl DirectManager {
                     peer_name: String::new(),
                     endpoint: String::new(),
                     rtt_ms: None,
+                    rtt_source: None,
                     last_handshake_at: None,
                     rx_bytes: 0,
                     tx_bytes: 0,
@@ -215,6 +218,7 @@ impl DirectManager {
                 },
                 endpoint: peer.endpoint.clone(),
                 rtt_ms: peer.rtt_ms,
+                rtt_source: peer.rtt_source.clone(),
                 last_handshake_at: peer.last_handshake_at,
                 rx_bytes: peer.rx_bytes,
                 tx_bytes: peer.tx_bytes,
@@ -262,16 +266,19 @@ impl DirectManager {
         if let Some(peer) = self.peers.get_mut(public_key) {
             peer.endpoint.clear();
             peer.rtt_ms = None;
+            peer.rtt_source = None;
         }
     }
 
-    /// 刷新直连状态读数（探测周期由执行侧调用）：直连路径实测 RTT（毫秒）、
-    /// 最近握手 Unix 秒、累计收发字节（wg 读数）。对端不在管或处于 Relay
-    /// （无直连链路可测）则 no-op。
+    /// 刷新直连状态读数（探测周期由执行侧调用）：直连路径实测 RTT（毫秒）+
+    /// 来源（`overlay` / `endpoint` / `unreachable`，见
+    /// [`crate::direct_rtt::RttProbe`]）、最近握手 Unix 秒、累计收发字节
+    /// （wg 读数）。对端不在管或处于 Relay（无直连链路可测）则 no-op。
     pub fn record_peer_status(
         &mut self,
         public_key: &str,
         rtt_ms: Option<u64>,
+        rtt_source: Option<&str>,
         last_handshake_at: Option<u64>,
         rx_bytes: u64,
         tx_bytes: u64,
@@ -279,6 +286,7 @@ impl DirectManager {
         if let Some(peer) = self.peers.get_mut(public_key) {
             if peer.state != PeerLinkState::Relay {
                 peer.rtt_ms = rtt_ms;
+                peer.rtt_source = rtt_source.map(str::to_string);
                 peer.last_handshake_at = last_handshake_at;
                 peer.rx_bytes = rx_bytes;
                 peer.tx_bytes = tx_bytes;
@@ -348,6 +356,7 @@ pub fn plan_updates(
                     peer_name: peer.name.clone(),
                     endpoint: String::new(),
                     rtt_ms: None,
+                    rtt_source: None,
                     last_handshake_at: None,
                     rx_bytes: 0,
                     tx_bytes: 0,
@@ -372,6 +381,7 @@ pub fn plan_updates(
                     peer_name: peer.name.clone(),
                     endpoint: String::new(),
                     rtt_ms: None,
+                    rtt_source: None,
                     last_handshake_at: None,
                     rx_bytes: 0,
                     tx_bytes: 0,
@@ -402,6 +412,7 @@ pub fn plan_updates(
                     .map(|e| e.endpoint.clone())
                     .unwrap_or_default(),
                 rtt_ms: None,
+                rtt_source: None,
                 last_handshake_at: None,
                 rx_bytes: 0,
                 tx_bytes: 0,
@@ -467,6 +478,7 @@ mod tests {
             peer_name: format!("{key}-name"),
             endpoint: String::new(),
             rtt_ms: None,
+            rtt_source: None,
             last_handshake_at: None,
             rx_bytes: 0,
             tx_bytes: 0,
@@ -835,6 +847,7 @@ mod tests {
                 connection_mode: "direct_pending".into(),
                 endpoint: String::new(),
                 rtt_ms: None,
+                rtt_source: None,
                 last_handshake_at: None,
                 rx_bytes: 0,
                 tx_bytes: 0,
@@ -865,6 +878,7 @@ mod tests {
                 connection_mode: "p2p_direct".into(),
                 endpoint: String::new(),
                 rtt_ms: None,
+                rtt_source: None,
                 last_handshake_at: None,
                 rx_bytes: 0,
                 tx_bytes: 0,
@@ -938,9 +952,16 @@ mod tests {
 
         // 富化：命中直连对端写入，Relay/缺失对端 no-op。
         manager.record_endpoint("peer-a", "192.168.1.50:51821".into());
-        manager.record_peer_status("peer-a", Some(42), Some(1_700_000_000), 111, 222);
+        manager.record_peer_status(
+            "peer-a",
+            Some(42),
+            Some("overlay"),
+            Some(1_700_000_000),
+            111,
+            222,
+        );
         manager.record_endpoint("peer-b", "192.168.1.60:51821".into());
-        manager.record_peer_status("ghost", Some(1), Some(1), 1, 1);
+        manager.record_peer_status("ghost", Some(1), Some("overlay"), Some(1), 1, 1);
 
         let a = &manager.peers["peer-a"];
         assert_eq!(a.endpoint, "192.168.1.50:51821");

@@ -491,6 +491,12 @@ pub struct DirectLinkStatus {
     /// 最近一次直连路径实测 RTT（毫秒）；`None` = 未测 / 探测失败。
     #[serde(default)]
     pub rtt_ms: Option<u64>,
+    /// RTT 读数来源（`overlay` = 对端 overlay VIP 直测；`endpoint` = overlay
+    /// 不通时回退 underlay endpoint 实测；`unreachable` = 两者均无响应，不可
+    /// 测；`None` = 未测 / 旧 agent 无来源标注）。展示层据此给 RTT 列标注
+    /// 来源，「最近握手」仍是链路活性的主证据。
+    #[serde(default)]
+    pub rtt_source: Option<String>,
     /// 最近一次握手 Unix 时间戳（秒）；0 / `None` = 尚无握手。
     #[serde(default)]
     pub last_handshake_at: Option<u64>,
@@ -1049,6 +1055,7 @@ mod tests {
             connection_mode: "p2p_direct".into(),
             endpoint: "192.168.1.2:51821".into(),
             rtt_ms: Some(7),
+            rtt_source: Some("overlay".into()),
             last_handshake_at: Some(1_700_000_000),
             rx_bytes: 1024,
             tx_bytes: 2048,
@@ -1077,6 +1084,7 @@ mod tests {
             connection_mode: "direct_pending".into(),
             endpoint: String::new(),
             rtt_ms: None,
+            rtt_source: None,
             last_handshake_at: None,
             rx_bytes: 0,
             tx_bytes: 0,

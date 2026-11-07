@@ -28,6 +28,7 @@ use crate::desktop::{desktop_trigger, DesktopPublish, DesktopTrigger};
 #[cfg(not(target_os = "linux"))]
 use crate::desktop_unsupported::DesktopClient;
 use crate::direct::{keepalive_secs, DirectManager, DirectUpdate};
+use crate::direct_rtt::{RttCandidate, RttProbe};
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
 use crate::self_update;
 use crate::server;
@@ -823,6 +824,11 @@ impl Agent {
     /// R-DIAG-2：从内核刷新各直连对端的实际状态（endpoint / 最近握手 /
     /// 累计流量），RTT 取**后台运行时**的最新实测值（绝不内联 `ping`）。
     ///
+    /// 探测候选带对端 endpoint 的 underlay 地址：overlay VIP 不答 ICMP
+    /// （WireGuard 接口 / 防火墙常弃包，链路可能完全活着）时，后台线程回退
+    /// ping endpoint——两路都无响应才「不可测」，来源随 RTT 一并记录，供
+    /// 面板/控制台标注。
+    ///
     /// 读数失败只记日志——展示数据源是「最后已知态」，绝不让诊断采集干扰
     /// 数据面；对端已不在管（本周期被 Demote）则各 record_* no-op。
     fn enrich_direct_peers(&mut self) {
@@ -832,29 +838,52 @@ impl Agent {
             self.direct_rtt.update_candidates(Vec::new());
             return;
         }
-        // 后台线程按最新候选集 ping；主循环只读快照，不等任何 ping。
-        self.direct_rtt.update_candidates(candidates.clone());
+        // 内核读数拿当前 endpoint（回退探测目标的来源）；读数失败则没有
+        // 回退路径可用，仅按 overlay 探测（与旧行为一致）。
         let net = match self.backend.diagnostics_sync() {
-            Ok(net) => net,
+            Ok(net) => Some(net),
             Err(e) => {
                 tracing::warn!(error = %e, "direct enrich: diagnostics unavailable");
-                return;
+                None
             }
         };
+        let probed: Vec<RttCandidate> = candidates
+            .into_iter()
+            .map(|(public_key, vip)| {
+                let endpoint_ip = net.as_ref().and_then(|net| {
+                    net.wg
+                        .iter()
+                        .find(|p| p.public_key == public_key)
+                        .map(|p| p.endpoint.clone())
+                        .unwrap_or_default()
+                        .rsplit_once(':')
+                        .and_then(|(host, _)| host.parse::<Ipv4Addr>().ok())
+                });
+                (public_key, vip, endpoint_ip)
+            })
+            .collect();
+        // 后台线程按最新候选集 ping；主循环只读快照，不等任何 ping。
+        self.direct_rtt.update_candidates(probed.clone());
         let rtts = self.direct_rtt.snapshot();
-        for (public_key, vip) in candidates {
-            let wg_peer = net.wg.iter().find(|p| p.public_key == public_key);
+        for (public_key, vip, _endpoint_ip) in probed {
+            let wg_peer = net
+                .as_ref()
+                .and_then(|net| net.wg.iter().find(|p| p.public_key == public_key));
             let endpoint = wg_peer.map(|p| p.endpoint.clone()).unwrap_or_default();
             let last_handshake_at =
                 wg_peer.and_then(|p| (p.last_handshake > 0).then_some(p.last_handshake));
             let (rx_bytes, tx_bytes) = wg_peer.map(|p| (p.rx_bytes, p.tx_bytes)).unwrap_or((0, 0));
             // 读快照：刚更新候选集的第一次读可能尚未有实测值（None=未知，
             // 与「读数失败」一致，展示数据源最后已知态）。`vip` 仅供记录日志。
-            let rtt_ms = rtts.get(&public_key).copied().flatten();
+            let probe = rtts
+                .get(&public_key)
+                .copied()
+                .unwrap_or_else(RttProbe::unknown);
             let _ = vip;
             self.direct.record_peer_status(
                 &public_key,
-                rtt_ms,
+                probe.rtt_ms,
+                Some(probe.source.as_str()),
                 last_handshake_at,
                 rx_bytes,
                 tx_bytes,
@@ -1235,6 +1264,7 @@ fn direct_peer_views(
                     .map(|l| l.connection_mode.clone())
                     .unwrap_or_else(|| "hub_relay".into()),
                 rtt_ms: link.and_then(|l| l.rtt_ms),
+                rtt_source: link.and_then(|l| l.rtt_source.clone()),
                 endpoint: link.map(|l| l.endpoint.clone()).unwrap_or_default(),
                 last_handshake_at: link.and_then(|l| l.last_handshake_at),
             }
@@ -1561,6 +1591,7 @@ mod tests {
             peer_name: String::new(),
             endpoint: String::new(),
             rtt_ms: None,
+            rtt_source: None,
             last_handshake_at: None,
             rx_bytes: 0,
             tx_bytes: 0,
@@ -1617,6 +1648,7 @@ mod tests {
             connection_mode: "p2p_direct".into(),
             endpoint: "192.168.1.50:51821".into(),
             rtt_ms: Some(5),
+            rtt_source: Some("overlay".into()),
             last_handshake_at: Some(1_700_000_000),
             rx_bytes: 0,
             tx_bytes: 0,
