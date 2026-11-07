@@ -23,7 +23,7 @@
 - [x] LAY-004 [P1] 拆分 `crates/meshlet-network/src/linux.rs`（2507 行）——Linux 后端把接口探测、命令运行、隧道/路由/NAT/防火墙、诊断和解析器集中在一个实现内。（`crates/meshlet-network/src/linux.rs:1606`）
 - [x] LAY-005 [P1] 拆分 `apps/server/tests/single_instance.rs`（2211 行）——集成测试把实例锁、备份/恢复、心跳、修订与多进程生命周期铺在同一文件。（`apps/server/tests/single_instance.rs:1`）
 - [x] LAY-006 [P1] 拆分 `apps/agent/src/agent.rs`（1913 行）——`Agent` 同时驱动对账、回执、心跳、直连、RTT、任务 kick、托盘、SSH 同步、自升级和发布。（`apps/agent/src/agent.rs:43`）
-- [ ] LAY-007 [P1] 拆分 `apps/tray-host/src/panel.rs`（1738 行）——本地面板把快照读取、HTML 渲染、JS 注入、HTTP server 与本地协议文案合并。（`apps/tray-host/src/panel.rs:313`）
+- [x] LAY-007 [P1] 拆分 `apps/tray-host/src/panel.rs`（1738 行）——本地面板把快照读取、HTML 渲染、JS 注入、HTTP server 与本地协议文案合并。（`apps/tray-host/src/panel.rs:313`）
 - [ ] LAY-008 [P1] 拆分 `apps/server/tests/dual_site_end_to_end.rs`（1690 行）——跨站点端到端用例覆盖注册、路由、NAT、收敛和备份恢复，适合按业务场景拆分。（`apps/server/tests/dual_site_end_to_end.rs:1`）
 - [ ] LAY-009 [P1] 拆分 `apps/server/src/task.rs`（1536 行）——任务记录、派发/回收策略、agent 通道和 console 路由集中，状态推进与 API 可拆开。（`apps/server/src/task.rs:628`）
 - [ ] LAY-010 [P1] 拆分 `apps/tray-host/src/main.rs`（1472 行）——Win32 托盘宿主、进程看门狗、菜单/图标、面板启动和 CLI 联动都在入口文件。（`apps/tray-host/src/main.rs:430`）
