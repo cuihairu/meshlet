@@ -293,13 +293,17 @@ pub enum RouteRow {
 
 /// RTT 来源 → 人话 tooltip。「最近握手」列始终保留为链路活性主证据——
 /// overlay/endpoint 都测不出 RTT 不代表链路死了（WireGuard 常不答 ICMP）。
+/// 如实四态（新 agent）：probe_ok / handshake_fresh / probe_failed / unprobed；
+/// overlay / endpoint / unreachable 是旧 agent 落盘的历史值，保留映射兼容。
 fn rtt_source_label(source: Option<&str>) -> &'static str {
     match source {
-        Some("overlay") => "来源：overlay 实测（对端 overlay VIP 直测）",
-        Some("endpoint") => "来源：endpoint 实测（overlay 不通，回退 underlay endpoint）",
-        Some("unreachable") => {
+        Some("probe_ok") => "来源：直连路径实测（overlay/endpoint ping 成功）",
+        Some("handshake_fresh") => "来源：握手新鲜（对端不答 ICMP，最近握手即链路活性证据）",
+        Some("probe_failed") | Some("unreachable") => {
             "来源：不可测（overlay 与 endpoint 均无响应，以「最近握手」为活性证据）"
         }
+        Some("overlay") => "来源：overlay 实测（对端 overlay VIP 直测）",
+        Some("endpoint") => "来源：endpoint 实测（overlay 不通，回退 underlay endpoint）",
         _ => "来源：未测（对端无直连路径或探测尚未完成）",
     }
 }
@@ -1664,26 +1668,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(state.parent().unwrap());
     }
 
-    /// RTT 来源标注：overlay / endpoint / unreachable / 旧数据（无来源字段）
+    /// RTT 来源标注：如实四态（新 agent）+ 旧 agent 落盘的历史值（无来源字段）
     /// 各得对应的 tooltip；「最近握手」列保留（活性主证据）。
     #[test]
     fn rtt_column_labels_its_source() {
         let state = temp_state_dir("rtt-source");
         std::fs::write(
             state.join("direct-peers.json"),
-            r#"[{"name":"a","virtual_ipv4":"10.240.0.3","mode":"p2p_direct","rtt_ms":12,"rtt_source":"endpoint","endpoint":"203.0.113.7:51820"},
-               {"name":"b","virtual_ipv4":"10.240.0.4","mode":"p2p_direct","rtt_ms":5,"rtt_source":"overlay"},
-               {"name":"c","virtual_ipv4":"10.240.0.5","mode":"p2p_direct","rtt_ms":null,"rtt_source":"unreachable"},
-               {"name":"d","virtual_ipv4":"10.240.0.6","mode":"p2p_direct","rtt_ms":9}]"#,
+            r#"[{"name":"a","virtual_ipv4":"10.240.0.3","mode":"p2p_direct","rtt_ms":12,"rtt_source":"probe_ok","endpoint":"203.0.113.7:51820"},
+               {"name":"b","virtual_ipv4":"10.240.0.4","mode":"p2p_direct","rtt_ms":null,"rtt_source":"handshake_fresh"},
+               {"name":"c","virtual_ipv4":"10.240.0.5","mode":"p2p_direct","rtt_ms":null,"rtt_source":"probe_failed"},
+               {"name":"d","virtual_ipv4":"10.240.0.6","mode":"p2p_direct","rtt_ms":9},
+               {"name":"e","virtual_ipv4":"10.240.0.7","mode":"p2p_direct","rtt_ms":null,"rtt_source":"unreachable"},
+               {"name":"f","virtual_ipv4":"10.240.0.8","mode":"p2p_direct","rtt_ms":5,"rtt_source":"overlay"}]"#,
         )
         .unwrap();
         let html = render(&state);
-        assert!(html.contains("来源：endpoint 实测（overlay 不通，回退 underlay endpoint）"));
-        assert!(html.contains("来源：overlay 实测（对端 overlay VIP 直测）"));
+        assert!(html.contains("来源：直连路径实测（overlay/endpoint ping 成功）"));
+        assert!(html.contains("来源：握手新鲜（对端不答 ICMP，最近握手即链路活性证据）"));
         assert!(
             html.contains("来源：不可测（overlay 与 endpoint 均无响应，以「最近握手」为活性证据）")
         );
         assert!(html.contains("来源：未测（对端无直连路径或探测尚未完成）"));
+        // 旧 agent 历史值仍可读（滚动升级兼容）。
+        assert!(html.contains("来源：overlay 实测（对端 overlay VIP 直测）"));
         // 数值照常显示；不可测显示占位符。
         assert!(html.contains("12 ms"));
         assert!(html.contains(">—</span>"));

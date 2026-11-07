@@ -39,11 +39,12 @@ pub use entities::{
 pub use invites::{generate_token, token_hash, Invite, InviteError};
 pub use ipam::{Ipam, IpamError};
 pub use p2p::{
-    classify_probe, decide_direct_path, direct_peer_allowed_ips, endpoint_candidates,
-    is_lan_reachable, is_private_ip, on_probe, peer_endpoints_for, DeviceDirectState,
-    DirectCandidateStatus, DirectDecision, DirectEndpointReport, DirectLinkStatus, DirectPeerError,
-    EndpointCandidate, EndpointKind, PeerEndpoints, PeerLinkAction, PeerLinkState, ProbeResult,
-    DIRECT_HEALTH_WINDOW_SECS, DIRECT_PERSISTENT_KEEPALIVE_SECS, DIRECT_PROBE_INTERVAL_SECS,
+    classify_probe, classify_promote_probe, decide_direct_path, direct_peer_allowed_ips,
+    endpoint_candidates, is_lan_reachable, is_private_ip, on_probe, peer_endpoints_for,
+    DeviceDirectState, DirectCandidateStatus, DirectDecision, DirectEndpointReport,
+    DirectLinkStatus, DirectPeerError, EndpointCandidate, EndpointKind, PeerEndpoints,
+    PeerLinkAction, PeerLinkState, ProbeResult, DIRECT_HEALTH_WINDOW_SECS,
+    DIRECT_PERSISTENT_KEEPALIVE_SECS, DIRECT_PROBE_INTERVAL_SECS, DIRECT_PROMOTE_FRESH_SECS,
     MAX_PROMOTE_ATTEMPTS,
 };
 pub use peer_routes::{

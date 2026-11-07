@@ -23,9 +23,10 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::Path;
 
 use meshlet_domain::{
-    classify_probe, decide_direct_path, direct_peer_allowed_ips, on_probe, DirectDecision,
-    DirectLinkStatus, Ipv4Cidr, PeerEndpoints, PeerLinkAction, PeerLinkState,
-    DIRECT_HEALTH_WINDOW_SECS, DIRECT_PERSISTENT_KEEPALIVE_SECS, MAX_PROMOTE_ATTEMPTS,
+    classify_probe, classify_promote_probe, decide_direct_path, direct_peer_allowed_ips, on_probe,
+    DirectDecision, DirectLinkStatus, Ipv4Cidr, PeerEndpoints, PeerLinkAction, PeerLinkState,
+    DIRECT_HEALTH_WINDOW_SECS, DIRECT_PERSISTENT_KEEPALIVE_SECS, DIRECT_PROMOTE_FRESH_SECS,
+    MAX_PROMOTE_ATTEMPTS,
 };
 
 /// 单个对端的直连管理状态（域层状态机状态 + 对端 overlay 地址）。
@@ -271,9 +272,10 @@ impl DirectManager {
     }
 
     /// 刷新直连状态读数（探测周期由执行侧调用）：直连路径实测 RTT（毫秒）+
-    /// 来源（`overlay` / `endpoint` / `unreachable`，见
-    /// [`crate::direct_rtt::RttProbe`]）、最近握手 Unix 秒、累计收发字节
-    /// （wg 读数）。对端不在管或处于 Relay（无直连链路可测）则 no-op。
+    /// 来源（如实四态：`probe_ok` / `handshake_fresh` / `probe_failed` /
+    /// `unprobed`，见 [`crate::direct_rtt::RttSource`]）、最近握手 Unix 秒、
+    /// 累计收发字节（wg 读数）。对端不在管或处于 Relay（无直连链路可测）
+    /// 则 no-op。
     pub fn record_peer_status(
         &mut self,
         public_key: &str,
@@ -366,6 +368,7 @@ pub fn plan_updates(
             continue;
         }
         // SEL-003：直连劣化（丢包尖峰/超时）→ 立即回中继，不等握手过期。
+        // （劣化优先级最高：即使握手证据新鲜，劣化仍回退——降级口径不放松。）
         if degraded.get(&key).copied().unwrap_or(false)
             && matches!(
                 state,
@@ -391,13 +394,20 @@ pub fn plan_updates(
             updates.push(DirectUpdate::Demote { public_key: key });
             continue;
         }
-        let probe = classify_probe(
-            state,
-            handshake_ages.get(&key).copied(),
-            DIRECT_HEALTH_WINDOW_SECS,
-        );
-        let (next_state, action) = on_probe(state, decision, probe, MAX_PROMOTE_ATTEMPTS);
+        // 探测判读：pending 用**握手证据优先**的晋升门槛（最近握手新鲜即
+        // 视为直连验证成功，ICMP 探测失败/不可用不拦晋升——Windows 网格
+        // 防火墙对 wg 接口 100% 丢包，imac 2026-11-07 取证）；其余状态沿用
+        // 健康窗口口径（Direct 断开回退等）。
         let handshake_age = handshake_ages.get(&key).copied();
+        let probe = match state {
+            PeerLinkState::DirectPending { .. } => classify_promote_probe(
+                handshake_age,
+                DIRECT_PROMOTE_FRESH_SECS,
+                DIRECT_HEALTH_WINDOW_SECS,
+            ),
+            _ => classify_probe(state, handshake_age, DIRECT_HEALTH_WINDOW_SECS),
+        };
+        let (next_state, action) = on_probe(state, decision, probe, MAX_PROMOTE_ATTEMPTS);
         current.insert(
             key.clone(),
             DirectPeer {
@@ -451,6 +461,22 @@ fn path_endpoint(path: DirectDecision) -> SocketAddrV4 {
             SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)
         }
     }
+}
+
+/// 握手读数兜底合并（纯函数）：`dedicated`（`wg show latest-handshakes` 专项
+/// 读数）为空/缺某对端时，用诊断 dump（`wg show dump`，同一次内核读数的另一
+/// 投影）推导的年龄补齐。Windows 隧道服务重装抖动期间 latest-handshakes 可能
+/// 不可读（「Unable to access interface」，imac 2026-11-07 取证）——专项读数
+/// 失败不该让握手证据整体丢失，否则晋升门槛拿不到输入，直连永卡「拨号中」。
+pub fn merge_handshake_ages(
+    dedicated: BTreeMap<String, u64>,
+    dump: BTreeMap<String, u64>,
+) -> BTreeMap<String, u64> {
+    let mut merged = dedicated;
+    for (key, age) in dump {
+        merged.entry(key).or_insert(age);
+    }
+    merged
 }
 
 /// keepalive 周期（域层常量，执行层据此下发）。
@@ -745,6 +771,102 @@ mod tests {
             Some(PeerLinkState::Relay),
             "held peer stays in relay"
         );
+    }
+
+    /// 修复回归（用户实测：直连每次都是「拨号中」）：pending 已握上手（握手
+    /// 新鲜）但 ICMP 探测永不成功（degraded 为空、探测读数不可用）→ 必须
+    /// 当轮晋升 Direct，不再等满 attempts 超时回退。
+    #[test]
+    fn pending_with_fresh_handshake_promotes_via_plan_updates() {
+        let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+        let mut current = BTreeMap::new();
+        current.insert(
+            "dev-b".into(),
+            direct_peer(
+                "dev-b",
+                "10.240.0.3",
+                PeerLinkState::DirectPending {
+                    attempts: MAX_PROMOTE_ATTEMPTS,
+                },
+            ),
+        );
+        let mut ages = BTreeMap::new();
+        ages.insert("dev-b".into(), 30u64);
+        let updates = plan_updates(
+            &wanted,
+            &[cidr(HOME)],
+            cidr(OVERLAY),
+            "10.240.0.2".parse().unwrap(),
+            &mut current,
+            &ages,
+            &BTreeMap::new(), // 探测全失败 → 无窗口 → degraded 为空
+            &BTreeSet::new(),
+        );
+        assert!(
+            updates.is_empty(),
+            "promotion is a keep, no churn: {updates:?}"
+        );
+        assert_eq!(
+            current.get("dev-b").map(|p| p.state),
+            Some(PeerLinkState::Direct),
+            "handshake evidence alone promotes pending → direct"
+        );
+    }
+
+    /// 握手过期（超过健康窗口）→ pending 判失效回退（降级口径不放松）。
+    #[test]
+    fn pending_with_stale_handshake_times_out_to_relay() {
+        let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+        let mut current = BTreeMap::new();
+        current.insert(
+            "dev-b".into(),
+            direct_peer(
+                "dev-b",
+                "10.240.0.3",
+                PeerLinkState::DirectPending {
+                    attempts: MAX_PROMOTE_ATTEMPTS,
+                },
+            ),
+        );
+        let mut ages = BTreeMap::new();
+        ages.insert("dev-b".into(), DIRECT_HEALTH_WINDOW_SECS.saturating_add(1));
+        let updates = plan_updates(
+            &wanted,
+            &[cidr(HOME)],
+            cidr(OVERLAY),
+            "10.240.0.2".parse().unwrap(),
+            &mut current,
+            &ages,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        );
+        assert!(
+            matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"),
+            "stale handshake in pending must fall back: {updates:?}"
+        );
+        assert_eq!(
+            current.get("dev-b").map(|p| p.state),
+            Some(PeerLinkState::Relay)
+        );
+    }
+
+    /// 握手读数兜底合并：专项读数优先，dump 只补缺失键；专项全空（Windows
+    /// 隧道抖动期 latest-handshakes 不可读）→ dump 独挑，晋升门槛仍有输入。
+    #[test]
+    fn merge_handshake_ages_fills_missing_keys_from_dump() {
+        let mut dedicated = BTreeMap::new();
+        dedicated.insert("hub".into(), 3u64);
+        let mut dump = BTreeMap::new();
+        dump.insert("hub".into(), 99u64); // 专项已有 → 不覆盖
+        dump.insert("peer-b".into(), 12u64); // 专项缺失 → 补齐
+        let merged = merge_handshake_ages(dedicated, dump.clone());
+        assert_eq!(merged.get("hub"), Some(&3));
+        assert_eq!(merged.get("peer-b"), Some(&12));
+
+        // 专项读数整体失败（空）→ dump 独挑。
+        let merged = merge_handshake_ages(BTreeMap::new(), dump);
+        assert_eq!(merged.get("hub"), Some(&99));
+        assert_eq!(merged.get("peer-b"), Some(&12));
     }
 
     /// SEL-003 验收：可注入时钟的完整回退/恢复时序单测（任务书允许 netns 不可

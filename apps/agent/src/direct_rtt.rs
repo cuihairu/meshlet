@@ -52,33 +52,36 @@ impl RttProbe {
     }
 }
 
-/// RTT 读数来源（面板/控制台 RTT 列的 tooltip 依据）。
+/// RTT 读数来源（面板/控制台 RTT 列的 tooltip 依据），**如实四态**：
+/// 实测成功、握手新鲜兜底、实测失败、没轮到——不把「没测到」谎报成
+/// 「链路死了」，也不把「握手新鲜链路活着」谎报成「未测」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RttSource {
-    /// 对端 overlay VIP 直测成功。
+    /// 直连路径实测成功（overlay VIP 通，或回退 underlay endpoint 通）。
     Overlay,
-    /// overlay 不通，回退对端 endpoint（underlay 公网地址）实测成功。
-    Endpoint,
-    /// overlay 与 endpoint 均无响应：不可测。
+    /// overlay 与 endpoint 均无响应，且无新鲜握手可兜底：实测失败。
     Unreachable,
-    /// 探测尚未出结果（快照无记录）。
+    /// 探测尚未出结果（快照无记录）：没轮到，不是结论。
     Unprobed,
 }
 
 impl RttSource {
     /// 稳定字符串键（进 ledger / `direct-peers.json` / 心跳，展示层再翻译）。
+    /// 如实四态：实测成功 = `probe_ok`；不可测但有新鲜握手 = `handshake_fresh`
+    /// （由 agent 侧按握手读数覆盖标注）；两路均无响应且握手不新鲜 =
+    /// `probe_failed`；探测在途 = `unprobed`。
     pub fn as_str(self) -> &'static str {
         match self {
-            RttSource::Overlay => "overlay",
-            RttSource::Endpoint => "endpoint",
-            RttSource::Unreachable => "unreachable",
+            RttSource::Overlay => "probe_ok",
+            RttSource::Unreachable => "probe_failed",
             RttSource::Unprobed => "unprobed",
         }
     }
 }
 
 /// 纯选择逻辑（可单测）：overlay 通 → overlay 读数；不通 → 回退 endpoint
-/// （有 endpoint 且 ping 通才成功）；两路都不通 / 无 endpoint 可回退 → 不可测。
+/// （有 endpoint 且 ping 通才成功）；两路都不通 / 无 endpoint 可回退 → 实测
+/// 失败（rtt_source 是否兜底为 handshake_fresh 由 agent 侧按握手读数标注）。
 fn resolve_rtt(
     overlay_ms: Option<u128>,
     endpoint_ip: Option<Ipv4Addr>,
@@ -94,7 +97,7 @@ fn resolve_rtt(
     match (endpoint_ip, endpoint_ms) {
         (Some(_), Some(ms)) => RttProbe {
             rtt_ms: cap(Some(ms)),
-            source: RttSource::Endpoint,
+            source: RttSource::Overlay,
         },
         _ => RttProbe {
             rtt_ms: None,
@@ -218,8 +221,9 @@ fn wait_kick_or_timeout(kick: &Mutex<VecDeque<()>>, stop: &AtomicBool, timeout_s
 mod tests {
     use super::*;
 
-    /// 回退选择逻辑（门禁测试）：overlay 通 = overlay 读数；overlay 不通 →
-    /// 回退 endpoint；两路都不通（或无 endpoint 可回退）= 不可测。
+    /// 回退选择逻辑（门禁测试）：overlay 通 = 实测读数；overlay 不通 →
+    /// 回退 endpoint；两路都不通（或无 endpoint 可回退）= 实测失败。来源键
+    /// 如实四态（probe_ok / probe_failed / unprobed + agent 侧 handshake_fresh）。
     #[test]
     fn rtt_fallback_prefers_overlay_then_endpoint_then_unreachable() {
         let underlay: Ipv4Addr = "203.0.113.7".parse().unwrap();
@@ -232,15 +236,16 @@ mod tests {
                 source: RttSource::Overlay
             }
         );
-        // overlay 不通、endpoint 通：回退 endpoint 读数，来源标 endpoint。
+        // overlay 不通、endpoint 通：回退 endpoint 读数——同为实测成功（probe_ok）。
         assert_eq!(
             resolve_rtt(None, Some(underlay), Some(35)),
             RttProbe {
                 rtt_ms: Some(35),
-                source: RttSource::Endpoint
+                source: RttSource::Overlay
             }
         );
-        // overlay 不通、endpoint 也不通：不可测（面板显示「—」+ 不可测标注）。
+        // overlay 不通、endpoint 也不通：实测失败（面板显示「—」+ 如实来源；
+        // 若握手新鲜，agent 侧覆盖标注为 handshake_fresh）。
         assert_eq!(
             resolve_rtt(None, Some(underlay), None),
             RttProbe {
@@ -248,7 +253,7 @@ mod tests {
                 source: RttSource::Unreachable
             }
         );
-        // overlay 不通、也没有 endpoint 可回退（无直连路径）：同样不可测。
+        // overlay 不通、也没有 endpoint 可回退（无直连路径）：同样实测失败。
         assert_eq!(
             resolve_rtt(None, None, None),
             RttProbe {
@@ -257,9 +262,10 @@ mod tests {
             }
         );
         // 来源键是稳定字符串（进 ledger / direct-peers.json / 心跳）。
-        assert_eq!(RttSource::Overlay.as_str(), "overlay");
-        assert_eq!(RttSource::Endpoint.as_str(), "endpoint");
-        assert_eq!(RttSource::Unreachable.as_str(), "unreachable");
+        assert_eq!(RttSource::Overlay.as_str(), "probe_ok");
+        assert_eq!(RttSource::Unreachable.as_str(), "probe_failed");
+        assert_eq!(RttSource::Unprobed.as_str(), "unprobed");
+        assert_eq!(RttProbe::unknown().source.as_str(), "unprobed");
     }
 
     #[test]

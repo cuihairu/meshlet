@@ -333,6 +333,15 @@ pub const DIRECT_HEALTH_WINDOW_SECS: u64 = 240;
 /// 直连 peer 的 persistent-keepalive（秒）：让 wg 主动发包——既是 NAT
 /// 打洞的「洞」，也是健康探测的心跳来源。
 pub const DIRECT_PERSISTENT_KEEPALIVE_SECS: u32 = 15;
+/// 直连晋升门槛（秒）：DirectPending → Direct 只认 **WireGuard 握手证据**——
+/// 内核 latest-handshake 年龄 ≤ 此值即判定直连已建立。
+///
+/// 为什么不是 ICMP 探测：真机取证（Windows 网格，imac 2026-11-07）防火墙对
+/// wg 接口 / overlay VIP 的 ICMP echo 100% 丢包——握手新鲜但 ping 全死，链路
+/// 完全活着。探测只用于 RTT 标注与 SEL-003 劣化判定，**不再拦晋升**；否则
+/// 直连永远卡在 `direct_pending`（拨号中），每 ~90s promote/demote 抖动。
+/// 阈值对齐 hub keepalive 与 CLI `peer_mode` 的 p2p_direct 口径（<180s）。
+pub const DIRECT_PROMOTE_FRESH_SECS: u64 = 180;
 
 /// 单对端直连链路状态（每探测周期跃迁一次）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,6 +403,23 @@ pub fn classify_probe(
         None => ProbeResult::Unhealthy,
         Some(age) if age <= health_window_secs => ProbeResult::Healthy,
         Some(_) => ProbeResult::Unhealthy,
+    }
+}
+
+/// DirectPending 的晋升探测（**握手证据优先**，见 [DIRECT_PROMOTE_FRESH_SECS]）：
+/// - 最近握手年龄 ≤ `promote_fresh_secs` → Healthy（直连已验证，晋升 Direct）；
+/// - 超过 `health_window_secs` → Unhealthy（有过握手但已死透，走超时回退）；
+/// - 其余（尚未握手 / 读数缺失 / 年龄在两窗之间的 rekey 间隙）→ Unknown
+///   （继续等，attempts 计满再回退）。
+pub fn classify_promote_probe(
+    handshake_age_secs: Option<u64>,
+    promote_fresh_secs: u64,
+    health_window_secs: u64,
+) -> ProbeResult {
+    match handshake_age_secs {
+        Some(age) if age <= promote_fresh_secs => ProbeResult::Healthy,
+        Some(age) if age > health_window_secs => ProbeResult::Unhealthy,
+        _ => ProbeResult::Unknown,
     }
 }
 
@@ -491,10 +517,12 @@ pub struct DirectLinkStatus {
     /// 最近一次直连路径实测 RTT（毫秒）；`None` = 未测 / 探测失败。
     #[serde(default)]
     pub rtt_ms: Option<u64>,
-    /// RTT 读数来源（`overlay` = 对端 overlay VIP 直测；`endpoint` = overlay
-    /// 不通时回退 underlay endpoint 实测；`unreachable` = 两者均无响应，不可
-    /// 测；`None` = 未测 / 旧 agent 无来源标注）。展示层据此给 RTT 列标注
-    /// 来源，「最近握手」仍是链路活性的主证据。
+    /// RTT 读数来源，如实标注（四态）：`probe_ok` = 直连路径实测成功（overlay
+    /// 或回退 endpoint）；`handshake_fresh` = 不可测但最近握手新鲜（活性证据是
+    /// 握手不是 ping——Windows 网格防火墙常不答 ICMP）；`probe_failed` = 两路
+    /// 均无响应且握手也无新鲜证据；`unprobed` = 没轮到（探测在途 / 无候选）；
+    /// `None` = 未测 / 旧 agent 无来源标注。展示层据此给 RTT 列标注来源，
+    /// 「最近握手」仍是链路活性的主证据。
     #[serde(default)]
     pub rtt_source: Option<String>,
     /// 最近一次握手 Unix 时间戳（秒）；0 / `None` = 尚无握手。
@@ -984,6 +1012,98 @@ mod tests {
         // ④ 恢复 → 自动升回直连。
         let (_, a) = on_probe(state, path, ProbeResult::Unknown, MAX_PROMOTE_ATTEMPTS);
         assert!(matches!(a, PeerLinkAction::Promote(_)));
+    }
+
+    /// 晋升门槛（握手证据优先）：pending 期最近握手年龄 ≤ 晋升阈值即
+    /// Healthy——**探测失败/不可用不拦晋升**（Windows 网格防火墙对 wg 接口
+    /// ICMP 100% 丢包，imac 2026-11-07 取证）；rekey 间隙（180, 240] 继续等；
+    /// 超过健康窗口才判失效。
+    #[test]
+    fn classify_promote_probe_uses_handshake_evidence_not_icmp() {
+        // 握手新鲜 → 晋升，无论探测是否成功。
+        assert_eq!(
+            classify_promote_probe(
+                Some(0),
+                DIRECT_PROMOTE_FRESH_SECS,
+                DIRECT_HEALTH_WINDOW_SECS
+            ),
+            ProbeResult::Healthy
+        );
+        assert_eq!(
+            classify_promote_probe(
+                Some(DIRECT_PROMOTE_FRESH_SECS),
+                DIRECT_PROMOTE_FRESH_SECS,
+                DIRECT_HEALTH_WINDOW_SECS
+            ),
+            ProbeResult::Healthy
+        );
+        // 刚过晋升阈值但在健康窗口内（rekey 间隙）：继续等，不晋升也不判死。
+        assert_eq!(
+            classify_promote_probe(
+                Some(DIRECT_PROMOTE_FRESH_SECS + 1),
+                DIRECT_PROMOTE_FRESH_SECS,
+                DIRECT_HEALTH_WINDOW_SECS
+            ),
+            ProbeResult::Unknown
+        );
+        // 尚未握手 / 读数缺失：继续等（attempts 计满走超时回退）。
+        assert_eq!(
+            classify_promote_probe(None, DIRECT_PROMOTE_FRESH_SECS, DIRECT_HEALTH_WINDOW_SECS),
+            ProbeResult::Unknown
+        );
+        // 超过健康窗口：有过握手但已死透 → 失效（回退路径）。
+        assert_eq!(
+            classify_promote_probe(
+                Some(DIRECT_HEALTH_WINDOW_SECS + 1),
+                DIRECT_PROMOTE_FRESH_SECS,
+                DIRECT_HEALTH_WINDOW_SECS
+            ),
+            ProbeResult::Unhealthy
+        );
+    }
+
+    /// 修复回归（用户实测：直连每次都是「拨号中」）：pending 已握上手
+    /// （握手新鲜）但 ICMP 探测永不成功 → 必须**当轮晋升 Direct**，
+    /// 不再等满 attempts 超时回退。plan_updates 全路径的同口径回归在
+    /// agent direct.rs 测试（`pending_with_fresh_handshake_promotes_via_plan_updates`）。
+    #[test]
+    fn pending_with_fresh_handshake_promotes_even_when_probe_never_succeeds() {
+        for age in [0u64, 30, DIRECT_PROMOTE_FRESH_SECS] {
+            let (next, action) = on_probe(
+                PeerLinkState::DirectPending {
+                    attempts: MAX_PROMOTE_ATTEMPTS,
+                },
+                DirectDecision::Relay,
+                classify_promote_probe(
+                    Some(age),
+                    DIRECT_PROMOTE_FRESH_SECS,
+                    DIRECT_HEALTH_WINDOW_SECS,
+                ),
+                MAX_PROMOTE_ATTEMPTS,
+            );
+            assert_eq!(next, PeerLinkState::Direct, "age {age} must promote");
+            assert_eq!(action, PeerLinkAction::Keep);
+        }
+    }
+
+    /// 握手过期（超过健康窗口）→ pending 判失效回退（降级口径不放松）：
+    /// Unhealthy 即回退，不等额外宽限。
+    #[test]
+    fn pending_with_stale_handshake_falls_back_to_relay() {
+        let (next, action) = on_probe(
+            PeerLinkState::DirectPending {
+                attempts: MAX_PROMOTE_ATTEMPTS,
+            },
+            DirectDecision::Relay,
+            classify_promote_probe(
+                Some(DIRECT_HEALTH_WINDOW_SECS + 1),
+                DIRECT_PROMOTE_FRESH_SECS,
+                DIRECT_HEALTH_WINDOW_SECS,
+            ),
+            MAX_PROMOTE_ATTEMPTS,
+        );
+        assert_eq!(next, PeerLinkState::Relay);
+        assert_eq!(action, PeerLinkAction::Demote);
     }
 
     #[test]

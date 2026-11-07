@@ -19,7 +19,7 @@ use meshlet_domain::{
 };
 use meshlet_network::dial::{self, DirectDialRequest, DirectDialResult, DirectPeerView};
 use meshlet_network::probe::RecoveryGate;
-use meshlet_network::{DevicePlan, SystemBackend, DEFAULT_TUNNEL_MTU};
+use meshlet_network::{DevicePlan, NetworkDiagnostics, SystemBackend, DEFAULT_TUNNEL_MTU};
 use meshlet_publish::{ProbeReport, PublishPlan, Publisher};
 
 #[cfg(target_os = "linux")]
@@ -27,7 +27,7 @@ use crate::dbus::DesktopClient;
 use crate::desktop::{desktop_trigger, DesktopPublish, DesktopTrigger};
 #[cfg(not(target_os = "linux"))]
 use crate::desktop_unsupported::DesktopClient;
-use crate::direct::{keepalive_secs, DirectManager, DirectUpdate};
+use crate::direct::{keepalive_secs, merge_handshake_ages, DirectManager, DirectUpdate};
 use crate::direct_rtt::{RttCandidate, RttProbe};
 use crate::reconcile::{needs_apply, stale_owners, state_path, AgentState, Decision};
 use crate::self_update;
@@ -734,6 +734,23 @@ impl Agent {
                 BTreeMap::new()
             }
         };
+        // 诊断快照一次采集、多处复用（直连 enrich + 晋升门槛的握手兜底）：
+        // `wg dump` 与 latest-handshakes 是同一次内核读数的两投影——Windows
+        // 隧道抖动期 latest-handshakes 不可读时，dump 里的握手时间仍是晋升
+        // 门槛的合法输入（缺失则 pending 拿不到握手证据，永卡「拨号中」）。
+        let net = match self.backend.diagnostics_sync() {
+            Ok(net) => Some(net),
+            Err(e) => {
+                tracing::warn!(error = %e, "direct probe: diagnostics unavailable");
+                None
+            }
+        };
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let handshake_ages =
+            merge_handshake_ages(handshake_ages, dump_handshake_ages(net.as_ref(), now_secs));
         // SEL-003：从探测窗口推导各对端直连路径是否劣化（丢包尖峰/超时）。
         let degraded = self.probe.degraded_map();
         // SEL-003 恢复门：对处于直连状态的对端记录本轮健康度；回中继后连续
@@ -775,7 +792,7 @@ impl Agent {
         }
         // R-DIAG-2：对处于直连状态的对端刷新读数（wg 端点/握手/流量）+ 实测
         // 直连路径 RTT——即使本周期无动作也要刷新，供心跳与控制台/CLI 展示。
-        self.enrich_direct_peers();
+        self.enrich_direct_peers(net.as_ref(), now_secs);
         // SEL-002：迟滞切换。已建立直连的对端，若其候选窗口中另有路径连续 N
         // 采样且优于现路径 ≥30%，则 `wg set endpoint` 漫游过去（零断线），
         // 并追加切换事件（事件可查）。探测未启用 / 无直连 / 无更优路径都
@@ -826,27 +843,21 @@ impl Agent {
     ///
     /// 探测候选带对端 endpoint 的 underlay 地址：overlay VIP 不答 ICMP
     /// （WireGuard 接口 / 防火墙常弃包，链路可能完全活着）时，后台线程回退
-    /// ping endpoint——两路都无响应才「不可测」，来源随 RTT 一并记录，供
-    /// 面板/控制台标注。
+    /// ping endpoint——两路都无响应才「实测失败」，rtt_source 随 RTT 如实记录
+    /// （实测成功 probe_ok；不可测但握手新鲜 handshake_fresh；两路无响应且
+    /// 握手也不新鲜 probe_failed；探测在途 unprobed），供面板/控制台标注。
     ///
     /// 读数失败只记日志——展示数据源是「最后已知态」，绝不让诊断采集干扰
     /// 数据面；对端已不在管（本周期被 Demote）则各 record_* no-op。
-    fn enrich_direct_peers(&mut self) {
+    fn enrich_direct_peers(&mut self, net: Option<&NetworkDiagnostics>, now_secs: u64) {
         let candidates = self.direct.direct_candidates();
         if candidates.is_empty() {
             // 无直连对端：清空 RTT 候选（后台线程下一轮 no-op）。
             self.direct_rtt.update_candidates(Vec::new());
             return;
         }
-        // 内核读数拿当前 endpoint（回退探测目标的来源）；读数失败则没有
-        // 回退路径可用，仅按 overlay 探测（与旧行为一致）。
-        let net = match self.backend.diagnostics_sync() {
-            Ok(net) => Some(net),
-            Err(e) => {
-                tracing::warn!(error = %e, "direct enrich: diagnostics unavailable");
-                None
-            }
-        };
+        // net 由调用方传入（reconcile 已采集一次，避免重复 `wg dump`）；None =
+        // 读数失败则没有回退路径可用，仅按 overlay 探测（与旧行为一致）。
         let probed: Vec<RttCandidate> = candidates
             .into_iter()
             .map(|(public_key, vip)| {
@@ -883,7 +894,7 @@ impl Agent {
             self.direct.record_peer_status(
                 &public_key,
                 probe.rtt_ms,
-                Some(probe.source.as_str()),
+                honest_rtt_source(&probe, last_handshake_at, now_secs),
                 last_handshake_at,
                 rx_bytes,
                 tx_bytes,
@@ -1197,6 +1208,44 @@ fn parse_endpoint_candidate(endpoint: &str) -> Option<EndpointCandidate> {
     Some(EndpointCandidate { ip, port, kind })
 }
 
+/// 诊断 dump → 握手年龄（纯函数）：`wg dump` 每 peer 的最近握手 Unix 秒翻译
+/// 成「距今秒」。`last_handshake <= 0`（从未握手）或晚于当前时钟（时钟回拨）
+/// 的行丢弃——证据缺失不臆造。
+fn dump_handshake_ages(net: Option<&NetworkDiagnostics>, now_secs: u64) -> BTreeMap<String, u64> {
+    let Some(net) = net else {
+        return BTreeMap::new();
+    };
+    net.wg
+        .iter()
+        .filter(|p| p.last_handshake > 0 && p.last_handshake <= now_secs)
+        .map(|p| (p.public_key.clone(), now_secs - p.last_handshake))
+        .collect()
+}
+
+/// rtt_source 如实标注（纯函数，四态）：
+/// - 实测成功（`probe_ok`）：RTT 有读数，来源就是实测；
+/// - 没测到读数但**最近握手新鲜**（≤ [`meshlet_domain::DIRECT_PROMOTE_FRESH_SECS`]）
+///   → `handshake_fresh`：活性证据是握手不是 ping——Windows 网格防火墙对
+///   wg 接口 ICMP 100% 丢包（imac 2026-11-07 取证），「不可测」谎报成链路
+///   结论会误导；
+/// - 其余（两路均无响应且握手也不新鲜 / 读数缺失且无握手）→ 探测线程的如实
+///   结论（`probe_failed` / `unprobed`）。
+fn honest_rtt_source(
+    probe: &RttProbe,
+    last_handshake_at: Option<u64>,
+    now_secs: u64,
+) -> Option<&'static str> {
+    if probe.rtt_ms.is_some() {
+        return Some("probe_ok");
+    }
+    if last_handshake_at.is_some_and(|ts| {
+        ts > 0 && ts <= now_secs && now_secs - ts <= meshlet_domain::DIRECT_PROMOTE_FRESH_SECS
+    }) {
+        return Some("handshake_fresh");
+    }
+    Some(probe.source.as_str())
+}
+
 /// hub 入口地址兜底（纯逻辑，§16.4）：服务端不知道 agent 的网络位置，计划里
 /// hub peer 的 endpoint 为 `None`；agent 用本地 `[dataplane] hub_endpoint`
 ///（`host:port`）填充，设备才能主动发起握手。服务端已带值（未来通告
@@ -1431,6 +1480,92 @@ mod tests {
         assert_eq!(probe_decision(&p, None), None);
         let p = probe_plan(Some(28), Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(probe_decision(&p, None), None);
+    }
+
+    /// rtt_source 如实四态：实测成功 probe_ok；不可测但握手新鲜 handshake_fresh
+    /// （「不可测」不再谎报链路结论）；握手不新鲜 probe_failed；没轮到 unprobed。
+    #[test]
+    fn rtt_source_is_honest_about_handshake_evidence() {
+        let now = 1_800_000_000u64;
+        // 实测成功：无论握手状态，来源都是 probe_ok。
+        assert_eq!(
+            honest_rtt_source(
+                &RttProbe {
+                    rtt_ms: Some(12),
+                    source: crate::direct_rtt::RttSource::Overlay
+                },
+                None,
+                now
+            ),
+            Some("probe_ok")
+        );
+        // 不可测（两路 ping 全静默）+ 握手新鲜 → handshake_fresh（链路活着）。
+        assert_eq!(
+            honest_rtt_source(
+                &RttProbe {
+                    rtt_ms: None,
+                    source: crate::direct_rtt::RttSource::Unreachable
+                },
+                Some(now - meshlet_domain::DIRECT_PROMOTE_FRESH_SECS),
+                now
+            ),
+            Some("handshake_fresh")
+        );
+        // 不可测 + 握手超过晋升阈值 → 如实 probe_failed（不再谎报「不可测=活着」）。
+        assert_eq!(
+            honest_rtt_source(
+                &RttProbe {
+                    rtt_ms: None,
+                    source: crate::direct_rtt::RttSource::Unreachable
+                },
+                Some(now - meshlet_domain::DIRECT_PROMOTE_FRESH_SECS - 1),
+                now
+            ),
+            Some("probe_failed")
+        );
+        // 没轮到（探测在途）+ 无握手 → unprobed（不是结论）。
+        assert_eq!(
+            honest_rtt_source(&RttProbe::unknown(), None, now),
+            Some("unprobed")
+        );
+        // 从未握手（ts=0）不算新鲜证据。
+        assert_eq!(
+            honest_rtt_source(&RttProbe::unknown(), Some(0), now),
+            Some("unprobed")
+        );
+    }
+
+    /// 诊断 dump → 握手年龄：从未握手 / 时钟回拨的行丢弃，其余翻译成距今秒。
+    #[test]
+    fn dump_handshake_ages_skips_never_handshaked_and_future_timestamps() {
+        let now = 1_800_000_000u64;
+        let net = NetworkDiagnostics {
+            collected_at: None,
+            route_table: vec![],
+            interfaces: vec![],
+            wg: vec![
+                meshlet_network::WgPeerDiagnostic {
+                    public_key: "fresh".into(),
+                    last_handshake: now - 42,
+                    ..Default::default()
+                },
+                meshlet_network::WgPeerDiagnostic {
+                    public_key: "never".into(),
+                    last_handshake: 0,
+                    ..Default::default()
+                },
+                meshlet_network::WgPeerDiagnostic {
+                    public_key: "clock-skew".into(),
+                    last_handshake: now + 10,
+                    ..Default::default()
+                },
+            ],
+        };
+        let ages = dump_handshake_ages(Some(&net), now);
+        assert_eq!(ages.len(), 1);
+        assert_eq!(ages.get("fresh"), Some(&42));
+        // 无快照 → 空（证据缺失不臆造）。
+        assert!(dump_handshake_ages(None, now).is_empty());
     }
 
     #[test]

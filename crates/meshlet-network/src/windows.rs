@@ -108,9 +108,34 @@ impl WindowsNetworkBackend {
     ) -> Result<(), NetworkError> {
         let existing = self.tunnel_service_exists(&self.interface);
         for command in crate::windows_tunnel::install_plan(existing, &self.interface, conf_path) {
+            if matches!(
+                command,
+                crate::windows_tunnel::WireGuardCommand::UninstallService { .. }
+            ) {
+                run_wireguard_command(&command, Some(exe))?;
+                // 卸载只是发停止信号：旧服务进程退出要时间，退出前仍持有
+                // conf 文件。新服务立刻启动读同一份 conf 会报「The process
+                // cannot access the file because it is being used by another
+                // process」起不来（真机 imac 2026-11-07 事件日志：7045 安装 →
+                // 7023 停止连环失败，隧道永远起不来）。等旧服务退干净再装。
+                self.wait_tunnel_service_gone(&self.interface);
+                continue;
+            }
             run_wireguard_command(&command, Some(exe))?;
         }
         self.wait_tunnel_service_running(&self.interface)
+    }
+
+    /// 轮询直到旧隧道服务退干净（SCM 里不再 RUNNING / 已删除），最多约 4s；
+    /// 超时也继续装（给一次机会，绝不为等退出卡死 apply）。
+    fn wait_tunnel_service_gone(&self, tunnel_name: &str) {
+        let service = crate::windows_tunnel::tunnel_service_query_name(tunnel_name);
+        for _ in 0..16 {
+            if self.sc_query_state_code(&service) != Some(4) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
     }
 
     /// 轮询 `sc query WireGuardTunnel$<name>` 直到 RUNNING（装服务后驱动
