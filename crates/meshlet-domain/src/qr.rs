@@ -615,7 +615,7 @@ mod tests {
         let simple = rqrr::SimpleGrid::from_func(m.size, |x, y| m.dark[y][x] == 1);
         let grid = rqrr::Grid::new(simple);
         let (_, text) = grid.decode().expect("rqrr decode");
-        assert_eq!(text, s, "roundtrip mismatch for {s:?}");
+        assert_eq!(text, s, "rqrr roundtrip decode mismatch");
     }
 
     #[test]
