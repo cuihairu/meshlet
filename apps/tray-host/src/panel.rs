@@ -10,6 +10,10 @@
 //!   数据链路完全不经过 server，**server 挂了本地面板照样开**。
 //! - **只绑 loopback**：`127.0.0.1:0`（内核分配端口，避开冲突），只应答
 //!   `GET/HEAD /`；纯展示无写操作，页面不含私钥 / token 等敏感数据。
+//! - **复制按钮是纯客户端行为**：overlay IP 旁的「复制」点击后写剪贴板
+//!   （`navigator.clipboard`，`file://` 等无该 API 的环境降级
+//!   `execCommand`，再失败给「复制失败」反馈），不新增任何网络请求，
+//!   只读纪律（GET/HEAD）不变；`data-copy` 属性值经 `esc` 转义。
 //! - **零新增依赖**：`std::net` 起一个后台线程，tray-host 保持
 //!   windows-sys + serde 的零数据面依赖纪律。
 //!
@@ -258,6 +262,10 @@ th {{ color: #98a2ab; font-weight: 600; white-space: nowrap; }}
 tr:last-child td {{ border-bottom: none; }}
 code, .mono {{ font-family: ui-monospace, Consolas, monospace; }}
 .key {{ word-break: break-all; font-size: 12px; color: #b9c2ca; }}
+.copy {{ margin-left: 8px; padding: 1px 8px; font-size: 12px; cursor: pointer;
+  background: #262c33; color: #b9c2ca; border: 1px solid #3a424b; border-radius: 6px; }}
+.copy:hover {{ background: #31383f; color: #e6e8ea; }}
+.copy.copied {{ background: #1d3a2a; color: #6fd08c; border-color: #2f5e42; }}
 .dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%;
   margin-right: 6px; vertical-align: middle; }}
 .caption {{ color: #98a2ab; font-size: 12px; margin: 0 0 8px; }}
@@ -294,6 +302,49 @@ footer {{ color: #6f7a83; font-size: 12px; margin-top: 8px; }}
 </section>
 </main>
 <footer>数据源：tray/status.json · direct-peers.json · applied.json · agent.toml（{state_dir}）</footer>
+<script>
+// 复制按钮：纯客户端行为，不新增任何网络请求（面板仍是 GET/HEAD 只读页）。
+// navigator.clipboard 在 http://127.0.0.1（安全上下文）可用；不可用（file://
+// 或旧引擎）降级 execCommand，再不行给出「复制失败」反馈。
+(function () {{
+  function flash(button, ok) {{
+    button.classList.add('copied');
+    button.textContent = ok ? '已复制' : '复制失败';
+    setTimeout(function () {{
+      button.classList.remove('copied');
+      button.textContent = '复制';
+    }}, 1500);
+  }}
+  function fallbackCopy(text) {{
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try {{ ok = document.execCommand('copy'); }} catch (e) {{}}
+    document.body.removeChild(ta);
+    return ok;
+  }}
+  Array.prototype.forEach.call(
+    document.querySelectorAll('button.copy'),
+    function (button) {{
+      button.addEventListener('click', function () {{
+        var text = button.getAttribute('data-copy');
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+          navigator.clipboard.writeText(text).then(
+            function () {{ flash(button, true); }},
+            function () {{ flash(button, fallbackCopy(text)); }}
+          );
+        }} else {{
+          flash(button, fallbackCopy(text));
+        }}
+      }});
+    }}
+  );
+}})();
+</script>
 </body>
 </html>
 "#,
@@ -348,9 +399,20 @@ fn hub_status(state: Option<&str>) -> &'static str {
     }
 }
 
+/// 复制按钮 HTML（`data-copy` 值必须先 `esc`——值来自本机状态文件，
+/// 不得把文件内容注入成属性外的标记）。
+fn copy_button_html(value: &str) -> String {
+    format!(
+        "<button type=\"button\" class=\"copy\" data-copy=\"{value}\">复制</button>",
+        value = esc(value)
+    )
+}
+
 /// ① 当前节点表行（label, value）。
 fn node_rows(state_dir: &Path, status: &serde_json::Value, applied: &serde_json::Value) -> String {
     let mut rows: Vec<(String, String)> = Vec::new();
+    // 虚拟 IP 的复制值：有真值才出复制按钮（占位符「—」没有可复制的东西）。
+    let mut copy_value: Option<(String, String)> = None;
 
     // 设备名：agent.toml 优先，缺省从 tooltip「…」里取，再兜底 unknown。
     let device_name = config_value(state_dir, "device_name").unwrap_or_else(|| {
@@ -368,9 +430,15 @@ fn node_rows(state_dir: &Path, status: &serde_json::Value, applied: &serde_json:
         .get("tunnel_address")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "—".into());
-    rows.push(("虚拟 IP".into(), tunnel_address));
+        .map(str::to_string);
+    let tunnel_cell = match &tunnel_address {
+        Some(ip) => {
+            copy_value = Some(("虚拟 IP".into(), ip.clone()));
+            ip.clone()
+        }
+        None => "—".into(),
+    };
+    rows.push(("虚拟 IP".into(), tunnel_cell));
 
     let pubkey = applied
         .get("local_public_key")
@@ -424,8 +492,15 @@ fn node_rows(state_dir: &Path, status: &serde_json::Value, applied: &serde_json:
 
     rows.into_iter()
         .map(|(label, value)| {
+            // 复制按钮只挂在携带真值的行（当前仅虚拟 IP）；按钮是仅有的
+            // 非转义片段，其 data-copy 属性值在 copy_button_html 内转义。
+            let button = copy_value
+                .as_ref()
+                .filter(|(row, _)| *row == label)
+                .map(|(_, ip)| copy_button_html(ip))
+                .unwrap_or_default();
             format!(
-                "<tr><th>{label}</th><td class=\"mono\">{value}</td></tr>",
+                "<tr><th>{label}</th><td class=\"mono\">{value}{button}</td></tr>",
                 label = esc(&label),
                 value = esc(&value)
             )
@@ -547,8 +622,14 @@ fn direct_rows(state_dir: &Path) -> String {
                 .and_then(|x| x.as_str())
                 .filter(|s| !s.is_empty())
                 .unwrap_or("—");
+            // Overlay IP 复制按钮：仅在 IP 是真值时出（占位符「—」无可复制）。
+            let ip_button = if ip == "—" {
+                String::new()
+            } else {
+                copy_button_html(ip)
+            };
             format!(
-                "<tr><td>{name}</td><td class=\"mono\">{ip}</td><td>{mode}</td>\
+                "<tr><td>{name}</td><td class=\"mono\">{ip}{ip_button}</td><td>{mode}</td>\
                  <td class=\"mono\">{rtt}</td><td class=\"mono\">{endpoint}</td>\
                  <td class=\"mono\">{handshake}</td>\
                  <td class=\"mono key\">{public_key}</td></tr>",
@@ -804,6 +885,68 @@ mod tests {
         assert!(html.contains("服务端计划 · applied.json"));
         // 控制台入口（另列，不是本地面板的替代）。
         assert!(html.contains("https://meshlet.example.com"));
+        // Overlay IP 复制按钮：当前节点的虚拟 IP + 直连节点两条 IP 都有按钮，
+        // 且 data-copy 携带正确值（点击写剪贴板的数据源）。
+        assert_eq!(
+            html.matches("class=\"copy\"").count(),
+            3,
+            "three copy buttons"
+        );
+        assert!(
+            html.contains("data-copy=\"10.240.0.5\""),
+            "node virtual ip copy value"
+        );
+        assert!(
+            html.contains("data-copy=\"10.240.0.3\""),
+            "peer ip copy value"
+        );
+        assert!(
+            html.contains("data-copy=\"10.240.0.4\""),
+            "relay peer ip copy value"
+        );
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    /// 复制按钮的安全纪律：`data-copy` 值来自本机状态文件，必须转义——
+    /// 恶意值不得逃出属性变成标记（面板其余动态文本的既有转义口径）。
+    #[test]
+    fn copy_button_escapes_hostile_ip_values() {
+        let state = temp_state_dir("copy-escape");
+        std::fs::write(
+            state.join("applied.json"),
+            r#"{"tunnel_address":"\"><script>alert(1)</script>"}"#,
+        )
+        .unwrap();
+        let html = render(&state);
+        // 属性值整体被转义：引号变 &quot;、尖括号变实体。
+        assert!(html.contains("data-copy=\"&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;\""));
+        // 原始的引号/尖括号组合不得出现在任何 data-copy 属性边界外。
+        assert!(!html.contains("\"><script>alert(1)"));
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    /// 没有虚拟 IP（账本缺失）时不出复制按钮——没有可复制的东西。
+    #[test]
+    fn no_copy_button_without_a_real_overlay_ip() {
+        let state = temp_state_dir("copy-absent");
+        let html = render(&state);
+        assert!(!html.contains("data-copy="), "no copy button without data");
+        // 直连节点也缺失时一条按钮都没有。
+        assert!(!html.contains("class=\"copy\""));
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    /// 直连节点 IP 缺失（形状不符 → 「—」占位）时该行不出复制按钮。
+    #[test]
+    fn placeholder_peer_ip_gets_no_copy_button() {
+        let state = temp_state_dir("copy-placeholder");
+        std::fs::write(state.join("direct-peers.json"), r#"[{"name":"peer-x"}]"#).unwrap();
+        let html = render(&state);
+        assert!(html.contains(">—<"), "placeholder ip renders");
+        assert!(
+            !html.contains("data-copy=\"—\""),
+            "placeholder must not be copyable"
+        );
         let _ = std::fs::remove_dir_all(state.parent().unwrap());
     }
 
