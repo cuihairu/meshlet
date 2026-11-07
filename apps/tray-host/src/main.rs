@@ -1435,7 +1435,10 @@ mod tests {
                 let direct_sub = GetSubMenu(hmenu, 2);
                 assert!(!direct_sub.is_null(), "直连节点 must be a submenu");
                 assert_eq!(GetMenuItemCount(direct_sub), 1);
-                assert_eq!(menu_string(direct_sub, 0), "nas · 10.240.0.2 · 直连 · 12 ms");
+                assert_eq!(
+                    menu_string(direct_sub, 0),
+                    "nas · 10.240.0.2 · 直连 · 12 ms"
+                );
                 assert_ne!(GetMenuState(direct_sub, 0, MF_BYPOSITION) & MF_GRAYED, 0);
 
                 // ④ 连接节点… 子菜单：中继候选可点击（非禁用）。
