@@ -828,10 +828,13 @@ impl DirectPeerView {
         }
     }
 
-    /// ②「直连节点」子菜单行：IP/模式/RTT（数据展示，禁用态）。
+    /// ②「直连节点」子菜单行：名字/IP/模式/RTT（数据展示，禁用态）。
+    /// 名字在前（用户令 2026-11-07：直连节点行须带节点名/nickname，纯 IP 行
+    /// 认不出是哪台机器）；名字缺失（旧服务端）时退回 IP，不出现空段。
     fn menu_label(&self) -> String {
         format!(
-            "{} · {} · {}",
+            "{} · {} · {} · {}",
+            self.display_name(),
             self.virtual_ipv4,
             mode_label(&self.mode),
             self.rtt_ms
@@ -1337,9 +1340,9 @@ mod tests {
         let (direct, relay) = split_peer_views(&peers);
         assert_eq!(direct.len(), 2);
         assert_eq!(relay.len(), 1);
-        // ②「直连节点」行 = IP/模式/RTT；RTT 未测 → "--"。
-        assert_eq!(direct[0].menu_label(), "10.240.0.2 · 直连 · 12 ms");
-        assert_eq!(direct[1].menu_label(), "10.240.0.3 · 拨号中 · --");
+        // ②「直连节点」行 = 名字/IP/模式/RTT；RTT 未测 → "--"；无名 → IP 代名。
+        assert_eq!(direct[0].menu_label(), "a · 10.240.0.2 · 直连 · 12 ms");
+        assert_eq!(direct[1].menu_label(), "b · 10.240.0.3 · 拨号中 · --");
         // ④「连接节点…」行 = IP + 名称；无名候选以 IP 代名。
         assert_eq!(relay[0].dial_menu_label(), "10.240.0.4  10.240.0.4");
     }
@@ -1432,7 +1435,7 @@ mod tests {
                 let direct_sub = GetSubMenu(hmenu, 2);
                 assert!(!direct_sub.is_null(), "直连节点 must be a submenu");
                 assert_eq!(GetMenuItemCount(direct_sub), 1);
-                assert_eq!(menu_string(direct_sub, 0), "10.240.0.2 · 直连 · 12 ms");
+                assert_eq!(menu_string(direct_sub, 0), "nas · 10.240.0.2 · 直连 · 12 ms");
                 assert_ne!(GetMenuState(direct_sub, 0, MF_BYPOSITION) & MF_GRAYED, 0);
 
                 // ④ 连接节点… 子菜单：中继候选可点击（非禁用）。
