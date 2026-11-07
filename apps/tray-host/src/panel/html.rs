@@ -80,9 +80,6 @@ pub(super) fn routes_html(rows: &[RouteRow]) -> String {
 
 /// 渲染整页 HTML（每次请求现读现渲染，无缓存；初始预渲染 + 内联快照供
 /// JS 做局部更新基线，无 JS 时三块照常可见）。
-
-/// 渲染整页 HTML（每次请求现读现渲染，无缓存；初始预渲染 + 内联快照供
-/// JS 做局部更新基线，无 JS 时三块照常可见）。
 pub fn render(state_dir: &Path) -> String {
     let snap = snapshot(state_dir);
 
@@ -521,9 +518,6 @@ fn env_rows(env: Option<&serde_json::Value>) -> Vec<(String, String)> {
     ]
 }
 
-/// ② 直连节点快照（`direct-peers.json` 全量，含中继候选）。RTT 值带来源
-/// tooltip（overlay / endpoint / 不可测），「最近握手」保留为活性主证据。
-
 /// 直连模式 → 中文短名（未知模式原样展示，不吞数据）。
 pub fn mode_label(mode: &str) -> &str {
     match mode {
@@ -533,8 +527,6 @@ pub fn mode_label(mode: &str) -> &str {
         other => other,
     }
 }
-
-/// 当前 Unix 秒（时钟回拨 / 无 epoch 时按 0 处理，展示层不 panic）。
 
 /// 空表占位行。
 pub(super) fn empty_row(cols: usize, message: &str) -> String {

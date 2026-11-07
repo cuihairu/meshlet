@@ -3,6 +3,9 @@ use crate::{parse_handshake_ages, NetworkBackend, NetworkError, TunnelConfig, DE
 use meshlet_domain::Ipv4Cidr;
 use std::net::Ipv4Addr;
 
+// 文件本身经 `mod tests;` 引入，内层再叫 tests 触发 module_inception；
+// 这是测试组织惯例而非缺陷，局部放行。
+#[allow(clippy::module_inception)]
 mod tests {
     use super::*;
     use crate::nat::{NatAction, NatChain, NatRule};

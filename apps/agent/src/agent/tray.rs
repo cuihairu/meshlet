@@ -2,8 +2,6 @@
 use crate::tray::{TrayState, TrayStatus};
 
 use crate::desktop::{desktop_trigger, DesktopPublish, DesktopTrigger};
-#[cfg(not(target_os = "linux"))]
-use crate::desktop_unsupported::DesktopClient;
 
 impl super::Agent {
     pub fn publish_tray(&self, state: TrayState, virtual_ip: Option<std::net::Ipv4Addr>) {
