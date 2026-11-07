@@ -1,277 +1,51 @@
 # TODO
 
-> 需求清单：一行一条需求，已完成项保留一行证据（commit hash + 测试数）。
-> 过程叙述与验收详情见 docs/implementation/、docs/decisions/ 与 git log，本清单不复述。
+## 源码分层分析 2026-11-07
 
-## 架构约束（十决策，写死）
+### 抽象层清单
 
-1. 模块化单体，而非微服务。
-2. Desired State + 不可变 Revision + 纯 Planner + Reconciler 是系统核心。
-3. 控制面不直接拥有通用特权命令执行能力。
-4. Network / Segment / Route / Alias / PortForward / HTTP Exposure 是不同领域对象。
-5. 访问控制必须在执行层真正生效（不只靠界面与 AllowedIPs）。
-6. 回滚不得重新开放已撤销的权限。
-7. 所有变更可验证、可审计、可重试，能从真实内核状态重建。
-8. SQLite 支撑当前定位，持久化边界允许未来替换。
-9. Linux/Windows 共享领域模型、协议与规划逻辑；执行后端各自实现。
-10. CI 通过 / 内核测试通过 / 真实 VPS 验收通过 = 三个独立完成标准。
+- 配置契约层：把 TOML 运维输入解析、校验并投影为 server/agent/本地 UI 的类型化运行配置。——`crates/meshlet-config/src/lib.rs:38`
+- 策略与规划层：做 IPAM、网段可见性、冲突、路由推导和直连选择，不产生 I/O。——`crates/meshlet-domain/src/ipam.rs:58`
+- 修订与状态收敛层：记录单调期望修订，经显式 backend 应用并区分 pending/applied/failed。——`crates/meshlet-domain/src/config_state.rs:156`
+- 持久化层：以内存 `MeshState` 处理事务，SQLite 做迁移、镜像、启动恢复、备份与离线恢复。——`apps/server/src/persist.rs:1307`
+- 设备对账与操作系统执行层：agent 比较期望与内核，经平台 backend 应用隧道/路由/NAT。——`crates/meshlet-network/src/linux.rs:1606`
+- 服务发布层：类型化 L4/HTTP/DNS/探针 CRUD、投影与设备本地监听运行时。——`crates/meshlet-publish/src/runtime.rs:128`
+- 任务与消息层：操作员显式任务经严格状态机、幂等通道与设备本地受控执行。——`apps/server/src/task.rs:709`
+- 接口层：组合管理 API、agent API、CLI、托盘与控制台静态入口，并隔离认证通道。——`apps/server/src/lib.rs:979`
+- 可观测与诊断层：结构化遥测、有界指标、诊断快照与心跳/回执/探针证据。——`apps/server/src/diagnostics.rs:852`
+- 平台打包与生命周期层：systemd 控制面/数据面与 agent 生命周期，以及 Windows 安装打包。——`deploy/systemd/meshlet-agent.service:18`
 
-## 实施阶段（按依赖序）
+### 超大文件候选（>1000 行）
 
-- [x] R-01 基础架构重建：纯 Planner、SQLite 事务+Outbox、特权执行器接口、crate 依赖边界门。
-  - 证据: docs/design/r01-domain-model.md · scripts/check-planner-deps.sh
-- [x] R-02 可靠 Linux 网络基础设施：WireGuard Hub、Peer 管理、路由、防火墙、安全撤销、漂移检测、last-good 恢复、单实例多网络隔离。
-  - 证据: docs/implementation/r02-linux-dataplane.md · netns 隔离测试（single_instance/dual_site）
-- [x] R-03 统一网络规划与冲突分析：IPAM、Segment 策略、网关选择、Direct 路由、Alias 映射、全局冲突检查。
-  - 证据: docs/implementation/r03-unified-network-plan.md · server 409 冲突语义集成测试
-- [x] R-04 设备端到端组网（Linux Agent）：注册、启动恢复、执行回执、重试、升级、真实连接诊断。
-  - 证据: docs/implementation/r04-linux-agent-e2e.md · 2026-10-24 跨主机 20/20 双向基线 · 13 项诊断全绿
-- [x] R-05 Windows 完整客户端：隧道服务、系统路由、防火墙、权限提升、开机恢复。
-  - 证据: docs/implementation/R05-REPORT-work-win11.md（work-win11 10.240.0.5，2026-11-05）——安装/服务控制/路由/防火墙/隧道生命周期/提权/hub 互联 7 项 PASS；开机恢复 1 项 PENDING（工作机避重启，下次重启窗口补验）。真机 3 台均到位：imac（验收并行）、openclaw、work cuihaitao（在线 10.240.0.8，agent+tray+custos）。agent 主线：计划已应用、隧道 Up、hub 心跳正常。
-- [x] R-05 权限提升：windows_elevation 计划层与错误分类，全平台编译 + Linux 单测。
-  - 证据: 66 tests（未真机实测，未接 SystemBackend）
-- [x] R-05 数据面真机验收（路由/防火墙/服务控制/卸载清理，zh-CN 解码修复）。
-  - 证据: docs/implementation/r05-windows-acceptance.md · meshlet-network 75 单测 + 3 真机集成
-- [x] R-06 服务发布 - TCP/UDP PortForward。
-  - 证据: docs/implementation/r06-service-publishing.md · apps/server/tests/publish.rs
-- [x] R-06 服务发布 - HTTP/HTTPS 发布（SNI 直通，不做 TLS 终止）。
-  - 证据: docs/implementation/r06-service-publishing.md
-- [x] R-06 服务发布 - 授权控制与 server 接线（WriteUser + CSRF）。
-  - 证据: docs/implementation/r06-service-publishing.md · 12 tests
-- [x] R-06 服务发布 - 健康探测（agent 周期探测批量上报）。
-  - 证据: docs/implementation/r06-service-publishing.md
-- [x] R-06 服务发布 - 内部 DNS 服务目录（分流 DNS，仅应答内部后缀）。
-  - 证据: docs/implementation/r06-service-publishing.md
-- [x] R-06 服务发布 - 真实 VPS/真机端到端验收。
-  - 证据: docs/implementation/r06-service-publishing.md · 11 单测 + 3 集成回归
-- [ ] R-07 正式部署与长期运行验收：空白 VPS 安装、密钥轮换、备份恢复、升级回滚、性能基线、真实多设备验收。
-  - BLOCKED: 唯一缺项为长期浸泡，缺数周真数据与实验环境重建（用户决策）
-- [x] R-07 空白容器安装。
-  - 证据: docs/implementation/r07-deployment-acceptance.md · 2026-10-24 真实 release 下载路径验收
-- [x] R-07 密钥轮换与密钥丢失（45 秒内三设备零接触换钥）。
-  - 证据: docs/implementation/r07-deployment-acceptance.md
-- [x] R-07 备份恢复（停服恢复口径）。
-  - 证据: docs/implementation/r07-deployment-acceptance.md
-- [x] R-07 性能基线。
-  - 证据: docs/architecture/performance.md
-- [x] R-07 真实多设备验收（第三台设备 max_uses=1 token 入网）。
-  - 证据: docs/implementation/r07-deployment-acceptance.md
-- [x] R-07 升级回滚。
-  - 证据: commit cefd5ef · docs/implementation/r07-deployment-acceptance.md
-- [ ] R-07 长期运行浸泡：采集器就绪，需数周连续 OK 数据后勾。
-  - BLOCKED: 缺实验环境重建（用户决策）与数周真数据
+- [ ] LAY-001 [P1] 拆分 `apps/server/src/service.rs`（3045 行）——混合 `MeshState` 聚合、错误映射、生命周期、网络/设备/邀请/路由/alias/网段/诊断与视图转换，单一文件已横跨策略与接口契约。（`apps/server/src/service.rs:485`）
+- [ ] LAY-002 [P1] 拆分 `apps/server/src/persist.rs`（2703 行）——同时承载 SQLite 重建、实体写入、任务加载、备份、恢复与诊断快照，恢复安全和逐表映射可各自成为边界。（`apps/server/src/persist.rs:1307`）
+- [ ] LAY-003 [P1] 拆分 `apps/server/src/publish.rs`（2546 行）——发布对象结构、四类 CRUD、认证解析、健康回报与设备计划投影在同一模块，控制器与领域规则可分离。（`apps/server/src/publish.rs:1214`）
+- [ ] LAY-004 [P1] 拆分 `crates/meshlet-network/src/linux.rs`（2507 行）——Linux 后端把接口探测、命令运行、隧道/路由/NAT/防火墙、诊断和解析器集中在一个实现内。（`crates/meshlet-network/src/linux.rs:1606`）
+- [ ] LAY-005 [P1] 拆分 `apps/server/tests/single_instance.rs`（2211 行）——集成测试把实例锁、备份/恢复、心跳、修订与多进程生命周期铺在同一文件。（`apps/server/tests/single_instance.rs:1`）
+- [ ] LAY-006 [P1] 拆分 `apps/agent/src/agent.rs`（1913 行）——`Agent` 同时驱动对账、回执、心跳、直连、RTT、任务 kick、托盘、SSH 同步、自升级和发布。（`apps/agent/src/agent.rs:43`）
+- [ ] LAY-007 [P1] 拆分 `apps/tray-host/src/panel.rs`（1738 行）——本地面板把快照读取、HTML 渲染、JS 注入、HTTP server 与本地协议文案合并。（`apps/tray-host/src/panel.rs:313`）
+- [ ] LAY-008 [P1] 拆分 `apps/server/tests/dual_site_end_to_end.rs`（1690 行）——跨站点端到端用例覆盖注册、路由、NAT、收敛和备份恢复，适合按业务场景拆分。（`apps/server/tests/dual_site_end_to_end.rs:1`）
+- [ ] LAY-009 [P1] 拆分 `apps/server/src/task.rs`（1536 行）——任务记录、派发/回收策略、agent 通道和 console 路由集中，状态推进与 API 可拆开。（`apps/server/src/task.rs:628`）
+- [ ] LAY-010 [P1] 拆分 `apps/tray-host/src/main.rs`（1472 行）——Win32 托盘宿主、进程看门狗、菜单/图标、面板启动和 CLI 联动都在入口文件。（`apps/tray-host/src/main.rs:430`）
+- [ ] LAY-011 [P1] 拆分 `apps/cli/src/main.rs`（1461 行）——CLI 同时包含参数分发、本地状态读取、Windows 诊断、任务 HTTP 客户端与表格渲染。（`apps/cli/src/main.rs:78`）
+- [ ] LAY-012 [P1] 拆分 `crates/meshlet-network/tests/backend_wiring.rs`（1460 行）——网络后端集成测试覆盖命令桥、netns、隧道、路由、NAT 与恢复多个场景。（`crates/meshlet-network/tests/backend_wiring.rs:1`）
+- [ ] LAY-013 [P1] 拆分 `crates/meshlet-network/src/windows.rs`（1402 行）——Windows 后端合并进程命令、WireGuard、netsh、路由、NAT、诊断与测试解析。（`crates/meshlet-network/src/windows.rs:1391`）
+- [ ] LAY-014 [P1] 拆分 `apps/agent/tests/agent_reconcile.rs`（1378 行）——agent 集成测试集中内核对账、文件账本、任务、托盘与 SSH 同步流程。（`apps/agent/tests/agent_reconcile.rs:1`）
+- [ ] LAY-015 [P1] 拆分 `apps/server/tests/backup.rs`（1296 行）——备份/恢复测试同时覆盖 schema 校验、并发、内容差异和审计，可按边界拆组。（`apps/server/tests/backup.rs:1`）
+- [ ] LAY-016 [P1] 拆分 `apps/tray-app/src-tauri/src/main.rs`（1241 行）——Tauri 命令、本地 TOML 读写、状态分档、i18n、窗口/托盘和前端逻辑在同一入口。（`apps/tray-app/src-tauri/src/main.rs:57`）
+- [ ] LAY-017 [P1] 拆分 `apps/agent/src/tray.rs`（1228 行）——托盘状态机、PNG 编码、文件 sink、DBus 通知模型与大量测试共存。（`apps/agent/src/tray.rs:344`）
+- [ ] LAY-018 [P1] 拆分 `crates/meshlet-domain/src/config_state.rs`（1222 行）——期望哈希、修订状态机、apply/rollback 语义与存储迁移规则集中一处。（`crates/meshlet-domain/src/config_state.rs:156`）
+- [ ] LAY-019 [P1] 拆分 `crates/meshlet-domain/src/p2p.rs`（1219 行）——端点推导、探测分类、状态跃迁和迟滞策略同处一个领域模块，可按纯函数职责细分。（`crates/meshlet-domain/src/p2p.rs:171`）
+- [ ] LAY-020 [P1] 拆分 `apps/server/tests/publish.rs`（1203 行）——发布集成测试覆盖四类对象、鉴权、健康回报与持久化，适合按对象族拆分。（`apps/server/tests/publish.rs:1`）
+- [ ] LAY-021 [P1] 拆分 `crates/meshlet-config/src/lib.rs`（1189 行）——server/agent 配置、原始 TOML schema、默认值、校验与跨平台数据面选项集中在单文件。（`crates/meshlet-config/src/lib.rs:38`）
+- [ ] LAY-022 [P1] 拆分 `apps/server/src/lib.rs`（1146 行）——通用写路径助手、根 router、大量网络/设备路由和 console fallback 混在一个 crate 入口。（`apps/server/src/lib.rs:979`）
+- [ ] LAY-023 [P1] 拆分 `apps/agent/src/direct.rs`（1111 行）——直连管理器、协议消息、ledger、防火墙动作、RTT 合并和状态导出聚合在一起。（`apps/agent/src/direct.rs:143`）
+- [ ] LAY-024 [P1] 拆分 `apps/server/src/auth.rs`（1069 行）——AppState、AuthStore、登录限流、会话/API token extractor、CSRF 与 auth API 端点集中。（`apps/server/src/auth.rs:51`）
+- [ ] LAY-025 [P1] 拆分 `apps/server/src/revision.rs`（1028 行）——revision API、hub plan 翻译、授权过滤、backend 工厂与部署恢复在同一文件。（`apps/server/src/revision.rs:150`）
+- [ ] LAY-026 [P1] 拆分 `crates/meshlet-network/src/lib.rs`（1020 行）——计划类型、SSH 段、对账规则、诊断载体和平台 trait 共用一个入口文件。（`crates/meshlet-network/src/lib.rs:707`）
 
-## 外部评审立项（2026-10-26，已逐条源码核验）
+### 目录/分类不合理处
 
-- [x] M1 tls_termination 更名与能力拒绝。
-  - 证据: publish 12 + backup 9 + migrations 12 集成 · console 17 tests · 全 workspace cargo test 零失败
-- [x] M2 漂移检测升级到身份/所有权级（身份级观测 + 三真机缺陷修复）。
-  - 证据: 单测 8 + 真机注入 3 项 · network 79 + agent 59 tests · workspace exit 0
-- [x] M3 故障矩阵验收（评审九场景真 netns 全真跑）。
-  - 证据: docs/implementation/m3-fault-matrix.md · single_instance 7 + ledger_recovery 6 + 3 集成 tests
-- [x] M4 回滚/重试不得重授已撤销权限（enforce_authorization 四消费点）。
-  - 证据: single_instance 8 tests · 回归测 rolling_back_a_failed_revoke_does_not_reopen_access
-- [x] M5 TODO 完成状态审计。
-  - 证据: commit ebcd9e7 · docs/analysis/todo-completion-audit-2026-10-27.md
-
-## Agent 安装即配防火墙（2026-10-30 用户令）
-
-- [x] AGENT-FW-1 [P1] Windows 数据面应用时自动设 wg 接口 NetworkCategory=Private 并放行 ICMPv4 入站，幂等可重跑。
-  - 证据: commit 16cb928/8bd2351（netsh add/show/idempotent/delete 全链路 + Set-NetConnectionProfile 双跑读回 Private，windows-latest 真机实跑 · run 41976760018）· 110 lib tests；端到端「ping 直接通」仍以 Windows 真机走查为准（openclaw SSH 本轮不可达）
-- [x] AGENT-FW-2 [P2] Linux 检测 ufw/firewalld 活跃时自动放行 wg 接口流量，幂等。
-  - 证据: commit 52a4763 · 101 lib + 4 特权集成全绿
-- [x] AGENT-FW-3 [P2] walkthrough.md 补「安装即配防火墙」验收步骤与回归用例。
-  - 证据: commit adbb65e
-- [x] AGENT-WIN-1 [P1] Windows 托盘宿主消费 TraySink 四态 PNG，常驻托盘+菜单。
-  - 证据: commit bbdc0e8/fb08bac · CI tray-windows 腿 run 41976760018（windows-latest 真实桌面：消费 TraySink 格式四态 fixture → NIM_ADD=1 注册 + tooltip 换态，截图/日志工件门禁绿）· tray-host 17 tests
-- [x] AGENT-WIN-2 [P1] Windows agent 安装包（zip 先行 + install.ps1），真机验收通过。
-  - 证据: commit f86489d/7639110 · 2026-10-31 真机验收 5/5（docs/agent-win-2-acceptance.md）
-- [x] NIGHTLY-PKG [P2] Linux 组件包矩阵：server/agent/cli 各出 .deb+.rpm。
-  - 证据: scripts/package-deb-rpm.sh · run 41045721705 全绿 · 18 资产 SHA256SUMS 对账 OK
-
-## console 重设计 + dev 部署（2026-10-31）
-
-- [x] CONSOLE-REDESIGN [P1] console 视觉重设计 + dev VPS 部署。
-  - 证据: commit 2a7375c/f75391d/b50fe9a/948db6e · 17 tests + build/lint 绿
-- [x] AUDIT-FIX · P2/P3 impeccable 审计待修 8 项。
-  - 证据: commit 2356fa3/1df7169/1f2fbc3/6863f08/5313ef6/c300722/9511c16/6276cda · 28 tests
-
-## Windows 托盘随安装包分发（2026-11-05 用户问「装完怎么没托盘」暴露）
-
-- [x] INSTALL-TRAY-1 [P2] install.ps1 默认安装并自启 meshlet-tray-host（行为：复制 tray-host、HKCU Run 注册（logon 启动，指向 agent state 目录）、`-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程存在）；真机托盘出现/菜单走查已由 agent 在 Windows 真机执行完毕（2026-11-07，不再是 BLOCKED）。
-  - 实现状态: 已完成——commit 8740c52 将 tray-host 复制到安装目录、注册 HKCU Run 自启（指向 agent state 目录）、新增 `-NoStartTray` 跳过立即启动；CI windows-latest 实跑 staged 安装并验证托盘进程与注册表条目（installer-windows 腿绿）。
-  - 真机走查证据（2026-11-07，agent 执行，无需用户手动）: docs/acceptance-evidence/tray-real-machine.md + 5 张截图。openclaw（msi 23:10 装入）三态截图——进程在=图标在、`Stop-Process` 后图标消失、重启后逐像素恢复（diff ①③=0，①②=156687）；悬停 tooltip=`openclaw-win 10.240.0.3: 在线…`；右键菜单五项（状态首行/直连节点/连接节点…/打开面板/退出）截图在案。imac（同 msi 交叉验证）: `NIM_ADD = 1`、UIA 枚举溢出区按钮 `name=[Meshlet … 10.240.0.7：在线…]`、`WM_APP+1` 投递后 `#32768` 菜单窗口出现；imac 控制台锁屏故其截图以 UIA+日志为证（如实记录）。
-
-## Console 网络拓扑图（2026-11-05 用户令，补账：此前未入账）
-
-- [x] TOPO-1 [P1] console 新增「拓扑」页：hub 居中，节点环布；连线区分 直连（实线，标注 RTT）与 hub 中继（虚线）；节点卡=设备名/虚拟 IP/在线状态/online_state；数据源=现有 peers/endpoints API + 心跳状态，实时刷新；直连未启用或单节点时如实显示引导（如何开 direct_connect、为什么当前无直连）。中英文案双语（UiStrings 惯例）。
-  - 验收: console 组件测试覆盖拓扑渲染三态（有直连/仅中继/单节点引导）；CI 绿；真机双节点走查挂 R-DIAG-2 同一前置。
-  - 证据: commit e1a66f8/a9401c6 · console 39 tests（含拓扑三态 4 项）+ tsc + oxlint 绿 · CI run 41979273275 全腿绿 · 真机双节点走查仍待 R-DIAG-2 前置（第二节点），不代勾
-
-## Windows MSI 安装包（2026-11-05 用户追问补账：此前口头承诺未入账，已漏 19 天——账本纪律事故）
-
-- [x] NIGHTLY-MSI-1 [P1] Windows nightly 增出 MSI 安装包（cargo-wix）：meshlet-server/agent/cli + tray-host 打进单个 msi，含开始菜单项与卸载；与现有 zip 并存不互替；CI windows-latest 真实产出 msi 并入 nightly release 资产。
-  - 证据: commit db211a4/8ef9399 · CI run 41993127622 success · nightly release 资产含 meshlet-nightly-windows-x86_64.msi（9.3 MB）。
-  - 计划: wix manifest 按 cargo-wix-packaging skill 规则（exe Source 用 $(var.CargoTargetBinDir)；附加 exe 同步 --release --bin 预构建；SVG→ico 用 rsvg-convert+ImageMagick；GUI tray host 加 windows_subsystem）；Linux 侧 wixl 干跑校验 wxs；夜间 workflow 打包步产出 target/wix/*.msi 并上传 release。
-
-## meshlet P2P 节点直连（2026-10-31 起，分批 ①-⑤）
-> 口径：以下勾=代码+netns 端到端验收。**direct_connect 自 2026-11-06 起默认开启**（agent `[dataplane.direct_connect] enabled`，显式 `false` 关闭）；效果需真实第二台节点才可见，开法与效果说明见 docs/guide/toggles.md §direct_connect。双真机走查已完成（见 ⑥），直连属「用户可用」。
-
-- [x] ① endpoint 上报+API：agent 心跳携带 direct，server 提供 peers/endpoints 查询。
-  - 证据: commit 7374f6f/a1111f5 · config 18 + network 102 + agent 60 + peers_endpoints 6 tests
-- [x] ② agent 直连+回退（连接管理，netns 端到端验收）。
-  - 证据: commit c1f4b63 · 全 workspace cargo test 0 FAILED（network 104 + agent 67）
-- [x] ③ 探测+状态上报（直连/中继状态随心跳上报，console 展示）。
-  - 证据: commit 4fc5aa7 · 域层 161 + agent 68 + peers_endpoints 9 tests
-- [x] ④ 防火墙联动（直连 UDP 端口放行，幂等；默认值 2026-11-06 起改开，见 ⑥）。
-  - 证据: commit 923c4dc · meshlet-network 106 lib + netns 2 tests
-- [x] P2P-⑤ 暴露 hub 观测的节点公网端点（observed/public endpoint 入 API 与 console）。
-  - 证据: commit 1c5df30/8e89856/168c1c5 · server 2 集成 + console 2 tests
-- [x] ⑥ 双真机直连走查 + 直连三缺陷修复（2026-11-06）：coding-vm（10.240.0.4，Linux）↔ cuihaitao（10.240.0.8，Windows）经 Tailscale underlay 建立直连边，拓扑 API 报 `connection_mode=p2p_direct` RTT 18ms，ping 15–19ms，直连 peer 计数器 GB 级增长。
-  - 修复 1（Windows 候选端点缺失）：部署的 exe 早于 `lan_addresses_sync`/`handshake_ages_sync` Windows 接线——重编重发。
-  - 修复 2（hub 观测到 127.0.0.1）：Windows agent 走 nginx 反代域名，hub `ConnectInfo` 只见本机回环 → 公网候选丢失；agent.toml `server_url` 改指 hub 直连地址（`http://106.14.216.177:8080`）后观测到真实公网 180.152.54.66。真因：server 不解析 `X-Forwarded-For`（记 TODO-116）。
-  - 修复 3（直连每 ~90s 抖动）：`DIRECT_HEALTH_WINDOW_SECS=35` < WireGuard 重新握手节拍（~120–180s，`latest-handshake` 不随 keepalive 刷新）→ 健康空闲链路被误判 Unhealthy 反复 demote/promote；窗口改 240s（真机取证在案）。
-  - 附带修复（Windows 重配拒发）：`wireguard.exe` CLI 无 `/stoptunnelservice`（真机 Usage 取证）——`install_plan` 改为卸载重建两步；`NetworkSnapshot.tunnel_listen_port` 入漂移判定（Windows 侧钉端口 51820 生效 + 防火墙 `Meshlet-Direct-UDP-In` 自动放行）。
-  - 测试: network 172 lib（+listen-port 漂移 3 例）· domain 178（+窗口 240 断言）· single_instance 8/8（默认开直连下 port 钉入引入的 ≤25s 收敛竞态改用既有 `reconnects` 有界等待）
-- [x] ⑦ 第三节点直连走查（2026-11-06 晚，coding-vm ↔ windows-desktop）+ ZeroTier 自环阻断。
-  - 走查: 同机第二套 agent（`C:\ProgramData\meshlet\config.toml`，device `windows-desktop`=10.240.0.5，与 `cuihaitao`=10.240.0.8 同一台 Windows）部署当日新 exe 并开 `[dataplane.direct_connect] enabled=true`；**监听端口取 51821**——同机 `wg-meshlet` 已占 51820，两接口不能同端口；防火墙 `Meshlet-Direct-UDP-In`（51821）由 agent 自动放行。
-  - 证据: devices API `coding-vm → windows-desktop connection_mode=p2p_direct endpoint=10.147.19.97:51821 rtt_ms=19`（对端 `cuihaitao` 边 rtt_ms=17）；本机 `wg show wg-mlt` 直连 peer 握手新鲜、`ping 10.240.0.5` 20/20 0% 丢包；**直连流量**: 经 `http://10.240.0.5:7897` 代理拉 20 MB（speed.cloudflare.com），直连 peer rx +21,294,644 B / tx +466,184 B，hub API rx/tx 同步增长。
-  - 缺陷（新）ZeroTier ↔ meshlet 互相封装自环: meshlet 直连 peer 的 endpoint 是对端 ZeroTier 地址（10.147.19.97），而 ZeroTier 又学到「该节点可经 meshlet overlay 到达」（path `10.240.0.5:34551`）→ WG→ZT→overlay→WG 逐层包裹，包长超过 MTU 后内层包全部丢弃（ping 黑洞），同时放大约 80 GB 隧道流量（真机取证 16:20–16:47，`wg show` tx 37→79 GiB）。修复: `/usr/local/sbin/meshlet-zt-separation.sh`（OUTPUT 按 uid 拦 ZeroTier 出 wg-mlt + INPUT 拦其本地端口入 wg-mlt），systemd `meshlet-zt-separation.service` 已 enable、`zerotier-one.service` 加 `ExecStartPost` 重启即重放；拦掉后 ZeroTier 回落真实公网 path `180.152.54.66/9993`，直连与 `10.240.0.8` 全部恢复。
-  - 归因（本轮 workspace `cargo test` 唯一失败，与 P2P 改动无关）: `meshlet-server --test backup::concurrent_backup_contains_only_complete_business_commits` 报 `database is locked (code 5)`——测试用 70 万行递归 CTE 触发器故意持写锁 ≈5 s，`backup_once` 里 `VACUUM INTO` 后的 audit INSERT 受 `busy_timeout = 5000`（store.rs）限制，机器负载 45 时触发器超 5 s 即 BUSY。单跑 3/3 绿、全 suite 2×10/10 绿（负载 9）；负载敏感 flake，非回归。
-
-- [x] TODO-116 [P3] server 解析反代头（`X-Forwarded-For`/`X-Real-IP`）：nginx 域名入口下 `ConnectInfo` 只见 127.0.0.1，hub 观测公网候选退化为回环（2026-11-06 真机取证，cuihaitao 走查中曾因此无公网候选；当前以 agent 直连 hub 地址绕过）。改法：`direct_observed_ip` 先取可信反代头再回落 socket；须同时收紧「仅可信代理来源才采信头部」，并补集成测试。
-  - 证据: commit `ee7e36d`；server 集成测试 `peers_endpoints` 15/15 全绿（三态：可信代理头生效 `203.0.113.7` / 不可信来源头被忽略回落 socket `192.168.1.11` 且不伪造公网 / 无头回落 socket `127.0.0.1`），`meshlet-config` lib 27/27 全绿（默认仅回环、CIDR/地址解析、主机位归并、拒绝非法条目）；`cargo check --workspace`、`cargo fmt --all -- --check` 通过。
-  - 证据: 2026-11-06 直连走查 devices API `observed_endpoint=127.0.0.1:51820`（域名入口）vs `180.152.54.66:51820`（直连地址）。
-
-## 诊断与托盘（2026-11-01 用户令）
-
-- [x] R-DIAG · P2 · agent 本地网络诊断信息面（三快照 + CLI `meshlet agent diag`）。
-  - 证据: commit 026b638
-- [x] R-TRAY-1 · P2 · 托盘设置界面功能化扩展（命令目录单一事实源 crates/meshlet-commands + 四分区前端）。
-  - 证据: commit b8d9e75/fb1e90d/3d71188/691fc36 · tray 5 tests
-- [x] R-DIAG-2 · P2 · 直连 peers 信息展示（RTT/endpoint/握手/流量 + console 区块）。
-  - 证据: commit d72e4a2/f97f6f0/4ba7d71 · 2-peer 直连场景验收待第二节点
-- [x] macOS x86_64 · tray 应用 .app 打包（CI 腿）。
-  - 证据: commit 69c7ec1/85b8518 · run 41307883225 success · network 115 + tray 5 tests
-- [x] DOC-GIF · P2 · 配置开关效果动态图（off→on 对比 + GIF，可复现流水线）。
-  - 证据: scripts/doc-gif · 12 项效果断言全绿
-
-## 审核发现（产品缺陷，已修）
-
-- [x] 审核发现：CLI state_dir/config_path 与实际安装路径不一致 → 改用 LOCALAPPDATA。
-  - 证据: commit 22283bd · meshlet-cli 5 tests
-- [x] 审核发现：CLI 硬编码 "WireGuard" 隧道名 → 改匹配 wg-meshlet/meshlet。
-  - 证据: commit 22283bd · 回归测 tunnel_service_names_match_install_conventions
-- [x] 审核发现：tray-app get_peers 硬编码接口名 → is_tunnel_interface 匹配。
-  - 证据: commit fb1e90d
-- [x] 审核发现：save_config 丢弃安装键 → rebuild_config 保留 agent 管理键。
-  - 证据: commit 3d71188
-- [x] 审核发现：前端读不存在的 handshake_secs 字段 → 改 last_handshake，dist 与源一致。
-  - 证据: commit 691fc36
-- [x] 审核发现：CLI 无用依赖 serde/toml → 删除。
-  - 证据: commit 6c755c7
-- [x] 审核发现：TraySink PNG 编码 NLEN 用补码负数（恒差 1，规范解压器以 "invalid stored block lengths" 拒收整张图标）→ 改反码 + 回归测。
-  - 证据: commit 431e38c · zlib_stream NLEN 单测（单块 + 跨 0xff00 块）· tray_fixture 四态 PNG 经真实 zlib 解压取证
-- [x] 审核发现：tray-host icon_24→icon_16 回退短路 → 修复回退并加回归测。
-  - 证据: commit 07667c5 · tray-host 5 tests
-- [x] 审核发现：2FA 写端点缺 WriteUser+CSRF 双重防线 → 补齐并加回归测。
-  - 证据: auth_console 16 tests
-- [x] 审核发现：deploy/windows/install.ps1 下载不存在的资产名 → 改下载 nightly zip 并校验。
-  - 证据: commit b29dd08
-- [x] 审核发现：AuthStore::set_password 死代码 → 移除。
-  - 证据: commit 3ce13f8
-- [x] 审核发现：Windows device_plan_matches 对账粒度不足 → 纯函数逐项对账（peer/routes/MTU/allowed-ips）。
-  - 证据: commit bb835e5 · meshlet-network 118 tests
-- [x] 审核发现：console 2FA 第二步无法完成 TOTP 登录 → 前端补 code 步与错误提示。
-  - 证据: console 19 tests + tsc
-- [x] 审核发现：on_probe Direct 态疑似应 Demote → 复核不采纳（no-flap 设计，测试锁定）。
-- [x] 审核发现：tray-app stateDir 硬编码 admin 路径 → 后端自解析 LOCALAPPDATA。
-  - 证据: cargo test -p meshlet-tray 2/2 绿
-- [x] 审核发现：invoke 缺失未优雅降级 → load/save 早退，路径统一。
-  - 证据: cargo test -p meshlet-tray 2/2 绿
-- [x] 审核发现：错码返回 401 时前端误当缺码 → 显式无效提示。
-  - 证据: console 20 tests
-- [x] 审核发现：托盘菜单打开设置仅 set_focus 不 show → 先 show 再 focus。
-  - 证据: cargo build/clippy -p meshlet-tray 绿
-
-## Agent-WIN-3/4（2026-11-02 用户令）
-
-- [x] AGENT-WIN-3 [P1] 托盘显示本机虚拟 IP + 直连节点列表(RTT)；菜单：打开面板/本机信息/直连节点/连接节点…/退出。
-  - 证据: commit bbdc0e8 · Windows 菜单结构真机测试（run 41973077285/41976760018 windows-latest 实跑：首行设备名+虚拟 IP+状态、直连子菜单 IP/模式/RTT、连接节点候选可点击、打开面板/退出读回断言）· tray-host 17 tests
-- [x] AGENT-WIN-4 [P1] 新增 peer dial <node> 命令并接托盘「连接节点…」子菜单。
-  - 证据: 代码 commit b9eaae0（CLI peer dial + 托盘 spawn + 结果气球）；commit bbdc0e8 CI tray-windows 腿验证宿主常驻与 agent 进程联动（run 41976760018 绿）；拨号端到端结果气球以真机走查为准（openclaw SSH 本轮不可达）
-
-## 漏洞扫描遗留（2026-11-03 全舰队扫描）
-
-- [x] VULN-MESHLET-001 [P1] rsa 0.9.10（sqlx-mysql 引入，RUSTSEC-2023-0071 中危 5.9）升级或换库。
-  - audit-ignore + unreachable + no upstream fix (RUSTSEC-2023-0071 ignored via .cargo/audit.toml)
-
-## 任务分配与确认通道（2026-11-03 用户令）
-
-- [x] MT-001 [P1] 任务模型与线性状态机（domain 纯函数）。
-  - 证据: commit a91987e · meshlet-domain 170 tests
-- [x] MT-002 [P1] 任务下发与回执（幂等键 + 断线补派不重跑）。
-  - 证据: commit 028ed3a · domain 170 + agent 82 + 集成 3 tests
-- [x] MT-003 [P1] 用户确认交互：console 任务队列面板 + CLI task assign/ls/confirm/retry。
-  - 证据: commit 29dff8a/3ca3507/7921c3d · meshlet-cli 10 + console 6 + 集成 lifecycle tests
-- [x] MT-004 [P2] 节点侧任务到达托盘通知（D-Bus，降级非致命）。
-  - 证据: commit de60cd5 · meshlet-agent 84 tests
-- [x] MT-005 [P2] 稳定性语义：超时回收重派、重试上限、每任务独立 scratch 目录、标签路由派单。
-  - 证据: commit 558a1f6/bbb6b35/092a7de/9dd43cd · domain 178 tests（容器隔离未做）
-
-## 智能链路选择（2026-11-04 用户令）
-
-- [x] SEL-001 [P1] 多候选端点探测：滑动窗口 RTT/丢包/抖动，默认 5s 可配。
-  - 证据: commit 6086b75 · meshlet-network 152 + config 20 tests · netns 双路径 45ms 差证据
-- [x] SEL-002 [P1] 评分与迟滞切换（30% 迟滞 + 连续 N 采样，零断线换 endpoint）。
-  - 证据: meshlet-network 159 + config 20 + agent 93 tests · 迟滞闸单测 6 个
-- [x] SEL-003 [P2] hub 兜底常热：keep-alive 永不掉、劣化立即回中继、恢复门切回。
-  - 证据: meshlet-network 159 + agent 101 tests · 可注入时钟时序单测
-- [x] SEL-004 [P2] console peer 详情展示全部候选（端点/RTT/丢包/选中与原因）。
-  - 证据: console 35 tests（含双候选渲染）· agent candidate_statuses 单测
-
-## 审核发现（40901d..cf3d9c8 任务通道/拨号/probe，人工自审）
-
-- [x] 审核发现：重派预算可被绕过（parent 链未回溯到根）→ 沿链回溯 + 回归测。
-  - 证据: 单测 deep_chain_reclaim_walks_to_root_and_respects_budget + 集成 deep_chain_redispatch_respects_budget
-- [x] 审核发现：跨网络幂等 assign 返回不一致 → 校验 network_id 归属（404）。
-  - 证据: 集成 assign_foreign_network_id_is_not_found
-- [x] 审核发现：自动 id 与显式 id 碰撞覆盖 → seq 递增避让。
-  - 证据: 单测 assign_auto_id_skips_explicit_collision + 集成 auto_id_skips_collision_with_explicit_id
-- [x] 审核发现：回收与活 agent 竞争致重复执行 → 终态回执幂等忽略。
-  - 证据: 集成 stale_result_does_not_overwrite_terminal_state
-- [x] 审核发现：账本按字典序淘汰非时间序 → 改真实插入序 FIFO。
-  - 证据: 单测 ledger_evicts_by_real_time_order_not_id_lexicographic
-- [x] 审核发现：任务内联阻塞心跳/数据面 → TaskRuntime 后台 worker。
-  - 证据: 单测 task_runtime_runs_in_background_and_kick_returns_immediately
-- [x] 审核发现：enrich_direct_peers 内联 ping 阻塞 → DirectRttRuntime 后台 worker。
-  - 证据: 单测 snapshot_never_blocks_and_reflects_background_probe
-- [x] 审核发现：跨网络幂等/碰撞/深链/竞争/终态覆盖测试缺口 → 补集成与单测。
-  - 证据: commit 715ad2c
-
-## Windows agent 部署发现（2026-11-05 openclaw/imac 真机取证）
-
-- [x] BUG: Windows apply 对已存在隧道不重配（apply_device_plan_sync 走 InstallService，wireguard.exe 对已存在服务返回 "already installed" 被判幂等成功 → 不更新 key/地址）。
-  - 证据: commit 5c9ce1c · `install_plan` 停/卸/装重配路径 + already-installed fail-closed + sc query 状态码解析 · meshlet-network 166 lib tests
-- [x] BUG: 漂移检测不查本机私钥/适配器地址（drifted() 只比对 peer 公钥+allowed-ips 与 ledger 地址 → 手动隧道 peer 恰与 plan 一致即误判 UpToDate）。
-  - 证据: commit a66fe18 · NetworkSnapshot 增 local_public_key/tunnel_address 双读数（Linux wg dump 接口行 + ip -4 addr / Windows wg.exe dump + netsh addresses），drifted() 增两查（读数缺失不判）· network 168 + agent 104 tests
-- [x] BUG: CI windows 腿两处测试脆断（task runtime 测试用 Unix shell 语法在 cmd /C 下必挂；live firewall 测试未处理 runner 接口别名含空格）→ 按平台语法/改名后实跑通过。
-  - 证据: commit 321a3d3/c0610a3/8bd2351 · run 41976760018 windows 腿绿
-
-## Dependabot 安全告警（2026-11-06 处理 GHSA-wrw7-89jp-8q8g）
-
-- [x] DEPENDABOT-10 [P2] glib >=0.15,<0.20 unsoundness（GHSA-wrw7-89jp-8q8g, medium, VariantStrIter Iterator/DoubleEndedIterator UB）dismissed as fix_not_planned。
-  - 依赖链: meshlet-tray → tauri 2.12.5 → tray-icon 0.25.1 → libappindicator 0.9.0 → gtk 0.18.2 → glib 0.18.5；tao 0.37.2/muda 0.20.0/wry 0.57.1/webkit2gtk 2.0.2 亦经 gtk 0.18 连 glib。
-  - 上游上限: libappindicator 0.9.0（最新）钉 gtk ^0.18；gtk 0.19.0 需 glib ^0.22（已修复），但 tauri 2.12.5/wry 0.57.1/tao 0.37.2/tray-icon 0.26.1 最新均钉 gtk 0.18；glib 0.18 线最末 0.18.5（无补丁版）。
-  - 可达性: 本仓代码无 glib::VariantStrIter/GVariant 直接使用（rg 零命中）；glib 仅 Linux target 编译（cargo tree -i glib --target x86_64-pc-windows-msvc 空），Windows 产物不含 glib，仅 Linux CI 编译该栈。
-  - 为何 fix_not_planned: 修复版 glib >=0.20 与整条 GTK 栈（libappindicator/tauri/wry/tao/tray-icon 全部钉 gtk 0.18）不兼容，无升级路径。
-  - 复查条件: tauri/wry/tao 迁移 gtk >=0.19 栈时重查本告警。
-  - 证据: gh api dependabot/alerts/10 state=dismissed reason=fix_not_planned（本 commit）
-
-## 本地面板（2026-11-06 用户定案）
-
-- [x] LOCAL-PANEL-1 [P1] 托盘入口分流：「本地面板」默认打开 tray-host 自托管的 loopback 只读页（`127.0.0.1` 随机端口，三块 = 当前节点 / 直连节点 / 本地路由；数据只读 `{state_dir}` 下的 `tray/status.json`、`direct-peers.json`、`applied.json`，**server 不可达照样打开**）；「控制台(网页)」保留原 dashboard 行为。菜单文案、README 中英、decisions-actions 同步；URL 另落 `local-panel.json` 交接文件（Windows 重定向日志在进程存活期间读不到）。
-  - 来源: 2026-11-06 用户定案（23:29 已入反馈台账）——「托盘打开面板必须打开本地面板，不是 dashboard/控制台」
-  - 证据: 本批 commits（`feat: add read-only local tray panel` / `ci: verify local tray panel on Windows`）· meshlet-tray-host 18 lib + 15 bin tests（本批实测 `cargo test -p meshlet-tray-host` 全绿） · `cargo test --workspace` exit 0 · clippy `-D warnings` + fmt 绿 · 本机 curl 实测：200 + `id="node"`/`id="direct"`/`id="routes"` 三块 + 12/12 内容探针 + POST/PUT 405 + 改 `direct-peers.json` 下一次 GET 即刷新 · CI windows-latest 新增面板门禁（loopback 200 + 三块 + POST 405）
-- [ ] LOCAL-PANEL-2 [P2] 真机验证：imac（192.168.5.117）装 `meshlet-tray-host.exe` → 托盘菜单点「本地面板」→ 截图三块信息。**待用户亲验**——该机 console 会话为「断开」态，自动化只能覆盖「装包 + 面板 200 + 页面截图」，交互式手点留给用户。
-  - 证据: docs/acceptance-evidence/local-panel-1.md（待真机回填）
+- `apps/tray-app/dist/popup.html` 是与 `apps/tray-app/popup.html` 并存的构建产物，源码清单不应把 dist 形态混入应用源（`apps/tray-app/dist/popup.html:1`）。
+- server 的通用写路径助手与根 router 放在 `apps/server/src/lib.rs`，而 alias、segment、publish、task、diagnostics 已有独立模块；根路由和通用 helper 可进一步按域归位（`apps/server/src/lib.rs:1113`）。
+- `apps/tray-app` 是 Tauri 应用但 Rust 入口位于子目录 `src-tauri/src/main.rs`，静态 UI 与 Rust 生命周期在同一应用目录内形成两类构建体系；若后续继续扩展，应明确前端源与原生入口的顶层边界（`apps/tray-app/src-tauri/src/main.rs:1`）。

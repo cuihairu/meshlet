@@ -51,6 +51,8 @@ export default defineConfig({
           ] }],
           '/architecture/': [{ text: 'Architecture', items: [
             { text: 'Process Topology', link: '/architecture/overview' },
+            { text: 'Source Layer Analysis', link: '/architecture/source-layer-analysis' },
+            { text: 'Source Layer Glossary', link: '/architecture/source-layer-glossary' },
             { text: 'Target Architecture (Draft)', link: '/architecture/target-architecture' },
             { text: 'Domain Model', link: '/architecture/domain-model' },
             { text: 'Modularity and Library Reuse', link: '/architecture/modularity-and-library-design' },
@@ -146,6 +148,8 @@ export default defineConfig({
           ] }],
           '/zh/architecture/': [{ text: '架构文档', items: [
             { text: '进程拓扑', link: '/zh/architecture/overview' },
+            { text: '源码分层分析', link: '/zh/architecture/source-layer-analysis' },
+            { text: '源码分层术语表', link: '/zh/architecture/source-layer-glossary' },
             { text: '目标架构（草案）', link: '/zh/architecture/target-architecture' },
             { text: '领域模型', link: '/zh/architecture/domain-model' },
             { text: '模块化与库复用提案', link: '/zh/architecture/modularity-and-library-design' },
