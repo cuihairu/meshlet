@@ -500,6 +500,7 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
             hub_endpoint: Some("172.31.1.1:51820".into()),
             ..Default::default()
         },
+        ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
     };
     let mut agent = meshlet_agent::agent::Agent::with_backend(
         config,
@@ -769,6 +770,7 @@ fn forwarding_agent(
             hub_endpoint: Some(format!("172.31.{index}.1:51820")),
             ..Default::default()
         },
+        ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
     };
     meshlet_agent::agent::Agent::with_backend(
         config,
@@ -1648,6 +1650,7 @@ async fn deleting_a_lan_route_cascades_managed_kernel_objects() {
             hub_endpoint: Some("172.31.1.1:51820".into()),
             ..Default::default()
         },
+        ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
     };
     let mut agent = meshlet_agent::agent::Agent::with_backend(
         config,
@@ -1752,6 +1755,7 @@ async fn restoring_a_backup_reconverges_the_kernel() {
             hub_endpoint: Some("172.31.1.1:51820".into()),
             ..Default::default()
         },
+        ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
     };
     let mut agent = meshlet_agent::agent::Agent::with_backend(
         config,

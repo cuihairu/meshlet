@@ -492,6 +492,7 @@ fn hub_plan(topo: &Topology) -> DevicePlan {
         nat_rules: Vec::new(),
         hub_address: Some(topo.hub.overlay.parse().unwrap()),
         publish: None,
+        ssh_config: None,
         desired_config_hash: "hub-hash".into(),
     }
 }
@@ -554,6 +555,7 @@ fn leaf_plan(
         nat_rules,
         hub_address: Some(hub.overlay.parse().unwrap()),
         publish: None,
+        ssh_config: None,
         desired_config_hash: hash.into(),
     }
 }
@@ -590,6 +592,7 @@ fn agent_in(node: &Node, state_dir: &str) -> Agent {
             enabled: true,
             ..DataplaneConfig::default()
         },
+        ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
     };
     let backend = LinuxNetworkBackend::new()
         .with_netns(&node.netns)
@@ -629,6 +632,7 @@ fn agent_in_direct(
             },
             ..DataplaneConfig::default()
         },
+        ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
     };
     let backend = LinuxNetworkBackend::new()
         .with_netns(&node.netns)

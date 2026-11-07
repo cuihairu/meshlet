@@ -63,6 +63,7 @@ pub async fn status(
                     &state.dataplane,
                     state.tunnel_mtu,
                     &key,
+                    state.ssh_config.as_ref(),
                 )
                 .map(|p| (d.id.0.clone(), p.desired_config_hash))
             })
@@ -158,6 +159,7 @@ pub async fn receipt_handler(
             &state.dataplane,
             state.tunnel_mtu,
             &key,
+            state.ssh_config.as_ref(),
         )
         .map_err(AgentApiError::Internal)?;
         if plan.desired_config_hash != receipt.plan_hash {

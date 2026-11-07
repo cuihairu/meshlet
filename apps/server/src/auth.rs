@@ -73,6 +73,9 @@ pub struct AppState {
     /// 服务端 `[dataplane]` 配置（设备计划下发用：接口名/私钥文件）；
     /// `enabled = false` 时 `GET /agent/device/desired` 返回 503。
     pub dataplane: meshlet_config::DataPlaneConfig,
+    /// SSH 别名分发段（生产来自 `[ssh_config]`）：`None` = hub 未开启，计划
+    /// 不带 `ssh_config` 段；`Some` = 计划携带全网 Active 节点别名表。
+    pub ssh_config: Option<meshlet_config::SshDistributeConfig>,
     /// 同一网络的 apply/rollback 串行门（§10.4）；不同网络仍可并行执行。
     pub revision_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     /// 可信反代来源（TODO-116）：仅当请求直接来自可信代理时才采信
@@ -110,6 +113,7 @@ impl AppState {
             backup_dir: None,
             tunnel_mtu: None,
             dataplane: meshlet_config::DataPlaneConfig::default(),
+            ssh_config: None,
             trusted_proxies: meshlet_config::TrustedProxyConfig::default(),
         }
     }
@@ -136,6 +140,15 @@ impl AppState {
     /// 验证设备计划下发与未配置分支）。
     pub fn with_dataplane(mut self, dataplane: meshlet_config::DataPlaneConfig) -> Self {
         self.dataplane = dataplane;
+        self
+    }
+
+    /// 注入 SSH 别名分发配置（生产来自 `[ssh_config]`；`None` = hub 未开启）。
+    pub fn with_ssh_config(
+        mut self,
+        ssh_config: Option<meshlet_config::SshDistributeConfig>,
+    ) -> Self {
+        self.ssh_config = ssh_config;
         self
     }
 

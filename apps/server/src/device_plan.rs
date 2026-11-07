@@ -93,6 +93,7 @@ pub fn build_device_plan(
     dataplane: &DataPlaneConfig,
     tunnel_mtu: Option<u32>,
     hub_public_key: &str,
+    ssh_distribute: Option<&meshlet_config::SshDistributeConfig>,
 ) -> Result<DevicePlan, String> {
     let network = mesh
         .network_row(network_id)
@@ -240,6 +241,7 @@ pub fn build_device_plan(
         // 服务发布计划（R-06）：控制面 catalog 按本设备过滤后的期望发布态
         // （`None` = 本设备无发布项）；计划层校验失败时整个计划构建失败可见。
         publish: crate::publish::device_publish_plan(mesh, network_id, &device_id.to_string())?,
+        ssh_config: ssh_config_plan(mesh, network_id, ssh_distribute),
         desired_config_hash: String::new(),
     };
     // Hash the actual device plan, including MTU, hub key and revision.
@@ -250,6 +252,42 @@ pub fn build_device_plan(
         Sha256::digest(serde_json::to_vec(&plan).map_err(|e| e.to_string())?)
     );
     Ok(plan)
+}
+
+/// SSH alias 分发段（hub 显式开启才下发）：网络内全部 Active 节点的别名表。
+/// alias 三级解析共用 [`meshlet_network::ssh_alias::resolve_alias`]：hub 显式
+/// 覆写 > 节点真实主机名（心跳上报的内存态）> peer name。`None` 配置 = hub
+/// 未开启分发 → 计划不带该段（序列化也省略，旧计划哈希不变）。
+fn ssh_config_plan(
+    mesh: &MeshState,
+    network_id: &str,
+    ssh_distribute: Option<&meshlet_config::SshDistributeConfig>,
+) -> Option<meshlet_network::SshConfigPlan> {
+    let ssh = ssh_distribute?;
+    let mut hosts = Vec::new();
+    for device in mesh.registry.devices() {
+        if device.network_id.0 != network_id || !device.is_active() {
+            continue;
+        }
+        let over = ssh.overrides.get(&device.name);
+        let hostname = mesh.device_hostnames.get(&device.id).map(String::as_str);
+        let (alias, source) = meshlet_network::ssh_alias::resolve_alias(
+            &device.name,
+            hostname,
+            over.and_then(|o| o.alias.as_deref()),
+        );
+        hosts.push(meshlet_network::SshHostConfig {
+            name: device.name.clone(),
+            alias,
+            address: device.virtual_ipv4,
+            port: over.and_then(|o| o.port),
+            user: over.and_then(|o| o.user.clone()),
+            alias_source: Some(source.to_string()),
+        });
+    }
+    // 设备名序：fragment 确定性（同一网络任意顺序恢复，计划哈希一致）。
+    hosts.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(meshlet_network::SshConfigPlan { hosts })
 }
 
 #[cfg(test)]
@@ -391,6 +429,7 @@ mod tests {
             &dataplane(),
             None,
             "hub-pub",
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -416,6 +455,7 @@ mod tests {
             &dataplane(),
             None,
             "hub-pub",
+            None,
         )
         .unwrap();
         assert!(granted
@@ -448,6 +488,7 @@ mod tests {
             &dataplane(),
             None,
             "hub-pub",
+            None,
         )
         .unwrap();
 
@@ -502,6 +543,7 @@ mod tests {
             &dataplane(),
             None,
             "hub-pub",
+            None,
         )
         .unwrap();
 
@@ -549,6 +591,7 @@ mod tests {
             &dataplane(),
             None,
             "hub-pub",
+            None,
         )
         .unwrap();
         assert_eq!(plan.routes.len(), 1);
@@ -574,6 +617,7 @@ mod tests {
             &dataplane(),
             None,
             "hub-pub",
+            None,
         )
         .is_err());
         assert!(build_device_plan(
@@ -583,6 +627,7 @@ mod tests {
             &dataplane(),
             None,
             "hub-pub",
+            None,
         )
         .is_err());
     }
@@ -604,6 +649,7 @@ mod tests {
             &dataplane(),
             None,
             "hub",
+            None,
         )
         .unwrap();
         mesh.lan_routes.get_mut("net-1").unwrap().reverse();
@@ -614,9 +660,95 @@ mod tests {
             &dataplane(),
             None,
             "hub",
+            None,
         )
         .unwrap();
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn ssh_distribution_emits_all_active_nodes_with_three_tier_alias_source() {
+        let mut mesh_state = mesh();
+        let mut self_dev = device("self", "10.240.0.3", DeviceStatus::Active);
+        self_dev.name = "self-node".into();
+        add(&mut mesh_state, self_dev);
+        add(
+            &mut mesh_state,
+            device("gw", "10.240.0.2", DeviceStatus::Active),
+        );
+        add(
+            &mut mesh_state,
+            device("pending", "10.240.0.4", DeviceStatus::Pending),
+        );
+        mesh_state
+            .device_hostnames
+            .insert(DeviceId("gw".into()), "My Host".into());
+
+        let off = build_device_plan(
+            &mesh_state,
+            "net-1",
+            &DeviceId("self".into()),
+            &dataplane(),
+            None,
+            "hub",
+            None,
+        )
+        .unwrap();
+        assert!(off.ssh_config.is_none(), "hub off keeps the segment absent");
+
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert(
+            "self-node".to_string(),
+            meshlet_config::SshHostOverride {
+                alias: Some("mybox".into()),
+                user: Some("root".into()),
+                port: Some(2222),
+            },
+        );
+        let on = build_device_plan(
+            &mesh_state,
+            "net-1",
+            &DeviceId("self".into()),
+            &dataplane(),
+            None,
+            "hub",
+            Some(&meshlet_config::SshDistributeConfig {
+                overrides: overrides.clone(),
+            }),
+        )
+        .unwrap();
+        let ssh = on.ssh_config.expect("hub on carries the segment");
+        assert_eq!(ssh.hosts.len(), 2, "pending nodes are excluded");
+        let self_row = ssh.hosts.iter().find(|h| h.name == "self-node").unwrap();
+        assert_eq!(self_row.alias, "mybox");
+        assert_eq!(self_row.alias_source.as_deref(), Some("hub-config"));
+        assert_eq!(self_row.port, Some(2222));
+        assert_eq!(self_row.user.as_deref(), Some("root"));
+        let gw_row = ssh.hosts.iter().find(|h| h.name == "gw").unwrap();
+        assert_eq!(gw_row.alias, "My-Host");
+        assert_eq!(gw_row.alias_source.as_deref(), Some("hostname"));
+
+        // 无 hostname 上报：peer name 兜底，来源如实标注。
+        let mut mesh2 = mesh();
+        add(
+            &mut mesh2,
+            device("only", "10.240.0.9", DeviceStatus::Active),
+        );
+        let bare = build_device_plan(
+            &mesh2,
+            "net-1",
+            &DeviceId("only".into()),
+            &dataplane(),
+            None,
+            "hub",
+            Some(&meshlet_config::SshDistributeConfig {
+                overrides: Default::default(),
+            }),
+        )
+        .unwrap();
+        let row = &bare.ssh_config.unwrap().hosts[0];
+        assert_eq!(row.alias, "only");
+        assert_eq!(row.alias_source.as_deref(), Some("peer-name"));
     }
 
     #[test]

@@ -263,6 +263,10 @@ pub struct HeartbeatRequest {
     /// 与 `direct_links` 同纪律：hub 仅存内存，控制台诊断页据此展示。
     #[serde(default)]
     pub diagnostics: Option<meshlet_network::NetworkDiagnostics>,
+    /// 本机真实主机名（SSH alias 分发的默认 alias 来源）；缺省表示旧 agent
+    /// 未上报。与 `direct_links` 同纪律：hub 仅存内存，心跳重报即恢复。
+    #[serde(default)]
+    pub hostname: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -323,6 +327,8 @@ pub async fn heartbeat_handler(
                 );
                 // R-DIAG：网络诊断快照同纪律——只对已注册设备记录。
                 service::record_diagnostics(&mut guard, &device_id, req.diagnostics.clone());
+                // SSH alias 分发的默认 alias 来源：本机真实主机名（内存态）。
+                service::record_device_hostname(&mut guard, &device_id, req.hostname.clone());
                 (Some(presence), network_id, Some(device))
             }
             Err(service::ServiceError::DeviceNotFound(_)) => {
@@ -462,6 +468,7 @@ pub async fn desired_device_plan_handler(
             &state.dataplane,
             state.tunnel_mtu,
             &hub_public_key,
+            state.ssh_config.as_ref(),
         )
         .map_err(AgentApiError::Internal)?;
         (plan, network_id)

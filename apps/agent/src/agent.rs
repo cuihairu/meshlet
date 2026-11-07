@@ -82,6 +82,9 @@ pub struct Agent {
     probe: crate::probe::ProbeRuntime,
     /// SEL-003 恢复门：直连劣化回中继后连续 N 轮健康才允许切回（防抖）。
     recovery: RecoveryGate,
+    /// SSH 别名同步开关与状态路径（默认全关：不写 `~/.ssh` 任何文件）。
+    ssh_config_sync: meshlet_config::SshConfigSyncConfig,
+    ssh_sync_status_path: std::path::PathBuf,
 }
 
 /// 发布运行时（R-06）：一个单 worker 的 tokio runtime 承载
@@ -219,6 +222,8 @@ impl Agent {
             ),
             probe,
             recovery: RecoveryGate::new(recovery_required),
+            ssh_config_sync: config.ssh_config_sync,
+            ssh_sync_status_path: crate::ssh_sync::status_path(&config.state_dir),
         }
     }
 
@@ -277,6 +282,7 @@ impl Agent {
         // 也先把发布态对齐；发布失败只记日志，绝不打断数据面循环。
         self.apply_publish(plan.publish.as_ref());
         self.report_publish_health();
+        self.apply_ssh_sync(&plan);
         let decision = result?;
         let control_ok = self.report_heartbeat(Some(&plan));
         // §12：心跳（带本机直连候选）之后探直连——服务端先看到本机端点，
@@ -293,6 +299,35 @@ impl Agent {
         );
         self.maybe_self_update();
         Ok(())
+    }
+
+    /// SSH 别名同步（`[ssh_config_sync]`）：据计划渲染 `~/.ssh/meshlet.conf`
+    /// 的 `Host <alias>` 块；失败只记状态，绝不打断数据面循环。
+    fn apply_ssh_sync(&mut self, plan: &DevicePlan) {
+        let config = self.ssh_config_sync;
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let fallback = crate::ssh_sync::self_host(
+            self.device_name.as_deref().unwrap_or("meshlet-node"),
+            plan.tunnel.address,
+        );
+        let hosts = plan
+            .ssh_config
+            .as_ref()
+            .map(crate::ssh_sync::hosts_from_plan);
+        let status = crate::ssh_sync::sync(
+            &home,
+            hosts.as_deref(),
+            &fallback,
+            config.enabled,
+            config.manage_include,
+            &self.ssh_sync_status_path,
+        );
+        if let Some(error) = &status.last_error {
+            tracing::warn!(error = %error, "ssh config sync failed");
+        }
     }
 
     fn flush_pending_receipts(&mut self) {
@@ -1045,6 +1080,7 @@ impl Agent {
             direct,
             direct_links,
             diagnostics,
+            crate::ssh_sync::local_hostname(),
         )
         .map(|_| ())
         .map_err(|e| format!("heartbeat failed: {e}"))
@@ -1338,6 +1374,7 @@ mod tests {
                 enabled: true,
                 ..DataplaneConfig::default()
             },
+            ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
         }
     }
 
@@ -1408,6 +1445,7 @@ mod tests {
             nat_rules: vec![],
             hub_address: hub.map(|h| h.parse().unwrap()),
             publish: None,
+            ssh_config: None,
             desired_config_hash: "hash".into(),
         }
     }
@@ -1691,6 +1729,7 @@ mod tests {
             nat_rules: Vec::new(),
             hub_address: None,
             publish: None,
+            ssh_config: None,
             desired_config_hash: "hash".into(),
         };
         for index in 0..17 {
@@ -1844,6 +1883,7 @@ mod tests {
             nat_rules: vec![],
             hub_address: None,
             publish: None,
+            ssh_config: None,
             desired_config_hash: "h".into(),
         };
         // 旧版计划缺省 None → 抬到 floor。

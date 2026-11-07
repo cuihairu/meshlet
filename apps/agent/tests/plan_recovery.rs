@@ -178,6 +178,7 @@ impl Case {
                 ..DataplaneConfig::default()
             },
             upgrade: meshlet_config::UpgradeConfig::default(),
+            ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
         };
         Agent::with_backend(config, Some(self.private_key.clone()), self.backend())
     }
@@ -236,6 +237,7 @@ fn plan(
         nat_rules,
         hub_address: None,
         publish: None,
+        ssh_config: None,
         desired_config_hash: hash.into(),
     }
 }

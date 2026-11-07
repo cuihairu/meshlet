@@ -1662,6 +1662,7 @@ fn tick_agent(
             },
             ..meshlet_config::DataplaneConfig::default()
         },
+        ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
     };
     let backend = LinuxNetworkBackend::new()
         .with_netns(&node.netns)

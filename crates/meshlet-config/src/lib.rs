@@ -47,6 +47,22 @@ struct RawServerConfig {
     tunnel_mtu: Option<u32>,
     dataplane: Option<RawDataPlaneConfig>,
     trusted_proxies: Option<Vec<String>>,
+    ssh_config: Option<RawSshDistributeConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawSshDistributeConfig {
+    /// 按设备名（peer name）覆写 alias/user/port；未覆写的节点用默认推导。
+    overrides: Option<std::collections::BTreeMap<String, RawSshHostOverride>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawSshHostOverride {
+    alias: Option<String>,
+    user: Option<String>,
+    port: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -137,6 +153,29 @@ pub struct ServerConfig {
     /// 可信反代来源（TODO-116）：仅当请求**直接来自**这些地址/网段时才采信
     /// `X-Forwarded-For`/`X-Real-IP`（默认仅回环 127.0.0.1/::1，可配 CIDR/地址）。
     pub trusted_proxies: TrustedProxyConfig,
+    /// SSH 别名分发（`[ssh_config]`）：`None` = hub 未开启分发（计划不带
+    /// `ssh_config` 段，agent 回落本机默认）。**存在该段 = 显式开启**——往
+    /// 节点 `~/.ssh/meshlet.conf` 分发属敏感面，与 agent 侧写盘开关（默认关）
+    /// 双重把关。
+    pub ssh_config: Option<SshDistributeConfig>,
+}
+
+/// hub 侧 SSH 别名分发配置（`[ssh_config]`）。`overrides` 按设备名覆写
+/// alias/user/port；未覆写的节点用「主机名 > peer name」默认推导。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SshDistributeConfig {
+    pub overrides: std::collections::BTreeMap<String, SshHostOverride>,
+}
+
+/// 单节点覆写（`[ssh_config.overrides.<设备名>]`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SshHostOverride {
+    /// 显式 Host 别名（优先级最高，覆盖主机名/peer name 推导）。
+    pub alias: Option<String>,
+    /// SSH 登录用户。
+    pub user: Option<String>,
+    /// SSH 端口。
+    pub port: Option<u16>,
 }
 
 impl Default for ServerConfig {
@@ -153,6 +192,7 @@ impl Default for ServerConfig {
             tunnel_mtu: None,
             dataplane: DataPlaneConfig::default(),
             trusted_proxies: TrustedProxyConfig::default(),
+            ssh_config: None,
         }
     }
 }
@@ -190,6 +230,40 @@ impl ServerConfig {
                 .map_err(|e| ConfigError::InvalidDataPlane(e.to_string()))?,
             None => TrustedProxyConfig::default(),
         };
+        let ssh_config = raw
+            .ssh_config
+            .map(|raw_ssh| {
+                let overrides: std::collections::BTreeMap<String, SshHostOverride> = raw_ssh
+                    .overrides
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(name, o)| {
+                        (
+                            name,
+                            SshHostOverride {
+                                alias: o
+                                    .alias
+                                    .map(|a| a.trim().to_string())
+                                    .filter(|a| !a.is_empty()),
+                                user: o
+                                    .user
+                                    .map(|u| u.trim().to_string())
+                                    .filter(|u| !u.is_empty()),
+                                port: o.port,
+                            },
+                        )
+                    })
+                    .collect();
+                for (name, o) in &overrides {
+                    if o.port == Some(0) {
+                        return Err(ConfigError::InvalidDataPlane(format!(
+                            "ssh_config.overrides.{name}.port must be 1..=65535"
+                        )));
+                    }
+                }
+                Ok(SshDistributeConfig { overrides })
+            })
+            .transpose()?;
         let dataplane = match raw.dataplane {
             Some(raw_dp) => {
                 let interface = raw_dp
@@ -231,6 +305,7 @@ impl ServerConfig {
             tunnel_mtu,
             dataplane,
             trusted_proxies,
+            ssh_config,
         })
     }
 }
@@ -282,6 +357,14 @@ struct RawAgentConfig {
     tray: Option<RawTrayConfig>,
     upgrade: Option<RawUpgradeConfig>,
     dataplane: RawDataplaneConfig,
+    ssh_config_sync: Option<RawSshConfigSyncConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawSshConfigSyncConfig {
+    enabled: Option<bool>,
+    manage_include: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -315,6 +398,38 @@ pub struct AgentConfig {
     pub tray: TrayConfig,
     pub upgrade: UpgradeConfig,
     pub dataplane: DataplaneConfig,
+    /// SSH alias 同步（`[ssh_config_sync]`）：写用户 `~/.ssh` 属敏感面，
+    /// **默认全关**——`enabled` 开才写 `~/.ssh/meshlet.conf`（仅 meshlet
+    /// 专用文件，不碰用户 config）；`manage_include` 开才往 `~/.ssh/config`
+    /// 追加 `Include meshlet.conf`（改前备份原文件一次）。
+    pub ssh_config_sync: SshConfigSyncConfig,
+}
+
+/// agent 侧 SSH alias 同步开关（默认全关）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SshConfigSyncConfig {
+    /// 总开关：关 = 不写任何 `~/.ssh` 文件（默认）。
+    pub enabled: bool,
+    /// Include 行管理：开 = 检测并追加 `Include meshlet.conf` 到
+    /// `~/.ssh/config`（缺失时追加、原文件先备份）。关 = 只写 fragment，
+    /// 面板提示需手动加 Include。
+    pub manage_include: bool,
+}
+
+impl Default for SshConfigSyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            manage_include: false,
+        }
+    }
+}
+
+impl SshConfigSyncConfig {
+    pub const OFF: Self = Self {
+        enabled: false,
+        manage_include: false,
+    };
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,6 +564,7 @@ impl Default for AgentConfig {
             tray: TrayConfig::default(),
             upgrade: UpgradeConfig::default(),
             dataplane: DataplaneConfig::default(),
+            ssh_config_sync: SshConfigSyncConfig::OFF,
         }
     }
 }
@@ -587,6 +703,15 @@ impl AgentConfig {
                 poll_interval_secs,
                 direct_connect,
                 probe,
+            },
+            ssh_config_sync: match raw.ssh_config_sync {
+                Some(raw_sync) => SshConfigSyncConfig {
+                    enabled: raw_sync.enabled.unwrap_or(default.ssh_config_sync.enabled),
+                    manage_include: raw_sync
+                        .manage_include
+                        .unwrap_or(default.ssh_config_sync.manage_include),
+                },
+                None => SshConfigSyncConfig::OFF,
             },
         })
     }
@@ -939,6 +1064,73 @@ listen_port = 20000
         assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
         let err = AgentConfig::from_toml("[dataplane.direct_connect]\nbogus = 1").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn ssh_config_sync_defaults_off_and_requires_explicit_opt_in() {
+        // 安全铁律：写用户 ~/.ssh 属敏感面，默认全关——不显式开启不落盘。
+        let d = AgentConfig::default().ssh_config_sync;
+        assert!(!d.enabled);
+        assert!(!d.manage_include);
+
+        let none = AgentConfig::from_toml("").unwrap().ssh_config_sync;
+        assert_eq!(none, SshConfigSyncConfig::OFF);
+
+        let on = AgentConfig::from_toml(
+            r#"
+[ssh_config_sync]
+enabled = true
+manage_include = true
+"#,
+        )
+        .unwrap()
+        .ssh_config_sync;
+        assert!(on.enabled);
+        assert!(on.manage_include);
+
+        // manage_include 可以单独开（此时只多管 Include 行）。
+        let partial = AgentConfig::from_toml("[ssh_config_sync]\nenabled = true")
+            .unwrap()
+            .ssh_config_sync;
+        assert!(partial.enabled);
+        assert!(!partial.manage_include);
+
+        let err = AgentConfig::from_toml("[ssh_config_sync]\nbogus = 1").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn server_ssh_config_section_parses_overrides_and_rejects_zero_port() {
+        let off = ServerConfig::default();
+        assert!(off.ssh_config.is_none());
+        assert!(ServerConfig::from_toml("").unwrap().ssh_config.is_none());
+
+        let on = ServerConfig::from_toml(
+            r#"
+[ssh_config.overrides.windows-desktop]
+alias = "wd"
+user = "root"
+port = 2222
+"#,
+        )
+        .unwrap()
+        .ssh_config
+        .expect("section presence enables distribution");
+        let o = on.overrides.get("windows-desktop").expect("override row");
+        assert_eq!(o.alias.as_deref(), Some("wd"));
+        assert_eq!(o.user.as_deref(), Some("root"));
+        assert_eq!(o.port, Some(2222));
+
+        // 空段同样 = 开启（全部节点走默认推导）。
+        let empty = ServerConfig::from_toml("[ssh_config]").unwrap().ssh_config;
+        assert!(empty.is_some());
+        assert!(empty.unwrap().overrides.is_empty());
+
+        let err = ServerConfig::from_toml("[ssh_config.overrides.x]\nport = 0").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+        let err = ServerConfig::from_toml("[ssh_config]\nbogus = 1").unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
     }
 

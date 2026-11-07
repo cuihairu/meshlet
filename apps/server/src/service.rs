@@ -528,6 +528,10 @@ pub struct MeshState {
     /// 由连接 socket 取（公网候选），LAN 地址由 agent 心跳上报。用 `BTreeMap`
     /// 与域层 `peer_endpoints_for` 一致（确定性排序）。
     pub(crate) direct_states: BTreeMap<DeviceId, DeviceDirectState>,
+    /// 各节点真实主机名（**内存态**，同 `direct_states` 纪律）：agent 心跳
+    /// 上报，SSH alias 分发的默认 alias 来源（主机名 > peer name）；不落库
+    /// ——hub 重启后下一轮心跳即恢复。
+    pub(crate) device_hostnames: BTreeMap<DeviceId, String>,
     /// R-DIAG 网络诊断三快照（**内存态**，同 `direct_states` 纪律）：每轮心跳
     /// 重报，不落库——持久化只添陈旧风险。`None` 上报（采集失败）即移除。
     pub(crate) diagnostics: BTreeMap<DeviceId, NetworkDiagnostics>,
@@ -560,6 +564,7 @@ impl MeshState {
             bootstrap_seq: 0,
             registration_seq: 0,
             direct_states: BTreeMap::new(),
+            device_hostnames: BTreeMap::new(),
             diagnostics: BTreeMap::new(),
             tasks: HashMap::new(),
             task_seq: 0,
@@ -1597,6 +1602,21 @@ pub fn record_direct_state(
         None => {
             state.direct_states.remove(device_id);
         }
+    }
+}
+
+/// 记录设备上报的真实主机名（内存态，心跳重报即覆盖）。`None`/空白 = 本轮
+/// 未取到 → 保留旧值（主机名基本不变；重启后由下一轮心跳恢复）。
+pub fn record_device_hostname(
+    state: &mut MeshState,
+    device_id: &DeviceId,
+    hostname: Option<String>,
+) {
+    if let Some(name) = hostname
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        state.device_hostnames.insert(device_id.clone(), name);
     }
 }
 

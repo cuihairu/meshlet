@@ -136,6 +136,78 @@ pub struct RouteConfig {
     pub gateway: Option<std::net::Ipv4Addr>,
 }
 
+/// SSH 别名同步单条主机（hub 下发的 SSH config 分发段，`ssh_config`）。
+///
+/// 每个网络内 Active 节点一条；agent 据此渲染 `~/.ssh/meshlet.conf` 的
+/// `Host <alias>` 块。alias 来源三级：hub 显式覆写 > 节点真实主机名 >
+/// meshlet peer name（`alias_source` 如实标注来源，面板/文档同口径）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SshHostConfig {
+    /// meshlet peer name（与控制台设备名一致，日志/排障锚点）。
+    pub name: String,
+    /// SSH Host 别名（已 sanitize 成合法 Host 字符）。
+    pub alias: String,
+    /// 对端 overlay VIP（`HostName`）。
+    pub address: std::net::Ipv4Addr,
+    /// SSH 端口；`None` = agent 用默认 22。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// SSH 登录用户；`None` = 不下发（用本地 ssh 默认）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// alias 来源（`hub-config` / `hostname` / `peer-name`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias_source: Option<String>,
+}
+
+/// SSH config 分发段（hub 侧显式开启才出现在计划里）：网络内全部 Active
+/// 节点的别名表。缺省（旧服务端 / hub 未开启）表示 hub 未下发——agent 用
+/// 本机默认（主机名 + 自身 overlay VIP + 22）自生成单条。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SshConfigPlan {
+    pub hosts: Vec<SshHostConfig>,
+}
+
+/// SSH alias 解析（hub 与 agent 共用同一实现，两端口径不漂移）。
+pub mod ssh_alias {
+    /// SSH Host 别名三级来源解析：hub 显式覆写 > 节点真实主机名 >
+    /// meshlet peer name。返回的 alias 已 sanitize，来源字符串与计划/面板同口径。
+    pub fn resolve_alias(
+        peer_name: &str,
+        hostname: Option<&str>,
+        hub_override: Option<&str>,
+    ) -> (String, &'static str) {
+        match hub_override.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(alias) => (sanitize_alias(alias), "hub-config"),
+            None => match hostname.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(hostname) => (sanitize_alias(hostname), "hostname"),
+                None => (sanitize_alias(peer_name), "peer-name"),
+            },
+        }
+    }
+
+    /// SSH Host 别名 sanitize：保留大小写，允许 `A-Za-z0-9._-`；其余字符转连
+    /// 字符，空名兜底 `node`。hub 与 agent 同一规则，保证下发段可直接渲染。
+    pub fn sanitize_alias(name: &str) -> String {
+        let cleaned: String = name
+            .trim()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        if cleaned.is_empty() {
+            "node".to_string()
+        } else {
+            cleaned
+        }
+    }
+}
+
 /// 设备数据面计划：服务端下发给 agent 的**结构化配置对象**（§16.4：agent 只
 /// 执行类型化对象，绝不执行服务端下发的任意 Shell 命令）。
 ///
@@ -167,6 +239,11 @@ pub struct DevicePlan {
     /// 服务发布计划；缺省（旧服务端 / 本设备无发布项）表示 `None`。
     #[serde(default)]
     pub publish: Option<meshlet_publish::PublishPlan>,
+    /// SSH 别名分发段（`ssh_config`）：hub 显式开启才携带。缺省不序列化
+    /// （`skip_serializing_if`）——旧服务端计划的哈希不变，升级不触发全网
+    /// 无谓重放。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_config: Option<SshConfigPlan>,
     pub desired_config_hash: String,
 }
 
@@ -476,6 +553,7 @@ mod device_plan_matches_tests {
             nat_rules: Vec::new(),
             hub_address: None,
             publish: None,
+            ssh_config: None,
             desired_config_hash: "h".into(),
         }
     }
@@ -839,6 +917,7 @@ mod tests {
             nat_rules: vec![],
             hub_address: Some("10.240.0.1".parse().unwrap()),
             publish: None,
+            ssh_config: None,
             desired_config_hash: "meshlet-desired-v3:ab".into(),
         };
         let value = serde_json::to_value(&plan).unwrap();
@@ -848,6 +927,9 @@ mod tests {
             "10.240.0.0/16"
         );
         assert_eq!(value["routes"][0]["destination"], "10.241.1.0/24");
+        // 缺省（旧服务端 / hub 未开启）不携带 ssh_config：计划序列化不新增
+        // 字段，旧服务端下发的哈希不变——升级不触发全网无谓重放。
+        assert!(value.get("ssh_config").is_none());
         let round = serde_json::from_value::<DevicePlan>(value).unwrap();
         assert_eq!(round, plan);
 
@@ -885,6 +967,7 @@ mod tests {
             nat_rules: vec![],
             hub_address: None,
             publish: None,
+            ssh_config: None,
             desired_config_hash: "h".into(),
         };
         let mut value = serde_json::to_value(&plan).unwrap();
@@ -893,6 +976,26 @@ mod tests {
             serde_json::from_value::<DevicePlan>(value).is_err(),
             "host bits set must be rejected"
         );
+    }
+
+    #[test]
+    fn ssh_alias_prefers_hub_override_then_hostname_then_peer_name() {
+        // 三级来源如实标注：hub 显式覆写 > 节点真实主机名 > peer name。
+        let (alias, source) = ssh_alias::resolve_alias("win", Some("DESKTOP"), Some("wd"));
+        assert_eq!((alias.as_str(), source), ("wd", "hub-config"));
+
+        let (alias, source) = ssh_alias::resolve_alias("win", Some("DESKTOP"), None);
+        assert_eq!((alias.as_str(), source), ("DESKTOP", "hostname"));
+
+        let (alias, source) = ssh_alias::resolve_alias("win", None, None);
+        assert_eq!((alias.as_str(), source), ("win", "peer-name"));
+
+        // 空串/空白覆写与主机名都回落；非法字符 sanitize。
+        let (alias, source) = ssh_alias::resolve_alias("win", Some("  "), Some("  "));
+        assert_eq!((alias.as_str(), source), ("win", "peer-name"));
+        let (alias, source) = ssh_alias::resolve_alias("win", Some("My PC"), None);
+        assert_eq!((alias.as_str(), source), ("My-PC", "hostname"));
+        assert_eq!(ssh_alias::sanitize_alias("  "), "node");
     }
 
     /// 本机公钥指纹解析（BUG② 修复的读数端）：接口行字段 1；私钥（字段 0）

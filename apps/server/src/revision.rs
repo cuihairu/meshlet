@@ -262,6 +262,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
             nat_rules: vec![],
             hub_address: None,
             publish: None,
+            ssh_config: None,
             desired_config_hash: String::new(),
         };
         check.tunnel.private_key = self.read_private_key()?;
@@ -328,6 +329,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
             nat_rules: vec![],
             hub_address: None,
             publish: None,
+            ssh_config: None,
             desired_config_hash: String::new(),
         };
         if !backend
@@ -365,6 +367,7 @@ impl ConfigApplyBackend for HubDataPlaneBackend {
                 nat_rules: vec![],
                 hub_address: None,
                 publish: None,
+                ssh_config: None,
                 desired_config_hash: String::new(),
             };
             if !backend

@@ -26,6 +26,7 @@ pub mod probe;
 pub mod reconcile;
 pub mod self_update;
 pub mod server;
+pub mod ssh_sync;
 pub mod tasks;
 pub mod tray;
 

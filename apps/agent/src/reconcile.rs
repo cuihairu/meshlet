@@ -405,6 +405,7 @@ mod tests {
             },
             hub_address: None,
             publish: None,
+            ssh_config: None,
             desired_config_hash: hash.into(),
         }
     }

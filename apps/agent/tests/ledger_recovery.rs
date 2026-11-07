@@ -200,6 +200,7 @@ impl Case {
                 ..DataplaneConfig::default()
             },
             upgrade: meshlet_config::UpgradeConfig::default(),
+            ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
         };
         Agent::with_backend(config, None, self.backend())
     }
@@ -259,6 +260,7 @@ fn plan(hash: &str, routes: Vec<RouteConfig>) -> DevicePlan {
         nat_rules: Vec::new(),
         hub_address: None,
         publish: None,
+        ssh_config: None,
         desired_config_hash: hash.into(),
     }
 }
