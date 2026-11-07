@@ -85,6 +85,7 @@ export default defineConfig({
             { text: 'Network Segment Trust', link: '/design/network-segment-trust' },
             { text: 'Overlapping LAN Aliases', link: '/design/overlapping-lan-alias' },
             { text: 'R-01 Domain Model (Draft)', link: '/design/r01-domain-model' },
+            { text: 'Node and Network Identity', link: '/design/meshlet-identity-network-id' },
           ] }],
           '/guide/': [{ text: 'Guides', items: [
             { text: 'Installation', link: '/guide/install' },
