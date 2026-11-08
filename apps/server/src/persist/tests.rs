@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+#[cfg(unix)]
 use super::backup::resolve_restored_database_owner;
 use super::entities::{commit_device_labels, insert_device, insert_network};
 use super::shared::{
@@ -11,6 +12,7 @@ use super::tasks::load;
 use crate::persist::AuditDraft;
 use meshlet_domain::{Device, DeviceId, DeviceStatus, Network, NetworkId, Platform, SegmentId};
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::path::Path;
 
 #[cfg(test)]
