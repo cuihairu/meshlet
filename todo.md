@@ -32,7 +32,7 @@
 - [x] LAY-013 [P1] 拆分 `crates/meshlet-network/src/windows.rs`（1402 行）——Windows 后端合并进程命令、WireGuard、netsh、路由、NAT、诊断与测试解析。（`crates/meshlet-network/src/windows.rs:1391`）
 - [x] LAY-014 [P1] 拆分 `apps/agent/tests/agent_reconcile.rs`（1378 行）——agent 集成测试集中内核对账、文件账本、任务、托盘与 SSH 同步流程。（`apps/agent/tests/agent_reconcile.rs:1`）
 - [x] LAY-015 [P1] 拆分 `apps/server/tests/backup.rs`（1296 行）——备份/恢复测试同时覆盖 schema 校验、并发、内容差异和审计，可按边界拆组。（`apps/server/tests/backup.rs:1`）
-- [ ] LAY-016 [P1] 拆分 `apps/tray-app/src-tauri/src/main.rs`（1241 行）——Tauri 命令、本地 TOML 读写、状态分档、i18n、窗口/托盘和前端逻辑在同一入口。（`apps/tray-app/src-tauri/src/main.rs:57`）
+- [ ] LAY-016 [P1] 拆分 `apps/tray-app/src-tauri/src/main.rs`（1241 行 → 已拆出 i18n 模块至 1049 行，剩余命令/TOML/状态分档/窗口待续）——Tauri 命令、本地 TOML 读写、状态分档、i18n、窗口/托盘和前端逻辑在同一入口。（`apps/tray-app/src-tauri/src/main.rs:57`）
 - [ ] LAY-017 [P1] 拆分 `apps/agent/src/tray.rs`（1228 行）——托盘状态机、PNG 编码、文件 sink、DBus 通知模型与大量测试共存。（`apps/agent/src/tray.rs:344`）
 - [ ] LAY-018 [P1] 拆分 `crates/meshlet-domain/src/config_state.rs`（1222 行）——期望哈希、修订状态机、apply/rollback 语义与存储迁移规则集中一处。（`crates/meshlet-domain/src/config_state.rs:156`）
 - [ ] LAY-019 [P1] 拆分 `crates/meshlet-domain/src/p2p.rs`（1219 行）——端点推导、探测分类、状态跃迁和迟滞策略同处一个领域模块，可按纯函数职责细分。（`crates/meshlet-domain/src/p2p.rs:171`）
