@@ -2,7 +2,8 @@
 // 职责：档位短标签、菜单文案表、状态摘要行、托盘语言镜像文件读写。
 // 依赖 main.rs 的 [`crate::Tier`]、[`crate::meshlet_state_dir`]。
 
-use crate::{meshlet_state_dir, Tier};
+use crate::config_io::meshlet_state_dir;
+use crate::state::Tier;
 
 fn tier_label(tier: Tier, lang: &str) -> &'static str {
     match (tier, lang) {

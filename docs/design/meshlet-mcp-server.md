@@ -67,7 +67,7 @@ port = 0
 
 - The row is **read-only display** (状态，是否开启) — it reads `[mcp] enabled`
   from `agent.toml` and, when on, the live port from `{state_dir}/mcp.json`.
-- Disabled → grayed "MCP：关闭"; enabled → normal "MCP：开启 <port>".
+- Disabled → grayed "MCP：关闭"; enabled → normal "MCP：开启 `{port}`".
 - No click action in v1 (toggling from tray is a later phase; the project rule
   is explicit config for enabling sensitive surfaces).
 
@@ -89,8 +89,8 @@ port = 0
 2. **P2 — tray menu row** (MCP on/off + port). Depends on P1's `mcp.json`.
 3. **P3 — write tool** `peer dial` behind `[mcp] allow_dial = false` (default off).
    Only if the user wants an AI to trigger dials.
-4. **P4 — docs**: README.zh section "AI 访问（MCP）" + a client config snippet
-   (Claude Code `mcp` block pointing at `http://127.0.0.1:<port>/mcp`).
+4. **P4 — docs**: README.zh section "AI 访问（MCP）" plus a client config snippet
+   (Claude Code `mcp` block pointing at `http://127.0.0.1:{port}/mcp`).
 
 ## Scope limits
 
