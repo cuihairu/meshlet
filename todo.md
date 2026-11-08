@@ -29,7 +29,7 @@
 - [x] LAY-010 [P1] 拆分 `apps/tray-host/src/main.rs`（1472 行）——Win32 托盘宿主、进程看门狗、菜单/图标、面板启动和 CLI 联动都在入口文件。（`apps/tray-host/src/main.rs:430`）
 - [x] LAY-011 [P1] 拆分 `apps/cli/src/main.rs`（1461 行）——CLI 同时包含参数分发、本地状态读取、Windows 诊断、任务 HTTP 客户端与表格渲染。（`apps/cli/src/main.rs:78`）
 - [x] LAY-012 [P1] 拆分 `crates/meshlet-network/tests/backend_wiring.rs`（1460 行）——网络后端集成测试覆盖命令桥、netns、隧道、路由、NAT 与恢复多个场景。（`crates/meshlet-network/tests/backend_wiring.rs:1`）
-- [ ] LAY-013 [P1] 拆分 `crates/meshlet-network/src/windows.rs`（1402 行）——Windows 后端合并进程命令、WireGuard、netsh、路由、NAT、诊断与测试解析。（`crates/meshlet-network/src/windows.rs:1391`）
+- [x] LAY-013 [P1] 拆分 `crates/meshlet-network/src/windows.rs`（1402 行）——Windows 后端合并进程命令、WireGuard、netsh、路由、NAT、诊断与测试解析。（`crates/meshlet-network/src/windows.rs:1391`）
 - [ ] LAY-014 [P1] 拆分 `apps/agent/tests/agent_reconcile.rs`（1378 行）——agent 集成测试集中内核对账、文件账本、任务、托盘与 SSH 同步流程。（`apps/agent/tests/agent_reconcile.rs:1`）
 - [ ] LAY-015 [P1] 拆分 `apps/server/tests/backup.rs`（1296 行）——备份/恢复测试同时覆盖 schema 校验、并发、内容差异和审计，可按边界拆组。（`apps/server/tests/backup.rs:1`）
 - [ ] LAY-016 [P1] 拆分 `apps/tray-app/src-tauri/src/main.rs`（1241 行）——Tauri 命令、本地 TOML 读写、状态分档、i18n、窗口/托盘和前端逻辑在同一入口。（`apps/tray-app/src-tauri/src/main.rs:57`）
