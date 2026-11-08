@@ -26,7 +26,7 @@
 - [x] LAY-007 [P1] 拆分 `apps/tray-host/src/panel.rs`（1738 行）——本地面板把快照读取、HTML 渲染、JS 注入、HTTP server 与本地协议文案合并。（`apps/tray-host/src/panel.rs:313`）
 - [x] LAY-008 [P1] 拆分 `apps/server/tests/dual_site_end_to_end.rs`（1690 行）——跨站点端到端用例覆盖注册、路由、NAT、收敛和备份恢复，适合按业务场景拆分。（`apps/server/tests/dual_site_end_to_end.rs:1`）
 - [x] LAY-009 [P1] 拆分 `apps/server/src/task.rs`（1536 行）——任务记录、派发/回收策略、agent 通道和 console 路由集中，状态推进与 API 可拆开。（`apps/server/src/task.rs:628`）
-- [ ] LAY-010 [P1] 拆分 `apps/tray-host/src/main.rs`（1472 行）——Win32 托盘宿主、进程看门狗、菜单/图标、面板启动和 CLI 联动都在入口文件。（`apps/tray-host/src/main.rs:430`）
+- [x] LAY-010 [P1] 拆分 `apps/tray-host/src/main.rs`（1472 行）——Win32 托盘宿主、进程看门狗、菜单/图标、面板启动和 CLI 联动都在入口文件。（`apps/tray-host/src/main.rs:430`）
 - [x] LAY-011 [P1] 拆分 `apps/cli/src/main.rs`（1461 行）——CLI 同时包含参数分发、本地状态读取、Windows 诊断、任务 HTTP 客户端与表格渲染。（`apps/cli/src/main.rs:78`）
 - [ ] LAY-012 [P1] 拆分 `crates/meshlet-network/tests/backend_wiring.rs`（1460 行）——网络后端集成测试覆盖命令桥、netns、隧道、路由、NAT 与恢复多个场景。（`crates/meshlet-network/tests/backend_wiring.rs:1`）
 - [ ] LAY-013 [P1] 拆分 `crates/meshlet-network/src/windows.rs`（1402 行）——Windows 后端合并进程命令、WireGuard、netsh、路由、NAT、诊断与测试解析。（`crates/meshlet-network/src/windows.rs:1391`）
