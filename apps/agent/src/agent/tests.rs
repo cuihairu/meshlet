@@ -41,6 +41,7 @@ mod tests {
                 ..DataplaneConfig::default()
             },
             ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
+            mcp: meshlet_config::McpConfig::OFF,
         }
     }
 

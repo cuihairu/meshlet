@@ -98,6 +98,13 @@ pub struct Agent {
     /// SSH 别名同步开关与状态路径（默认全关：不写 `~/.ssh` 任何文件）。
     ssh_config_sync: meshlet_config::SshConfigSyncConfig,
     ssh_sync_status_path: std::path::PathBuf,
+    /// MCP 本地服务（`[mcp] enabled`，默认关）：AI 客户端 loopback 查询本机
+    /// mesh 事实。`None` = 未开启（不监听）。
+    ///
+    /// **持有即运行**：字段值从不被读，drop 时 `McpServer` 的 `Drop` 停服务
+    /// 并清 `mcp.json`——故意不读，故 `#[allow(dead_code)]`。
+    #[allow(dead_code)]
+    mcp_server: Option<crate::mcp::McpServer>,
 }
 
 impl Agent {
@@ -124,6 +131,25 @@ impl Agent {
         let task_ledger_path = task_ledger_path(&config.state_dir);
         let task_ledger = crate::tasks::TaskLedger::load(&task_ledger_path);
         let notify_enabled = config.tray.notifications;
+        // MCP 本地服务：`[mcp] enabled` 默认关（不监听）；显式开启才起。
+        // 绑定失败不致命——如实记录并继续（agent 不因 MCP 端口占用而退出）。
+        let mcp_server = if config.mcp.enabled {
+            match crate::mcp::start(std::path::Path::new(&config.state_dir), config.mcp.port) {
+                Ok(server) => {
+                    tracing::info!(
+                        port = server.port(),
+                        "mcp server started (AI can query this node)"
+                    );
+                    Some(server)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "mcp server failed to start; AI query unavailable");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         // R-DIAG-2：RTT 探测与数据面解耦（后台线程）。后端可 Clone（仅携带
         // netns/sudo/interface 配置），worker 线程内 `ping_rtt_ms` 不拖主循环。
         let direct_rtt = crate::direct_rtt::DirectRttRuntime::start(backend.clone());
@@ -175,6 +201,7 @@ impl Agent {
             recovery: RecoveryGate::new(recovery_required),
             ssh_config_sync: config.ssh_config_sync,
             ssh_sync_status_path: crate::ssh_sync::status_path(&config.state_dir),
+            mcp_server,
         }
     }
 

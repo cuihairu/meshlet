@@ -358,6 +358,14 @@ struct RawAgentConfig {
     upgrade: Option<RawUpgradeConfig>,
     dataplane: RawDataplaneConfig,
     ssh_config_sync: Option<RawSshConfigSyncConfig>,
+    mcp: Option<RawMcpConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawMcpConfig {
+    enabled: Option<bool>,
+    port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -403,6 +411,26 @@ pub struct AgentConfig {
     /// 专用文件，不碰用户 config）；`manage_include` 开才往 `~/.ssh/config`
     /// 追加 `Include meshlet.conf`（改前备份原文件一次）。
     pub ssh_config_sync: SshConfigSyncConfig,
+    /// MCP 本地服务（`[mcp]`）：AI 客户端经 loopback HTTP 查询本机 mesh 事实。
+    /// **默认全关**——监听面默认不开，`enabled = true` 显式开启（2026-11-08）。
+    pub mcp: McpConfig,
+}
+
+/// Agent 侧 MCP 服务开关（默认全关：监听面显式开启）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct McpConfig {
+    /// 总开关：关 = 不监听任何端口（默认）。
+    pub enabled: bool,
+    /// 监听端口；`0` = 随机（实际端口写 `{state_dir}/mcp.json` 交接文件）。
+    pub port: u16,
+}
+
+impl McpConfig {
+    /// 关闭态（测试/默认构造用，语义与 [`Default::default`] 相同）。
+    pub const OFF: Self = Self {
+        enabled: false,
+        port: 0,
+    };
 }
 
 /// agent 侧 SSH alias 同步开关（默认全关）。
@@ -556,6 +584,7 @@ impl Default for AgentConfig {
             upgrade: UpgradeConfig::default(),
             dataplane: DataplaneConfig::default(),
             ssh_config_sync: SshConfigSyncConfig::OFF,
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -703,6 +732,13 @@ impl AgentConfig {
                         .unwrap_or(default.ssh_config_sync.manage_include),
                 },
                 None => SshConfigSyncConfig::OFF,
+            },
+            mcp: match raw.mcp {
+                Some(raw_mcp) => McpConfig {
+                    enabled: raw_mcp.enabled.unwrap_or(default.mcp.enabled),
+                    port: raw_mcp.port.unwrap_or(default.mcp.port),
+                },
+                None => McpConfig::default(),
             },
         })
     }
@@ -1088,6 +1124,31 @@ manage_include = true
         assert!(!partial.manage_include);
 
         let err = AgentConfig::from_toml("[ssh_config_sync]\nbogus = 1").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn mcp_defaults_off_and_requires_explicit_opt_in() {
+        // 安全铁律：监听面默认关——不显式开启不监听（2026-11-08）。
+        let d = AgentConfig::default().mcp;
+        assert!(!d.enabled);
+        assert_eq!(d.port, 0);
+
+        let none = AgentConfig::from_toml("").unwrap().mcp;
+        assert_eq!(none, McpConfig::default());
+
+        let on = AgentConfig::from_toml("[mcp]\nenabled = true\nport = 8765\n")
+            .unwrap()
+            .mcp;
+        assert!(on.enabled);
+        assert_eq!(on.port, 8765);
+
+        // 只开 enabled：端口默认 0（随机，写 mcp.json 交接）。
+        let rand = AgentConfig::from_toml("[mcp]\nenabled = true").unwrap().mcp;
+        assert!(rand.enabled);
+        assert_eq!(rand.port, 0);
+
+        let err = AgentConfig::from_toml("[mcp]\nbogus = 1").unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
     }
 

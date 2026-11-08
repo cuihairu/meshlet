@@ -108,6 +108,26 @@ pub(crate) fn status_line_text(state_dir: Option<&std::path::Path>) -> String {
         .unwrap_or_else(|| "Meshlet".into())
 }
 
+/// MCP 状态行（定案 2026-11-08）：读 `{state_dir}/mcp.json`（agent 写）。
+/// 无交接文件 → 「MCP：关闭」；有 → 「MCP：开启 [port]」；缺 port（损坏/
+/// 旧形态）→「MCP：开启」，不猜值。tray 只读展示——开启/切换经 agent.toml
+/// `[mcp] enabled` 显式配置。
+pub(crate) fn mcp_line_text(state_dir: Option<&std::path::Path>) -> String {
+    let Some(dir) = state_dir else {
+        return "MCP：关闭".into();
+    };
+    let Ok(text) = std::fs::read_to_string(dir.join("mcp.json")) else {
+        return "MCP：关闭".into();
+    };
+    let Ok(endpoint) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return "MCP：开启".into();
+    };
+    match endpoint.get("port").and_then(|p| p.as_u64()) {
+        Some(port) => format!("MCP：开启 {port}"),
+        None => "MCP：开启".into(),
+    }
+}
+
 /// UTF-16 + NUL（Win32 菜单/气泡文本）。
 pub(crate) fn wide_z(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
@@ -125,12 +145,14 @@ unsafe fn append_popup(menu: HMENU, text: &str, sub: HMENU) {
 }
 
 /// 按当前快照重建整个右键菜单（首行状态 + 直连节点/连接节点… 子菜单 +
-/// 本地面板 + 控制台(网页) + 退出）。返回新建的 HMENU；调用方（`tray_wnd_proc`）
-/// 在用毕后立即销毁。①②④ 的数据都来自本函数被调时的文件快照，非缓存。
+/// MCP 状态行 + 本地面板 + 控制台(网页) + 退出）。返回新建的 HMENU；调用方
+/// （`tray_wnd_proc`）在用毕后立即销毁。①②④ 的数据都来自本函数被调时的
+/// 文件快照，非缓存。`mcp_line` 为 [mcp_line_text] 的当前值（MCP 状态行）。
 pub(crate) fn build_menu(
     status_line: &str,
     direct: &[&DirectPeerView],
     relay: &[&DirectPeerView],
+    mcp_line: &str,
 ) -> HMENU {
     unsafe {
         let hmenu = CreatePopupMenu();
@@ -160,6 +182,11 @@ pub(crate) fn build_menu(
             }
         }
         append_popup(hmenu, "连接节点…", sub);
+        AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
+
+        // MCP 状态行（定案 2026-11-08）：tray 显示 MCP 是否开启 + 端口。
+        // 禁用展示项（v1 只读；开启/切换经 agent.toml 显式配置）。
+        append_item(hmenu, MF_STRING | MF_GRAYED, 0, mcp_line);
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
 
         // 入口分流（定案 2026-11-06）：本地面板 = 本机自托管只读页（默认入口，
@@ -244,6 +271,29 @@ mod tests {
     }
 
     #[test]
+    fn mcp_line_reads_endpoint_or_defaults_closed() {
+        let state = temp_state_dir("mcp-line");
+        // 无交接文件 → 关闭。
+        assert_eq!(mcp_line_text(Some(&state)), "MCP：关闭");
+        assert_eq!(mcp_line_text(None), "MCP：关闭");
+        // 交接文件有端口 → 开启 + 端口。
+        std::fs::write(
+            state.join("mcp.json"),
+            r#"{"url":"http://127.0.0.1:8765/mcp","port":8765,"pid":1234}"#,
+        )
+        .unwrap();
+        assert_eq!(mcp_line_text(Some(&state)), "MCP：开启 8765");
+        // 交接文件缺端口（损坏/旧形态）→ 开启不加端口，不猜值。
+        std::fs::write(
+            state.join("mcp.json"),
+            r#"{"url":"http://127.0.0.1:0/mcp"}"#,
+        )
+        .unwrap();
+        assert_eq!(mcp_line_text(Some(&state)), "MCP：开启");
+        let _ = std::fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    #[test]
     fn direct_peer_views_load_from_state_dir_or_default_empty() {
         let state = temp_state_dir("direct-peers");
         // 缺失 → 空表（子菜单显示「（无）」）。
@@ -301,17 +351,22 @@ mod tests {
         }
 
         #[test]
-        fn build_menu_contains_status_direct_dial_local_panel_console_and_quit() {
+        fn build_menu_contains_status_direct_dial_mcp_local_panel_console_and_quit() {
             let peers = vec![
                 DirectPeerView::sample("nas", "10.240.0.2", "p2p_direct", Some(12)),
                 DirectPeerView::sample("", "10.240.0.4", "hub_relay", None),
             ];
             let (direct, relay) = split_peer_views(&peers);
-            let hmenu = build_menu("Meshlet「dev」 10.240.0.5：在线", &direct, &relay);
+            let hmenu = build_menu(
+                "Meshlet「dev」 10.240.0.5：在线",
+                &direct,
+                &relay,
+                "MCP：开启 8765",
+            );
             unsafe {
                 // 结构：首行 / sep / 直连节点 / sep / 连接节点… / sep /
-                // 本地面板 / 控制台(网页) / sep / 退出。
-                assert_eq!(GetMenuItemCount(hmenu), 10, "menu layout must be intact");
+                // MCP 状态行 / sep / 本地面板 / 控制台(网页) / sep / 退出。
+                assert_eq!(GetMenuItemCount(hmenu), 12, "menu layout must be intact");
 
                 // ① 首行 = 设备名 + 虚拟 IP + 状态（禁用展示项）。
                 assert_eq!(menu_string(hmenu, 0), "Meshlet「dev」 10.240.0.5：在线");
@@ -338,10 +393,14 @@ mod tests {
                     "dial candidates must be clickable"
                 );
 
+                // MCP 状态行（定案 2026-11-08）：禁用展示项，显示开启+端口。
+                assert_eq!(menu_string(hmenu, 6), "MCP：开启 8765");
+                assert_ne!(GetMenuState(hmenu, 6, MF_BYPOSITION) & MF_GRAYED, 0);
+
                 // 入口分流（定案 2026-11-06）：本地面板是默认入口，控制台另列。
-                assert_eq!(menu_string(hmenu, 6), "本地面板");
-                assert_eq!(menu_string(hmenu, 7), "控制台(网页)");
-                assert_eq!(menu_string(hmenu, 9), "退出");
+                assert_eq!(menu_string(hmenu, 8), "本地面板");
+                assert_eq!(menu_string(hmenu, 9), "控制台(网页)");
+                assert_eq!(menu_string(hmenu, 11), "退出");
 
                 DestroyMenu(hmenu);
             }
@@ -349,7 +408,7 @@ mod tests {
 
         #[test]
         fn build_menu_shows_empty_placeholders_without_peers() {
-            let hmenu = build_menu("Meshlet", &[], &[]);
+            let hmenu = build_menu("Meshlet", &[], &[], "MCP：关闭");
             unsafe {
                 let direct_sub = GetSubMenu(hmenu, 2);
                 let dial_sub = GetSubMenu(hmenu, 4);
@@ -357,6 +416,7 @@ mod tests {
                 assert_eq!(menu_string(direct_sub, 0), "（无）");
                 assert_eq!(GetMenuItemCount(dial_sub), 1);
                 assert_eq!(menu_string(dial_sub, 0), "（无）");
+                assert_eq!(menu_string(hmenu, 6), "MCP：关闭");
                 DestroyMenu(hmenu);
             }
         }

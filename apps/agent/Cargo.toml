@@ -19,6 +19,10 @@ semver = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+rmcp = { version = "3.8", features = ["server", "transport-streamable-http-server"] }
+axum = { workspace = true }
+tokio-util = "0.7"
+http = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

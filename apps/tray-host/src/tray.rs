@@ -6,8 +6,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::cli::spawn_peer_dial;
 use crate::launcher::{open_console, open_local_panel};
 use crate::menu::{
-    build_menu, load_local_direct_peers, split_peer_views, status_line_text, CMD_DIAL_BASE,
-    CMD_OPEN_CONSOLE, CMD_OPEN_LOCAL_PANEL, CMD_QUIT,
+    build_menu, load_local_direct_peers, mcp_line_text, split_peer_views, status_line_text,
+    CMD_DIAL_BASE, CMD_OPEN_CONSOLE, CMD_OPEN_LOCAL_PANEL, CMD_QUIT,
 };
 use crate::watchdog::{terminate_agent, WM_TRAY_EXIT};
 
@@ -43,7 +43,8 @@ pub(crate) unsafe extern "system" fn tray_wnd_proc(
             let status_line = status_line_text(state_dir);
             let peers = load_local_direct_peers(state_dir);
             let (direct, relay) = split_peer_views(&peers);
-            let hmenu = build_menu(&status_line, &direct, &relay);
+            let mcp_line = mcp_line_text(state_dir);
+            let hmenu = build_menu(&status_line, &direct, &relay, &mcp_line);
             destroy_current_menu();
             G_MENU.store(hmenu as isize, Ordering::SeqCst);
 

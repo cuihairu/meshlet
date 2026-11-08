@@ -568,6 +568,7 @@ pub(crate) fn agent_in(node: &Node, state_dir: &str) -> Agent {
             ..DataplaneConfig::default()
         },
         ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
+        mcp: meshlet_config::McpConfig::OFF,
     };
     let backend = LinuxNetworkBackend::new()
         .with_netns(&node.netns)
@@ -607,6 +608,7 @@ pub(crate) fn agent_in_direct(
             },
             ..DataplaneConfig::default()
         },
+        mcp: meshlet_config::McpConfig::OFF,
         ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
     };
     let backend = LinuxNetworkBackend::new()

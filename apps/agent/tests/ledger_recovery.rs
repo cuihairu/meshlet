@@ -201,6 +201,7 @@ impl Case {
             },
             upgrade: meshlet_config::UpgradeConfig::default(),
             ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
+            mcp: meshlet_config::McpConfig::OFF,
         };
         Agent::with_backend(config, None, self.backend())
     }
