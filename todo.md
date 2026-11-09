@@ -5,17 +5,17 @@
 <!-- 2026-11-09 补账：以下项在 README.md:20-21、98、185 与 docs/index.md:24 明确标注 pending，
      但此前未进 todo.md，导致巡检按「todo 全勾」误判「无活可派」。此处如实补入，不虚标完成。 -->
 
-- [ ] R-05 Windows 真机验收（AGENT-WIN-2 / AGENT-WIN-3）：tunnel 全生命周期、elevation exec、boot-recovery 重启。
+- [ ] R-05 Windows 真机验收（AGENT-WIN-2 / AGENT-WIN-3）：tunnel 全生命周期、elevation exec、boot-recovery 重启。【2026-11-09 r6 巡检：BLOCKED——B1–B3 需用户真机执行（优先 imac），本席不代跑，标注跳过】
   - 现状：AGENT-WIN-2 已在 imac 跑 5/5 通过（`docs/agent-win-2-acceptance.md`，2026-10-31）；tunnel 生命周期与 elevation exec 仍缺真机证据。2026-11-09 本机静态核实：6 项 PASS（routes/firewall/service/uninstall/console/AGENT-WIN-2）/ 3 项 BLOCKED(真机) 逐项矩阵带 file:line 证据见 `docs/implementation/r05-status.md`；B1–B3 需用户真机执行（优先 imac），本席不代跑。
   - 验收：`docs/implementation/r05-windows-acceptance.md` checklist 逐项真机跑通并附日志。
-- [ ] NIGHTLY-MSI-1：`meshlet-nightly-windows-x86_64.msi` 真机安装验收（开始菜单、添加/删除程序、卸载清理）。
+- [ ] NIGHTLY-MSI-1：`meshlet-nightly-windows-x86_64.msi` 真机安装验收（开始菜单、添加/删除程序、卸载清理）。【2026-11-09 r6 巡检：BLOCKED——需 Windows 真机安装/卸载走查，标注跳过】
   - 现状：MSI 已随 nightly 发布，从未在真机跑过安装/卸载。
-- [ ] AGENT-WIN-3：`install.ps1` 与 tray-host 真机走查（图标切换、右键菜单、本地面板/控制台入口）。
+- [ ] AGENT-WIN-3：`install.ps1` 与 tray-host 真机走查（图标切换、右键菜单、本地面板/控制台入口）。【2026-11-09 r6 巡检：BLOCKED——需 Windows 真机走查，标注跳过】
   - 现状：tray-host 随 zip 发布，安装器未接线，真机走查 pending（README.md:98）。2026-11-09 补记：AGENT-WIN-2 发现的 tray GDI 占位图标已在代码侧修复（`apps/tray-host/src/icon.rs:95,105` png_decode），真机复核随本项走查。
-- [ ] R-07 soak：长跑 soak 验收。
+- [ ] R-07 soak：长跑 soak 验收。【2026-11-09 r6 巡检：BLOCKED——新 soak 窗口未启动（等 D6 资源待答用户），窗口本身 ≥7 天，标注跳过】
   - 现状：收集器 2026-10-24 启动，需数周数据；day-1 review 16.85h `status=OK`、`NRestarts=0`，远未达门槛（`docs/analysis/todo-completion-audit-2026-10-27.md:334`）。2026-11-09 核查：原 PVE 网格已主动拆除（2026-10-30 决策 D6），本席 ping 192.168.5.150 不通、旧 collect.sh/soak.log 留存无法核实；旧累计 39.4h 按纪律列历史证据不折算，距门槛 = 一整个新窗口（≥7 天 / D7 建议 21 天），见 `docs/analysis/r07-soak-status-2026-11-09.md`；dev VPS meshlet-server active（2026-11-07 起 NRestarts=0）仅作旁证记录、不计入窗口；启动前等 D6 资源待答（用户）。
   - 验收：连续 ≥ 7 天无重启/无掉线，指标曲线与报告归档。
-- [ ] #52 SystemBackend Windows 实装：data-plane 从 `unsupported` 占位切到真实实现。
+- [ ] #52 SystemBackend Windows 实装：data-plane 从 `unsupported` 占位切到真实实现。【2026-11-09 r6 巡检：BLOCKED——前置 R-05 B1–B3 真机未过；设计侧已确认（见现状），标注跳过】
   - 前置：R-05 三项（tunnel lifecycle / elevation / boot-recovery）真机通过 + ADR-008 tunnel-only v1 设计确认。2026-11-09 设计确认已落 `docs/decisions/2026-11-09-adr-008-windows-v1-gate.md`（tunnel-only v1 口径：NAT-bearing 计划显式拒绝；D2 原语映射就绪；接线排程原文 r05-windows-acceptance.md:103-105「deliberately deferred until 1–3 are accepted」）——#52 阻塞仅剩 R-05 B1–B3 三项真机，不是缺设计。
 
 ## 源码分层分析 2026-11-07
