@@ -1,6 +1,10 @@
 //! Tauri IPC handlers for local state, settings, peers, diagnostics, and navigation.
 
 use crate::config_io::{meshlet_config_path, rebuild_config};
+// 仅 windows 分支用到（open_log_dir 的 explorer 调用）；非 windows 编译期
+// 摘除，避免 unused import 破坏 linux 目标 -D warnings。
+#[cfg(windows)]
+use crate::config_io::meshlet_state_dir;
 use crate::state::goto_zone_js;
 use tauri::Manager;
 
