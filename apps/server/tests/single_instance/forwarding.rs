@@ -35,6 +35,7 @@ fn forwarding_agent(
             ..Default::default()
         },
         ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
+        mcp: meshlet_config::McpConfig::OFF,
     };
     meshlet_agent::agent::Agent::with_backend(
         config,

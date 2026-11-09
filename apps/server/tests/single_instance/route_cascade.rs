@@ -124,6 +124,7 @@ async fn deleting_a_lan_route_cascades_managed_kernel_objects() {
             ..Default::default()
         },
         ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
+        mcp: meshlet_config::McpConfig::OFF,
     };
     let mut agent = meshlet_agent::agent::Agent::with_backend(
         config,

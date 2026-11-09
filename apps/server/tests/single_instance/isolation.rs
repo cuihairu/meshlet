@@ -299,6 +299,7 @@ async fn two_networks_isolate_reconcile_and_rollback_on_one_hub() {
             ..Default::default()
         },
         ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
+        mcp: meshlet_config::McpConfig::OFF,
     };
     let mut agent = meshlet_agent::agent::Agent::with_backend(
         config,

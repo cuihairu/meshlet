@@ -85,6 +85,7 @@ async fn restoring_a_backup_reconverges_the_kernel() {
             ..Default::default()
         },
         ssh_config_sync: meshlet_config::SshConfigSyncConfig::OFF,
+        mcp: meshlet_config::McpConfig::OFF,
     };
     let mut agent = meshlet_agent::agent::Agent::with_backend(
         config,
