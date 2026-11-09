@@ -67,3 +67,10 @@
 - `apps/tray-app/dist/popup.html` 是与 `apps/tray-app/popup.html` 并存的构建产物，源码清单不应把 dist 形态混入应用源（`apps/tray-app/dist/popup.html:1`）。
 - server 的通用写路径助手与根 router 放在 `apps/server/src/lib.rs`，而 alias、segment、publish、task、diagnostics 已有独立模块；根路由和通用 helper 可进一步按域归位（`apps/server/src/lib.rs:1113`）。
 - `apps/tray-app` 是 Tauri 应用但 Rust 入口位于子目录 `src-tauri/src/main.rs`，静态 UI 与 Rust 生命周期在同一应用目录内形成两类构建体系；若后续继续扩展，应明确前端源与原生入口的顶层边界（`apps/tray-app/src-tauri/src/main.rs:1`）。
+
+## 审核发现
+
+- [x] 审核发现：ICMP 规则探测只检查名称，设备 overlay 地址变更或同名规则被禁用后仍会跳过创建，导致当前地址的入站 ping 未获保障（crates/meshlet-network/src/windows/process_cmds.rs:117）。属实 → 探测升级为 `probe_icmp_rule_state`：逐块核对 Enabled + LocalIP 匹配（`rule_output_has_satisfied_icmp_rule`），不匹配判 `IcmpRuleState::Stale` → 计划先 `DeleteIcmpRule` 再 add（`mesh_reachability_commands`）。df0d710；windows_firewall lib 24 passed/0 failed + windows-gnu clippy -D warnings 绿；crates/meshlet-network/src/windows/process_cmds.rs:120、crates/meshlet-network/src/windows_firewall.rs:386。
+- [x] 审核发现：直连 UDP 规则探测依赖英文 LocalPort 标签，中文 Windows 的本地化输出无法识别已存在端口，每次重放都会叠加同名防火墙规则（crates/meshlet-network/src/windows/process_cmds.rs:181）。属实 → `rule_output_mentions_port` 改走 `rule_output_ports` 枚举全量端口，标签判定 en `LocalPort` / zh `本地端口` 均命中。df0d710；tests `rule_output_mentions_port_matches_zh_cn_label` + `rule_output_ports_enumerates_all_mentioned_ports` 绿；crates/meshlet-network/src/windows_firewall.rs:297。
+- [x] 审核发现：直连监听端口变更时只追加新防火墙规则而不移除旧端口规则，旧 UDP 端口会持续对所有网络配置开放（crates/meshlet-network/src/windows/process_cmds.rs:145）。属实 → `ensure_direct_udp_firewall_sync` 在场但端口不匹配时先 `FirewallRuleCommand::Delete`（按 name 清全部同名旧端口规则，幂等）再 add 新端口。df0d710；windows-gnu clippy -D warnings 绿；crates/meshlet-network/src/windows/process_cmds.rs:159。
+- [x] 审核发现：网络档位探测在完整 PowerShell 输出中搜索 Private，若连接名称含该词而实际档位为 Public 会误判并跳过切换（crates/meshlet-network/src/windows/process_cmds.rs:111）。属实 → 探测命令改取 `(Get-NetConnectionProfile).NetworkCategory` 裸值，`net_category_is_private` 只认 `NetworkCategory` 字段行，忽略 Name/InterfaceAlias 行。df0d710；test `net_category_probe_ignores_name_collisions` 绿；crates/meshlet-network/src/windows/process_cmds.rs:94、crates/meshlet-network/src/windows_firewall.rs:487。
