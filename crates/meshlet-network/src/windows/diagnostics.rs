@@ -1,3 +1,10 @@
+use super::backend::WindowsNetworkBackend;
+use super::parsing::{
+    parse_ping_rtt_ms_windows, parse_wg_dump_diag_line_windows, parse_windows_interfaces_json,
+};
+use crate::{NetworkDiagnostics, NetworkError, WgPeerDiagnostic};
+use std::net::Ipv4Addr;
+
 impl WindowsNetworkBackend {
     /// R-DIAG 网络诊断信息面采集（Windows，2026-11-01 用户令）：三类快照。
     ///
@@ -8,7 +15,7 @@ impl WindowsNetworkBackend {
     ///   源但保留 endpoint / 握手 / 流量列，[WgPeerDiagnostic]）。
     ///
     /// 采集只读；单项失败按空/缺上报（诊断面如实展示「未取到」）。
-    pub(super) fn diagnostics_sync(&self) -> Result<NetworkDiagnostics, NetworkError> {
+    pub fn diagnostics_sync(&self) -> Result<NetworkDiagnostics, NetworkError> {
         let route_table = std::process::Command::new("route")
             .args(["print"])
             .output()

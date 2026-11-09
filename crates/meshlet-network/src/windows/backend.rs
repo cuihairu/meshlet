@@ -1,21 +1,18 @@
+use super::parsing::{is_windows_lan_interface, parse_lan_ip_json};
+use crate::nat::NatRule;
+use crate::windows_routes::exec::run_route_command;
+use crate::windows_tunnel::exec::run_wireguard_command;
+use crate::windows_tunnel::exec::write_tunnel_conf;
+use crate::windows_tunnel::render_wireguard_conf;
+use crate::windows_tunnel::wireguard_exe;
+use crate::windows_tunnel::WireGuardCommand;
+use crate::{
+    ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
+    RouteConfig, TunnelConfig,
+};
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-
-use crate::nat::NatRule;
-use crate::windows_routes::exec::run_route_command;
-use crate::windows_tunnel::exec::{run_wireguard_command, write_tunnel_conf};
-use crate::windows_tunnel::{render_wireguard_conf, wireguard_exe, WireGuardCommand};
-use crate::{
-    ApplyResult, ConfigRevisionRef, DevicePlan, InterfaceDiagnostic, NetworkBackend,
-    NetworkDiagnostics, NetworkError, NetworkSnapshot, PeerObserved, RouteConfig, TunnelConfig,
-    WgPeerDiagnostic,
-};
-use meshlet_domain::Ipv4Cidr;
-
-use super::parsing::{is_windows_lan_interface, parse_lan_ip_json};
-use super::{diagnostics, nat, netsh, process_cmds, route, wireguard};
-
 /// Windows 网络后端：WireGuardNT 隧道 + netsh 路由。
 #[derive(Clone)]
 pub struct WindowsNetworkBackend {
@@ -87,8 +84,64 @@ impl WindowsNetworkBackend {
         Ok(crate::device_plan_matches(plan, extra_peer_keys, &snapshot))
     }
 
-    pub fn meshlet_nat_owners_sync(&self) -> Result<Vec<String>, NetworkError> {
-        Ok(Vec::new())
+    pub fn inspect_sync(&self) -> Result<NetworkSnapshot, NetworkError> {
+        let _exe = self.find_wireguard_exe().ok_or_else(|| {
+            NetworkError::Unsupported(
+                "WireGuard for Windows is not installed.                  Install from https://www.wireguard.com/install/                  or set MESHLET_WIREGUARD_EXE to the wireguard.exe path."
+                    .to_string(),
+            )
+        })?;
+        let tunnel_exists = self.tunnel_service_exists(&self.interface);
+        let forwarding_enabled = self.forwarding_enabled();
+        let peers = if tunnel_exists {
+            self.read_tunnel_peers(&self.interface)
+        } else {
+            Vec::new()
+        };
+        let installed_routes = if tunnel_exists {
+            self.routes_on_interface()
+        } else {
+            Vec::new()
+        };
+        let tunnel_mtu = if tunnel_exists {
+            self.interface_mtu()
+        } else {
+            None
+        };
+        // 本机身份读数（BUG② 修复的漂移判定输入）：dump 接口行第 2 列是
+        // 本机公钥（读不到 → None，证据缺失不判）；适配器地址读 netsh。
+        let local_public_key = if tunnel_exists {
+            self.read_tunnel_dump(&self.interface)
+                .as_deref()
+                .and_then(crate::parse_wg_dump_local_public_key)
+        } else {
+            None
+        };
+        let tunnel_address = if tunnel_exists {
+            self.interface_address()
+        } else {
+            None
+        };
+        // 实际监听端口（直连钉端口的漂移判定输入）：同一 dump 接口行第 3 列
+        // （读不到 → None，证据缺失不判）。
+        let tunnel_listen_port = if tunnel_exists {
+            self.read_tunnel_dump(&self.interface)
+                .as_deref()
+                .and_then(crate::parse_wg_dump_listen_port)
+        } else {
+            None
+        };
+        Ok(NetworkSnapshot {
+            tunnel_exists,
+            forwarding_enabled,
+            peers,
+            installed_routes,
+            nat_rules: Vec::new(),
+            tunnel_mtu,
+            local_public_key,
+            tunnel_address,
+            tunnel_listen_port,
+        })
     }
 
     /// 本机 RFC1918 局域网地址（§12 P2P 候选端点上报）。Windows 读数走

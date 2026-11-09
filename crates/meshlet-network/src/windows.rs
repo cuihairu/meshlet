@@ -14,6 +14,7 @@
 //! 不静默失败；不支持的操作返回 [`NetworkError::Unsupported`]。
 
 mod backend;
+pub use backend::WindowsNetworkBackend;
 mod diagnostics;
 mod nat;
 mod netsh;

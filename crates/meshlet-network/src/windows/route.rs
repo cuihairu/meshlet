@@ -1,3 +1,6 @@
+use super::backend::WindowsNetworkBackend;
+use crate::{ApplyResult, NetworkError, RouteConfig};
+
 impl WindowsNetworkBackend {
     pub fn remove_stale_meshlet_routes_sync(
         &self,

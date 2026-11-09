@@ -1,3 +1,6 @@
+use crate::{InterfaceDiagnostic, NetworkError, WgPeerDiagnostic};
+use std::net::Ipv4Addr;
+
 /// 解析 `reg query IPEnableRouter` 输出为布尔（`0x1` → true、`0x0` → false，
 /// 值缺失/其他 → None）。纯字符串判定：Windows 语言包不影响 `0x` 前缀。
 pub(super) fn parse_ip_enable_router(text: &str) -> Option<bool> {
@@ -51,7 +54,7 @@ pub(super) fn mask_to_prefix(mask: &str) -> u8 {
 
 /// 从 Windows `ping` 输出解析首个 RTT（毫秒），支持英文 `time=1ms` 与
 /// 中文 `时间=1ms`；无读数返回 `None`。
-fn parse_ping_rtt_ms_windows(text: &str) -> Option<u128> {
+pub(super) fn parse_ping_rtt_ms_windows(text: &str) -> Option<u128> {
     let marker = if text.contains("time") {
         "time"
     } else if text.contains("时间") {
@@ -73,7 +76,7 @@ fn parse_ping_rtt_ms_windows(text: &str) -> Option<u128> {
 /// 单测）。官方格式为制表符分隔：首行接口，其后每行
 /// `pubkey preshared endpoint allowed-ips latest-handshake transfer-rx
 /// transfer-tx keepalive`。缺列按 0/空补。
-fn parse_wg_dump_diag_line_windows(line: &str) -> Option<WgPeerDiagnostic> {
+pub(super) fn parse_wg_dump_diag_line_windows(line: &str) -> Option<WgPeerDiagnostic> {
     let fields: Vec<&str> = line.split('\t').collect();
     let public_key = fields.first()?.trim();
     if public_key.is_empty() {
@@ -105,7 +108,7 @@ fn parse_wg_dump_diag_line_windows(line: &str) -> Option<WgPeerDiagnostic> {
 
 /// 解析 `Get-NetIPConfiguration | ConvertTo-Json` 的接口清单（纯函数，任意
 /// 平台单测）。输出为对象数组或单个对象；字段缺省按空/None 处理。
-fn parse_windows_interfaces_json(text: &str) -> Vec<InterfaceDiagnostic> {
+pub(super) fn parse_windows_interfaces_json(text: &str) -> Vec<InterfaceDiagnostic> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Vec::new();

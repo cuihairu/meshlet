@@ -1,5 +1,8 @@
+use super::backend::WindowsNetworkBackend;
+use crate::{ApplyResult, NetworkError};
+
 impl WindowsNetworkBackend {
-    pub(super) fn meshlet_nat_owners_sync(&self) -> Result<Vec<String>, NetworkError> {
+    pub fn meshlet_nat_owners_sync(&self) -> Result<Vec<String>, NetworkError> {
         Ok(Vec::new())
     }
 

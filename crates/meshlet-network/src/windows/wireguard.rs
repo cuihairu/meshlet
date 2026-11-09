@@ -1,6 +1,9 @@
+use super::backend::WindowsNetworkBackend;
+use super::parsing::parse_netsh_interface_ipv4_address;
+use crate::windows_tunnel::exec::run_wireguard_command;
+use crate::{NetworkError, PeerObserved};
+use meshlet_domain::Ipv4Cidr;
 use std::path::PathBuf;
-
-use crate::PeerObserved;
 
 impl WindowsNetworkBackend {
     /// 隧道服务安装（重配正确性，BUG 修复）：已存在 → 停/卸载/装新 conf；
@@ -74,7 +77,7 @@ impl WindowsNetworkBackend {
         crate::windows_tunnel::parse_sc_query_state_code(&text)
     }
 
-    fn read_tunnel_peers(&self, tunnel_name: &str) -> Vec<PeerObserved> {
+    pub(super) fn read_tunnel_peers(&self, tunnel_name: &str) -> Vec<PeerObserved> {
         // 漂移探测：从 `wg.exe show <name> dump` 读回实际生效的 peer。读不到
         // （wg.exe 缺失 / 隧道未运行 / 输出异常）一律返回空——调用方据存在性
         // 判定为「与期望不符」宁可重装收敛，绝不因读数缺失假装一致。
@@ -86,7 +89,7 @@ impl WindowsNetworkBackend {
 
     /// `wg.exe show <name> dump` 原文（接口行 + peer 行；解码走
     /// [windows_console] 的活动代码页兜底）。读不到 → None。
-    fn read_tunnel_dump(&self, tunnel_name: &str) -> Option<String> {
+    pub(super) fn read_tunnel_dump(&self, tunnel_name: &str) -> Option<String> {
         let exe = self.find_wg_exe()?;
         let out = std::process::Command::new(&exe)
             .args(["show", tunnel_name, "dump"])
@@ -101,7 +104,7 @@ impl WindowsNetworkBackend {
 
     /// 受管接口适配器的实际 IPv4 地址（`netsh interface ipv4 show addresses
     /// name=<if>` 解析；漂移判定的适配器地址读数，BUG②）。读不到 → None。
-    fn interface_address(&self) -> Option<std::net::Ipv4Addr> {
+    pub(super) fn interface_address(&self) -> Option<std::net::Ipv4Addr> {
         let output = std::process::Command::new("netsh")
             .args(["interface", "ipv4", "show", "addresses", &self.interface])
             .output()
