@@ -379,6 +379,16 @@ fn rule_blocks(output: &str) -> Vec<String> {
     blocks
 }
 
+/// LocalIP 值与设备地址匹配：netsh show 把 localip 归一成 `ip/netmask` 形态
+/// （`127.0.0.1/255.255.255.255`），多地址逗号分隔——取每个词元 `/` 前的
+/// IP 部分做精确比较（真机取证见 windows_firewall_live，裸地址也兼容）。
+fn local_ip_value_matches(value: &str, addr: std::net::Ipv4Addr) -> bool {
+    value.split(',').any(|token| {
+        let ip = token.trim().split('/').next().unwrap_or("").trim();
+        ip.parse::<std::net::Ipv4Addr>() == Ok(addr)
+    })
+}
+
 /// 同名 ICMP 规则中是否存在「已启用 且 localip 匹配当前设备地址」的规则。
 ///
 /// 审核发现 #1：仅按名字判在场会在地址变更 / 规则被禁用后误报为已满足、跳过
@@ -395,7 +405,7 @@ pub fn rule_output_has_satisfied_icmp_rule(output: &str, addr: std::net::Ipv4Add
             if is_enabled_label(label) {
                 enabled = is_yes_value(value);
             }
-            if is_local_ip_label(label) && value.trim() == addr.to_string() {
+            if is_local_ip_label(label) && local_ip_value_matches(value, addr) {
                 addr_match = true;
             }
         }
@@ -752,6 +762,29 @@ mod tests {
             "规则名称:      Meshlet-ICMPv4-In\r\n已启用:        是\r\n本地 IP:        {addr}\r\n"
         );
         assert!(rule_output_has_satisfied_icmp_rule(&zh, addr));
+    }
+
+    /// netsh show 把 localip 归一为 `ip/netmask`（真机 windows_firewall_live
+    /// 取证：`LocalIP: 127.0.0.1/255.255.255.255`），裸串等值比较会把已满足
+    /// 误判 Stale、每轮 apply delete+add 永不幂等。
+    #[test]
+    fn icmp_rule_satisfaction_tolerates_netsh_ip_mask_suffix() {
+        let addr = "127.0.0.1".parse().unwrap();
+        // 真机形态：ip/netmask + 对齐宽空格。
+        let real = "Rule Name:                            Meshlet-ICMPv4-In\r\n\
+                    Enabled:                              Yes\r\n\
+                    LocalIP:                              127.0.0.1/255.255.255.255\r\n";
+        assert!(rule_output_has_satisfied_icmp_rule(real, addr));
+        // CIDR 形态同样兼容。
+        let cidr = "Enabled: Yes\r\nLocalIP: 127.0.0.1/32\r\n";
+        assert!(rule_output_has_satisfied_icmp_rule(cidr, addr));
+        // 多地址逗号分隔，含目标地址 → 满足。
+        let multi =
+            "Enabled: Yes\r\nLocalIP: 10.240.0.9/255.255.255.255,127.0.0.1/255.255.255.255\r\n";
+        assert!(rule_output_has_satisfied_icmp_rule(multi, addr));
+        // 形态合法但地址不同 → 不满足（前缀同段也不行）。
+        let other = "Enabled: Yes\r\nLocalIP: 127.0.0.2/255.255.255.255\r\n";
+        assert!(!rule_output_has_satisfied_icmp_rule(other, addr));
     }
 
     #[cfg(target_os = "windows")]
