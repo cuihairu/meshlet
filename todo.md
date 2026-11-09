@@ -1,5 +1,23 @@
 # TODO
 
+## 待验收 / 进行中（README 与 docs 已声明 pending，账本必须可见）
+
+<!-- 2026-11-09 补账：以下项在 README.md:20-21、98、185 与 docs/index.md:24 明确标注 pending，
+     但此前未进 todo.md，导致巡检按「todo 全勾」误判「无活可派」。此处如实补入，不虚标完成。 -->
+
+- [ ] R-05 Windows 真机验收（AGENT-WIN-2 / AGENT-WIN-3）：tunnel 全生命周期、elevation exec、boot-recovery 重启。
+  - 现状：AGENT-WIN-2 已在 imac 跑 5/5 通过（`docs/agent-win-2-acceptance.md`，2026-10-31）；tunnel 生命周期与 elevation exec 仍缺真机证据。
+  - 验收：`docs/implementation/r05-windows-acceptance.md` checklist 逐项真机跑通并附日志。
+- [ ] NIGHTLY-MSI-1：`meshlet-nightly-windows-x86_64.msi` 真机安装验收（开始菜单、添加/删除程序、卸载清理）。
+  - 现状：MSI 已随 nightly 发布，从未在真机跑过安装/卸载。
+- [ ] AGENT-WIN-3：`install.ps1` 与 tray-host 真机走查（图标切换、右键菜单、本地面板/控制台入口）。
+  - 现状：tray-host 随 zip 发布，安装器未接线，真机走查 pending（README.md:98）。
+- [ ] R-07 soak：长跑 soak 验收。
+  - 现状：收集器 2026-10-24 启动，需数周数据；day-1 review 16.85h `status=OK`、`NRestarts=0`，远未达门槛（`docs/analysis/todo-completion-audit-2026-10-27.md:334`）。
+  - 验收：连续 ≥ 7 天无重启/无掉线，指标曲线与报告归档。
+- [ ] #52 SystemBackend Windows 实装：data-plane 从 `unsupported` 占位切到真实实现。
+  - 前置：R-05 三项（tunnel lifecycle / elevation / boot-recovery）真机通过 + ADR-008 tunnel-only v1 设计确认。
+
 ## 源码分层分析 2026-11-07
 
 ### 抽象层清单
