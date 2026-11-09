@@ -74,12 +74,12 @@ impl WindowsNetworkBackend {
         device_addr: std::net::Ipv4Addr,
     ) -> Result<(), NetworkError> {
         let category_is_private = self.probe_net_category_is_private();
-        let icmp_rule_present = self.probe_icmp_rule_present();
+        let icmp_rule_state = self.probe_icmp_rule_state(device_addr);
         let commands = crate::windows_firewall::mesh_reachability_commands(
             &self.interface,
             device_addr,
             category_is_private,
-            icmp_rule_present,
+            icmp_rule_state,
         )?;
         for command in &commands {
             crate::windows_firewall::exec::run_mesh_firewall_command(command)?;
@@ -87,9 +87,10 @@ impl WindowsNetworkBackend {
         Ok(())
     }
 
-    /// `Get-NetConnectionProfile -InterfaceAlias <if>` 探测：exit 0 且输出含
-    /// Private → 已满足；接口未找到 / 命令失败 → 未满足（宁补不漏，档位 set
-    /// 天然幂等）。接口名由后端构造控制，与既有 apply 路径同信任级。
+    /// `(Get-NetConnectionProfile -InterfaceAlias <if>).NetworkCategory` 探测：
+    /// exit 0 且值为 Private → 已满足；接口未找到 / 命令失败 → 未满足（宁补
+    /// 不漏，档位 set 天然幂等）。只取档位值，绝不在整段输出搜 `private`——
+    /// 否则连接名含该词的 Public 档会被误判（审核发现 #4）。
     pub(super) fn probe_net_category_is_private(&self) -> bool {
         let Ok(output) = std::process::Command::new("powershell")
             .args([
@@ -97,7 +98,7 @@ impl WindowsNetworkBackend {
                 "-NonInteractive",
                 "-Command",
                 &format!(
-                    "Get-NetConnectionProfile -InterfaceAlias '{}'",
+                    "(Get-NetConnectionProfile -InterfaceAlias '{}').NetworkCategory",
                     self.interface
                 ),
             ])
@@ -111,10 +112,15 @@ impl WindowsNetworkBackend {
         crate::windows_firewall::net_category_is_private(&String::from_utf8_lossy(&output.stdout))
     }
 
-    /// `netsh advfirewall firewall show rule name=Meshlet-ICMPv4-In` 探测：
-    /// exit 0 且输出列出规则 → 已放行；其余 → 未放行（宁补不漏，add 重放
-    /// 同名同谓词规则无害）。netsh 输出按活动代码页编码，走 GBK 兑底解码。
-    pub(super) fn probe_icmp_rule_present(&self) -> bool {
+    /// `netsh advfirewall firewall show rule name=Meshlet-ICMPv4-In` 在场状态。
+    ///
+    /// 仅按名判在场会在地址变更 / 同名规则被禁用后误报为已满足（审核发现
+    /// #1）：需逐块核对「已启用 且 localip 匹配当前设备地址」。netsh 输出按
+    /// 活动代码页编码，走 GBK 兑底解码。
+    pub(super) fn probe_icmp_rule_state(
+        &self,
+        device_addr: std::net::Ipv4Addr,
+    ) -> crate::windows_firewall::IcmpRuleState {
         let Ok(output) = std::process::Command::new("netsh")
             .args([
                 "advfirewall",
@@ -125,26 +131,49 @@ impl WindowsNetworkBackend {
             ])
             .output()
         else {
-            return false;
+            return crate::windows_firewall::IcmpRuleState::Absent;
         };
         if !output.status.success() {
-            return false;
+            return crate::windows_firewall::IcmpRuleState::Absent;
         }
         let text = format!(
             "{}{}",
             crate::windows_console::decode_output(&output.stdout),
             crate::windows_console::decode_output(&output.stderr),
         );
-        crate::windows_firewall::firewall_rule_present(&text)
+        if !crate::windows_firewall::firewall_rule_present(&text) {
+            return crate::windows_firewall::IcmpRuleState::Absent;
+        }
+        if crate::windows_firewall::rule_output_has_satisfied_icmp_rule(&text, device_addr) {
+            crate::windows_firewall::IcmpRuleState::Satisfied
+        } else {
+            crate::windows_firewall::IcmpRuleState::Stale
+        }
     }
 
     /// 直连 UDP 端口入站放行（批次④ Windows 接线）：`Meshlet-Direct-UDP-In`
-    /// 规则（protocol=udp / localport=<port> / profile=any），先探
-    /// [crate::windows_firewall::firewall_rule_present] 再 add（netsh 重复
-    /// add 同名规则会叠出重复项，探测是幂等性的一半）。
+    /// 规则（protocol=udp / localport=<port> / profile=any）。在场且端口匹配
+    /// → 跳过；在场但端口已变（审核发现 #3）→ 先 `delete name=<rule>` 清掉
+    /// 全部同名旧端口规则再 add——netsh 重复 add 同名规则会叠出重复项，
+    /// 只加不清会在端口漂移后同时放行新旧两个端口。
     pub(super) fn ensure_direct_udp_firewall_sync(&self, port: u16) -> Result<(), NetworkError> {
-        if self.direct_udp_rule_present(port) {
-            return Ok(());
+        let output = self.direct_udp_rule_output();
+        if crate::windows_firewall::firewall_rule_present(&output) {
+            if crate::windows_firewall::rule_output_mentions_port(&output, port) {
+                return Ok(());
+            }
+            // 端口漂移：清空同名规则（delete 按 name 删全部同名项，幂等），
+            // 落到下方 add 重建当前端口的新规则。
+            let cleanup = crate::windows_firewall::FirewallRuleCommand::Delete {
+                name: crate::windows_firewall::DIRECT_UDP_RULE_NAME.into(),
+            };
+            let result = crate::windows_firewall::exec::run_firewall_command(&cleanup)?;
+            if !result.applied {
+                return Err(NetworkError::ApplyRejected(format!(
+                    "stale direct UDP firewall rule not removed: {}",
+                    result.error.as_deref().unwrap_or("unknown")
+                )));
+            }
         }
         let command = crate::windows_firewall::FirewallRuleCommand::Add {
             rule: crate::windows_firewall::direct_udp_rule(port),
@@ -159,9 +188,10 @@ impl WindowsNetworkBackend {
         )))
     }
 
-    /// `netsh advfirewall firewall show rule name=Meshlet-Direct-UDP-In` 探测。
-    pub(super) fn direct_udp_rule_present(&self, port: u16) -> bool {
-        let output = std::process::Command::new("netsh")
+    /// `netsh advfirewall firewall show rule name=Meshlet-Direct-UDP-In` 输出
+    /// （GBK 兑底解码；命令失败 / spawn 失败 → 空文本，判为不在场）。
+    fn direct_udp_rule_output(&self) -> String {
+        std::process::Command::new("netsh")
             .args([
                 "advfirewall",
                 "firewall",
@@ -177,8 +207,6 @@ impl WindowsNetworkBackend {
                     crate::windows_console::decode_output(&out.stderr),
                 )
             })
-            .unwrap_or_default();
-        crate::windows_firewall::firewall_rule_present(&output)
-            && crate::windows_firewall::rule_output_mentions_port(&output, port)
+            .unwrap_or_default()
     }
 }

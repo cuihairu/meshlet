@@ -201,6 +201,10 @@ pub enum MeshFirewallCommand {
     /// 限定设备 overlay 地址（见 [mesh_icmp_rule]）；幂等由调用方先探
     /// [firewall_rule_present] 再决定是否下发。
     AddIcmpRule { rule: FirewallRule },
+    /// `netsh advfirewall firewall delete rule`：按名删除同名 ICMP 规则。
+    /// 地址变更残留 / 被禁用的旧规则先删后建（审核发现 #1）；netsh delete
+    /// 按名删全部同名规则，重建后恰一条。
+    DeleteIcmpRule { name: String },
 }
 
 impl MeshFirewallCommand {
@@ -225,6 +229,9 @@ impl MeshFirewallCommand {
                 ),
             ],
             Self::AddIcmpRule { rule } => FirewallRuleCommand::Add { rule: rule.clone() }.args(),
+            Self::DeleteIcmpRule { name } => {
+                FirewallRuleCommand::Delete { name: name.clone() }.args()
+            }
         }
     }
 
@@ -232,12 +239,13 @@ impl MeshFirewallCommand {
         match self {
             Self::SetNetworkCategoryPrivate { .. } => "network category set private",
             Self::AddIcmpRule { .. } => "firewall rule add",
+            Self::DeleteIcmpRule { .. } => "firewall rule delete",
         }
     }
 
     /// 该命令是否走 netsh（否则走 PowerShell）。
     pub fn uses_netsh(&self) -> bool {
-        matches!(self, Self::AddIcmpRule { .. })
+        matches!(self, Self::AddIcmpRule { .. } | Self::DeleteIcmpRule { .. })
     }
 }
 
@@ -283,19 +291,115 @@ pub fn direct_udp_rule(port: u16) -> FirewallRule {
 /// `netsh … show rule` 输出里是否出现该端口的 `LocalPort` 词元。
 /// 规则名固定而端口可变（配置改端口后旧规则在场但端口不符）：名字在场
 /// **不**代表端口放行，需逐条核对 `LocalPort: <port>` 行。
+///
+/// 字段标签按 en / zh-CN 双语言匹配（`LocalPort` / `本地端口`），避免中文
+/// 系统的本地化输出漏判、每次重放叠加同名规则（2026-11-09 审核发现 #2）。
 pub fn rule_output_mentions_port(output: &str, port: u16) -> bool {
+    rule_output_ports(output).contains(&port)
+}
+
+/// `netsh … show rule` 输出中出现的全部 `LocalPort` 值。
+///
+/// 同一固定规则名可含多条（配置改端口后旧端口规则残留，审核发现 #3）；
+/// 调用方据此判断「名字在场但端口不符」并触发重建。
+pub fn rule_output_ports(output: &str) -> Vec<u16> {
+    let mut ports = Vec::new();
     for line in output.lines() {
-        let trimmed = line.trim();
-        // 标签大小写不敏感匹配（zh-CN netsh 的字段词形可能随版本变化），
-        // 值按 `标签: 值` 拆分后精确比对端口。
-        if !trimmed.to_ascii_lowercase().starts_with("localport") {
+        let Some((label, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        if !is_local_port_label(label.trim()) {
             continue;
         }
-        if trimmed
-            .split_once(':')
-            .map(|(_, v)| v.trim() == port.to_string())
-            .unwrap_or(false)
-        {
+        if let Ok(port) = value.trim().parse::<u16>() {
+            ports.push(port);
+        }
+    }
+    ports
+}
+
+/// `netsh advfirewall firewall show rule` 输出的 LocalPort 字段标签。
+/// en `LocalPort`；zh-CN `本地端口`（本地化输出，审核发现 #2）。
+fn is_local_port_label(label: &str) -> bool {
+    label.eq_ignore_ascii_case("localport") || label.to_ascii_lowercase().contains("本地端口")
+}
+
+/// LocalIP 字段标签：en `LocalIP`；zh-CN `本地IP` / `本地 IP`。
+fn is_local_ip_label(label: &str) -> bool {
+    label.eq_ignore_ascii_case("localip")
+        || label.to_ascii_lowercase().contains("本地ip")
+        || label.to_ascii_lowercase().contains("本地 ip")
+}
+
+/// Enabled 字段标签：en `Enabled`；zh-CN `已启用`。
+fn is_enabled_label(label: &str) -> bool {
+    label.eq_ignore_ascii_case("enabled") || label.to_ascii_lowercase().contains("已启用")
+}
+
+/// 布尔字段取值：en `Yes`；zh-CN `是`（兼容 `true` / `1`）。
+fn is_yes_value(value: &str) -> bool {
+    let v = value.trim();
+    v.eq_ignore_ascii_case("yes") || v.eq_ignore_ascii_case("true") || v == "是" || v == "1"
+}
+
+/// 规则块头标签：en `Rule Name`；zh-CN `规则名称`。
+fn is_rule_name_header(line: &str) -> bool {
+    let t = line.trim();
+    t.eq_ignore_ascii_case("rule name")
+        || t.to_ascii_lowercase().starts_with("rule name:")
+        || t.starts_with("规则名称")
+}
+
+/// `netsh … show rule name=<n>` 输出按规则块拆分。同名规则可能多条（地址变更
+/// 残留 / 禁用副本，审核发现 #1）；无块头时整段视为单块。
+fn rule_blocks(output: &str) -> Vec<String> {
+    let lines: Vec<&str> = output.lines().collect();
+    let mut headers: Vec<usize> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if is_rule_name_header(line) {
+            headers.push(i);
+        }
+    }
+    if headers.is_empty() {
+        return if output.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![output.to_string()]
+        };
+    }
+    let mut blocks = Vec::new();
+    for (k, &h) in headers.iter().enumerate() {
+        let end = if k + 1 < headers.len() {
+            headers[k + 1]
+        } else {
+            lines.len()
+        };
+        blocks.push(lines[h..end].join("\n"));
+    }
+    blocks
+}
+
+/// 同名 ICMP 规则中是否存在「已启用 且 localip 匹配当前设备地址」的规则。
+///
+/// 审核发现 #1：仅按名字判在场会在地址变更 / 规则被禁用后误报为已满足、跳过
+/// 创建——需逐块核对启用态与地址绑定。
+pub fn rule_output_has_satisfied_icmp_rule(output: &str, addr: std::net::Ipv4Addr) -> bool {
+    for block in rule_blocks(output) {
+        let mut enabled = false;
+        let mut addr_match = false;
+        for line in block.lines() {
+            let Some((label, value)) = line.trim().split_once(':') else {
+                continue;
+            };
+            let label = label.trim();
+            if is_enabled_label(label) {
+                enabled = is_yes_value(value);
+            }
+            if is_local_ip_label(label) && value.trim() == addr.to_string() {
+                addr_match = true;
+            }
+        }
+        if enabled && addr_match {
             return true;
         }
     }
@@ -321,15 +425,27 @@ pub fn mesh_icmp_rule(device_addr: std::net::Ipv4Addr) -> FirewallRule {
     }
 }
 
+/// 同名 ICMP 规则在场状态（探测 → 规划，AGENT-FW-1 审核发现 #1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IcmpRuleState {
+    /// 名为 `Meshlet-ICMPv4-In` 的规则不存在——直接添加。
+    Absent,
+    /// 存在、已启用、且 localip 与当前设备地址一致——已满足，不动。
+    Satisfied,
+    /// 同名规则在场但不满足（地址变更残留 / 被禁用）——先删后建，
+    /// 否则仅按名判在场会跳过创建、当前地址的入站 ping 未获保障。
+    Stale,
+}
+
 /// 纯规划（AGENT-FW-1，跨平台单测）：给定档位与规则现状，产出保障命令。
 ///
-/// 调用方先探测 `category_is_private` 与 `icmp_rule_present`，本函数只做
-/// 决定论映射——全幂等（现状已满足 → 空计划）。
+/// 调用方先探测 `category_is_private` 与 ICMP 规则在场状态
+/// （[IcmpRuleState]），本函数只做决定论映射——全幂等（现状已满足 → 空计划）。
 pub fn mesh_reachability_commands(
     interface: &str,
     device_addr: std::net::Ipv4Addr,
     category_is_private: bool,
-    icmp_rule_present: bool,
+    icmp_rule_state: IcmpRuleState,
 ) -> Result<Vec<MeshFirewallCommand>, NetworkError> {
     validate_tunnel_interface(interface)?;
     let mut commands = Vec::new();
@@ -338,10 +454,19 @@ pub fn mesh_reachability_commands(
             interface,
         )?);
     }
-    if !icmp_rule_present {
-        commands.push(MeshFirewallCommand::AddIcmpRule {
+    match icmp_rule_state {
+        IcmpRuleState::Satisfied => {}
+        IcmpRuleState::Absent => commands.push(MeshFirewallCommand::AddIcmpRule {
             rule: mesh_icmp_rule(device_addr),
-        });
+        }),
+        IcmpRuleState::Stale => {
+            commands.push(MeshFirewallCommand::DeleteIcmpRule {
+                name: mesh_icmp_rule(device_addr).name,
+            });
+            commands.push(MeshFirewallCommand::AddIcmpRule {
+                rule: mesh_icmp_rule(device_addr),
+            });
+        }
     }
     Ok(commands)
 }
@@ -354,8 +479,29 @@ pub fn firewall_rule_present(output: &str) -> bool {
 }
 
 /// 判断 `Get-NetConnectionProfile` 输出表示连接档位已是 Private。
+///
+/// 只认 `NetworkCategory` 字段（PowerShell 字段名不随界面语言变化）或裸值
+/// 输出（探测命令只取 `.NetworkCategory`）；绝不在整段输出里搜 `private`——
+/// 否则连接名/别名含该词的 Public 档会被误判为 Private、跳过档位切换
+/// （2026-11-09 审核发现 #4）。
 pub fn net_category_is_private(output: &str) -> bool {
-    output.to_lowercase().contains("private")
+    let mut bare: Option<&str> = None;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((label, value)) = trimmed.split_once(':') {
+            let label = label.trim();
+            if label.eq_ignore_ascii_case("networkcategory") {
+                return value.trim().eq_ignore_ascii_case("private");
+            }
+            // 其他字段（Name / InterfaceAlias 等）忽略，防同名词误判。
+        } else if bare.is_none() {
+            bare = Some(trimmed);
+        }
+    }
+    bare.is_some_and(|v| v.eq_ignore_ascii_case("private"))
 }
 
 /// `key=value` 形式的 netsh 命名参数，**整个键值对是单个 argv 词元**，不内嵌
@@ -525,6 +671,7 @@ pub mod exec {
                     interface.as_str()
                 }
                 super::MeshFirewallCommand::AddIcmpRule { rule } => rule.name.as_str(),
+                super::MeshFirewallCommand::DeleteIcmpRule { name } => name.as_str(),
             },
         )?;
         Ok(ApplyResult::ok())
@@ -559,6 +706,52 @@ mod tests {
         assert!(!rule_output_mentions_port("", 51820));
         // 无冒号/畸形行按不匹配处理，不 panic。
         assert!(!rule_output_mentions_port("LocalPort garbage", 51820));
+    }
+
+    #[test]
+    fn rule_output_mentions_port_matches_zh_cn_label() {
+        // 审核发现 #2：中文 Windows 的 netsh 输出用「本地端口」标签，英文标签
+        // 匹配会漏判 → 每次重放叠加同名规则。zh 标签必须命中。
+        let zh = "规则名称: Meshlet-Direct-UDP-In\r\n本地端口:\t51820\r\n";
+        assert!(rule_output_mentions_port(zh, 51820));
+        assert!(!rule_output_mentions_port(zh, 20000));
+        assert_eq!(rule_output_ports(zh), vec![51820]);
+    }
+
+    #[test]
+    fn rule_output_ports_enumerates_all_mentioned_ports() {
+        // 审核发现 #3：同名规则可含多条（配置改端口后残留），端口全集需枚举。
+        let both = "Rule Name: Meshlet-Direct-UDP-In\r\nLocalPort: 20000\r\n\
+                    Rule Name: Meshlet-Direct-UDP-In\r\nLocalPort: 51820\r\n";
+        assert_eq!(rule_output_ports(both), vec![20000, 51820]);
+        assert!(rule_output_mentions_port(both, 51820));
+        assert!(rule_output_mentions_port(both, 20000));
+    }
+
+    #[test]
+    fn icmp_rule_satisfaction_checks_enabled_and_local_ip() {
+        // 审核发现 #1：仅按名判在场会在地址变更 / 规则被禁用后误报。
+        let addr = "10.240.0.7".parse().unwrap();
+        let satisfied_en = format!(
+            "Rule Name:        Meshlet-ICMPv4-In\r\nEnabled:          Yes\r\nLocalIP:         {addr}\r\n"
+        );
+        assert!(rule_output_has_satisfied_icmp_rule(&satisfied_en, addr));
+
+        // 地址变更：规则在场但 localip 是旧地址 → 不满足。
+        let stale_addr = "Rule Name:        Meshlet-ICMPv4-In\r\nEnabled:          Yes\r\nLocalIP:         10.240.0.9\r\n".to_string();
+        assert!(!rule_output_has_satisfied_icmp_rule(&stale_addr, addr));
+
+        // 同名规则被禁用（Enabled: No）→ 不满足。
+        let disabled = format!(
+            "Rule Name:        Meshlet-ICMPv4-In\r\nEnabled:          No\r\nLocalIP:         {addr}\r\n"
+        );
+        assert!(!rule_output_has_satisfied_icmp_rule(&disabled, addr));
+
+        // zh-CN 字段（已启用: 是 / 本地 IP）→ 满足。
+        let zh = format!(
+            "规则名称:      Meshlet-ICMPv4-In\r\n已启用:        是\r\n本地 IP:        {addr}\r\n"
+        );
+        assert!(rule_output_has_satisfied_icmp_rule(&zh, addr));
     }
 
     #[cfg(target_os = "windows")]
@@ -818,19 +1011,21 @@ mod tests {
 
     #[test]
     fn mesh_reachability_plan_covers_all_current_states() {
-        // 全幂等：档位已 Private 且规则已存在 → 空计划；任一缺 → 只补缺的那条。
-        let none = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, true).unwrap();
+        use IcmpRuleState::*;
+        // 全幂等：档位已 Private 且规则已满足 → 空计划；任一缺 → 只补缺的那条。
+        let none = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, Satisfied).unwrap();
         assert!(none.is_empty());
 
         let only_category =
-            mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, false, true).unwrap();
+            mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, false, Satisfied).unwrap();
         assert_eq!(only_category.len(), 1);
         assert!(matches!(
             only_category[0],
             MeshFirewallCommand::SetNetworkCategoryPrivate { .. }
         ));
 
-        let only_rule = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, false).unwrap();
+        let only_rule =
+            mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, Absent).unwrap();
         assert_eq!(only_rule.len(), 1);
         assert_eq!(
             only_rule[0],
@@ -839,8 +1034,29 @@ mod tests {
             }
         );
 
-        let both = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, false, false).unwrap();
+        let both = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, false, Absent).unwrap();
         assert_eq!(both.len(), 2);
+    }
+
+    #[test]
+    fn mesh_reachability_stale_icmp_rule_is_delete_then_add() {
+        // 审核发现 #1：地址变更残留 / 被禁用的同名规则 → 先删后建，保证恰一条。
+        let commands =
+            mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, IcmpRuleState::Stale)
+                .unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(
+            commands[0],
+            MeshFirewallCommand::DeleteIcmpRule {
+                name: mesh_icmp_rule(DEVICE_ADDR).name
+            }
+        );
+        assert_eq!(
+            commands[1],
+            MeshFirewallCommand::AddIcmpRule {
+                rule: mesh_icmp_rule(DEVICE_ADDR)
+            }
+        );
     }
 
     #[test]
@@ -848,14 +1064,17 @@ mod tests {
         // 接口名进入 PowerShell 单引号字符串：引号/空白必须拒绝（防注入）。
         for bad in ["", "wg meshlet", "wg'x", "wg\"x", "wg;x", "$(x)", "wg|x"] {
             assert!(
-                mesh_reachability_commands(bad, DEVICE_ADDR, false, false).is_err(),
+                mesh_reachability_commands(bad, DEVICE_ADDR, false, IcmpRuleState::Absent).is_err(),
                 "interface {bad:?} must be rejected"
             );
             assert!(MeshFirewallCommand::set_network_category_private(bad).is_err());
         }
         // 合法隧道名（含 dot / 下划线）必须放行。
         for good in ["wg-meshlet", "wg0", "Meshlet.Tunnel_1"] {
-            assert!(mesh_reachability_commands(good, DEVICE_ADDR, true, true).is_ok());
+            assert!(
+                mesh_reachability_commands(good, DEVICE_ADDR, true, IcmpRuleState::Satisfied)
+                    .is_ok()
+            );
         }
     }
 
@@ -882,5 +1101,21 @@ mod tests {
         assert!(!net_category_is_private(
             "Get-NetConnectionProfile : No matching MSFT_NetConnectionProfile"
         ));
+    }
+
+    #[test]
+    fn net_category_probe_ignores_name_collisions() {
+        // 审核发现 #4：连接名/别名含 private 但档位为 Public → 必须判非 Private。
+        assert!(!net_category_is_private(
+            "Name       : Private LAN\nNetworkCategory : Public"
+        ));
+        assert!(net_category_is_private(
+            "Name       : Private LAN\nNetworkCategory : Private"
+        ));
+        // 探测命令只取 `.NetworkCategory` 时的裸值输出。
+        assert!(net_category_is_private("Private"));
+        assert!(!net_category_is_private("Public"));
+        assert!(!net_category_is_private("DomainAuthenticated"));
+        assert!(!net_category_is_private(""));
     }
 }

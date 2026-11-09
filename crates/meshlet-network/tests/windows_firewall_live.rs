@@ -9,7 +9,8 @@
 
 use meshlet_network::windows_firewall::{
     exec::run_mesh_firewall_command, firewall_rule_present, mesh_icmp_rule,
-    net_category_is_private, MeshFirewallCommand,
+    net_category_is_private, rule_output_has_satisfied_icmp_rule, IcmpRuleState,
+    MeshFirewallCommand,
 };
 use meshlet_network::{ApplyResult, NetworkError};
 
@@ -82,12 +83,23 @@ fn icmp_rule_add_show_delete_roundtrip_is_idempotent_on_a_real_firewall() {
         "rule must be present after add; netsh said: {shown:?}"
     );
 
-    // 幂等重跑：探测已满足 → 计划为空（agent 不会重复 add）。
+    // 幂等重跑：探测已满足 → 计划为空（agent 不会重复 add）。状态从真实
+    // show 输出按计划层同款谓词推导（在场 + 已启用 + localip 匹配）。
+    let device_addr = "127.0.0.1".parse().unwrap();
+    let icmp_state = if firewall_rule_present(&shown) {
+        if rule_output_has_satisfied_icmp_rule(&shown, device_addr) {
+            IcmpRuleState::Satisfied
+        } else {
+            IcmpRuleState::Stale
+        }
+    } else {
+        IcmpRuleState::Absent
+    };
     let plan = meshlet_network::windows_firewall::mesh_reachability_commands(
         "meshlet",
-        "10.240.0.1".parse().unwrap(),
+        device_addr,
         true,
-        firewall_rule_present(&show_rule(&name).1),
+        icmp_state,
     )
     .unwrap();
     assert!(
