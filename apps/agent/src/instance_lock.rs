@@ -86,7 +86,64 @@ mod tests {
             "rejection must be the lock being held, not another io failure: {err}"
         );
         drop(first);
+        #[cfg(target_os = "linux")]
+        let _released = try_acquire(&state_dir).unwrap_or_else(|e| {
+            // 现场取证（flake 2026-11-13，~1/8 全量轮询复现）：`/proc/locks`
+            // 直接给出**持有者 pid**——是我们自己漏关了 fd，还是另一个进程
+            // 拿着锁，panic 消息里当场见分晓。
+            panic!(
+                "acquire succeeds again after release (err {e}); kernel lock table:\n{}own fds:\n{}",
+                read_proc_locks_for(&state_dir),
+                read_own_fds(),
+            )
+        });
+        #[cfg(not(target_os = "linux"))]
         let _released = try_acquire(&state_dir).expect("acquire succeeds again after release");
+    }
+
+    /// 取证一：内核锁表里落在本锁文件 inode 上的锁（每行含持有者 pid）。
+    #[cfg(target_os = "linux")]
+    fn read_proc_locks_for(state_dir: &Path) -> String {
+        let ino = match std::fs::metadata(lock_path(state_dir)) {
+            Ok(meta) => std::os::unix::fs::MetadataExt::ino(&meta),
+            Err(_) => return "  (lock file metadata unavailable)\n".into(),
+        };
+        let Ok(table) = std::fs::read_to_string("/proc/locks") else {
+            return "  (/proc/locks unavailable)\n".into();
+        };
+        let mut hit = format!("  (looking for inode {ino})\n");
+        let mut found = false;
+        for line in table.lines() {
+            // /proc/locks 每行形如 `1: FLOCK ADVISORY WRITE <pid> 0:38:<ino> ...`。
+            if line.split([':', ' ']).any(|tok| tok == ino.to_string()) {
+                found = true;
+                hit.push_str("  ");
+                hit.push_str(line);
+                hit.push('\n');
+            }
+        }
+        if !found {
+            hit.push_str("  (no lock row matches this inode)\n");
+        }
+        hit
+    }
+
+    /// 取证二：本进程还开着的 fd（泄漏的句柄一览）。
+    #[cfg(target_os = "linux")]
+    fn read_own_fds() -> String {
+        let mut out = String::new();
+        if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+            for entry in entries.flatten() {
+                if let Ok(target) = std::fs::read_link(entry.path()) {
+                    out.push_str(&format!(
+                        "  {} -> {}\n",
+                        entry.file_name().to_string_lossy(),
+                        target.display()
+                    ));
+                }
+            }
+        }
+        out
     }
 
     /// 不同 `state_dir` 是不同设备身份：两路必须都能拿到锁（互斥只约束同设备）。
