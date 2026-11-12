@@ -83,3 +83,12 @@
 - [x] 审核发现：直连 UDP 规则探测依赖英文 LocalPort 标签，中文 Windows 的本地化输出无法识别已存在端口，每次重放都会叠加同名防火墙规则（crates/meshlet-network/src/windows/process_cmds.rs:181）。属实 → `rule_output_mentions_port` 改走 `rule_output_ports` 枚举全量端口，标签判定 en `LocalPort` / zh `本地端口` 均命中。df0d710；tests `rule_output_mentions_port_matches_zh_cn_label` + `rule_output_ports_enumerates_all_mentioned_ports` 绿；crates/meshlet-network/src/windows_firewall.rs:297。
 - [x] 审核发现：直连监听端口变更时只追加新防火墙规则而不移除旧端口规则，旧 UDP 端口会持续对所有网络配置开放（crates/meshlet-network/src/windows/process_cmds.rs:145）。属实 → `ensure_direct_udp_firewall_sync` 在场但端口不匹配时先 `FirewallRuleCommand::Delete`（按 name 清全部同名旧端口规则，幂等）再 add 新端口。df0d710；windows-gnu clippy -D warnings 绿；crates/meshlet-network/src/windows/process_cmds.rs:159。
 - [x] 审核发现：网络档位探测在完整 PowerShell 输出中搜索 Private，若连接名称含该词而实际档位为 Public 会误判并跳过切换（crates/meshlet-network/src/windows/process_cmds.rs:111）。属实 → 探测命令改取 `(Get-NetConnectionProfile).NetworkCategory` 裸值，`net_category_is_private` 只认 `NetworkCategory` 字段行，忽略 Name/InterfaceAlias 行。df0d710；test `net_category_probe_ignores_name_collisions` 绿；crates/meshlet-network/src/windows/process_cmds.rs:94、crates/meshlet-network/src/windows_firewall.rs:487。
+
+## 断线自愈修复批（2026-11-12，用户令：先修稳定再议 soak；imac 实测 3 agent 互踩 + 0 ESTABLISHED + server 无断连感知）
+
+- [ ] [P0] agent 加进程级 instance lock（对齐 apps/server/src/instance_lock.rs 的 File::try_lock 口径）——imac 实测 3 个 meshlet-agent 并存互踢同 device_id，server 侧 0 断连日志（server 感知不到互踩），apps/agent/src/main.rs
+- [ ] [P0] Windows 数据面探测传输接线（crates/meshlet-network/src/probe.rs:253 非 Linux 返回 None 记丢包）——三台主力机全 Windows，SEL-001 探测/SEL-002 切换在主力平台全盲；ICMP 或 TCP probe 二选一，与 Linux ping 口径对齐采样窗口
+- [ ] [P1] tick 失败 backoff 上限 300s→30s（apps/agent/src/agent/mod.rs:53 BACKOFF_MAX_SECS）——断线后最坏 5 分钟才重试一次是"老是连不上"的直接来源；配套：网络变化事件（interface up/down）触发立即重试
+- [ ] [P1] server 侧设备掉线可观测：agent 心跳超时判定 + server 日志显式记录 disconnected/stale 事件（近 24h dev VPS 日志 0 条断连记录，掉线事实无从感知）；对齐 apps/server/src/diagnostics.rs:257 的 stale handshake 判定已有口径
+- [ ] [P2] SEL-002 直连切换在 Windows 数据面接线后的端到端验收（crates/meshlet-network/src/dial.rs 切换事件+迟滞闸已实现，Linux 已验；Windows 随 P0 探测接线后补真机验收）
+- [ ] [P2] 断线重连场景集成测试：kill WireGuard 隧道 → agent 感知 → 重建 → server 状态收敛，全链路 ≤60s（当前无此场景测试，R-07 soak 前置门禁）
