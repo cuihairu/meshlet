@@ -31,8 +31,27 @@ async fn main() {
         )
         .init();
 
-    // 参数：`restore <backup.db> [config.toml]` 或 `[config.toml]`。
+    // 参数：`restore <backup.db> [config.toml]` 或 `[config.toml]`；
+    // `--version`/`--help` 必须先行处理——否则会被当成配置文件路径，
+    // `load_config` 读不到即 panic（真机验收 NIGHTLY-MSI-1 抓到：
+    // `meshlet-server --version` 曾 exit 101）。
     let mut args = std::env::args().skip(1).peekable();
+    if let Some(flag) = args.peek().map(String::as_str) {
+        match flag {
+            "--version" | "-V" => {
+                println!("meshlet-server {}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            "--help" | "-h" => {
+                println!("meshlet-server {}", env!("CARGO_PKG_VERSION"));
+                println!();
+                println!("Usage: meshlet-server [config.toml]");
+                println!("       meshlet-server restore <backup.db> [config.toml]");
+                return;
+            }
+            _ => {}
+        }
+    }
     let config = if args.peek().map(String::as_str) == Some("restore") {
         args.next();
         let backup = args.next().unwrap_or_else(|| {

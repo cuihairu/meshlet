@@ -11,6 +11,23 @@ use meshlet_agent::{read_private_key, Agent};
 use meshlet_config::AgentConfig;
 
 fn main() -> std::process::ExitCode {
+    // `--version`/`--help` 先行处理，避免被当成配置文件路径而报错
+    // （真机验收 NIGHTLY-MSI-1 抓到：`meshlet-agent --help` 曾 exit 1）。
+    if let Some(flag) = std::env::args().nth(1).as_deref() {
+        match flag {
+            "--version" | "-V" => {
+                println!("meshlet-agent {}", env!("CARGO_PKG_VERSION"));
+                return std::process::ExitCode::SUCCESS;
+            }
+            "--help" | "-h" => {
+                println!("meshlet-agent {}", env!("CARGO_PKG_VERSION"));
+                println!();
+                println!("Usage: meshlet-agent [agent.toml]");
+                return std::process::ExitCode::SUCCESS;
+            }
+            _ => {}
+        }
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
