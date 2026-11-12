@@ -5,13 +5,19 @@
 <!-- 2026-11-09 补账：以下项在 README.md:20-21、98、185 与 docs/index.md:24 明确标注 pending，
      但此前未进 todo.md，导致巡检按「todo 全勾」误判「无活可派」。此处如实补入，不虚标完成。 -->
 
-- [ ] R-05 Windows 真机验收（AGENT-WIN-2 / AGENT-WIN-3）：tunnel 全生命周期、elevation exec、boot-recovery 重启。【2026-11-09 r6 巡检：BLOCKED——B1–B3 需用户真机执行（优先 imac），本席不代跑，标注跳过】
+- [ ] R-05 Windows 真机验收（AGENT-WIN-2 / AGENT-WIN-3）：tunnel 全生命周期、elevation exec、boot-recovery 重启。【2026-11-12 本席经 SSH+cua-driver 计划任务模式在 imac 真机代跑：B1/B2 已实测通过（见下），B3 需重启 imac 待用户点头（桌面在用），R-05 整体保持未勾】
   - 现状：AGENT-WIN-2 已在 imac 跑 5/5 通过（`docs/agent-win-2-acceptance.md`，2026-10-31）；tunnel 生命周期与 elevation exec 仍缺真机证据。2026-11-09 本机静态核实：6 项 PASS（routes/firewall/service/uninstall/console/AGENT-WIN-2）/ 3 项 BLOCKED(真机) 逐项矩阵带 file:line 证据见 `docs/implementation/r05-status.md`；B1–B3 需用户真机执行（优先 imac），本席不代跑。
+  - **B1 tunnel 生命周期 ✅ 2026-11-12 imac 实测**：`/uninstalltunnelservice wg-meshlet` → 服务消失 + ping 10.240.0.1 断（真断非假成功）→ 幂等重卸报 `service does not exist`（分类正确）→ `/installtunnelservice` 重装 → 服务 Running + ping 恢复 + `wg-meshlet` 接口 10.240.0.7/16。`wireguard.exe` 路径 `C:\Program Files\WireGuard`，conf 在 `%LOCALAPPDATA%\Temp\meshlet\wg-meshlet.conf`（服务 PathName 佐证）。
+  - **B2 elevation exec 真机首跑 ✅ 2026-11-12**：`current_process_is_elevated()` 首次真实 Windows 执行 = `Ok(true)`；ManagedExecutablePath 拒绝受管目录外路径 ✓；classify(5,"Access is denied.") → InsufficientPrivileges ✓。**附带发现：Windows OpenSSH 会话默认 High Mandatory Level（S-1-16-12288，whoami /groups 实证）→ SSH 上下文无法测「非提升」分支，且 SSH 上跑 elevation 判定会恒真**——该局限已实测，后续验收须用非提升计划任务或交互桌面。
+  - **B3 boot-recovery 需重启 imac**——console 会话（Session 20）explorer 在跑（用户桌面在用），重启须用户点头，未擅动。
   - 验收：`docs/implementation/r05-windows-acceptance.md` checklist 逐项真机跑通并附日志。
-- [ ] NIGHTLY-MSI-1：`meshlet-nightly-windows-x86_64.msi` 真机安装验收（开始菜单、添加/删除程序、卸载清理）。【2026-11-09 r6 巡检：BLOCKED——需 Windows 真机安装/卸载走查，标注跳过】
+- [ ] NIGHTLY-MSI-1：`meshlet-nightly-windows-x86_64.msi` 真机安装验收（开始菜单、添加/删除程序、卸载清理）。【2026-11-12 本席 imac 实测完成一轮：安装/卸载/运行全走查，发现并修复 2 个真实缺陷（6a9ec71），待新版 nightly MSI 复装确认后勾】
   - 现状：MSI 已随 nightly 发布，从未在真机跑过安装/卸载。
-- [ ] AGENT-WIN-3：`install.ps1` 与 tray-host 真机走查（图标切换、右键菜单、本地面板/控制台入口）。【2026-11-09 r6 巡检：BLOCKED——需 Windows 真机走查，标注跳过】
+  - **2026-11-12 实测**：imac 原装 Meshlet 0.1.0（product `{6F1F6166-...}`）→ 静默卸载 exit=0，ARP/开始菜单/Program Files 全清 ✓ → 装 nightly MSI exit=0，ARP 新 product `{AACE9652-...}`、开始菜单 3 快捷方式（目标 exe 均存在）、`C:\Program Files\Meshlet` 4 个 exe 落位 ✓。**运行走查抓到真缺陷**：`meshlet-server --version` panic exit 101（`--version` 被当配置路径，main.rs:172）、`meshlet-agent --help` exit 1 → **已修 6a9ec71**（两 exe 先行处理 `--version/-V/--help/-h`，imac 真机复编译实测 4 条全 exit=0）。
+  - 残留确认项：`user-PATH` 里的 `C:\Users\cui\AppData\Local\meshlet` 是 agent 状态目录（install.ps1 写入），非 MSI 产物，符合设计；新版 nightly MSI（406b597）装机复验后本项可勾。
+- [ ] AGENT-WIN-3：`install.ps1` 与 tray-host 真机走查（图标切换、右键菜单、本地面板/控制台入口）。【2026-11-12 本席 imac 实测：托盘图标抓到一个真实渲染缺陷（406b597 已修），复验后继续走查右键菜单/面板】
   - 现状：tray-host 随 zip 发布，安装器未接线，真机走查 pending（README.md:98）。2026-11-09 补记：AGENT-WIN-2 发现的 tray GDI 占位图标已在代码侧修复（`apps/tray-host/src/icon.rs:95,105` png_decode），真机复核随本项走查。
+  - **2026-11-12 实测**（cua-driver console 会话 + 全屏截图 + 像素级比对）：tray-host（安装版）console 会话启动存活、日志 `NIM_ADD=1`、注册表 `HKCU\Control Panel\NotifyIconSettings` 有 meshlet 槽位且 `IsPromoted=1`，**但托盘区 0 个 meshlet 暗青灰(50,96,114)像素**（精确+±12 容差均 0；TraySink PNG=stored-deflate 可被 png_decode 正确解，排除解码层）→ 根因=`rgba_to_icon`/`create_green_icon` 用 32-bit 彩色位图当 `ICONINFO.hbmMask`（GDI 要求单色 1-bit）→ 图标句柄渲染异常不可见。**已修 406b597**（`CreateBitmap(w,h,1,1,NULL)`）。附带：发现 Session 0 残留 tray-host 多实例（已清）；status.json 是 11-07 旧文件（agent 53312 在 Session 0 跑但 5 天未更新状态——独立疑点，走查时跟进）。
 - [ ] R-07 soak：长跑 soak 验收。【2026-11-09 r6 巡检：BLOCKED——新 soak 窗口未启动（等 D6 资源待答用户），窗口本身 ≥7 天，标注跳过】
   - 现状：收集器 2026-10-24 启动，需数周数据；day-1 review 16.85h `status=OK`、`NRestarts=0`，远未达门槛（`docs/analysis/todo-completion-audit-2026-10-27.md:334`）。2026-11-09 核查：原 PVE 网格已主动拆除（2026-10-30 决策 D6），本席 ping 192.168.5.150 不通、旧 collect.sh/soak.log 留存无法核实；旧累计 39.4h 按纪律列历史证据不折算，距门槛 = 一整个新窗口（≥7 天 / D7 建议 21 天），见 `docs/analysis/r07-soak-status-2026-11-09.md`；dev VPS meshlet-server active（2026-11-07 起 NRestarts=0）仅作旁证记录、不计入窗口；启动前等 D6 资源待答（用户）。
   - 验收：连续 ≥ 7 天无重启/无掉线，指标曲线与报告归档。
