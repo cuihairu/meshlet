@@ -61,6 +61,7 @@ pub mod windows_cleanup;
 pub mod windows_console;
 pub mod windows_elevation;
 pub mod windows_firewall;
+pub mod windows_probe;
 pub mod windows_routes;
 pub mod windows_service;
 pub mod windows_tunnel;

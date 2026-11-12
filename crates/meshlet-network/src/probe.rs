@@ -13,9 +13,9 @@
 //! - **零控制面负载**：探测周期与心跳 / 派单独立，只复用对端候选集（30s 心跳
 //!   同步的数据），绝不因探测额外请求 server。
 //!
-//! 平台差异收敛在 [`default_transport`]：Linux 真实 ICMP 探测；非 Linux 返回
-//! `None`（记为丢包）——Windows 数据面探测传输随其数据面接线后接入，SEL-001
-//! 先以 Linux 为准验收。
+//! 平台差异收敛在 [`default_transport`]：Linux 真实 ICMP 探测（`ping -c 1
+//! -W 1`）；Windows 同口径 ICMP（`ping -n 1 -w 1000`，[`crate::windows_probe`]，
+//! 2026-11-13 接线）；其余平台返回 `None`（记为丢包）。
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::Ipv4Addr;
@@ -250,15 +250,22 @@ pub fn probe_round<F: Fn(Ipv4Addr) -> Option<u128>>(
 /// 平台默认探测传输：Linux 经 `ping -c 1 -W 1` 发 ICMP echo 实测 RTT（免特权
 /// 的 `ping_group_range` 或 root 均可，与 [`crate::linux::run_ping_rtt`] 同源）。
 ///
-/// 非 Linux（Windows 数据面探测传输未接线）返回 `None`——`probe_round` 记为
-/// 丢包，绝不假装探测到 RTT。SEL-001 以 Linux 为准验收。
+/// Windows 经 `ping -n 1 -w 1000` 同口径实测（[`crate::windows_probe`]，P0
+/// 接线 2026-11-13：此前非 Linux 一律 `None` 记丢包，主力平台探测全盲）。
+/// 其余平台返回 `None`——`probe_round` 记为丢包，绝不假装探测到 RTT。
 #[cfg(target_os = "linux")]
 pub fn default_transport(ip: Ipv4Addr) -> Option<u128> {
     crate::linux::run_ping_rtt(ip)
 }
 
-/// 平台默认探测传输（非 Linux）：见上方 Linux 版别的文档。
-#[cfg(not(target_os = "linux"))]
+/// 平台默认探测传输（Windows）：见上方 Linux 版别的文档。
+#[cfg(target_os = "windows")]
+pub fn default_transport(ip: Ipv4Addr) -> Option<u128> {
+    crate::windows_probe::run_ping_rtt(ip)
+}
+
+/// 平台默认探测传输（其余平台）：无探测实现，记为丢包（见上方文档）。
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn default_transport(_ip: Ipv4Addr) -> Option<u128> {
     None
 }
