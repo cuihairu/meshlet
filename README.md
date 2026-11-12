@@ -18,8 +18,8 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > Covered: routes, firewall, service control and uninstall cleanup.
 > A Windows agent+CLI+tray-host zip and `install.ps1` now ship in the nightly release.
 > The Windows data-plane backend is wired (ADR-008 tunnel-only v1) and R-05 real-machine acceptance passed on 2026-11-12.
-> The end-to-end apply walkthrough and real-machine installer/tray-host acceptance remain pending (AGENT-WIN-3, NIGHTLY-MSI-1).
-> Long-run soak acceptance also remains pending. See [TODO](todo.md).
+> The end-to-end apply walkthrough and real-machine installer/tray-host acceptance passed on 2026-11-13 on a real machine (AGENT-WIN-3, NIGHTLY-MSI-1; #52 data-plane apply walkthrough included).
+> Long-run soak acceptance remains pending. See [TODO](todo.md).
 
 ## Nightly builds and one-command installation
 
@@ -91,15 +91,17 @@ Windows is a data-plane target gated behind real-machine acceptance
 - Cross-platform evidence: full-workspace `cargo test` and
   `cargo clippy --workspace --all-targets -- -D warnings` pass on `stable-x86_64-pc-windows-gnu`. CI runs `cargo test --workspace` natively on `windows-latest`.
 
-Still pending on Windows:
+Windows acceptance status (2026-11-13: R-05, installer, tray-host and end-to-end apply all passed; NAT remains an explicit ADR-008 rejection):
 
 - The agent's data-plane backend is wired on Windows (ADR-008 tunnel-only v1, commit `1324dd2`):
   `SystemBackend` maps to the real Windows backend for tunnel/routes/device plans, and the R-05
   real-machine acceptance items (tunnel lifecycle, elevation exec, boot-recovery) passed on
-  2026-11-12. NAT-bearing plans are still explicitly rejected per ADR-008. The remaining gap is an
-  end-to-end apply walkthrough on a real machine (approve the device, apply the revision, tunnel up).
-- MSI is in the nightly, real-machine installer acceptance is finishing. The nightly release publishes a Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`). It also publishes an `install.ps1` installer ([install below](#install-the-agent-on-windows)). The MSI installer is `meshlet-nightly-windows-x86_64.msi`, built with cargo-wix. It packages server, agent, CLI and tray-host in one installer. It adds start-menu shortcuts and an Add/Remove Programs entry. The zip/install.ps1 path was accepted on a real machine (AGENT-WIN-2, 2026-10-31); the MSI was walked through install/uninstall/run on 2026-11-12 (which surfaced and fixed two CLI defects, `6a9ec71`). The remaining piece is the reinstall check against a current nightly (`todo.md` NIGHTLY-MSI-1).
-- A Windows tray host ships, real-machine acceptance pending. `apps/tray-host` (`meshlet-tray-host.exe`) is a thin Win32 `Shell_NotifyIcon` host. It consumes the agent's four-state status PNGs (`TraySink`). `install.ps1` copies it, registers HKCU logon autostart with the agent state directory, and starts it unless `-NoStartTray` is passed. Real-machine walkthroughs (icon switching, menus) remain pending. Its menu splits two entries: **本地面板 (local panel)** — a read-only page the tray host serves itself on `127.0.0.1` (current node, direct peers, local routes read from the local state files, so it opens even when the server is unreachable) — and **控制台(网页) (web console)**, which opens `server_url`. On Linux the agent writes the same status PNGs and sends D-Bus desktop notifications. The repository holds no panel host binary for either platform's desktop shell beyond what ships here.
+  2026-11-12. NAT-bearing plans are still explicitly rejected per ADR-008. The end-to-end apply
+  walkthrough passed on a real machine on 2026-11-13 (two full apply cycles on the nightly binary:
+  tunnel service reinstalled, routes replayed, firewall rules converged idempotently,
+  ping 10.240.0.1 8-9 ms through the tunnel; see `todo.md` #52).
+- MSI is in the nightly and passed real-machine installer acceptance on 2026-11-13 (NIGHTLY-MSI-1). The nightly release publishes a Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`). It also publishes an `install.ps1` installer ([install below](#install-the-agent-on-windows)). The MSI installer is `meshlet-nightly-windows-x86_64.msi`, built with cargo-wix. It packages server, agent, CLI and tray-host in one installer. It adds start-menu shortcuts and an Add/Remove Programs entry. The zip/install.ps1 path was accepted on a real machine (AGENT-WIN-2, 2026-10-31); the MSI was walked through install/uninstall/run on 2026-11-12 (which surfaced and fixed two CLI defects, `6a9ec71`), and the reinstall check against the `b988ed8` nightly passed on 2026-11-13 (hash-verified download, ARP entry, shortcuts, exe set, uninstall cleanup, agent continuity; see `todo.md` NIGHTLY-MSI-1).
+- A Windows tray host ships and passed real-machine acceptance on 2026-11-13 (AGENT-WIN-3). `apps/tray-host` (`meshlet-tray-host.exe`) is a thin Win32 `Shell_NotifyIcon` host. It consumes the agent's four-state status PNGs (`TraySink`). `install.ps1` copies it, registers HKCU logon autostart with the agent state directory, and starts it unless `-NoStartTray` is passed. The real-machine walkthrough verified icon state colors pixel-exact in a console session (`NIM_ADD = 1`), the right-click menu rendering with both entries, and the local panel serving HTTP 200. Its menu splits two entries: **本地面板 (local panel)** — a read-only page the tray host serves itself on `127.0.0.1` (current node, direct peers, local routes read from the local state files, so it opens even when the server is unreachable) — and **控制台(网页) (web console)**, which opens `server_url`. On Linux the agent writes the same status PNGs and sends D-Bus desktop notifications. The repository holds no panel host binary for either platform's desktop shell beyond what ships here.
 
 ### Install the agent on Windows
 
@@ -114,7 +116,7 @@ pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '
 The installer verifies the zip's SHA-256 against the release `SHA256SUMS`. It installs `meshlet-agent.exe`, `meshlet-cli.exe` and `meshlet-tray-host.exe` into `%LOCALAPPDATA%\meshlet` and adds that directory to the user PATH. It generates an agent key and config once, and registers per-user HKCU Run autostart entries for the hidden agent and tray host.
 Re-run it to upgrade — the existing `agent.toml` and key are preserved, so device credentials
 survive. Offline/staged installs use `$env:MESHLET_INSTALL_ARCHIVE` and
-`$env:MESHLET_INSTALL_SHA256SUMS`. The installer starts the background agent and tray host by default; pass `-NoStartTray` to skip the tray host's immediate start while keeping its logon autostart entry. Data-plane apply on Windows is wired (tunnel-only v1 per ADR-008); the end-to-end real-machine apply walkthrough is still pending — see below.
+`$env:MESHLET_INSTALL_SHA256SUMS`. The installer starts the background agent and tray host by default; pass `-NoStartTray` to skip the tray host's immediate start while keeping its logon autostart entry. Data-plane apply on Windows is wired (tunnel-only v1 per ADR-008) and passed the end-to-end real-machine apply walkthrough on 2026-11-13 — see below.
 
 ### Build and run the agent on Windows (from source)
 
@@ -149,10 +151,10 @@ Run it from an elevated terminal:
 meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 ```
 
-Approve the device in the console, then apply the network's current revision. **Data-plane apply on Windows is wired** (ADR-008 tunnel-only v1; the R-05 real-machine acceptance items passed on 2026-11-12); the end-to-end apply walkthrough on a real machine is still pending. The control plane (registration, heartbeats, status) works. A machine that only has the
+Approve the device in the console, then apply the network's current revision. **Data-plane apply on Windows is wired** (ADR-008 tunnel-only v1; the R-05 real-machine acceptance items passed on 2026-11-12; the end-to-end apply walkthrough passed on a real machine on 2026-11-13). The control plane (registration, heartbeats, status) works. A machine that only has the
 `WireGuardTunnel$…` service (e.g. set up by hand) does **not** have the agent running — check for
-`meshlet-agent.exe` in the process list. Real-machine installer and tray-host acceptance are
-tracked as pending work — see [TODO](todo.md).
+`meshlet-agent.exe` in the process list. Real-machine installer and tray-host acceptance passed
+on 2026-11-13 — see [TODO](todo.md).
 
 ## What it is
 
@@ -185,7 +187,7 @@ Agent path: pull plan → reconcile → apply tunnel/routes/NAT → heartbeat. B
 
 The current implementation is not fully accepted for deployment. See the
 [P0 fixes and nightly implementation record](docs/implementation/fixes-and-nightly-2026-10-17.md)
-for local Linux evidence. Empty-VPS installation and real-device walkthroughs remain pending. On Windows the data-plane wiring (R-05) passed real-machine acceptance on 2026-11-12; real-machine installer/tray-host acceptance and the end-to-end apply walkthrough also remain pending. See [Windows support](#windows-support).
+for local Linux evidence. Empty-VPS installation and real-device walkthroughs remain pending. On Windows the data-plane wiring (R-05) passed real-machine acceptance on 2026-11-12, and the real-machine installer/tray-host acceptance plus the end-to-end apply walkthrough passed on 2026-11-13. See [Windows support](#windows-support).
 The current checklist at the top of [TODO](todo.md) records these limits.
 
 ## License
