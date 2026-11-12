@@ -17,7 +17,8 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > Windows backend modules are implemented and real-machine verified.
 > Covered: routes, firewall, service control and uninstall cleanup.
 > A Windows agent+CLI+tray-host zip and `install.ps1` now ship in the nightly release.
-> The agent's live data-plane wiring and real-machine installer/tray-host acceptance remain pending (R-05, AGENT-WIN).
+> The Windows data-plane backend is wired (ADR-008 tunnel-only v1) and R-05 real-machine acceptance passed on 2026-11-12.
+> The end-to-end apply walkthrough and real-machine installer/tray-host acceptance remain pending (AGENT-WIN-3, NIGHTLY-MSI-1).
 > Long-run soak acceptance also remains pending. See [TODO](todo.md).
 
 ## Nightly builds and one-command installation
@@ -97,7 +98,7 @@ Still pending on Windows:
   real-machine acceptance items (tunnel lifecycle, elevation exec, boot-recovery) passed on
   2026-11-12. NAT-bearing plans are still explicitly rejected per ADR-008. The remaining gap is an
   end-to-end apply walkthrough on a real machine (approve the device, apply the revision, tunnel up).
-- MSI is in the nightly, and real-machine install acceptance is pending. The nightly release publishes a Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`). It also publishes an `install.ps1` installer ([install below](#install-the-agent-on-windows)). The MSI installer is `meshlet-nightly-windows-x86_64.msi`, built with cargo-wix. It packages server, agent, CLI and tray-host in one installer. It adds start-menu shortcuts and an Add/Remove Programs entry. Neither installer has been accepted on a real machine yet (AGENT-WIN-2, NIGHTLY-MSI-1 in `todo.md`).
+- MSI is in the nightly, real-machine installer acceptance is finishing. The nightly release publishes a Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`). It also publishes an `install.ps1` installer ([install below](#install-the-agent-on-windows)). The MSI installer is `meshlet-nightly-windows-x86_64.msi`, built with cargo-wix. It packages server, agent, CLI and tray-host in one installer. It adds start-menu shortcuts and an Add/Remove Programs entry. The zip/install.ps1 path was accepted on a real machine (AGENT-WIN-2, 2026-10-31); the MSI was walked through install/uninstall/run on 2026-11-12 (which surfaced and fixed two CLI defects, `6a9ec71`). The remaining piece is the reinstall check against a current nightly (`todo.md` NIGHTLY-MSI-1).
 - A Windows tray host ships, real-machine acceptance pending. `apps/tray-host` (`meshlet-tray-host.exe`) is a thin Win32 `Shell_NotifyIcon` host. It consumes the agent's four-state status PNGs (`TraySink`). `install.ps1` copies it, registers HKCU logon autostart with the agent state directory, and starts it unless `-NoStartTray` is passed. Real-machine walkthroughs (icon switching, menus) remain pending. Its menu splits two entries: **本地面板 (local panel)** — a read-only page the tray host serves itself on `127.0.0.1` (current node, direct peers, local routes read from the local state files, so it opens even when the server is unreachable) — and **控制台(网页) (web console)**, which opens `server_url`. On Linux the agent writes the same status PNGs and sends D-Bus desktop notifications. The repository holds no panel host binary for either platform's desktop shell beyond what ships here.
 
 ### Install the agent on Windows
@@ -184,7 +185,7 @@ Agent path: pull plan → reconcile → apply tunnel/routes/NAT → heartbeat. B
 
 The current implementation is not fully accepted for deployment. See the
 [P0 fixes and nightly implementation record](docs/implementation/fixes-and-nightly-2026-10-17.md)
-for local Linux evidence. ARM64 builds and the first nightly publication on the default branch remain pending. So do empty-VPS installation and real-device walkthroughs. On Windows the data-plane wiring (R-05) passed real-machine acceptance on 2026-11-12; real-machine installer/tray-host acceptance and the end-to-end apply walkthrough also remain pending. See [Windows support](#windows-support).
+for local Linux evidence. Empty-VPS installation and real-device walkthroughs remain pending. On Windows the data-plane wiring (R-05) passed real-machine acceptance on 2026-11-12; real-machine installer/tray-host acceptance and the end-to-end apply walkthrough also remain pending. See [Windows support](#windows-support).
 The current checklist at the top of [TODO](todo.md) records these limits.
 
 ## License

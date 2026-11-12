@@ -74,18 +74,20 @@ pub mod windows;
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub mod unsupported;
 
-/// 平台默认后端：Linux 为真实内核后端（[linux] 模块，ADR-007）；非 Linux
-/// 为 [unsupported] 模块的明确占位（ADR-008 Windows 后端待接入）。
+/// 平台默认后端：Linux 为真实内核后端（[linux] 模块，ADR-007）。
 ///
 /// 调用方一律经本别名构造（`SystemBackend::new()` + `with_*` 装配），平台
-/// 差异收敛在这里：Linux 真实执行，其他平台每个数据面操作都失败可见。
+/// 差异收敛在这里：Linux 真实执行。
 #[cfg(target_os = "linux")]
 pub type SystemBackend = linux::LinuxNetworkBackend;
 
-/// 平台默认后端（非 Linux）：见上方 Linux 版别的文档。
+/// 平台默认后端（Windows）：真实 Windows 后端（[windows] 模块，ADR-008
+/// tunnel-only v1 已接线；NAT-bearing 计划显式拒绝，绝不静默假装生效）。
 #[cfg(target_os = "windows")]
 pub type SystemBackend = windows::WindowsNetworkBackend;
 
+/// 平台默认后端（其余平台）：[unsupported] 模块的明确占位，每个数据面操作
+/// 都失败可见（`NetworkError::Unsupported`），绝不静默假装生效。
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub type SystemBackend = unsupported::UnsupportedBackend;
 

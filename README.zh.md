@@ -85,7 +85,7 @@ Windows 是数据面目标平台，受真机验收门禁（[R-05](docs/implement
 Windows 上仍待完成：
 
 - agent 数据面后端已按 ADR-008 接线（tunnel-only v1，`1324dd2`）：Windows 的 `SystemBackend` 已映射到真实 Windows 后端（隧道/路由/设备计划），R-05 三项真机验收（隧道生命周期、提权执行层、开机恢复）已于 2026-11-12 全过。NAT-bearing 计划仍按 ADR-008 显式拒绝。余项：真机端到端 apply 走查（批准设备 → 应用修订 → 隧道打通）。
-- MSI 已入 nightly，安装包真机验收未做。nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）。MSI 安装包为 `meshlet-nightly-windows-x86_64.msi`，由 cargo-wix 构建。该 MSI 把 server、agent、CLI 与 tray-host 打进一个包，含开始菜单项与卸载项。两类安装包均未经真机验收（AGENT-WIN-2、`todo.md` NIGHTLY-MSI-1）。
+- MSI 已入 nightly，安装包真机验收待收尾。nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）。MSI 安装包为 `meshlet-nightly-windows-x86_64.msi`，由 cargo-wix 构建。该 MSI 把 server、agent、CLI 与 tray-host 打进一个包，含开始菜单项与卸载项。zip/install.ps1 真机验收已通过（AGENT-WIN-2，2026-10-31）；MSI 已于 2026-11-12 真机走查安装/卸载/运行（顺带发现并修复 2 个 CLI 缺陷，`6a9ec71`），余项是含最新 nightly 的复装确认（`todo.md` NIGHTLY-MSI-1）。
 - Windows 托盘宿主已随包发布，真机验收待做。`apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`）。已随 nightly zip 发布；`install.ps1` 会把它装进 `%LOCALAPPDATA%\meshlet`、注册 HKCU 登录自启并默认启动（`-NoStartTray` 只跳过立即启动），图标换图与菜单的真机走查按 AGENT-WIN-2/3 跟踪。菜单分两个入口：**本地面板**（tray-host 自己在 `127.0.0.1` 上托管的只读页，读本机状态文件展示当前节点 / 直连节点 / 本地路由，**server 挂了也照样打开**）与**控制台(网页)**（打开 `server_url` 托管的控制台）。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知，但 Linux 侧尚无对应的桌面托盘宿主二进制。
 
 ### 在 Windows 安装 agent

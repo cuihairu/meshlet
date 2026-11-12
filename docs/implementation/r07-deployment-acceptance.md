@@ -198,8 +198,11 @@ Each iteration forks a fresh `curl` process, so these are floors set by client p
 
 ## Not accepted
 
-- Windows client: remains not accepted while the R-05 end-to-end acceptance runs on the newly
-  provided Windows machines.
+- Windows client: remains not fully accepted.
+  - **2026-11-12 update**: R-05 real-machine acceptance (tunnel lifecycle, elevation exec,
+    boot-recovery) passed on imac on 2026-11-12, and the data-plane backend is wired
+    (`1324dd2`, ADR-008 tunnel-only v1). What is still open: the end-to-end apply walkthrough
+    and the MSI/tray-host reinstall confirmation.
   - **2026-11-05 update**: three Windows machines have been provided (imac 192.168.5.117,
     openclaw 10.240.0.3, work win11 `cuihaitao` 10.240.0.5); the R-05 acceptance is running on
     imac and the cuihaitao node is installed (agent + tray host) and online (plan applied,

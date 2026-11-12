@@ -21,7 +21,7 @@ features:
     link: /implementation/r04-linux-agent-e2e
     linkText: Acceptance records
   - title: What is not done stays unchecked
-    details: Windows machines are now provided (imac, openclaw, work-win11) and the R-05 acceptance is running on imac; the long-run soak collector started on 2026-10-24 and needs weeks of data; no dated release exists yet. The TODO keeps all three visible.
+    details: R-05 real-machine acceptance passed on imac on 2026-11-12; the end-to-end apply walkthrough and the MSI/tray-host reinstall confirmation are still open, the long-run soak collector started on 2026-10-24 and needs weeks of data, and no dated release exists yet. The TODO keeps all three visible.
     link: /implementation/r07-deployment-acceptance
     linkText: Deployment acceptance
 ---
