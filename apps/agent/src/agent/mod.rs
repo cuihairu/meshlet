@@ -50,9 +50,16 @@ use crate::tray::{TraySink, TrayState};
 use meshlet_config::TrayConfig;
 
 /// 拉取持续失败时的退避上限（秒）：服务端不可达时不打满日志。
-pub const BACKOFF_MAX_SECS: u64 = 300;
+///
+/// 2026-11-12 用户令（P1）：300s 封顶意味着断线后最坏 5 分钟才重试一次，
+/// 是「老是连不上」的直接来源——封到 30s；网络变化事件另触发**立即**重试
+/// （[`crate::net_event`]），网络早恢复就不必干等退避周期。
+pub const BACKOFF_MAX_SECS: u64 = 30;
 /// 连续成功后的正常轮询间隔由 `[dataplane] poll_interval_secs` 决定。
 const BACKOFF_MIN_SECS: u64 = 1;
+/// 网络事件唤醒重试的节流地板（真机实证：一次换网动作在亚秒级连发一串
+/// netlink 消息，不设地板就是 tick 洪流——1s 粒度仍是「立即」）。
+const NET_WAKE_FLOOR: Duration = Duration::from_secs(1);
 
 /// 设备端 agent：拉计划 → 对账 → 应用 → 心跳，循环之。
 pub struct Agent {
@@ -212,9 +219,15 @@ impl Agent {
     }
 
     /// 主循环：首轮即对账（启动对账），之后按 `poll_interval_secs` 轮询；
-    /// 连续失败指数退避至上限。
+    /// 连续失败指数退避至上限（[`BACKOFF_MAX_SECS`]，30s）。等待期可被网络
+    /// 变化事件（接口起落 / 地址增删，[`crate::net_event`]）**立即唤醒重试**
+    /// ——网络早恢复就不干等退避周期；正常轮询周期同样可被唤醒（换网时尽快
+    /// 对账），监视不可用时退回纯睡眠，绝不忙转。事件串按 [`NET_WAKE_FLOOR`]
+    /// 节流：一次换网动作的事件串不打成 tick 洪流。
     pub fn run(mut self) -> ! {
         let mut backoff = Duration::from_secs(BACKOFF_MIN_SECS);
+        let net_events = crate::net_event::watch();
+        let mut last_net_wake: Option<Instant> = None;
         loop {
             match self.tick() {
                 Ok(()) => backoff = Duration::from_secs(BACKOFF_MIN_SECS),
@@ -227,7 +240,30 @@ impl Agent {
             } else {
                 backoff
             };
-            std::thread::sleep(wait);
+            match net_events.recv_timeout(wait) {
+                Ok(()) => {
+                    // 合并已在队列里的事件：同批只触发一次立即重试。
+                    while net_events.try_recv().is_ok() {}
+                    // 事件串防抖：1s 内已因网络事件重试过的，等满 1s 再来
+                    // （真机实证：一次 DHCP 类动作 400ms 内连发 17 条消息，
+                    // 不设地板就是 tick 洪流）。
+                    if let Some(last) = last_net_wake {
+                        let since = last.elapsed();
+                        if since < NET_WAKE_FLOOR {
+                            std::thread::sleep(NET_WAKE_FLOOR - since);
+                            while net_events.try_recv().is_ok() {}
+                        }
+                    }
+                    last_net_wake = Some(Instant::now());
+                    tracing::info!("network change observed: retrying immediately");
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // 监视线程没了（订阅失败/退出）：退回纯睡眠——Disconnected
+                // 立即返回，不处理就是忙转。
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(wait);
+                }
+            }
             backoff = (backoff * 2).min(Duration::from_secs(BACKOFF_MAX_SECS));
         }
     }

@@ -24,6 +24,7 @@ pub mod direct;
 pub mod direct_rtt;
 pub mod instance_lock;
 pub mod mcp;
+pub mod net_event;
 pub mod probe;
 pub mod reconcile;
 pub mod self_update;

@@ -31,7 +31,11 @@ libc = "0.2"
 zbus = { version = "5.19.0", default-features = false, features = ["async-io"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_RemoteDesktop"] }
+windows-sys = { workspace = true, features = [
+  "Win32_System_RemoteDesktop",
+  "Win32_System_IO",
+  "Win32_NetworkManagement_IpHelper",
+] }
 
 [build-dependencies]
 winresource = "0.1"
