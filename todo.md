@@ -5,12 +5,12 @@
 <!-- 2026-11-09 补账：以下项在 README.md:20-21、98、185 与 docs/index.md:24 明确标注 pending，
      但此前未进 todo.md，导致巡检按「todo 全勾」误判「无活可派」。此处如实补入，不虚标完成。 -->
 
-- [ ] R-05 Windows 真机验收（AGENT-WIN-2 / AGENT-WIN-3）：tunnel 全生命周期、elevation exec、boot-recovery 重启。【2026-11-12 本席经 SSH+cua-driver 计划任务模式在 imac 真机代跑：B1/B2 已实测通过（见下），B3 需重启 imac 待用户点头（桌面在用），R-05 整体保持未勾】
-  - 现状：AGENT-WIN-2 已在 imac 跑 5/5 通过（`docs/agent-win-2-acceptance.md`，2026-10-31）；tunnel 生命周期与 elevation exec 仍缺真机证据。2026-11-09 本机静态核实：6 项 PASS（routes/firewall/service/uninstall/console/AGENT-WIN-2）/ 3 项 BLOCKED(真机) 逐项矩阵带 file:line 证据见 `docs/implementation/r05-status.md`；B1–B3 需用户真机执行（优先 imac），本席不代跑。
+- [x] R-05 Windows 真机验收（AGENT-WIN-2 / AGENT-WIN-3）：tunnel 全生命周期、elevation exec、boot-recovery 重启。【2026-11-12 全部真机通过并勾账：B1/B2/B3 三项 imac 实测闭环（用户点头后 12:08 完成重启验证），此前 6 项 PASS 见 r05-status.md】
+  - 现状：AGENT-WIN-2 已在 imac 跑 5/5 通过（`docs/agent-win-2-acceptance.md`，2026-10-31）。2026-11-09 本机静态核实：6 项 PASS（routes/firewall/service/uninstall/console/AGENT-WIN-2）逐项矩阵带 file:line 证据见 `docs/implementation/r05-status.md`。
   - **B1 tunnel 生命周期 ✅ 2026-11-12 imac 实测**：`/uninstalltunnelservice wg-meshlet` → 服务消失 + ping 10.240.0.1 断（真断非假成功）→ 幂等重卸报 `service does not exist`（分类正确）→ `/installtunnelservice` 重装 → 服务 Running + ping 恢复 + `wg-meshlet` 接口 10.240.0.7/16。`wireguard.exe` 路径 `C:\Program Files\WireGuard`，conf 在 `%LOCALAPPDATA%\Temp\meshlet\wg-meshlet.conf`（服务 PathName 佐证）。
-  - **B2 elevation exec 真机首跑 ✅ 2026-11-12**：`current_process_is_elevated()` 首次真实 Windows 执行 = `Ok(true)`；ManagedExecutablePath 拒绝受管目录外路径 ✓；classify(5,"Access is denied.") → InsufficientPrivileges ✓。**附带发现：Windows OpenSSH 会话默认 High Mandatory Level（S-1-16-12288，whoami /groups 实证）→ SSH 上下文无法测「非提升」分支，且 SSH 上跑 elevation 判定会恒真**——该局限已实测，后续验收须用非提升计划任务或交互桌面。
-  - **B3 boot-recovery 需重启 imac**——console 会话（Session 20）explorer 在跑（用户桌面在用），重启须用户点头，未擅动。
-  - 验收：`docs/implementation/r05-windows-acceptance.md` checklist 逐项真机跑通并附日志。
+  - **B2 elevation exec 真机首跑 ✅ 2026-11-12**：`current_process_is_elevated()` 首次真实 Windows 执行 = `Ok(true)`；ManagedExecutablePath 拒绝受管目录外路径 ✓；classify(5,"Access is denied.") → InsufficientPrivileges ✓。**附带发现：Windows OpenSSH 会话默认 High Mandatory Level（S-1-16-12288，whoami /groups 实证）→ SSH 上下文无法测「非提升」分支，且 SSH 上跑 elevation 判定会恒真**——后续验收须用非提升计划任务或交互桌面。
+  - **B3 boot-recovery ✅ 2026-11-12 12:08（用户点头重启）**：重启前基线（服务 Running/接口 10.240.0.7/16/防火墙 5 规则）→ `shutdown /r /t 10` → 12:08:39 起机 → **服务自动 Running + 接口自动恢复 10.240.0.7/16 + ping 10.240.0.1 通 + 防火墙规则 6 条全在**——开机恢复闭环。
+  - 遗留衔接：#52 SystemBackend 接线的 B1–B3 前置已全部满足（ADR-008 设计确认 2026-11-09 已落），可进入接线实施。
 - [ ] NIGHTLY-MSI-1：`meshlet-nightly-windows-x86_64.msi` 真机安装验收（开始菜单、添加/删除程序、卸载清理）。【2026-11-12 本席 imac 实测完成一轮：安装/卸载/运行全走查，发现并修复 2 个真实缺陷（6a9ec71），待新版 nightly MSI 复装确认后勾】
   - 现状：MSI 已随 nightly 发布，从未在真机跑过安装/卸载。
   - **2026-11-12 实测**：imac 原装 Meshlet 0.1.0（product `{6F1F6166-...}`）→ 静默卸载 exit=0，ARP/开始菜单/Program Files 全清 ✓ → 装 nightly MSI exit=0，ARP 新 product `{AACE9652-...}`、开始菜单 3 快捷方式（目标 exe 均存在）、`C:\Program Files\Meshlet` 4 个 exe 落位 ✓。**运行走查抓到真缺陷**：`meshlet-server --version` panic exit 101（`--version` 被当配置路径，main.rs:172）、`meshlet-agent --help` exit 1 → **已修 6a9ec71**（两 exe 先行处理 `--version/-V/--help/-h`，imac 真机复编译实测 4 条全 exit=0）。
