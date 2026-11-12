@@ -1,7 +1,8 @@
 //! Agent 主体：拉计划 → 对账 → 应用 → 心跳，循环之。
 //!
-//! 一切内核操作都经 [`meshlet_network::SystemBackend`]（ADR-007；非 Linux
-//! 平台为 ADR-008 的明确 Unsupported 占位，每个操作失败可见）：
+//! 一切内核操作都经 [`meshlet_network::SystemBackend`]（ADR-007；Windows 上
+//! 已按 ADR-008 接线到 `windows::WindowsNetworkBackend`（tunnel-only v1，
+//! NAT-bearing 计划显式拒绝），其余非 Linux 平台仍为 Unsupported 占位）：
 //! 本模块只负责**何时**调用它与**喂什么配置**（计划来自 server，绝非本地拼装
 //! 的 Shell 命令，§16.4）。
 mod direct;

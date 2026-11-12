@@ -23,8 +23,9 @@
 - [ ] R-07 soak：长跑 soak 验收。【2026-11-09 r6 巡检：BLOCKED——新 soak 窗口未启动（等 D6 资源待答用户），窗口本身 ≥7 天，标注跳过】
   - 现状：收集器 2026-10-24 启动，需数周数据；day-1 review 16.85h `status=OK`、`NRestarts=0`，远未达门槛（`docs/analysis/todo-completion-audit-2026-10-27.md:334`）。2026-11-09 核查：原 PVE 网格已主动拆除（2026-10-30 决策 D6），本席 ping 192.168.5.150 不通、旧 collect.sh/soak.log 留存无法核实；旧累计 39.4h 按纪律列历史证据不折算，距门槛 = 一整个新窗口（≥7 天 / D7 建议 21 天），见 `docs/analysis/r07-soak-status-2026-11-09.md`；dev VPS meshlet-server active（2026-11-07 起 NRestarts=0）仅作旁证记录、不计入窗口；启动前等 D6 资源待答（用户）。
   - 验收：连续 ≥ 7 天无重启/无掉线，指标曲线与报告归档。
-- [ ] #52 SystemBackend Windows 实装：data-plane 从 `unsupported` 占位切到真实实现。【2026-11-09 r6 巡检：BLOCKED——前置 R-05 B1–B3 真机未过；设计侧已确认（见现状），标注跳过】
+- [ ] #52 SystemBackend Windows 实装：data-plane 从 `unsupported` 占位切到真实实现。【2026-11-12 巡检：接线已落（1324dd2，meshlet-network lib.rs Windows 别名=WindowsNetworkBackend），R-05 B1–B3 前置 2026-11-12 全过；余端到端真机 apply 验证】
   - 前置：R-05 三项（tunnel lifecycle / elevation / boot-recovery）真机通过 + ADR-008 tunnel-only v1 设计确认。2026-11-09 设计确认已落 `docs/decisions/2026-11-09-adr-008-windows-v1-gate.md`（tunnel-only v1 口径：NAT-bearing 计划显式拒绝；D2 原语映射就绪；接线排程原文 r05-windows-acceptance.md:103-105「deliberately deferred until 1–3 are accepted」）——#52 阻塞仅剩 R-05 B1–B3 三项真机，不是缺设计。
+  - **2026-11-12 现状更新**：接线已落——`1324dd2`（10-30）"Wire SystemBackend to WindowsNetworkBackend on Windows"，`crates/meshlet-network/src/lib.rs:87` Windows 别名生效，backend.rs 具 inspect/apply_tunnel/apply_routes/apply_device_plan_sync/mtu_probe_sync；R-05 B1–B3 已于 2026-11-12 真机全过（见 R-05 条目）。余项：imac 端到端 apply 走查（console 批准 → apply revision → ping 10.240.0.1），真机未过不勾。文档口径本轮已同步（README.md、README.zh.md、agent mod.rs 头注释）。
 
 ## 源码分层分析 2026-11-07
 

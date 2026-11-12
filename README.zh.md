@@ -14,7 +14,7 @@
 > 已有 Linux 真实内核与非 root 服务回归证据。
 > Windows 后端模块已实现并完成路由、防火墙、服务控制与卸载清理的真机验收。
 > nightly 现已附带 Windows agent+CLI+tray-host zip 与 `install.ps1`。
-> agent 数据面接线与安装包/托盘真机验收仍待完成（R-05、AGENT-WIN）。
+> agent 数据面接线已按 ADR-008 落地（tunnel-only v1），R-05 三项真机验收 2026-11-12 全过；端到端 apply 真机走查与安装包/托盘真机验收（AGENT-WIN-3、NIGHTLY-MSI-1）仍待完成。
 > 空 VPS 安装和真实设备
 > 走查也仍待完成。每日构建与一键安装见下节，当前验收范围见 [TODO](todo.md)。
 
@@ -79,12 +79,12 @@ sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/m
 Windows 是数据面目标平台，受真机验收门禁（[R-05](docs/implementation/r05-windows-acceptance.md)，ADR-008）。仓库现状：
 
 - 后端模块，已真机验收（中文 Windows Server 2022，2026-10-25/26）。路由（`netsh interface ipv4`）、防火墙规则（`netsh advfirewall firewall`）、服务控制（`sc`）与卸载清理——增/读回/删/幂等重删均真机走通。含 zh-CN 输出（GBK/CP936）由 `windows_console` 解码。
-- WireGuardNT 隧道计划层 + CI：`windows_tunnel` 渲染 `WireGuardTunnel$<name>` 服务配置并构造 `wireguard.exe` argv；其文件级测试在 `windows-latest` CI 真跑。隧道真机全生命周期仍待完成。
+- WireGuardNT 隧道计划层 + CI：`windows_tunnel` 渲染 `WireGuardTunnel$<name>` 服务配置并构造 `wireguard.exe` argv；其文件级测试在 `windows-latest` CI 真跑。隧道真机全生命周期已于 2026-11-12 通过验收（R-05 B1）。
 - 跨平台证据：全 workspace `cargo test` 通过。`cargo clippy --workspace --all-targets -- -D warnings` 在 `stable-x86_64-pc-windows-gnu` 上同样绿。CI 在 `windows-latest` 原生跑 `cargo test --workspace`。
 
-Windows 上仍未就绪：
+Windows 上仍待完成：
 
-- agent 活动数据面后端未接线。Windows 的 `SystemBackend` 仍是显式 `unsupported` 占位，直到隧道生命周期、提权执行层与开机恢复通过真机验收。Windows agent 可注册、上报状态，但应用隧道/路由/NAT 计划被显式拒绝——没有任何假装成功。
+- agent 数据面后端已按 ADR-008 接线（tunnel-only v1，`1324dd2`）：Windows 的 `SystemBackend` 已映射到真实 Windows 后端（隧道/路由/设备计划），R-05 三项真机验收（隧道生命周期、提权执行层、开机恢复）已于 2026-11-12 全过。NAT-bearing 计划仍按 ADR-008 显式拒绝。余项：真机端到端 apply 走查（批准设备 → 应用修订 → 隧道打通）。
 - MSI 已入 nightly，安装包真机验收未做。nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）。MSI 安装包为 `meshlet-nightly-windows-x86_64.msi`，由 cargo-wix 构建。该 MSI 把 server、agent、CLI 与 tray-host 打进一个包，含开始菜单项与卸载项。两类安装包均未经真机验收（AGENT-WIN-2、`todo.md` NIGHTLY-MSI-1）。
 - Windows 托盘宿主已随包发布，真机验收待做。`apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`）。已随 nightly zip 发布；`install.ps1` 会把它装进 `%LOCALAPPDATA%\meshlet`、注册 HKCU 登录自启并默认启动（`-NoStartTray` 只跳过立即启动），图标换图与菜单的真机走查按 AGENT-WIN-2/3 跟踪。菜单分两个入口：**本地面板**（tray-host 自己在 `127.0.0.1` 上托管的只读页，读本机状态文件展示当前节点 / 直连节点 / 本地路由，**server 挂了也照样打开**）与**控制台(网页)**（打开 `server_url` 托管的控制台）。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知，但 Linux 侧尚无对应的桌面托盘宿主二进制。
 
@@ -97,7 +97,7 @@ Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/
 pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken '控制台里的TOKEN' -DeviceName 'home-windows'
 ```
 
-安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` / `meshlet-tray-host.exe` 装进 `%LOCALAPPDATA%\meshlet`。把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器同时安装并注册托盘宿主 `meshlet-tray-host.exe`（`-NoStartTray` 可跳过立即启动，登录自启仍在），托盘菜单提供**本地面板**与**控制台(网页)**两个入口；且 Windows 上数据面 apply 在真机验收通过前仍被拒绝——见下文。
+安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` / `meshlet-tray-host.exe` 装进 `%LOCALAPPDATA%\meshlet`。把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器同时安装并注册托盘宿主 `meshlet-tray-host.exe`（`-NoStartTray` 可跳过立即启动，登录自启仍在），托盘菜单提供**本地面板**与**控制台(网页)**两个入口；Windows 上数据面 apply 已按 ADR-008 接线（tunnel-only v1），端到端真机 apply 走查仍待完成——见下文。
 
 ### 在 Windows 从源码构建并运行 agent
 
@@ -132,7 +132,7 @@ poll_interval_secs = 30
 meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 ```
 
-在控制台批准设备，再应用该网络的当前修订。**Windows 上数据面 apply 当前会被拒绝**（后端占位）直到 R-05 验收；控制面（注册、心跳、状态）可用。机器上只有 `WireGuardTunnel$…` 服务（如手工搭建）并**不**等于装了 agent——请在进程列表确认 `meshlet-agent.exe`。安装包与托盘宿主的真机验收作为待办跟踪——见 [TODO](todo.md)。
+在控制台批准设备，再应用该网络的当前修订。**Windows 上数据面 apply 已接线**（ADR-008 tunnel-only v1；R-05 三项真机验收 2026-11-12 通过），真机端到端 apply 走查仍待完成；控制面（注册、心跳、状态）可用。机器上只有 `WireGuardTunnel$…` 服务（如手工搭建）并**不**等于装了 agent——请在进程列表确认 `meshlet-agent.exe`。安装包与托盘宿主的真机验收作为待办跟踪——见 [TODO](todo.md)。
 
 ## 产品定义
 
@@ -166,7 +166,7 @@ meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 
 本轮架构修复及 Linux 回归记录见 [P0 修复与 nightly 实施记录](docs/implementation/fixes-and-nightly-2026-10-17.md)。
 整体部署验收仍未完成：ARM64 构建、默认分支首次 nightly 发布、空 VPS 一键安装和真实设备走查保持
-待验证；Windows 侧数据面接线（R-05）与安装包/托盘真机验收仍待完成——见 [Windows 支持](#windows-支持)。
+待验证；Windows 侧数据面接线（R-05）已于 2026-11-12 通过真机验收，安装包/托盘真机验收与端到端 apply 走查仍待完成——见 [Windows 支持](#windows-支持)。
 当前工作以 [TODO](todo.md) 顶部清单为准，本地测试不替代真实部署验收。
 
 ## 本地测试口径

@@ -86,15 +86,17 @@ Windows is a data-plane target gated behind real-machine acceptance
 - Backend modules are verified on real machines (Chinese Windows Server 2022, 2026-10-25/26). Covered: route management with `netsh interface ipv4` and firewall rules with `netsh advfirewall firewall`. Service control (`sc`) and uninstall cleanup are covered the same way: add / read-back / delete / idempotent re-delete. zh-CN output (GBK/CP936) is decoded by `windows_console`.
 - WireGuardNT tunnel plan layer + CI: `windows_tunnel` renders the `WireGuardTunnel$<name>`
   service config and builds `wireguard.exe` argv; its file-level test runs on `windows-latest`
-  CI. The real-machine tunnel lifecycle is still pending.
+  CI. The real-machine tunnel lifecycle passed acceptance on 2026-11-12 (R-05 B1).
 - Cross-platform evidence: full-workspace `cargo test` and
   `cargo clippy --workspace --all-targets -- -D warnings` pass on `stable-x86_64-pc-windows-gnu`. CI runs `cargo test --workspace` natively on `windows-latest`.
 
-Still not available on Windows:
+Still pending on Windows:
 
-- The agent's live data-plane backend is not wired. `SystemBackend` on Windows is the explicit
-  `unsupported` placeholder until the tunnel lifecycle, elevation exec and boot-recovery items pass
-  real-machine acceptance. A Windows agent registers and reports status. Applying a tunnel/routes/NAT plan is rejected with an explicit error; nothing pretends to succeed.
+- The agent's data-plane backend is wired on Windows (ADR-008 tunnel-only v1, commit `1324dd2`):
+  `SystemBackend` maps to the real Windows backend for tunnel/routes/device plans, and the R-05
+  real-machine acceptance items (tunnel lifecycle, elevation exec, boot-recovery) passed on
+  2026-11-12. NAT-bearing plans are still explicitly rejected per ADR-008. The remaining gap is an
+  end-to-end apply walkthrough on a real machine (approve the device, apply the revision, tunnel up).
 - MSI is in the nightly, and real-machine install acceptance is pending. The nightly release publishes a Windows agent+CLI+tray-host zip (`meshlet-nightly-windows-x86_64.zip`). It also publishes an `install.ps1` installer ([install below](#install-the-agent-on-windows)). The MSI installer is `meshlet-nightly-windows-x86_64.msi`, built with cargo-wix. It packages server, agent, CLI and tray-host in one installer. It adds start-menu shortcuts and an Add/Remove Programs entry. Neither installer has been accepted on a real machine yet (AGENT-WIN-2, NIGHTLY-MSI-1 in `todo.md`).
 - A Windows tray host ships, real-machine acceptance pending. `apps/tray-host` (`meshlet-tray-host.exe`) is a thin Win32 `Shell_NotifyIcon` host. It consumes the agent's four-state status PNGs (`TraySink`). `install.ps1` copies it, registers HKCU logon autostart with the agent state directory, and starts it unless `-NoStartTray` is passed. Real-machine walkthroughs (icon switching, menus) remain pending. Its menu splits two entries: **本地面板 (local panel)** — a read-only page the tray host serves itself on `127.0.0.1` (current node, direct peers, local routes read from the local state files, so it opens even when the server is unreachable) — and **控制台(网页) (web console)**, which opens `server_url`. On Linux the agent writes the same status PNGs and sends D-Bus desktop notifications. The repository holds no panel host binary for either platform's desktop shell beyond what ships here.
 
@@ -111,7 +113,7 @@ pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '
 The installer verifies the zip's SHA-256 against the release `SHA256SUMS`. It installs `meshlet-agent.exe`, `meshlet-cli.exe` and `meshlet-tray-host.exe` into `%LOCALAPPDATA%\meshlet` and adds that directory to the user PATH. It generates an agent key and config once, and registers per-user HKCU Run autostart entries for the hidden agent and tray host.
 Re-run it to upgrade — the existing `agent.toml` and key are preserved, so device credentials
 survive. Offline/staged installs use `$env:MESHLET_INSTALL_ARCHIVE` and
-`$env:MESHLET_INSTALL_SHA256SUMS`. The installer starts the background agent and tray host by default; pass `-NoStartTray` to skip the tray host's immediate start while keeping its logon autostart entry. Data-plane apply on Windows is still rejected until real-machine acceptance passes — see below.
+`$env:MESHLET_INSTALL_SHA256SUMS`. The installer starts the background agent and tray host by default; pass `-NoStartTray` to skip the tray host's immediate start while keeping its logon autostart entry. Data-plane apply on Windows is wired (tunnel-only v1 per ADR-008); the end-to-end real-machine apply walkthrough is still pending — see below.
 
 ### Build and run the agent on Windows (from source)
 
@@ -146,7 +148,7 @@ Run it from an elevated terminal:
 meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 ```
 
-Approve the device in the console, then apply the network's current revision. **Data-plane apply on Windows is currently rejected** (backend placeholder) until R-05 acceptance. The control plane (registration, heartbeats, status) works. A machine that only has the
+Approve the device in the console, then apply the network's current revision. **Data-plane apply on Windows is wired** (ADR-008 tunnel-only v1; the R-05 real-machine acceptance items passed on 2026-11-12); the end-to-end apply walkthrough on a real machine is still pending. The control plane (registration, heartbeats, status) works. A machine that only has the
 `WireGuardTunnel$…` service (e.g. set up by hand) does **not** have the agent running — check for
 `meshlet-agent.exe` in the process list. Real-machine installer and tray-host acceptance are
 tracked as pending work — see [TODO](todo.md).
@@ -182,7 +184,7 @@ Agent path: pull plan → reconcile → apply tunnel/routes/NAT → heartbeat. B
 
 The current implementation is not fully accepted for deployment. See the
 [P0 fixes and nightly implementation record](docs/implementation/fixes-and-nightly-2026-10-17.md)
-for local Linux evidence. ARM64 builds and the first nightly publication on the default branch remain pending. So do empty-VPS installation and real-device walkthroughs. On Windows the data-plane wiring (R-05) and real-machine installer/tray-host acceptance also remain pending. See [Windows support](#windows-support).
+for local Linux evidence. ARM64 builds and the first nightly publication on the default branch remain pending. So do empty-VPS installation and real-device walkthroughs. On Windows the data-plane wiring (R-05) passed real-machine acceptance on 2026-11-12; real-machine installer/tray-host acceptance and the end-to-end apply walkthrough also remain pending. See [Windows support](#windows-support).
 The current checklist at the top of [TODO](todo.md) records these limits.
 
 ## License
