@@ -24,6 +24,7 @@ pub mod diagnostics;
 pub mod instance_lock;
 pub mod metrics;
 pub mod persist;
+pub mod presence_watch;
 pub mod publish;
 pub mod publish_check;
 pub mod revision;
