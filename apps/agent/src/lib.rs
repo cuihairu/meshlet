@@ -22,6 +22,7 @@ pub mod desktop;
 pub mod desktop_unsupported;
 pub mod direct;
 pub mod direct_rtt;
+pub mod instance_lock;
 pub mod mcp;
 pub mod probe;
 pub mod reconcile;

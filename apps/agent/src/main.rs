@@ -1,8 +1,9 @@
 //! meshlet-agent 可执行入口（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
 //!
 //! 业务逻辑在库层（[`meshlet_agent`]）：本文件只做**启动纪律**——读配置、
-//! 校验数据面前置条件（默认全关时不碰内核）、注入本机私钥（ADR-010）、进入
-//! 对账循环。
+//! 校验数据面前置条件（默认全关时不碰内核）、**抢单实例锁**
+//! （[`meshlet_agent::instance_lock`]，已锁即退出，不让两个进程互踢同一个
+//! 设备身份）、注入本机私钥（ADR-010）、进入对账循环。
 //!
 //! 数据面纪律：agent 只消费服务端下发的结构化配置对象（§16.4），
 //! **绝不执行任何服务端下发的 Shell 命令**。
@@ -56,6 +57,34 @@ fn main() -> std::process::ExitCode {
         tracing::info!("dataplane disabled: agent does not touch the kernel (see ADR-007)");
         return std::process::ExitCode::SUCCESS;
     }
+    // 单实例守卫（2026-11-12 imac 实锤：计划任务 + 残留测试进程让 3 个
+    // meshlet-agent 并存、互踢同一个 device_id，server 侧 0 条断连日志）：启动即
+    // 对 `<state_dir>/agent.lock` 拿 OS 级锁（flock / LockFileEx）并持有到退出；
+    // 已被别的实例拿着就明确报错退出——宁可这次启动失败，也不去抢设备身份。
+    // 锁在凭证解析**之前**拿：并发 bootstrap 同样会互写账本。上面的纯状态路径
+    // 已提前返回，不碰锁、不建目录。
+    let state_dir = std::path::PathBuf::from(&config.state_dir);
+    let lock_display = meshlet_agent::instance_lock::lock_path(&state_dir)
+        .display()
+        .to_string();
+    let _instance_lock = match meshlet_agent::instance_lock::try_acquire(&state_dir) {
+        Ok(lock) => lock,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                eprintln!(
+                    "meshlet-agent: another instance is already running (lock {lock_display} held); stop the other meshlet-agent before starting a new one"
+                );
+            } else {
+                // 锁文件打不开同样拒绝：无法证明没有别的实例在跑（对齐 server 的
+                // 恢复守卫口径）。
+                eprintln!(
+                    "meshlet-agent: cannot acquire {lock_display} ({e}); refusing to start while another instance cannot be ruled out"
+                );
+            }
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    tracing::info!(instance_lock = %lock_display, "single-instance lock held");
     // 凭证解析（ZeroTier 式自举）：配置 device_token → 凭证文件 → 持自举码
     // 注册自身（落 Pending，控制中心批准前拉不到计划，心跳保活）。
     let config = match meshlet_agent::resolve_device_token(config) {
