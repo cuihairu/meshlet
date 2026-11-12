@@ -32,7 +32,11 @@ pub(crate) fn rgba_to_icon(
         let mut ii: ICONINFO = std::mem::zeroed();
         ii.fIcon = 1;
         ii.hbmColor = bmp;
-        ii.hbmMask = CreateCompatibleBitmap(hdc, width as i32, height as i32);
+        // hbmMask 必须是**单色（1-bit）位图**（GDI 约定），不是彩色位图——
+        // 传 32-bit 位图作 mask 会让 CreateIconIndirect 产生的图标渲染异常/
+        // 全透明（真机验收：NIM_ADD=1、注册表 IsPromoted=1 槽位存在，但托盘
+        // 无像素）。全 0 mask = 不透明，透明由 hbmColor 的 Alpha 通道决定。
+        ii.hbmMask = CreateBitmap(width as i32, height as i32, 1, 1, std::ptr::null());
         let icon = CreateIconIndirect(&ii);
 
         DeleteObject(ii.hbmMask as isize as _);
@@ -226,7 +230,8 @@ pub(crate) fn create_green_icon() -> windows_sys::Win32::UI::WindowsAndMessaging
         let mut ii: ICONINFO = std::mem::zeroed();
         ii.fIcon = 1;
         ii.hbmColor = bmp;
-        ii.hbmMask = CreateCompatibleBitmap(hdc, 16, 16);
+        // 同 rgba_to_icon：hbmMask 必须单色位图，否则图标渲染异常/不可见。
+        ii.hbmMask = CreateBitmap(16, 16, 1, 1, std::ptr::null());
         let icon = CreateIconIndirect(&ii);
 
         DeleteObject(ii.hbmMask as isize as _);
