@@ -1,9 +1,32 @@
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, DestroyIcon, ICONINFO};
 
-/// 将 RGBA 像素缓冲转为 HICON（含透明通道）。
+/// RGBA（PNG 解码产物）→ BGRA（32bpp BI_RGB DIB 字节序，byte0=Blue）。
+/// 纯函数，跨平台测试；输入恒为 4 倍数长度（w*h*4）。
+#[cfg(any(windows, test))]
+fn rgba_to_bgra(rgba: &[u8]) -> Vec<u8> {
+    let mut out = rgba.to_vec();
+    let (pixels, _) = out.as_chunks_mut::<4>();
+    for px in pixels {
+        px.swap(0, 2);
+    }
+    out
+}
+
+/// BGRA 像素缓冲 → HICON。
+///
+/// 真机两个根因（imac 2026-11-12：NIM_ADD=1、注册表槽位存在，托盘却 0 像素）：
+/// ① hbmColor 必须是 **32bpp DIB section**（[CreateDIBSection]）——位图内存
+///    即写入字节、逐像素 Alpha 按值生效；此前 `CreateCompatibleBitmap` 产出
+///    DDB，无稳定 Alpha 语义，配 1bpp 全 0 mask 渲染不出像素（hbmMask 改单色
+///    位图的 406b597 复验仍不可见，即证 mask 非唯一根因）。
+/// ② 32bpp BI_RGB 字节序为 BGRA（byte0=Blue），解码器产出 RGBA，直传会把
+///    R/B 互换——即便画出，状态色 (50,96,114) 的像素扫描也全 miss，
+///    表现与「不可见」一致。
+/// hbmMask 用 1bpp 全 0（位语义 0=不透明；hbmColor 带 Alpha 时 mask 不参与
+/// 混合，但仍是 ICONINFO 必填项）。
 #[cfg(windows)]
-pub(crate) fn rgba_to_icon(
-    rgba: &[u8],
+fn bgra_to_icon(
+    bgra: &[u8],
     width: u32,
     height: u32,
 ) -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
@@ -13,39 +36,56 @@ pub(crate) fn rgba_to_icon(
     unsafe {
         let hdc = GetDC(0 as HWND);
         let mem_dc = CreateCompatibleDC(hdc);
-        let bmp = CreateCompatibleBitmap(hdc, width as i32, height as i32);
-        let old = SelectObject(mem_dc, bmp);
 
-        // SetDIBits 需要 BITMAPINFO
         let mut bmi: BITMAPINFO = std::mem::zeroed();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
         bmi.bmiHeader.biWidth = width as i32;
         bmi.bmiHeader.biHeight = -(height as i32); // top-down
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = 0; // BI_RGB
+        bmi.bmiHeader.biCompression = BI_RGB;
+        bmi.bmiHeader.biSizeImage = bgra.len() as u32;
 
-        SetDIBits(mem_dc, bmp, 0, height, rgba.as_ptr() as *const _, &bmi, 0);
-
-        SelectObject(mem_dc, old as isize as _);
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let dib = CreateDIBSection(
+            mem_dc,
+            &bmi,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        if dib.is_null() || bits.is_null() {
+            tracing::warn!("CreateDIBSection failed for {width}x{height}");
+            DeleteDC(mem_dc);
+            ReleaseDC(0 as HWND, hdc);
+            return std::ptr::null_mut();
+        }
+        std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, bgra.len());
 
         let mut ii: ICONINFO = std::mem::zeroed();
         ii.fIcon = 1;
-        ii.hbmColor = bmp;
-        // hbmMask 必须是**单色（1-bit）位图**（GDI 约定），不是彩色位图——
-        // 传 32-bit 位图作 mask 会让 CreateIconIndirect 产生的图标渲染异常/
-        // 全透明（真机验收：NIM_ADD=1、注册表 IsPromoted=1 槽位存在，但托盘
-        // 无像素）。全 0 mask = 不透明，透明由 hbmColor 的 Alpha 通道决定。
+        ii.hbmColor = dib;
         ii.hbmMask = CreateBitmap(width as i32, height as i32, 1, 1, std::ptr::null());
         let icon = CreateIconIndirect(&ii);
 
         DeleteObject(ii.hbmMask as isize as _);
-        DeleteObject(bmp as isize as _);
+        DeleteObject(dib as isize as _);
         DeleteDC(mem_dc);
         ReleaseDC(0 as HWND, hdc);
 
         icon
     }
+}
+
+/// 将 RGBA 像素缓冲转为 HICON（含透明通道）。
+#[cfg(windows)]
+pub(crate) fn rgba_to_icon(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
+    bgra_to_icon(&rgba_to_bgra(rgba), width, height)
 }
 
 use windows_sys::Win32::UI::Shell::{
@@ -203,44 +243,18 @@ fn zlib_inflate_stored(stream: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// GDI 绿色方块兜底图标。
+/// 纯绿方块兜底图标。不再走 GDI FillRect（DDB 上的 Alpha 语义同样不稳，
+/// COLORREF 无 Alpha 字节、DDB 落盘第 4 字节未定义），与状态图统一走
+/// DIB-section 像素写入——B=0/G=255/R=0/A=255 即 #00FF00。
 #[cfg(windows)]
 pub(crate) fn create_green_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::Graphics::Gdi::*;
-
-    unsafe {
-        let hdc = GetDC(0 as HWND);
-        let mem_dc = CreateCompatibleDC(hdc);
-        let bmp = CreateCompatibleBitmap(hdc, 16, 16);
-        let old = SelectObject(mem_dc, bmp);
-
-        let brush = CreateSolidBrush(0x0000FF00);
-        let rect = windows_sys::Win32::Foundation::RECT {
-            left: 0,
-            top: 0,
-            right: 16,
-            bottom: 16,
-        };
-        FillRect(mem_dc, &rect, brush);
-        DeleteObject(brush as isize as _);
-
-        SelectObject(mem_dc, old as isize as _);
-
-        let mut ii: ICONINFO = std::mem::zeroed();
-        ii.fIcon = 1;
-        ii.hbmColor = bmp;
-        // 同 rgba_to_icon：hbmMask 必须单色位图，否则图标渲染异常/不可见。
-        ii.hbmMask = CreateBitmap(16, 16, 1, 1, std::ptr::null());
-        let icon = CreateIconIndirect(&ii);
-
-        DeleteObject(ii.hbmMask as isize as _);
-        DeleteObject(bmp as isize as _);
-        DeleteDC(mem_dc);
-        ReleaseDC(0 as HWND, hdc);
-
-        icon
+    let size = 16u32;
+    let mut bgra = vec![0u8; (size * size * 4) as usize];
+    let (pixels, _) = bgra.as_chunks_mut::<4>();
+    for px in pixels {
+        *px = [0x00, 0xFF, 0x00, 0xFF];
     }
+    bgra_to_icon(&bgra, size, size)
 }
 
 #[cfg(test)]
@@ -293,6 +307,22 @@ mod tests {
         assert_eq!(decoded.0, w);
         assert_eq!(decoded.1, h);
         assert_eq!(decoded.2, rgba);
+    }
+
+    /// RGBA→BGRA 字节序：R/B 互换、G/A 原位。真机像素扫描的状态色
+    /// (50,96,114) 转换后 R/B 对调——不转换则托盘画出的是 swapped 色，
+    /// 扫描全 miss（表现同「不可见」）。
+    #[test]
+    fn rgba_to_bgra_swaps_red_blue_and_keeps_green_alpha() {
+        assert_eq!(rgba_to_bgra(&[10, 20, 30, 40]), [30, 20, 10, 40]);
+        assert_eq!(rgba_to_bgra(&[50, 96, 114, 255]), [114, 96, 50, 255]);
+        // 多像素逐个互换。
+        assert_eq!(
+            rgba_to_bgra(&[1, 2, 3, 4, 5, 6, 7, 8]),
+            [3, 2, 1, 4, 7, 6, 5, 8]
+        );
+        // 空输入 → 空。
+        assert!(rgba_to_bgra(&[]).is_empty());
     }
 
     #[test]
