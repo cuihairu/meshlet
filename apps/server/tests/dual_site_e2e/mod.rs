@@ -7,3 +7,4 @@ mod recovery;
 mod registration;
 mod routing;
 mod support;
+mod tunnel_recovery;
