@@ -10,6 +10,9 @@
 //!   `~/.ssh/config` 是否已 `Include meshlet.conf`，缺失才追加一行
 //!   （追加前把原文件备份一次到 `config.meshlet.bak`，并保留原权限）；
 //!   关 = 只写 fragment，状态文件标注 `manual_required` 提示手动加 Include。
+//! - `[ssh_config_sync] target_homes`（默认空 = 只写运行账号自己的
+//!   `$HOME`）：绝对路径数组，agent 以 root 服务运行时对每个目标 home
+//!   独立写 fragment / 管 Include，落盘文件属主钉成该 home 的属主用户。
 //!
 //! alias 来源（面板/文档同口径，`alias_source` 如实标注）：
 //! hub 显式覆写（`hub-config`）> 节点真实主机名（`hostname`）>
@@ -57,9 +60,24 @@ pub struct SyncStatus {
     pub manage_include: bool,
     pub include_state: IncludeState,
     /// fragment 路径（开关关时也为 `~/.ssh/meshlet.conf` 的预期路径，供文案）。
+    /// 多目标 home 时 = 第一个 home 的 fragment 路径（旧格式兼容；全量表看
+    /// [`SyncStatus::homes`]）。
     pub fragment_path: String,
     /// 本轮期望主机表（关 = 空表）。
     pub hosts: Vec<StatusHost>,
+    pub last_error: Option<String>,
+    /// 按目标 home 列出的全量状态（`target_homes` 非空时多行；开关关 =
+    /// 空数组）。顶层的 `fragment_path` / `include_state` / `last_error`
+    /// 恒等于 `homes[0]`，旧格式消费方不受多 home 影响。
+    pub homes: Vec<HomeStatus>,
+}
+
+/// 单个目标 home 的同步状态（`ssh-sync.json` 的 `homes` 数组项）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct HomeStatus {
+    pub home: String,
+    pub fragment_path: String,
+    pub include_state: IncludeState,
     pub last_error: Option<String>,
 }
 
@@ -178,8 +196,9 @@ pub fn config_includes_fragment(config: &Path) -> bool {
 
 /// 确保用户 config 含 `Include meshlet.conf`：已有 → `Present`；缺失 →
 /// 先备份原文件一次（`config.meshlet.bak`，存在即不覆盖），再追加一行并
-/// 保留原文件权限；config 不存在则新建（0600）。
-fn ensure_include(config: &Path) -> (IncludeState, Option<String>) {
+/// 保留原文件权限；config 不存在则新建（0600）。新建件与备份属主钉成
+/// 目标 home 属主（root 服务写入用户 home 的场景）。
+fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) {
     if config_includes_fragment(config) {
         return (IncludeState::Present, None);
     }
@@ -196,6 +215,7 @@ fn ensure_include(config: &Path) -> (IncludeState, Option<String>) {
             if let Some(m) = &metadata {
                 let _ = std::fs::set_permissions(&backup, m.permissions());
             }
+            let _ = pin_owner_to_home(&backup, home);
         }
     }
     // 权限先于写入：既有文件保留原权限（备份后恢复）；新建文件落盘即 0600。
@@ -203,6 +223,7 @@ fn ensure_include(config: &Path) -> (IncludeState, Option<String>) {
         // 先创建空文件（create true 的 append 打开也满足），再钉 0600。
         let _ = std::fs::File::create(config);
         let _ = set_mode(config, 0o600);
+        let _ = pin_owner_to_home(config, home);
     }
     let mut file = match std::fs::OpenOptions::new()
         .create(true)
@@ -234,6 +255,33 @@ fn ensure_include(config: &Path) -> (IncludeState, Option<String>) {
     }
     let _ = file.flush();
     (IncludeState::Managed, None)
+}
+
+/// 把已落盘文件属主钉到目标 home 目录的属主（agent 以 root 服务运行、往
+/// 用户 home 写文件时必须有这一步，否则用户读不到自己的 fragment/备份）。
+/// home 目录 stat 不出来时放行不判错（不因检查手段失败否掉已写好的内容）。
+#[cfg(unix)]
+fn pin_owner_to_home(path: &Path, home: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = std::fs::metadata(home) else {
+        return Ok(());
+    };
+    let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| format!("chown {}: path contains NUL", path.display()))?;
+    // chown(2)：root 直接生效；非 root 且属主不变时是允许的空操作。
+    if unsafe { libc::chown(cpath.as_ptr(), meta.uid(), meta.gid()) } != 0 {
+        return Err(format!(
+            "chown {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn pin_owner_to_home(_path: &Path, _home: &Path) -> Result<(), String> {
+    Ok(()) // Windows 无 POSIX 属主；ACL 继承用户目录默认
 }
 
 /// 原子写 + 权限钉 0600：同目录临时文件写完 chmod 后 rename（进程崩半路也
@@ -311,6 +359,9 @@ pub fn self_host(name: &str, address: std::net::Ipv4Addr) -> SshHost {
 /// - 开关关：只刷新状态文件（enabled=false），**不碰 `~/.ssh` 任何文件**；
 /// - 开：按期望主机表整文件重渲染 fragment（幂等：内容不变不重写），
 ///   再按 `manage_include` 决定是否管理用户 config 的 Include 行。
+///
+/// 单 home 入口（`target_homes` 为空时的旧语义）；多 home 走
+/// [`sync_homes`]。
 pub fn sync(
     home: &Path,
     hosts: Option<&[SshHost]>,
@@ -319,7 +370,27 @@ pub fn sync(
     manage_include: bool,
     status_path: &Path,
 ) -> SyncStatus {
-    let fragment = fragment_path(home);
+    sync_homes(
+        &[home.to_path_buf()],
+        hosts,
+        fallback,
+        enabled,
+        manage_include,
+        status_path,
+    )
+}
+
+/// 多目标 home 同步入口：对每个 home 独立渲染 fragment、独立管 Include
+/// （一个 home 失败不影响其余 home，失败如实落到该 home 的 `last_error`）。
+/// 顶层字段取第一个 home 的状态（旧格式消费方口径不变）。
+pub fn sync_homes(
+    homes: &[PathBuf],
+    hosts: Option<&[SshHost]>,
+    fallback: &SshHost,
+    enabled: bool,
+    manage_include: bool,
+    status_path: &Path,
+) -> SyncStatus {
     let mut status = SyncStatus {
         enabled,
         manage_include,
@@ -328,14 +399,31 @@ pub fn sync(
         } else {
             IncludeState::Off
         },
-        fragment_path: fragment.display().to_string(),
+        fragment_path: homes
+            .first()
+            .map(|h| fragment_path(h).display().to_string())
+            .unwrap_or_default(),
         hosts: Vec::new(),
         last_error: None,
+        homes: Vec::new(),
     };
     if !enabled {
         write_status(status_path, &status);
         return status;
     }
+    // 重复路径只同步一次（多写同一 home 无意义，状态行也不重复）。
+    let mut seen: Vec<&PathBuf> = Vec::new();
+    let unique: Vec<&PathBuf> = homes
+        .iter()
+        .filter(|h| {
+            if seen.contains(h) {
+                false
+            } else {
+                seen.push(h);
+                true
+            }
+        })
+        .collect();
     let desired: Vec<SshHost> = match hosts {
         Some(list) => dedupe_aliases(list.to_vec()),
         None => vec![fallback.clone()],
@@ -351,27 +439,53 @@ pub fn sync(
             alias_source: h.alias_source.to_string(),
         })
         .collect();
-    match write_fragment(&fragment, &desired) {
-        Ok(()) => {}
-        Err(e) => {
-            status.last_error = Some(e);
-            write_status(status_path, &status);
-            return status;
+    for home in unique {
+        let (state, error) = sync_one(home, &desired, manage_include);
+        let entry = HomeStatus {
+            home: home.display().to_string(),
+            fragment_path: fragment_path(home).display().to_string(),
+            include_state: state,
+            last_error: error,
+        };
+        if status.homes.is_empty() {
+            status.fragment_path = entry.fragment_path.clone();
+            status.include_state = entry.include_state;
+            status.last_error = entry.last_error.clone();
         }
-    }
-    if manage_include {
-        let config = ssh_config_path(home);
-        let (state, error) = ensure_include(&config);
-        status.include_state = state;
-        status.last_error = error;
-    } else {
-        status.include_state = IncludeState::ManualRequired;
+        status.homes.push(entry);
     }
     write_status(status_path, &status);
     status
 }
 
-fn write_fragment(fragment: &Path, hosts: &[SshHost]) -> Result<(), String> {
+/// 单个 home 的同步（fragment + 可选 Include 管理），返回
+/// `(include_state, last_error)`。
+fn sync_one(
+    home: &Path,
+    desired: &[SshHost],
+    manage_include: bool,
+) -> (IncludeState, Option<String>) {
+    let fragment = fragment_path(home);
+    if let Err(e) = write_fragment(&fragment, home, desired) {
+        // 与旧单 home 语义一致：fragment 失败时 include_state 维持轮初值。
+        return (
+            if manage_include {
+                IncludeState::ManualRequired
+            } else {
+                IncludeState::Off
+            },
+            Some(e),
+        );
+    }
+    if manage_include {
+        let config = ssh_config_path(home);
+        ensure_include(&config, home)
+    } else {
+        (IncludeState::ManualRequired, None)
+    }
+}
+
+fn write_fragment(fragment: &Path, home: &Path, hosts: &[SshHost]) -> Result<(), String> {
     let content = render_fragment(hosts);
     let dir = fragment
         .parent()
@@ -380,6 +494,8 @@ fn write_fragment(fragment: &Path, hosts: &[SshHost]) -> Result<(), String> {
     if !dir.exists() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let _ = set_mode(dir, 0o700);
+        // root 服务代建的 .ssh 目录属主钉成目标 home 属主。
+        let _ = pin_owner_to_home(dir, home);
     }
     // 幂等：内容一致不重写（mtime 稳定，同步监控/备份不被打搅）。
     if let Ok(existing) = std::fs::read_to_string(fragment) {
@@ -393,10 +509,13 @@ fn write_fragment(fragment: &Path, hosts: &[SshHost]) -> Result<(), String> {
                     set_mode(fragment, 0o600)?;
                 }
             }
+            // 每轮补钉属主（上一轮可能以非目标属主落盘）。
+            let _ = pin_owner_to_home(fragment, home);
             return Ok(());
         }
     }
-    write_atomic_0600(fragment, &content)
+    write_atomic_0600(fragment, &content)?;
+    pin_owner_to_home(fragment, home)
 }
 
 fn write_status(status_path: &Path, status: &SyncStatus) {
@@ -666,7 +785,7 @@ mod tests {
         std::fs::write(&config, "Host github.com\n  User git\n").unwrap();
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        let (state, err) = ensure_include(&config);
+        let (state, err) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Managed, "err: {err:?}");
         let text = std::fs::read_to_string(&config).unwrap();
         assert!(text.starts_with("Host github.com\n  User git\n"));
@@ -683,7 +802,7 @@ mod tests {
             "Host github.com\n  User git\n"
         );
         // 已含 Include → Present，不再追加。
-        let (state, _) = ensure_include(&config);
+        let (state, _) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Present);
         let text2 = std::fs::read_to_string(&config).unwrap();
         assert_eq!(text2.matches("Include meshlet.conf").count(), 1);
@@ -698,7 +817,7 @@ mod tests {
         let home = tempdir("fresh");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
         let config = ssh_config_path(&home);
-        let (state, err) = ensure_include(&config);
+        let (state, err) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Managed, "err: {err:?}");
         assert!(config_includes_fragment(&config));
         let _ = std::fs::remove_dir_all(&home);
@@ -782,5 +901,115 @@ mod tests {
         assert_eq!(v["include_state"], "off");
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn target_homes_write_every_home_with_pinned_owner_and_0600() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let h1 = tempdir("homes-1");
+        let h2 = tempdir("homes-2");
+        let hosts = vec![host("win", "wd", "10.240.0.3", None, None)];
+        let status = sync_homes(
+            &[h1.clone(), h2.clone()],
+            Some(&hosts),
+            &self_host("x", "10.240.0.1".parse().unwrap()),
+            true,
+            true,
+            &status_path(h1.to_str().unwrap()),
+        );
+        // 每个 home 都有自己的 fragment：0600、属主钉成该 home 的属主；
+        // Include 行按目标 home 的 config 管理（全新 config 由本 agent 创建）。
+        for h in [&h1, &h2] {
+            let fragment = fragment_path(h);
+            assert!(fragment.exists(), "fragment missing in {}", h.display());
+            let meta = std::fs::metadata(&fragment).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+            assert_eq!(meta.uid(), std::fs::metadata(h).unwrap().uid());
+            assert!(config_includes_fragment(&ssh_config_path(h)));
+            let config_meta = std::fs::metadata(ssh_config_path(h)).unwrap();
+            assert_eq!(config_meta.mode() & 0o777, 0o600);
+            assert_eq!(config_meta.uid(), std::fs::metadata(h).unwrap().uid());
+        }
+        // 状态文件按 home 列全量；顶层镜像第一个 home。
+        assert_eq!(status.homes.len(), 2);
+        assert_eq!(status.homes[0].home, h1.display().to_string());
+        assert_eq!(status.include_state, status.homes[0].include_state);
+        assert_eq!(status.fragment_path, status.homes[0].fragment_path);
+        let _ = std::fs::remove_dir_all(&h1);
+        let _ = std::fs::remove_dir_all(&h2);
+    }
+
+    #[test]
+    fn one_home_failing_does_not_block_the_other() {
+        let good = tempdir("homes-good");
+        // bad = good 的子目录路径上放一个「文件」冒充 home → stat 出来不是
+        // 目录，写 fragment 必失败。
+        let base = tempdir("homes-base");
+        let bad = base.join("not-a-home");
+        std::fs::write(&bad, "i am a file").unwrap();
+        let hosts = vec![host("win", "wd", "10.240.0.3", None, None)];
+        let status = sync_homes(
+            &[bad.clone(), good.clone()],
+            Some(&hosts),
+            &self_host("x", "10.240.0.1".parse().unwrap()),
+            true,
+            false,
+            &status_path(base.to_str().unwrap()),
+        );
+        assert_eq!(status.homes.len(), 2);
+        assert!(status.homes[0].last_error.is_some(), "bad home must fail");
+        assert!(status.homes[1].last_error.is_none());
+        assert!(fragment_path(&good).exists());
+        assert!(!fragment_path(&bad).exists());
+        // 顶层 last_error 镜像第一个失败的 home。
+        assert_eq!(status.last_error, status.homes[0].last_error);
+        let _ = std::fs::remove_dir_all(&good);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn status_json_keeps_old_fields_alongside_homes_array() {
+        let home = tempdir("compat");
+        let state_dir = tempdir("compat-state");
+        let hosts = vec![host("win", "wd", "10.240.0.3", None, None)];
+        sync_homes(
+            std::slice::from_ref(&home),
+            Some(&hosts),
+            &self_host("x", "10.240.0.1".parse().unwrap()),
+            true,
+            false,
+            &status_path(state_dir.to_str().unwrap()),
+        );
+        let raw = std::fs::read_to_string(status_path(state_dir.to_str().unwrap())).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        // 旧字段仍在且与 homes[0] 一致（旧格式消费方不受影响）。
+        assert_eq!(
+            v["fragment_path"],
+            fragment_path(&home).display().to_string()
+        );
+        assert_eq!(v["include_state"], "manual_required");
+        assert_eq!(v["homes"][0]["home"], home.display().to_string());
+        assert_eq!(v["homes"][0]["fragment_path"], v["fragment_path"]);
+        assert_eq!(v["homes"][0]["include_state"], "manual_required");
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&state_dir);
+    }
+
+    #[test]
+    fn duplicate_target_homes_are_synced_once() {
+        let home = tempdir("homes-dup");
+        let hosts = vec![host("win", "wd", "10.240.0.3", None, None)];
+        let status = sync_homes(
+            &[home.clone(), home.clone()],
+            Some(&hosts),
+            &self_host("x", "10.240.0.1".parse().unwrap()),
+            true,
+            false,
+            &status_path(home.to_str().unwrap()),
+        );
+        // 重复路径去重后只出现一行（多写一遍同一 home 无意义）。
+        assert_eq!(status.homes.len(), 1);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

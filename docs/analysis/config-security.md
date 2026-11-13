@@ -32,5 +32,6 @@ The hub can distribute SSH host aliases for every active device in a network, so
   Per-device overrides live under `[ssh_config.overrides.<device-name>]` with optional `alias`, `user`, and `port` keys.
 - Agent side: `[ssh_config_sync]` defaults to off. Enabling it (`enabled = true`) writes only the meshlet-owned fragment `~/.ssh/meshlet.conf` atomically with mode `0600`.
   The optional `manage_include = true` appends a single `Include meshlet.conf` line to `~/.ssh/config`, backing up the user's file once before the first modification.
+  By default the agent only touches the home of the account it runs as. On root-run agents, `target_homes = ["/home/cui"]` opts into additional home directories: each target home gets its own fragment (`0600`, owner pinned to that home's user) and its own include management, one home failing never blocks the others. The state file `ssh-sync.json` lists every home under `homes` while keeping the legacy single-home top-level fields for old readers.
 - Alias resolution is three-tier and honestly labeled: hub override (`hub-config`) > the device's reported hostname (`hostname`) > meshlet peer name (`peer-name`).
 - Absent plans (hub off or an older server) do not serialize the `ssh_config` field, so the existing `desired_config_hash` stays byte-identical and upgrades never trigger a full replay.

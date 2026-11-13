@@ -71,6 +71,7 @@ struct RawMcpConfig {
 struct RawSshConfigSyncConfig {
     enabled: Option<bool>,
     manage_include: Option<bool>,
+    target_homes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -107,7 +108,8 @@ pub struct AgentConfig {
     /// SSH alias 同步（`[ssh_config_sync]`）：写用户 `~/.ssh` 属敏感面，
     /// **默认全关**——`enabled` 开才写 `~/.ssh/meshlet.conf`（仅 meshlet
     /// 专用文件，不碰用户 config）；`manage_include` 开才往 `~/.ssh/config`
-    /// 追加 `Include meshlet.conf`（改前备份原文件一次）。
+    /// 追加 `Include meshlet.conf`（改前备份原文件一次）；`target_homes`
+    /// 显式列出目标 home 目录（空 = 仅当前运行账号自己的 home）。
     pub ssh_config_sync: SshConfigSyncConfig,
     /// MCP 本地服务（`[mcp]`）：AI 客户端经 loopback HTTP 查询本机 mesh 事实。
     /// **默认全关**——监听面默认不开，`enabled = true` 显式开启（2026-11-08）。
@@ -132,7 +134,7 @@ impl McpConfig {
 }
 
 /// agent 侧 SSH alias 同步开关（默认全关）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SshConfigSyncConfig {
     /// 总开关：关 = 不写任何 `~/.ssh` 文件（默认）。
     pub enabled: bool,
@@ -140,12 +142,19 @@ pub struct SshConfigSyncConfig {
     /// `~/.ssh/config`（缺失时追加、原文件先备份）。关 = 只写 fragment，
     /// 面板提示需手动加 Include。
     pub manage_include: bool,
+    /// 目标 home 目录（绝对路径数组）：agent 以 root 服务运行时默认只写
+    /// root 自己的 home——多账号机器配置本项后，对每个目标 home 写
+    /// `<home>/.ssh/meshlet.conf`（属主钉成该 home 的属主用户、0600）、
+    /// Include 追加/备份同样按目标 home 处理。空数组 = 维持「当前
+    /// `$HOME` 单 home」旧语义（默认）。
+    pub target_homes: Vec<std::path::PathBuf>,
 }
 
 impl SshConfigSyncConfig {
     pub const OFF: Self = Self {
         enabled: false,
         manage_include: false,
+        target_homes: Vec::new(),
     };
 }
 
@@ -455,6 +464,14 @@ impl AgentConfig {
                     manage_include: raw_sync
                         .manage_include
                         .unwrap_or(default.ssh_config_sync.manage_include),
+                    target_homes: raw_sync
+                        .target_homes
+                        // 模板缺省恒为空 = 单 home 旧语义（见结构体文档）。
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|s| std::path::PathBuf::from(s.trim()))
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .collect(),
                 },
                 None => SshConfigSyncConfig::OFF,
             },

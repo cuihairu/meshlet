@@ -176,6 +176,34 @@ manage_include = true
 }
 
 #[test]
+fn ssh_config_sync_target_homes_parses_and_defaults_to_empty() {
+    // 缺省/空数组 = 单 home 旧语义（只写运行账号自己的 home）。
+    let none = AgentConfig::from_toml("").unwrap().ssh_config_sync;
+    assert!(none.target_homes.is_empty());
+    let empty = AgentConfig::from_toml("[ssh_config_sync]\ntarget_homes = []")
+        .unwrap()
+        .ssh_config_sync;
+    assert!(empty.target_homes.is_empty());
+
+    let homes = AgentConfig::from_toml(
+        r#"
+[ssh_config_sync]
+enabled = true
+target_homes = ["/home/cui", "  ", "/root"]
+"#,
+    )
+    .unwrap()
+    .ssh_config_sync;
+    assert_eq!(
+        homes.target_homes,
+        vec![
+            std::path::PathBuf::from("/home/cui"),
+            std::path::PathBuf::from("/root")
+        ]
+    );
+}
+
+#[test]
 fn mcp_defaults_off_and_requires_explicit_opt_in() {
     // 安全铁律：监听面默认关——不显式开启不监听（2026-11-08）。
     let d = AgentConfig::default().mcp;

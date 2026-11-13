@@ -4,7 +4,7 @@ use meshlet_network::DevicePlan;
 
 impl super::Agent {
     pub(super) fn apply_ssh_sync(&mut self, plan: &DevicePlan) {
-        let config = self.ssh_config_sync;
+        let config = self.ssh_config_sync.clone();
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .map(std::path::PathBuf::from)
@@ -17,8 +17,12 @@ impl super::Agent {
             .ssh_config
             .as_ref()
             .map(crate::ssh_sync::hosts_from_plan);
-        let status = crate::ssh_sync::sync(
-            &home,
+        let status = crate::ssh_sync::sync_homes(
+            if config.target_homes.is_empty() {
+                std::slice::from_ref(&home)
+            } else {
+                &config.target_homes
+            },
             hosts.as_deref(),
             &fallback,
             config.enabled,
