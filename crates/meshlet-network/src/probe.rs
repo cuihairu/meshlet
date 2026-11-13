@@ -362,10 +362,14 @@ impl SwitchGate {
         if windows.is_empty() {
             return None;
         }
-        let current_score = windows
-            .get(&(peer.to_string(), current))
-            .and_then(score)
-            .unwrap_or(f64::INFINITY);
+        // 现路径无窗口（如 WG roaming 到候选表之外的面，2026-11-13 真机实锤：
+        // 稳定的 192.168.5.0/24 roaming 面不在候选表 → 无读数）→ **不切换**。
+        // `score` 的「无 RTT 读数 = ∞」语义只该用于候选间比较（全丢的候选
+        // 确实最差），不能把「无读数」的现路径当最差处理——那会把工作中的
+        // 稳定路径主动踢到候选表可见（但不一定更适合 WG 会话）的候选上，
+        // 触发会话重建乃至 classify-240 降级极限环。无证据不动现路径；路径
+        // 死亡由握手年龄 classify 与 SEL-003 劣化闸负责。
+        let current_score = windows.get(&(peer.to_string(), current)).and_then(score)?;
 
         // 最佳候选 = 得分最低者（确定性：得分相同取地址最小者）。
         let mut best_candidate: Option<EndpointCandidate> = None;
@@ -857,6 +861,27 @@ mod tests {
         windows.insert(("dev-b".into(), c1), w1);
         windows.insert(("dev-b".into(), c2), w2);
         assert!(gate.evaluate("dev-b", Some(c1), &windows).is_some());
+    }
+
+    /// 现路径无窗口（候选表之外的 roaming 面，2026-11-13 真机实锤：稳定的
+    /// 192.168.5.0/24 roaming 面不在候选表 → 无读数 → 旧逻辑按 ∞ 评分把它
+    /// 踢下线，触发会话重建乃至 classify-240 降级极限环）→ 不切换。
+    #[test]
+    fn switch_gate_spares_current_path_without_window() {
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let mut gate = SwitchGate::new(1, 0.30);
+        // 只有 c2 有读数（48ms）；现路径 c1 无任何窗口。
+        let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+        let mut w = ProbeWindow::new(8);
+        w.record(ProbeSample::Rtt(48));
+        windows.insert(("dev-b".into(), c2), w);
+        for _ in 0..5 {
+            assert!(
+                gate.evaluate("dev-b", Some(c1), &windows).is_none(),
+                "no evidence about the current path must not switch"
+            );
+        }
     }
 
     #[test]
