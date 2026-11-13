@@ -1,0 +1,115 @@
+# SEL-002 真死复验第二轮：imac↔openclaw（2026-11-13 晚，巡检单 meshlet-nov13-1936）
+
+## 结论速览
+
+- **demote 真死复验仍未复现**——OS 级三重杀伤（防火墙规则〔首轮验收实锤〕/ 禁 ZT 适配器 / 双 null 路由）全部无法杀死 imac↔openclaw 的 WG 直连通路：内核握手以墙钟速率持续续期，classify 输入持续新鲜，Healthy 保持直连是**正确判定**，不是缺陷。
+- 复验的真正产出是**插桩取证揪出三路消费全盲的实现缺陷**：探测窗口按 `device_id` 记键、而全部消费端（SEL-003 劣化映射/恢复门、SEL-002 迟滞闸、SEL-004 候选详情）按 `public_key` 查——生产环境三路全盲。连带修掉两处语义缺陷（「任一候选劣化拖垮整 peer」「无基线全 Lost 判劣化」）。**已修 `4174773`**（单 commit；network 187 / agent lib 135 全绿、clippy -D warnings 净、windows-gnu check 净）。
+- **测量勘误**：PS 5.1 `Get-Date -UFormat %s` 把本地墙钟当 UTC 计算 epoch（+28800s，UTC+8 环境）——此前 recon 采样里「握手冻结 ~28800s / now_minus_ts≈28730」类读数**全部是采样器伪影**。agent（Rust `SystemTime`）、WG 内核握手戳、Linux `date +%s` 三者一致为真 UTC；今晚插桩实测握手年龄 33–120s 持续新鲜。
+- **第二根因（修复部署后现场实锤）**：升级到 4174773 nightly 后两台 Windows 对进入 ~4–5min 的 demote 极限环。切换事件取证实锤：SEL-002 切换闸把「现役路径无探测窗口」（稳定 192.168.5.0/24 roaming 面，不在服务端候选表 → 无读数）按 ∞ 评分处理 → 22:34:02 / 22:35:30 把两台会话踢上 ZT 面 → ZT 面瞬态劣化 → SEL-003 / classify 轮番回收。**已修 `c4e5038`**：现路径无窗口 → 不切换（无证据不动现路径）；握手年龄轨迹证明 demote 发生在 age 56–66s（≪240）且握手正常续期，classify 无辜、触发者是 ZT 面探测瞬态。
+
+## 前置：nightly 升级（巡检单任务 1–3）
+
+- nightly：run 43419151175 success 14m21s；`nightly` tag → `704836005ba797441ce22559faca14f57da6d380`（含 7048360 时延劣化维度）。
+- MSI SHA256 `9759aef2123ed1305de2ff11c41b8fe936c0ff12e2e208cdb3f4087575eabb62` 对 SHA256SUMS 两机一致；双位 exe（Program Files 服务位 + AppData 运行位）同哈希 `7425B7FD01EE6C2C42808E8D1C52BC995C71031762EE7463B26DD343B1955E76`；imac PID 38768→23888、openclaw PID 9320；升级后 ping 10.240.0.1 ✓。
+- **imac ZT 恢复义务已履行**：v2 复验结束 RESTORE，20:53:47 `zt=Up`、p49=ok7ms（raw v2 RESTORE 段）。
+
+## 实验（任务 4a–c）
+
+### 4a baseline（≥5min，2s 采样）
+
+ledger 稳态直连、零 demote（raw v1/v2 BASE 段）。
+
+### 4b-v1：禁 imac ZT 适配器（≥10min）
+
+demote 未现；WG 握手照常续期；恢复后 zt=Up。
+
+### 4b-v2（权威轮）：禁适配器 + 双 null 路由（≥10min）
+
+- 20:43:37 **KILL**：禁 ZT 适配器 + `route add 10.147.19.0/24` + `route add 192.168.5.11/32`（ROUTE_ADD rc OK、ZT_STATE Disabled）。
+- KILL_VERIFY（+6s）：**p49=ok8ms pLan=fail**——null 路由已生效但隧道照通。
+- 内核握手戳持续前进（真活铁证）：1794573787（20:43:43）→ 1794574035（20:48:39）→ 1794574406（20:53:38）。
+- **RESTORE** 20:53:38–47：适配器恢复、null 路由删除、zt=Up。
+- 全程 559 拍 ledger mode **零 hub_relay**。
+
+### 「打不死」通路的侧写（环境缺口）
+
+服务端候选表 openclaw-win = `10.147.19.49:51820/lan`、`192.168.36.153:51820/lan`、`180.153.160.8:51820/public`（raw deviceids json）——**不含 192.168.5.x**；而 imac↔openclaw 实际同处 192.168.5.0/24（imac .117 / openclaw .11，ledger 端点 .49↔.11 翻转）。被杀死的已知面之外存在**服务端不可见的同 L2 面**（与首轮验收「匿名成员 .17」同族现象）。真死需物理层断开（拔线/断 AP），超出远程巡检能力——**如实记为环境缺口，不冒充已验**。
+
+## 任务 4d：插桩取证（21:13–21:16，windows-gnu 临时插桩构建，取证后已还原 7425B7FD 原件）
+
+sel002diag 三轮对账 verbatim（raw: `sel-002-imac-diag-run-2026-11-13.log`）：
+
+```
+wanted=[(coding-vm,b6txQ61F…),(windows-desktop,JMrE4SZy…),(openclaw-win,FSaf/1S9…)]
+states=[Direct,Direct,Direct]
+ages={FSaf:120→40→83, JMrE:86, b6tx:33, vLkJ:38}   ← 全新鲜（≤240 健康窗口内）
+degraded={"dev-reg-5":true,"dev-reg-9":true}        ← 键是 device_id，不是公钥！
+hold={}
+```
+
+服务端 API 对账（raw: `sel-002-wanted-deviceids-2026-11-13.json`）：**dev-reg-4=coding-vm、dev-reg-5=windows-desktop、dev-reg-9=openclaw-win**——劣化信号本身在正常触发（两台 Windows 对端防火墙拦 ICMP → 候选窗口全 Lost），但三处缺陷让它到不了判定层：
+
+1. **键失配（致命）**：`probe_round` 按 `peer.device_id` 记窗口（crates/meshlet-network/src/probe.rs），而 `plan_updates` 劣化闸 / hold_relay / RecoveryGate / SwitchGate / candidate_statuses 全按 `public_key` 查（apps/agent）→ **SEL-002 迟滞切换、SEL-003 探测降级、SEL-004 候选详情生产全盲**。单测全绿是因为合成键（"dev-b"）两边恰好一致。
+2. **any-candidate 折叠**：旧 degraded_map「任一候选窗口劣化 → 整 peer 劣化」——openclaw-win 3 候选中异网 LAN / 公网常年 ICMP 不达，会把健康直连永久拖入劣化。
+3. **无基线判劣化**：旧 is_degraded 对全 Lost 窗口（对端防火墙拦 ICMP，隧道可能健康）判劣化——与晋升门槛「ICMP 探测失败不拦晋升」（Windows 网格防火墙对 wg 接口 100% 丢包取证，2026-11-07）哲学矛盾。
+
+## 修复（4174773，2026-11-13）
+
+- ProbeTarget / `record` / `window` / `retain_peers` / `probe_round` 全部改按 `public_key` 记键；probe_netns 集成测试同步对齐（其 fixture 依赖旧键法，基线挂、修正后绿）。
+- `degraded_map` 收窄为**现役 endpoint 窗口**口径（调用点从 `link_statuses` 构造 pubkey→现役候选）。
+- `is_degraded` **无基线豁免**：窗口内无任何 RTT 样本 → 不判劣化；真死由握手年龄 classify 兜底（> `DIRECT_HEALTH_WINDOW_SECS`=240s → Demote），不依赖探测。
+- 回归测试：network +2（公钥记键 / 全 Lost 不劣化）、agent +1（现役口径四分支：备份候选无关 / 由好变坏劣化 / 无基线不劣化 / 无窗口不劣化）。
+- 门禁：network lib 187 / agent lib 135 / 全集成绿（agent_reconcile、instance_lock 三套、ledger/plan recovery、probe_netns）；clippy -D warnings 净；fmt 净；windows-gnu `--all-targets` check 净。
+- 后续 nightly run 43437201158 滚动该修复。
+
+## 升级后震荡：第二根因取证（22:34–23:03，现场观测）
+
+4174773 nightly（FF6E9D53 双位构建，imac PID 25228 / openclaw PID 13140）部署后，两台 Windows 对进入 ~4–5min 周期的 demote→hub→promote 极限环（ledger mode 反复 `p2p_direct↔hub_relay`，b6tx/coding-vm 全程稳直）。
+
+**切换事件（smoking gun，`state/direct-switch-events.json`，JSONL 原文存 raw）**：
+
+- `22:34:02.507` JMrE4SZy（windows-desktop）`192.168.5.11:51821 → 10.147.19.97:51821`，reason `score 48.5 beats current inf by >= 30% for 3 consecutive samples`
+- `22:35:30.115` FSaf/1S9（openclaw-win）`192.168.5.11:51820 → 10.147.19.49:51820`，reason `score 8.0 beats current inf by >= 30% for 3 consecutive samples`
+- `22:40:51` b6txQ61F（coding-vm）`.130 → .188`（`score 0.0 beats 1.0`，良性）
+
+**根因（SwitchGate ∞ 评分）**：`evaluate` 对现役 endpoint 无探测窗口时按 ∞ 评分（「无读数 = 最差」语义本意只用于候选间比较）。192.168.5.0/24 roaming 面稳定可通但**不在服务端候选表**（上游遗留：该面服务端不可见、永远无探测目标）→ 永无窗口 → 被当 ∞ → 换到候选表可见的 ZT 面。链条闭合：换面 → ZT 面 ICMP 瞬态（丢包/时延抖动）→ SEL-003 现役窗口判劣化 demote（或 classify 超窗）→ hub 期内核删 peer → 恢复门 3 轮健康 → promote → 单次握手后再次瞬态 → 极限环 ~4–5min。
+
+**握手年龄轨迹（10s×48 拍，raw 存档）定性 demote 时点**：
+
+- 握手按 ~118s 节奏正常续期（FSaf 111s→7s，14s 间隔内完成 rekey），路径在 demote 前后均健康。
+- wd 在 22:58:50→22:59:00 之间被 demote，demote 时 age 仅 **56–66s ≪ 240**（classify 无辜）；同拍 FSaf 同 demote、b6tx（现役 LAN 面 .188）幸免 → 触发者是 ZT 面共同瞬态（现役窗口劣化命中）。
+- 采样器里 `age≈1794581849s` 的行为 latest-handshake=0（promote 刚重加 peer、首次握手未落），非时钟伪影。
+- demote 时序非全同步（23:00:5x FSaf 单独挂、wd 撑到 23:02:40），与「逐窗口瞬态劣化」一致。
+
+## 第二修复（c4e5038，2026-11-13）
+
+- `SwitchGate::evaluate`：现路径取不到窗口 → `?` 提前返回**不切换**（原 `else { return None }` 处改为 `let current_score = windows.get(&(peer.to_string(), current)).and_then(score)?;`）。「无 RTT 读数 = ∞」语义只保留在候选间比较；现路径死亡交给握手年龄 classify 与 SEL-003 劣化闸负责。
+- 回归测试 `switch_gate_spares_current_path_without_window`：现役 c1 无窗口、候选 c2 有窗口（rtt 48）→ 5 轮评分恒 `None` 不切换。
+- 门禁：network lib 33 绿（改后重验）；随 nightly run 43451086220 滚动（`4174773..c4e5038`）。（首次派出 43449300571 失败于 `scripts/verify-systemd.py` 步：runner 上 server 15s 重试窗内未监听 18080——与改动无关的 runner 瞬态；本机同源 c4e5038 重建复跑该脚本 PASS，重新派出。）
+- 修复语义与 4174773「无基线不行动」同源：**无证据不动现路径**。预期部署后会话停在 .11 roaming 面回到升级前稳定性（该面永无探测目标 → 永无劣化误判 → 无切换）。
+
+## 测量勘误（修正既有记录）
+
+- **机制**：PS 5.1 `Get-Date -UFormat %s` 按本地墙钟 DateTime 直接折算 epoch → 本地 21:08:03（=真 UTC 13:08:03Z，真 epoch 1794575283）报出 1794604083（=+28800）。
+- **交叉验证**：21:13:51 插桩轮 agent `now_secs`=1794575631 = 1794575283+348，与真 epoch 精确吻合 → agent/内核侧无偏移。
+- **失效读数**：本轮及首轮 recon 中一切「PS epoch − 内核 ts」差值（「握手冻结 ~28800s」「now_minus_ts≈28730」等）——真值为新鲜 33–120s。
+- **仍有效**：wg.exe 第三列内核 ago 读数（时区免疫，首轮 133–203s）、ledger mode/rtt_source 等非时间差字段、防火墙封堵验证（fw=True / zicmp fail）。
+
+## 未决缺口（不冒充已验）
+
+1. Windows 对上 demote 真死仍未复现：直连面无法 OS 级杀死（见「打不死」通路）。修复后的降级路径由单测证明接线正确（由好变坏 → 劣化 → demote、无基线不误伤），真机复现等物理层断开手段。**但升级后震荡意外提供了 demote 通路真机实锤**：SEL-003 现役窗口瞬态劣化 + classify 超窗两条 demote 路径都在真机上走到了终点（hub 期内核删 peer → hub_relay 通信恢复），链路完整可用。
+2. 时延维度（≥800ms 中位数）在本环境无法主动触发（健康面实测 RTT 7–100ms）；ZT 面瞬态抖动是否曾以时延维度命中未逐窗归因（loss/last-Lost 时序足够解释本轮观测）。
+3. SEL-001 探测目标（underlay 候选）与 enrich 探测（overlay VIP→endpoint 回退）口径差仍待统一（上游遗留）。
+4. 匿名 ZT 成员 10.147.19.17 身份对账（上游遗留）。
+5. 192.168.5.0/24 roaming 面不在服务端候选表（本轮事故的放大器）——是否纳管待上游决策；c4e5038 已保证其被选中使用时不会再被踢走。
+
+## raw 证据
+
+- `sel-002-imac-obs-v1-2026-11-13.txt`（禁适配器轮，2s 采样全程）
+- `sel-002-imac-obs-v2-2026-11-13.txt`（禁适配器 + 双 null 路由权威轮，559 拍，KILL/RESTORE 标记）
+- `sel-002-imac-diag-run-2026-11-13.log`（插桩三轮 sel002diag verbatim + 探测轮 debug）
+- `sel-002-wanted-deviceids-2026-11-13.json`（服务端 device_id↔对端↔候选映射）
+- `sel-002-imac-switch-events-2026-11-13.jsonl`（direct-switch-events.json 原文 3 行，∞ 评分 smoking gun）
+- `sel-002-imac-age-trace-2026-11-13.txt`（10s×48 拍 modes+握手年龄轨迹，demote 时 age 56–66s 定性）
+
+前置文档：`sel-002-imac-openclaw-2026-11-13.md`（首轮验收：防火墙封锁 + 自然劣化窗，252+70 拍零 demote，.17 匿名面实锤）。

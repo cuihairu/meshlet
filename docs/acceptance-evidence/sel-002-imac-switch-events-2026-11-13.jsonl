@@ -1,0 +1,3 @@
+{"public_key":"JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs=","from":"192.168.5.11:51821","to":"10.147.19.97:51821","reason":"score 48.5 beats current inf by >= 30% for 3 consecutive samples","at_ms":"1794580442507"}
+{"public_key":"FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=","from":"192.168.5.11:51820","to":"10.147.19.49:51820","reason":"score 8.0 beats current inf by >= 30% for 3 consecutive samples","at_ms":"1794580530115"}
+{"public_key":"b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=","from":"10.147.19.130:51820","to":"192.168.5.188:51820","reason":"score 0.0 beats current 1.0 by >= 30% for 3 consecutive samples","at_ms":"1794580851091"}

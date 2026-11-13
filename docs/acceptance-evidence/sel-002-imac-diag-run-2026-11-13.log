@@ -1,0 +1,624 @@
+[2m2026-11-13T13:13:36.033945Z[0m [32m INFO[0m [2mmeshlet_agent[0m[2m:[0m agent starting [3mversion[0m[2m=[0m"0.1.0"
+[2m2026-11-13T13:13:36.035021Z[0m [32m INFO[0m [2mmeshlet_agent[0m[2m:[0m agent config loaded [3mserver_url[0m[2m=[0mhttp://106.14.216.177:8080 [3mstate_dir[0m[2m=[0mC:\Users\cui\AppData\Local\meshlet\state [3mdataplane_enabled[0m[2m=[0mtrue [3minterface[0m[2m=[0mwg-meshlet [3mpoll_interval_secs[0m[2m=[0m30
+[2m2026-11-13T13:13:36.036120Z[0m [32m INFO[0m [2mmeshlet_agent[0m[2m:[0m single-instance lock held [3minstance_lock[0m[2m=[0mC:\Users\cui\AppData\Local\meshlet\state\agent.lock
+[2m2026-11-13T13:13:36.036558Z[0m [32m INFO[0m [2mmeshlet_agent::bootstrap[0m[2m:[0m using the saved agent token [3mpath[0m[2m=[0mC:\Users\cui\AppData\Local\meshlet\state\device_token
+[2m2026-11-13T13:13:36.037696Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:36.046779Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65301, peer: 106.14.216.177:8080, socket: 364 })
+[2m2026-11-13T13:13:36.047051Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/device/desired
+[2m2026-11-13T13:13:36.047198Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/device/desired HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:13:36.056551Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 465)
+[2m2026-11-13T13:13:36.056701Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65301, peer: 106.14.216.177:8080, socket: 364 })
+[2m2026-11-13T13:13:36.056819Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/device/desired
+[2m2026-11-13T13:13:36.056931Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65301, peer: 106.14.216.177:8080, socket: 364 })
+[2m2026-11-13T13:13:36.414316Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:36.427615Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65303, peer: 106.14.216.177:8080, socket: 384 })
+[2m2026-11-13T13:13:36.427820Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request POST http://106.14.216.177:8080/api/v1/agent/device/applied
+[2m2026-11-13T13:13:36.427942Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: POST /api/v1/agent/device/applied HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+content-type: application/json
+accept-encoding: gzip
+Transfer-Encoding: chunked
+[2m2026-11-13T13:13:36.442265Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m zero-length body returning stream directly to pool
+[2m2026-11-13T13:13:36.442432Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65303, peer: 106.14.216.177:8080, socket: 384 })
+[2m2026-11-13T13:13:36.442567Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 204 to POST http://106.14.216.177:8080/api/v1/agent/device/applied
+[2m2026-11-13T13:13:36.442703Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65303, peer: 106.14.216.177:8080, socket: 384 })
+[2m2026-11-13T13:13:41.055954Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:41.063132Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65307, peer: 106.14.216.177:8080, socket: 476 })
+[2m2026-11-13T13:13:41.063423Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:41.063762Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:13:41.070569Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:13:41.071034Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65307, peer: 106.14.216.177:8080, socket: 476 })
+[2m2026-11-13T13:13:41.071253Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:41.071482Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65307, peer: 106.14.216.177:8080, socket: 476 })
+[2m2026-11-13T13:13:44.940042Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:44.953728Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65314, peer: 106.14.216.177:8080, socket: 320 })
+[2m2026-11-13T13:13:44.954020Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request POST http://106.14.216.177:8080/api/v1/agent/heartbeat
+[2m2026-11-13T13:13:44.954193Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: POST /api/v1/agent/heartbeat HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+content-type: application/json
+accept-encoding: gzip
+Transfer-Encoding: chunked
+[2m2026-11-13T13:13:44.963761Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 96)
+[2m2026-11-13T13:13:44.964098Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65314, peer: 106.14.216.177:8080, socket: 320 })
+[2m2026-11-13T13:13:44.964341Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to POST http://106.14.216.177:8080/api/v1/agent/heartbeat
+[2m2026-11-13T13:13:44.964568Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65314, peer: 106.14.216.177:8080, socket: 320 })
+[2m2026-11-13T13:13:44.964960Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:44.973817Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65315, peer: 106.14.216.177:8080, socket: 320 })
+[2m2026-11-13T13:13:44.974155Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/device/peers/endpoints
+[2m2026-11-13T13:13:44.974322Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/device/peers/endpoints HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:13:44.982816Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 902)
+[2m2026-11-13T13:13:44.983194Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65315, peer: 106.14.216.177:8080, socket: 320 })
+[2m2026-11-13T13:13:44.983463Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/device/peers/endpoints
+[2m2026-11-13T13:13:44.983732Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65315, peer: 106.14.216.177:8080, socket: 320 })
+[2m2026-11-13T13:13:46.080227Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:46.094941Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65316, peer: 106.14.216.177:8080, socket: 432 })
+[2m2026-11-13T13:13:46.095282Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:46.095425Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:13:46.104631Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:13:46.104874Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65316, peer: 106.14.216.177:8080, socket: 432 })
+[2m2026-11-13T13:13:46.105036Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:46.105204Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65316, peer: 106.14.216.177:8080, socket: 432 })
+[2m2026-11-13T13:13:50.072444Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m4
+[2m2026-11-13T13:13:51.120169Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:51.129288Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65318, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:13:51.129587Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:51.129812Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:13:51.138065Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:13:51.138269Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65318, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:13:51.138418Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:51.138595Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65318, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:13:51.485957Z[0m [33m WARN[0m [2msel002diag[0m[2m:[0m sel002diag reconcile inputs [3mwanted[0m[2m=[0m[("coding-vm", "b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc="), ("windows-desktop", "JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs="), ("openclaw-win", "FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=")] [3mstates[0m[2m=[0m[("coding-vm", Some("Direct")), ("windows-desktop", Some("Direct")), ("openclaw-win", Some("Direct"))] [3mages[0m[2m=[0m{"FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=": 120, "JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs=": 86, "b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=": 33, "vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=": 38} [3mdegraded[0m[2m=[0m{"dev-reg-5": true, "dev-reg-9": true} [3mhold[0m[2m=[0m{} [3mnow_secs[0m[2m=[0m1794575631
+[2m2026-11-13T13:13:51.497112Z[0m [34mDEBUG[0m [2mmeshlet_agent::agent::tray[0m[2m:[0m desktop status not shown [3mresult[0m[2m=[0mDisabled
+[2m2026-11-13T13:13:51.502872Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:51.511393Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65319, peer: 106.14.216.177:8080, socket: 600 })
+[2m2026-11-13T13:13:51.511622Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:51.511801Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:13:51.519588Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:13:51.519895Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65319, peer: 106.14.216.177:8080, socket: 600 })
+[2m2026-11-13T13:13:51.520121Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:51.520295Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65319, peer: 106.14.216.177:8080, socket: 600 })
+[2m2026-11-13T13:13:56.538702Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:13:56.553561Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65322, peer: 106.14.216.177:8080, socket: 596 })
+[2m2026-11-13T13:13:56.575288Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:56.575469Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:13:56.586099Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:13:56.586386Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65322, peer: 106.14.216.177:8080, socket: 596 })
+[2m2026-11-13T13:13:56.586643Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:13:56.586798Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65322, peer: 106.14.216.177:8080, socket: 596 })
+[2m2026-11-13T13:13:59.066017Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m4
+[2m2026-11-13T13:14:01.588458Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:01.596691Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65326, peer: 106.14.216.177:8080, socket: 412 })
+[2m2026-11-13T13:14:01.611053Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:01.611193Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:01.619685Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:01.619867Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65326, peer: 106.14.216.177:8080, socket: 412 })
+[2m2026-11-13T13:14:01.620047Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:01.620188Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65326, peer: 106.14.216.177:8080, socket: 412 })
+[2m2026-11-13T13:14:06.629849Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:06.653683Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65332, peer: 106.14.216.177:8080, socket: 300 })
+[2m2026-11-13T13:14:06.684290Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:06.685138Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:06.692754Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:06.693005Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65332, peer: 106.14.216.177:8080, socket: 300 })
+[2m2026-11-13T13:14:06.712957Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:06.713255Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65332, peer: 106.14.216.177:8080, socket: 300 })
+[2m2026-11-13T13:14:08.065215Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m4
+[2m2026-11-13T13:14:11.729697Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:11.738729Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65335, peer: 106.14.216.177:8080, socket: 544 })
+[2m2026-11-13T13:14:11.763082Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:11.763278Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:11.772345Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:11.772583Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65335, peer: 106.14.216.177:8080, socket: 544 })
+[2m2026-11-13T13:14:11.772766Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:11.772910Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65335, peer: 106.14.216.177:8080, socket: 544 })
+[2m2026-11-13T13:14:16.773216Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:16.783698Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65337, peer: 106.14.216.177:8080, socket: 404 })
+[2m2026-11-13T13:14:16.783909Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:16.784060Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:16.793739Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:16.794003Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65337, peer: 106.14.216.177:8080, socket: 404 })
+[2m2026-11-13T13:14:16.794150Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:16.794328Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65337, peer: 106.14.216.177:8080, socket: 404 })
+[2m2026-11-13T13:14:17.075821Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m4
+[2m2026-11-13T13:14:21.503148Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:21.512582Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65339, peer: 106.14.216.177:8080, socket: 636 })
+[2m2026-11-13T13:14:21.512853Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/device/desired
+[2m2026-11-13T13:14:21.513130Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/device/desired HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:21.525411Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 465)
+[2m2026-11-13T13:14:21.525549Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65339, peer: 106.14.216.177:8080, socket: 636 })
+[2m2026-11-13T13:14:21.525810Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/device/desired
+[2m2026-11-13T13:14:21.525937Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65339, peer: 106.14.216.177:8080, socket: 636 })
+[2m2026-11-13T13:14:21.814716Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:21.828377Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65342, peer: 106.14.216.177:8080, socket: 644 })
+[2m2026-11-13T13:14:21.828577Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:21.828733Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:21.837111Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:21.837330Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65342, peer: 106.14.216.177:8080, socket: 644 })
+[2m2026-11-13T13:14:21.837534Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:21.837678Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65342, peer: 106.14.216.177:8080, socket: 644 })
+[2m2026-11-13T13:14:21.863884Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:21.872924Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65343, peer: 106.14.216.177:8080, socket: 496 })
+[2m2026-11-13T13:14:21.873065Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request POST http://106.14.216.177:8080/api/v1/agent/device/applied
+[2m2026-11-13T13:14:21.873183Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: POST /api/v1/agent/device/applied HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+content-type: application/json
+accept-encoding: gzip
+Transfer-Encoding: chunked
+[2m2026-11-13T13:14:21.887458Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m zero-length body returning stream directly to pool
+[2m2026-11-13T13:14:21.887653Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65343, peer: 106.14.216.177:8080, socket: 496 })
+[2m2026-11-13T13:14:21.887787Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 204 to POST http://106.14.216.177:8080/api/v1/agent/device/applied
+[2m2026-11-13T13:14:21.887963Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65343, peer: 106.14.216.177:8080, socket: 496 })
+[2m2026-11-13T13:14:26.076806Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m4
+[2m2026-11-13T13:14:26.851003Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:26.859485Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65350, peer: 106.14.216.177:8080, socket: 644 })
+[2m2026-11-13T13:14:26.859785Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:26.859936Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:26.868157Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:26.868440Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65350, peer: 106.14.216.177:8080, socket: 644 })
+[2m2026-11-13T13:14:26.868639Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:26.868821Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65350, peer: 106.14.216.177:8080, socket: 644 })
+[2m2026-11-13T13:14:28.353743Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:28.366363Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65352, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:14:28.393672Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request POST http://106.14.216.177:8080/api/v1/agent/heartbeat
+[2m2026-11-13T13:14:28.393803Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: POST /api/v1/agent/heartbeat HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+content-type: application/json
+accept-encoding: gzip
+Transfer-Encoding: chunked
+[2m2026-11-13T13:14:28.403682Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 96)
+[2m2026-11-13T13:14:28.403889Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65352, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:14:28.404052Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to POST http://106.14.216.177:8080/api/v1/agent/heartbeat
+[2m2026-11-13T13:14:28.404217Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65352, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:14:28.404536Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:28.413262Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65353, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:14:28.413511Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/device/peers/endpoints
+[2m2026-11-13T13:14:28.413695Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/device/peers/endpoints HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:28.422174Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 902)
+[2m2026-11-13T13:14:28.422364Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65353, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:14:28.422624Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/device/peers/endpoints
+[2m2026-11-13T13:14:28.422874Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65353, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:14:31.885858Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:31.893840Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65354, peer: 106.14.216.177:8080, socket: 708 })
+[2m2026-11-13T13:14:31.894152Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:31.894422Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:31.901998Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:31.902313Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65354, peer: 106.14.216.177:8080, socket: 708 })
+[2m2026-11-13T13:14:31.902556Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:31.902742Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65354, peer: 106.14.216.177:8080, socket: 708 })
+[2m2026-11-13T13:14:35.073432Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m4
+[2m2026-11-13T13:14:35.073616Z[0m [33m WARN[0m [2msel002diag[0m[2m:[0m sel002diag reconcile inputs [3mwanted[0m[2m=[0m[("coding-vm", "b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc="), ("windows-desktop", "JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs="), ("openclaw-win", "FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=")] [3mstates[0m[2m=[0m[("coding-vm", Some("Direct")), ("windows-desktop", Some("Direct")), ("openclaw-win", Some("Direct"))] [3mages[0m[2m=[0m{"FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=": 40, "JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs=": 7, "b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=": 77, "vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=": 82} [3mdegraded[0m[2m=[0m{"dev-reg-5": true, "dev-reg-9": true} [3mhold[0m[2m=[0m{} [3mnow_secs[0m[2m=[0m1794575674
+[2m2026-11-13T13:14:35.085406Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:35.093248Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65356, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:14:35.093428Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:35.093547Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:35.101026Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:35.101291Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65356, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:14:35.101442Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:35.101629Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65356, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:14:40.121024Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:40.129732Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65359, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:14:40.129971Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:40.130154Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:40.137951Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:40.138229Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65359, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:14:40.138540Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:40.138893Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65359, peer: 106.14.216.177:8080, socket: 444 })
+[2m2026-11-13T13:14:44.076185Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m4
+[2m2026-11-13T13:14:45.142964Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:45.153931Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65362, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:14:45.154173Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:45.154358Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:45.164354Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:45.164593Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65362, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:14:45.164780Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:45.164965Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65362, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:14:50.168709Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:50.183217Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65367, peer: 106.14.216.177:8080, socket: 620 })
+[2m2026-11-13T13:14:50.183847Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:50.184406Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:50.192772Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:50.193556Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65367, peer: 106.14.216.177:8080, socket: 620 })
+[2m2026-11-13T13:14:50.194288Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:50.194980Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65367, peer: 106.14.216.177:8080, socket: 620 })
+[2m2026-11-13T13:14:52.064713Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m3
+[2m2026-11-13T13:14:55.214958Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:14:55.224160Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65369, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:14:55.224464Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:55.224716Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:14:55.233798Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:14:55.234062Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65369, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:14:55.234307Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:14:55.234558Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65369, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:15:00.073637Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m3
+[2m2026-11-13T13:15:00.246770Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:00.255194Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65373, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:00.255465Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:00.255616Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:00.263431Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:00.263640Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65373, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:00.263778Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:00.263899Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65373, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:05.095723Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:05.111250Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65378, peer: 106.14.216.177:8080, socket: 632 })
+[2m2026-11-13T13:15:05.111521Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/device/desired
+[2m2026-11-13T13:15:05.111664Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/device/desired HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:05.121937Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 465)
+[2m2026-11-13T13:15:05.122126Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65378, peer: 106.14.216.177:8080, socket: 632 })
+[2m2026-11-13T13:15:05.122296Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/device/desired
+[2m2026-11-13T13:15:05.122452Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65378, peer: 106.14.216.177:8080, socket: 632 })
+[2m2026-11-13T13:15:05.273125Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:05.281436Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65379, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:05.281756Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:05.282306Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:05.290378Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:05.290639Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65379, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:05.290847Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:05.291113Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65379, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:05.458429Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:05.466939Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65380, peer: 106.14.216.177:8080, socket: 604 })
+[2m2026-11-13T13:15:05.467209Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request POST http://106.14.216.177:8080/api/v1/agent/device/applied
+[2m2026-11-13T13:15:05.467450Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: POST /api/v1/agent/device/applied HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+content-type: application/json
+accept-encoding: gzip
+Transfer-Encoding: chunked
+[2m2026-11-13T13:15:05.481412Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m zero-length body returning stream directly to pool
+[2m2026-11-13T13:15:05.481700Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65380, peer: 106.14.216.177:8080, socket: 604 })
+[2m2026-11-13T13:15:05.481961Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 204 to POST http://106.14.216.177:8080/api/v1/agent/device/applied
+[2m2026-11-13T13:15:05.482245Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65380, peer: 106.14.216.177:8080, socket: 604 })
+[2m2026-11-13T13:15:08.064543Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m3
+[2m2026-11-13T13:15:10.308275Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:10.317600Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65383, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:15:10.317905Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:10.318113Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:10.327941Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:10.328206Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65383, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:15:10.328411Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:10.328593Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65383, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:15:12.033616Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:12.060258Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65385, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:15:12.060630Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request POST http://106.14.216.177:8080/api/v1/agent/heartbeat
+[2m2026-11-13T13:15:12.060860Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: POST /api/v1/agent/heartbeat HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+content-type: application/json
+accept-encoding: gzip
+Transfer-Encoding: chunked
+[2m2026-11-13T13:15:12.069542Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 96)
+[2m2026-11-13T13:15:12.069894Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65385, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:15:12.070138Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to POST http://106.14.216.177:8080/api/v1/agent/heartbeat
+[2m2026-11-13T13:15:12.070287Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65385, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:15:12.070561Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:12.078611Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65386, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:15:12.078873Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/device/peers/endpoints
+[2m2026-11-13T13:15:12.079042Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/device/peers/endpoints HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:12.086986Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 902)
+[2m2026-11-13T13:15:12.087272Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65386, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:15:12.087430Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/device/peers/endpoints
+[2m2026-11-13T13:15:12.087588Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65386, peer: 106.14.216.177:8080, socket: 464 })
+[2m2026-11-13T13:15:15.347688Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:15.355883Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65387, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:15:15.374288Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:15.374598Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:15.382756Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:15.383003Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65387, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:15:15.383169Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:15.383346Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65387, peer: 106.14.216.177:8080, socket: 488 })
+[2m2026-11-13T13:15:16.074928Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m3
+[2m2026-11-13T13:15:18.414072Z[0m [33m WARN[0m [2msel002diag[0m[2m:[0m sel002diag reconcile inputs [3mwanted[0m[2m=[0m[("coding-vm", "b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc="), ("windows-desktop", "JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs="), ("openclaw-win", "FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=")] [3mstates[0m[2m=[0m[("coding-vm", Some("Direct")), ("windows-desktop", Some("Direct")), ("openclaw-win", Some("Direct"))] [3mages[0m[2m=[0m{"FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=": 83, "JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs=": 50, "b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=": 120, "vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=": 125} [3mdegraded[0m[2m=[0m{"dev-reg-5": true, "dev-reg-9": true} [3mhold[0m[2m=[0m{} [3mnow_secs[0m[2m=[0m1794575718
+[2m2026-11-13T13:15:18.418852Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:18.428261Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65389, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:15:18.428575Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:18.428827Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:18.437288Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:18.437563Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65389, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:15:18.437756Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:18.437933Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65389, peer: 106.14.216.177:8080, socket: 680 })
+[2m2026-11-13T13:15:23.441859Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:23.451338Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65416, peer: 106.14.216.177:8080, socket: 588 })
+[2m2026-11-13T13:15:23.451568Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:23.451726Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:23.462058Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:23.462274Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65416, peer: 106.14.216.177:8080, socket: 588 })
+[2m2026-11-13T13:15:23.462435Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:23.462576Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65416, peer: 106.14.216.177:8080, socket: 588 })
+[2m2026-11-13T13:15:24.066815Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m3
+[2m2026-11-13T13:15:28.468425Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:28.477641Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65439, peer: 106.14.216.177:8080, socket: 588 })
+[2m2026-11-13T13:15:28.477970Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:28.478213Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:28.486582Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:28.486866Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65439, peer: 106.14.216.177:8080, socket: 588 })
+[2m2026-11-13T13:15:28.487108Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:28.487442Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65439, peer: 106.14.216.177:8080, socket: 588 })
+[2m2026-11-13T13:15:32.065033Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m3
+[2m2026-11-13T13:15:33.506596Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:33.516359Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65454, peer: 106.14.216.177:8080, socket: 548 })
+[2m2026-11-13T13:15:33.516649Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:33.516909Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:33.526089Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:33.526433Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65454, peer: 106.14.216.177:8080, socket: 548 })
+[2m2026-11-13T13:15:33.526694Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:33.526953Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65454, peer: 106.14.216.177:8080, socket: 548 })
+[2m2026-11-13T13:15:38.531082Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:38.541989Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65463, peer: 106.14.216.177:8080, socket: 824 })
+[2m2026-11-13T13:15:38.542896Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:38.543790Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:38.553630Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:38.554466Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65463, peer: 106.14.216.177:8080, socket: 824 })
+[2m2026-11-13T13:15:38.555419Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:38.556335Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65463, peer: 106.14.216.177:8080, socket: 824 })
+[2m2026-11-13T13:15:41.073379Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m4
+[2m2026-11-13T13:15:43.577341Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:43.584909Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65468, peer: 106.14.216.177:8080, socket: 688 })
+[2m2026-11-13T13:15:43.585145Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:43.585415Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:43.592504Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:43.592778Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65468, peer: 106.14.216.177:8080, socket: 688 })
+[2m2026-11-13T13:15:43.593046Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:43.593311Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65468, peer: 106.14.216.177:8080, socket: 688 })
+[2m2026-11-13T13:15:48.434949Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:48.444392Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65470, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:48.466547Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/device/desired
+[2m2026-11-13T13:15:48.466754Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/device/desired HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:48.478184Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 465)
+[2m2026-11-13T13:15:48.478371Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65470, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:48.478513Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/device/desired
+[2m2026-11-13T13:15:48.478676Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65470, peer: 106.14.216.177:8080, socket: 764 })
+[2m2026-11-13T13:15:48.613709Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:48.621921Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65472, peer: 106.14.216.177:8080, socket: 688 })
+[2m2026-11-13T13:15:48.622082Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:48.622220Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:48.630772Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:48.630978Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65472, peer: 106.14.216.177:8080, socket: 688 })
+[2m2026-11-13T13:15:48.631121Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:48.631243Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65472, peer: 106.14.216.177:8080, socket: 688 })
+[2m2026-11-13T13:15:48.819168Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:48.828272Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65473, peer: 106.14.216.177:8080, socket: 408 })
+[2m2026-11-13T13:15:48.828432Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request POST http://106.14.216.177:8080/api/v1/agent/device/applied
+[2m2026-11-13T13:15:48.828556Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: POST /api/v1/agent/device/applied HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+content-type: application/json
+accept-encoding: gzip
+Transfer-Encoding: chunked
+[2m2026-11-13T13:15:48.841163Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m zero-length body returning stream directly to pool
+[2m2026-11-13T13:15:48.841346Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65473, peer: 106.14.216.177:8080, socket: 408 })
+[2m2026-11-13T13:15:48.841514Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 204 to POST http://106.14.216.177:8080/api/v1/agent/device/applied
+[2m2026-11-13T13:15:48.841727Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65473, peer: 106.14.216.177:8080, socket: 408 })
+[2m2026-11-13T13:15:49.075341Z[0m [34mDEBUG[0m [2mmeshlet_agent::probe[0m[2m:[0m candidate probe round finished [3mpeers[0m[2m=[0m3 [3missued[0m[2m=[0m9 [3mlost[0m[2m=[0m3
+[2m2026-11-13T13:15:53.644475Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:53.654952Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65476, peer: 106.14.216.177:8080, socket: 848 })
+[2m2026-11-13T13:15:53.655198Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:53.655363Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/tasks/pending HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:53.665477Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 2)
+[2m2026-11-13T13:15:53.665684Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65476, peer: 106.14.216.177:8080, socket: 848 })
+[2m2026-11-13T13:15:53.665881Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/tasks/pending
+[2m2026-11-13T13:15:53.666071Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65476, peer: 106.14.216.177:8080, socket: 848 })
+[2m2026-11-13T13:15:55.349382Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:55.365819Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65477, peer: 106.14.216.177:8080, socket: 808 })
+[2m2026-11-13T13:15:55.377690Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request POST http://106.14.216.177:8080/api/v1/agent/heartbeat
+[2m2026-11-13T13:15:55.377927Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: POST /api/v1/agent/heartbeat HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+content-type: application/json
+accept-encoding: gzip
+Transfer-Encoding: chunked
+[2m2026-11-13T13:15:55.388401Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 96)
+[2m2026-11-13T13:15:55.388626Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65477, peer: 106.14.216.177:8080, socket: 808 })
+[2m2026-11-13T13:15:55.388807Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to POST http://106.14.216.177:8080/api/v1/agent/heartbeat
+[2m2026-11-13T13:15:55.388930Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65477, peer: 106.14.216.177:8080, socket: 808 })
+[2m2026-11-13T13:15:55.389169Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m connecting to 106.14.216.177:8080 at 106.14.216.177:8080
+[2m2026-11-13T13:15:55.395730Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m created stream: Stream(TcpStream { addr: 192.168.5.117:65478, peer: 106.14.216.177:8080, socket: 808 })
+[2m2026-11-13T13:15:55.395920Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m sending request GET http://106.14.216.177:8080/api/v1/agent/device/peers/endpoints
+[2m2026-11-13T13:15:55.396038Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m writing prelude: GET /api/v1/agent/device/peers/endpoints HTTP/1.1
+Host: 106.14.216.177:8080
+User-Agent: ureq/2.12.1
+Accept: */*
+authorization: ***
+accept-encoding: gzip
+[2m2026-11-13T13:15:55.404150Z[0m [34mDEBUG[0m [2mureq::response[0m[2m:[0m Body entirely buffered (length: 902)
+[2m2026-11-13T13:15:55.404341Z[0m [34mDEBUG[0m [2mureq::pool[0m[2m:[0m adding stream to pool: http|106.14.216.177|8080 -> Stream(TcpStream { addr: 192.168.5.117:65478, peer: 106.14.216.177:8080, socket: 808 })
+[2m2026-11-13T13:15:55.404481Z[0m [34mDEBUG[0m [2mureq::unit[0m[2m:[0m response 200 to GET http://106.14.216.177:8080/api/v1/agent/device/peers/endpoints
+[2m2026-11-13T13:15:55.404634Z[0m [34mDEBUG[0m [2mureq::stream[0m[2m:[0m dropping stream: Stream(TcpStream { addr: 192.168.5.117:65478, peer: 106.14.216.177:8080, socket: 808 })
