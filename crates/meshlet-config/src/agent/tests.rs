@@ -201,10 +201,12 @@ fn mcp_defaults_off_and_requires_explicit_opt_in() {
 }
 
 #[test]
-fn agent_probe_defaults_off_5s_and_parses_section() {
-    // SEL-001：默认关（数据面子功能默认全关惯例），周期 5s（任务书），窗口 20。
+fn agent_probe_defaults_on_5s_and_parses_section() {
+    // SEL-001：默认开——direct_connect 默认开（98c75fe），探测是它的安全网
+    // （SEL-003 劣化回中继只吃探测窗口；探测关 = 劣化直连无限钉死黑洞，
+    // 真机 2026-11-13 imac↔work5 事故）。周期 5s（任务书），窗口 20。
     let d = AgentConfig::default().dataplane.probe;
-    assert!(!d.enabled);
+    assert!(d.enabled);
     assert_eq!(d.interval_secs, 5);
     assert_eq!(d.window, 20);
     // SEL-002 迟滞默认：连续 3 采样、裕量 30%。
@@ -214,7 +216,7 @@ fn agent_probe_defaults_off_5s_and_parses_section() {
     assert_eq!(d.recovery_required, 3);
     // 缺 [dataplane] 段同样取默认。
     let d = AgentConfig::from_toml("").unwrap().dataplane.probe;
-    assert!(!d.enabled);
+    assert!(d.enabled);
     assert_eq!(d.interval_secs, 5);
     assert_eq!(d.switch_required, 3);
     assert_eq!(d.switch_margin, 0.30);

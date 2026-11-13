@@ -222,8 +222,12 @@ impl Default for DirectConnectConfig {
 /// SEL-001 候选端点探测配置（任务书：agent 周期，默认 5s，可配）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProbeConfig {
-    /// 是否开启候选端点探测。默认关；开启且 `direct_connect.enabled` 且对端
-    /// 有候选端点时才发探测（无候选 = 无目标，no-op）。
+    /// 是否开启候选端点探测。默认开（2026-11-13 spoke 互断事故后从关改为开）：
+    /// `direct_connect` 自 98c75fe 起默认开，探测是它的安全网——SEL-003 劣化
+    /// 判定（丢包尖峰/超时 → 立即回中继）只吃探测窗口，探测关 = 直连劣化后
+    /// 无限钉死黑洞（真机 2026-11-13：imac↔work5 直连在 ZT 劣化窗内 payload
+    /// 全丢而握手依旧新鲜，数小时不自愈）。开关仍需 `direct_connect.enabled`
+    /// 且对端有候选端点才实际发探测（无候选 = 无目标，no-op）。
     pub enabled: bool,
     /// 探测周期（秒）：默认 5s（任务书）。下限 1。
     pub interval_secs: u64,
@@ -243,7 +247,7 @@ pub struct ProbeConfig {
 impl Default for ProbeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             interval_secs: 5,
             window: 20,
             switch_required: 3,
