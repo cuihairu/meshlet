@@ -99,7 +99,7 @@
 - [x] imac 升级到最新 nightly（MSI 11-13 00:37 构建，exit=0）：Program Files 服务位已更新，AppData 运行位以新版覆盖并重启 agent（1 进程，instance lock 生效）；dev→10.240.0.7 ping 通 7ms——升级后隧道工作正常
 - [x] openclaw 确认 v0.1.0=nightly 同构建（文件时间 11-12），1 进程健康；imac→openclaw、openclaw→work5 隧道 ping 通
 - [x] 连通性矩阵实测：dev→imac ✅ / dev→work5 ✅ / imac→openclaw ✅ / openclaw→work5 ✅ / **imac→work5 ❌**（仅此一条不通）
-- [ ] work5 SSH sshd 半死（端口开、连接即 reset，5 连败）：需 RDP（3389 通）进桌面重启 sshd 服务 + 升级 meshlet；imac→work5 不通疑似同因（work5 侧防火墙/sshd 异常），修复 SSH 后复验
+- [ ] work5 恢复（SSH 对 Administrator 用户名触发 sshd 崩、admin 用户间歇；MSI 已在 C:/Users/admin/meshlet-nightly.msi）：随 spoke-to-spoke 根因修复后由 agent 自愈通道复验；**不阻塞 SEL-002 验收**——验收改用 imac↔openclaw 双机（均已升级最新 nightly 且互通），work5 单独排修复
 - [ ] SEL-002 端到端真机验收：**Linux 侧已实证**（coding-vm 2026-11-13 三轮 demote→re-promote 32-34s 自愈周期，journalctl 直连事件实录）；Windows 侧等三机升到含 df21f88（Windows 探测传输）+ 探测默认开的 nightly 后，复跑 imac↔work5 直连/中继切换场景（work5 需先修 sshd/升级）
 - [ ] 稳定持续跑：三机 nightly 新版运行，观察 24-48h 断线事件（presence_watcher 已可观测），作为 R-07 soak 前置数据
 
