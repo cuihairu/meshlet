@@ -123,3 +123,33 @@ hold={}
 - `sel-002-imac-keyed-trace-2026-11-14.txt`（c4e5038 部署后 20s×30 拍 keyed 轨迹：b6tx 恒直、零新切换、JMrE/FSaf ZT 面残余回收 demote 时 age 56–120s）
 
 前置文档：`sel-002-imac-openclaw-2026-11-13.md`（首轮验收：防火墙封锁 + 自然劣化窗，252+70 拍零 demote，.17 匿名面实锤）。
+
+## 第三轮：stranded 残余根修 880b49a 部署与验证（2026-11-14 03:0x，巡检单 meshlet-nov14-0155）
+
+### 修复内容
+
+`880b49a`（fix(agent): re-promote returns to last direct face over table faces）：DirectPeer 增 `last_direct` 记忆面——promote 记下实拨面、`record_endpoint` 随内核实况刷新（含 wg 漫游出的表外面）；回中继后的再晋升优先选回记忆面（这类面常不在服务端候选表、且无探测目标=免 SEL-003 误判的最稳面）；pending 验证失败（3 拍无握手）清记忆=死面逃生；SwitchGate 短路语义（c4e5038）原样保留；记忆面不进探测目标（窗口免疫=稳定机制本身）。单测 5 例（记忆选回/死面清零/hold 穿透/首次记录/内核刷新），agent lib 144 全绿、windows-gnu 交叉 clippy 净。
+
+### 部署（两机钉版本 MSI 流程）
+
+- nightly run `43482891978`（workflow_dispatch，head `880b49a`）success；本机 `gh run download` 取 nightly-windows 资产，MSI 11,112,448B、SHA256 `769cf4f9f3f59ddbf723e5e042e77b48b6046b745af553096a61a601ec82ca4b`（SHA256SUMS 不在 artifact 内，本地按 release 步同公式生成后随 MSI 一起 scp）。
+- **imac**（02:52）：HASH OK=上值、MSIEXEC_RC 0、PID 13712、APPDATA/PF 双哈希同 `EF3E86DF…CEBDE1`；`--version` 0.1.0；顺手清掉 11-07 遗留休眠任务 7 个（MeshletDIAG/FINAL/I1/IMAC×4）。首跑因 ps1 带中文注释在 PS 5.1 ANSI 解码下 ParserError 一行未执行（agent 无损），改纯 ASCII 后成功。
+- **openclaw**（03:01–03:02，schtasks 分离任务 MeshletOcUp，任务自删）：HASH OK 同上、MSIEXEC_RC 0、PID 2396（03:01:45 起）、APPDATA/PF 双哈希同 imac。Temp 四文件已清。
+- **插曲（如实记）**：一个 11-13 夜遗留的后台旧脚本任务（滚动 release 下载流程）在 openclaw 上推进到 HASH_MATCH 后 sshd flap 会话死亡——实测**未执行到停止步骤**（agent PID 2808 于 00:31:44 启动未被触碰、msiexec 计数 0、其下载的 MSI 已被自身清理），openclaw 状态未被污染；钉版本部署照常完成。
+
+### 验证（imac 分离任务 MeshletImacSample，20s×70 拍 03:03:56–03:25:58 = 22min2s，PID 13712 恒定零重启；raw: sel-002-imac-keyed-trace-2026-11-14-postfix.txt）
+
+| 对端 | 结果 |
+|---|---|
+| b6tx（coding-vm） | **70/70 恒 p2p_direct @ 192.168.5.188，零翻转**（无窗口 roaming 面持续稳定） |
+| JMrE（windows-desktop） | 18 次翻转（hub 39 / pending 13 / direct 18 拍），~2min 周期 direct↔hub 回收——**未达「≥20min 无回收」判据** |
+| FSaf（openclaw-win） | 17 次翻转（hub 32 / pending 25 / direct 13 拍），同期相位与 JMrE 同步——**未达判据** |
+
+- 切换闸零新触发：imac `direct-switch-events.json` 全窗口 648B/LastWriteTime 11-13 22:40:51（升级前后字节恒定）；openclaw 同 217B/11-13 23:11:59 —— SEL-002 闸在 880b49a 下不回退。
+- **残余如实定性（不冒充已验）**：JMrE/FSaf 的记忆面与候选面**同为 10.147.19.x ZT 面**（两台 Windows 现均漫游在外：wd@192.168.88.x、openclaw@192.168.36.x，无真 L2 面存在）——记忆机制「选回上次直连面」与「候选表决策」在此几何下选同一个 ZT 面，无无窗口面可回，震荡未被本次修复消除是**几何必然**而非实现缺陷。修复在单测层证明接线正确（含 192.168.5.11 记忆面 vs 10.x 表面用例）；fleet 可见收益要等对端漫游回家（192.168.5.x/88.x/36.x 任一真 L2 面出现）或 SEL-003 last-Lost 单包触发软化（上游决策清单方案 3，本轮不动）。观测期内每次 pending→direct 均成功握手（面本身可用），hub_relay 期通信正常——数据面无损，仅控制面频繁换道。
+- 软化/几何条件齐备后的复验口径：同采样器 ≥20min，判据 JMrE/FSaf 零 hub_relay 拍。
+
+### 收尾状态
+
+- imac 临时文件已清（msi/sums/脚本）；采样任务 MeshletImacSample 与 openclaw MeshletOcUp 均为自删型（注册脚本首行 schtasks /Delete，无 23:59 重燃残留）。
+- 待办：todo.md 103 行纪要追加（见下一 commit）；Windows 真死复现仍待物理断开手段；openclaw sshd flap 根因未定位（进程级挂起、升级窗口外复现）。
