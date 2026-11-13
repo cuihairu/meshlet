@@ -1,0 +1,5 @@
+#!/bin/sh
+# Idempotent pre-remove: stop both roles (no-op when disabled/not running).
+[ -x /etc/init.d/meshlet-server ] && /etc/init.d/meshlet-server stop 2>/dev/null
+[ -x /etc/init.d/meshlet-agent ] && /etc/init.d/meshlet-agent stop 2>/dev/null
+exit 0

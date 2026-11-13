@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- meshlet brand mark: pointy-top hex nut (approved four-state tray geometry, gen_icons.py constants; R=13.4, hole=5.0) -->
+  <path fill-rule="evenodd" fill="#326072" d="M16.00,2.60 L4.40,9.30 L4.40,22.70 L16.00,29.40 L27.60,22.70 L27.60,9.30 Z M16,11.0 a5.0,5.0 0 1,0 0,10.0 a5.0,5.0 0 1,0 0,-10.0 Z"/>
+</svg>

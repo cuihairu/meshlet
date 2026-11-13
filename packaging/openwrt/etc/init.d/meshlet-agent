@@ -1,0 +1,86 @@
+#!/bin/sh /etc/rc.common
+# Meshlet device agent procd init (meshlet package).
+# Renders /var/etc/meshlet-agent.toml from /etc/config/meshlet on every
+# start; UCI is the single source of truth. The agent's only useful mode
+# is dataplane-on (the binary exits 0 without touching the kernel when
+# [dataplane] is off), so agent.enabled=1 always renders dataplane on.
+# The agent private key is generated on first start (wg genkey).
+START=99
+USE_PROCD=1
+
+PROG=/usr/bin/meshlet-agent
+CONF_DEFAULT=/var/etc/meshlet-agent.toml
+KEY_DIR=/etc/meshlet
+
+# Same contract as meshlet-server's ensure_key.
+ensure_key() {
+	local key="$1"
+	[ -s "$key" ] && return 0
+	mkdir -p "$KEY_DIR"
+	chmod 0755 "$KEY_DIR"
+	if ! command -v wg >/dev/null 2>&1; then
+		logger -t meshlet-agent "no wg tool; cannot generate $key"
+		return 1
+	fi
+	umask 077
+	wg genkey > "$key" || return 1
+	chmod 0600 "$key"
+	logger -t meshlet-agent "generated $key"
+	return 0
+}
+
+render_config() {
+	local server_url state_dir device_name bootstrap_token hub_endpoint interface listen_port private_key_file
+	config_get server_url agent server_url 'http://127.0.0.1:8080'
+	config_get state_dir agent state_dir '/var/lib/meshlet-agent'
+	config_get device_name agent device_name ''
+	config_get bootstrap_token agent bootstrap_token ''
+	config_get hub_endpoint agent hub_endpoint ''
+	config_get interface agent interface 'meshlet'
+	config_get listen_port agent listen_port '51821'
+	config_get private_key_file agent private_key_file "$KEY_DIR/agent.key"
+	mkdir -p "$(dirname "$CONF_DEFAULT")" "$state_dir" "$KEY_DIR"
+	ensure_key "$private_key_file" || return 1
+	{
+		echo "server_url = \"$server_url\""
+		echo "state_dir = \"$state_dir\""
+		[ -n "$device_name" ] && echo "device_name = \"$device_name\""
+		[ -n "$bootstrap_token" ] && echo "bootstrap_token = \"$bootstrap_token\""
+		echo "[dataplane]"
+		echo "enabled = true"
+		echo "interface = \"$interface\""
+		echo "private_key_file = \"$private_key_file\""
+		[ -n "$hub_endpoint" ] && echo "hub_endpoint = \"$hub_endpoint\""
+		echo "poll_interval_secs = 30"
+		# The direct-connect listen port lives in its own table; a flat
+		# listen_port under [dataplane] is a TOML parse error (caught on
+		# the acceptance router).
+		echo ""
+		echo "[dataplane.direct_connect]"
+		echo "listen_port = $listen_port"
+	} > "$CONF_DEFAULT"
+	return 0
+}
+
+start_service() {
+	local enabled
+	config_load meshlet
+	config_get enabled agent enabled '0'
+	[ "$enabled" = "1" ] || return 0
+	render_config || return 1
+	procd_open_instance
+	procd_set_param command "$PROG" "$CONF_DEFAULT"
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	service_stop "$PROG"
+}
+
+reload_service() {
+	stop
+	start
+}

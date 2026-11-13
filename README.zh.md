@@ -74,6 +74,22 @@ sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/m
 
 流水线须先合入默认分支并成功运行一次，下载链接才会产生可安装的资产。`install.sh` 用于 Linux + systemd；Windows agent 用下文 [Windows 支持](#windows-支持) 的 `install.ps1` 安装。更多配置见[安装指南](docs/guide/install.md)。
 
+**OpenWrt / iStoreOS 安装（opkg）：**
+
+nightly 对每个架构（x86_64 / aarch64）发布三个 `.ipk`：`meshlet-nightly-openwrt-<arch>.ipk`（musl 静态二进制 + procd init + UCI 配置）、`meshlet-nightly-openwrt-luci-app.ipk`（LuCI 设置与状态页）、`meshlet-nightly-openwrt-app-meta.ipk`（iStore 元数据；装它会经依赖拉齐前两个）。按依赖链顺序安装：
+
+```bash
+opkg install meshlet-nightly-openwrt-x86_64.ipk        # 或 -aarch64
+opkg install meshlet-nightly-openwrt-luci-app.ipk
+opkg install meshlet-nightly-openwrt-app-meta.ipk      # 可选；连带装齐
+```
+
+典型部署：做 hub 的路由器跑 server 角色（可选再把 agent 角色打开，让路由器自身入网）；成员路由器只跑 agent 角色。两个角色都在 `/etc/config/meshlet`，各有独立 `enabled` 开关，默认关闭。procd init 每次启动都从 UCI 渲染 `/var/etc/meshlet-{server,agent}.toml`——UCI 是唯一配置源，LuCI 里 Apply 即重启生效。WireGuard 密钥首启自动生成（需 `wg` 工具，iStoreOS 自带）；hub 数据面另需 `kmod-wireguard`。升级保留 `/etc/config/meshlet`（新默认值落 `/etc/config/meshlet-opkg` 旁路），并把已启用的角色自动拉起。
+
+LuCI 在 **服务 → Meshlet 组网**：双角色设置页 + 状态页（服务状态、设备在线计数、`logread` 日志摘录，10 秒自动刷新）。设备计数需在 server 控制台签发 read scope 的 API token 并填入设置页 `api_token`，页面只显示脱敏前缀。LuCI 是运维面而非完整管理控制台——设备批准、revision、拓扑仍在 server 的 web 控制台操作（默认 `127.0.0.1:8080` 只绑回环，请改成 LAN 可达的 bind 或加反代）。
+
+server 角色在路由器上是可选的：x86_64 验收路由器（iStoreOS 24.10，1.6 GB 内存）实测，hub 开数据面空闲 RSS ~10.5 MB，agent ~6.4 MB。
+
 ## Windows 支持
 
 Windows 是数据面目标平台，受真机验收门禁（[R-05](docs/implementation/r05-windows-acceptance.md)，ADR-008）。仓库现状：

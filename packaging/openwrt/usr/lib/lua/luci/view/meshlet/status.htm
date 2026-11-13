@@ -1,0 +1,138 @@
+<%+header%>
+<h2><a id="content" name="content"><%:Meshlet 运行状态%></a></h2>
+
+<div id="meshlet-error" class="alert-message warning" style="display:none"></div>
+
+<div class="cbi-map">
+	<fieldset class="cbi-section">
+		<legend><%:服务状态%></legend>
+		<table class="table">
+			<tr><td><%:hub 服务 (meshlet-server)%></td><td><code id="meshlet-server">…</code></td></tr>
+			<tr><td><%:hub 监听%></td><td><code id="meshlet-bind">…</code></td></tr>
+			<tr><td><%:hub 数据面%></td><td><code id="meshlet-dataplane">…</code></td></tr>
+			<tr><td><%:agent (meshlet-agent)%></td><td><code id="meshlet-agent">…</code></td></tr>
+			<tr><td><%:API token%></td><td><code id="meshlet-token">…</code></td></tr>
+		</table>
+	</fieldset>
+
+	<fieldset class="cbi-section">
+		<legend><%:mesh 网络与在线设备%></legend>
+		<table class="table" id="meshlet-networks">
+			<tr><th><%:网络%></th><th><%:overlay 网段%></th><th><%:在线/总数%></th><th><%:设备%></th></tr>
+		</table>
+	</fieldset>
+
+	<fieldset class="cbi-section">
+		<legend><%:最近日志 (logread -e meshlet)%></legend>
+		<table class="table" id="meshlet-logs">
+			<tr><th><%:日志行%></th></tr>
+		</table>
+	</fieldset>
+</div>
+
+<p><%:每 10 秒自动刷新%></p>
+
+<script type="text/javascript">
+(function() {
+	var inflight = false;
+
+	function set_text(id, text) {
+		var el = document.getElementById(id);
+		if (el) el.textContent = text;
+	}
+
+	function clear_rows(id) {
+		var table = document.getElementById(id);
+		while (table.rows.length > 1) table.deleteRow(-1);
+		return table;
+	}
+
+	function add_row(id, cells) {
+		var table = document.getElementById(id);
+		var row = table.insertRow(-1);
+		for (var i = 0; i < cells.length; i++) {
+			var td = row.insertCell(-1);
+			td.textContent = cells[i];
+		}
+		return row;
+	}
+
+	function empty_row(id, message) {
+		var row = add_row(id, [message]);
+		var td = row.cells[0];
+		td.colSpan = document.getElementById(id).rows[0].cells.length;
+		td.style.color = '#888';
+	}
+
+	function state_color(state) {
+		var el = document.createElement('span');
+		el.textContent = state;
+		el.style.fontWeight = '600';
+		el.style.color = (state === 'running' || state === 'online') ? '#080' : '#c00';
+		return el;
+	}
+
+	function load() {
+		if (inflight) return;
+		inflight = true;
+		fetch('/cgi-bin/luci/admin/services/meshlet/api/status')
+			.then(function(r) { return r.json(); })
+			.then(function(j) {
+				var err = document.getElementById('meshlet-error');
+				if (j.error) {
+					err.textContent = j.error;
+					err.style.display = '';
+				} else {
+					err.style.display = 'none';
+				}
+
+				var srv = document.getElementById('meshlet-server');
+				srv.textContent = '';
+				srv.appendChild(state_color(j.server && j.server.status || 'stopped'));
+				set_text('meshlet-bind', (j.server && j.server.bind) || '-');
+				set_text('meshlet-dataplane',
+					(j.server && j.server.dataplane === '1') ? '启用' : '关闭（仅面板）');
+				var ag = document.getElementById('meshlet-agent');
+				ag.textContent = '';
+				ag.appendChild(state_color(j.agent && j.agent.status || 'stopped'));
+				set_text('meshlet-token', j.token_masked || (j.token_hint || '-'));
+
+				clear_rows('meshlet-networks');
+				if (!j.networks || !j.networks.length) {
+					empty_row('meshlet-networks', '暂无网络数据（未启用 hub、未配置 token 或 hub 不可达）');
+				} else {
+					j.networks.forEach(function(n) {
+						var head = add_row('meshlet-networks', [
+							n.name + ' (' + n.id + ')',
+							n.overlay_cidr || '-',
+							n.online + ' / ' + n.total,
+							''
+						]);
+						// 设备明细：一行摘要，控制名/ VIP / 在线态。
+						var summary = (n.devices || []).map(function(d) {
+							return d.name + ' ' + (d.virtual_ipv4 || '') + ' [' + d.online_state + ']';
+						}).join(' · ');
+						head.cells[3].textContent = summary || '-';
+					});
+				}
+
+				clear_rows('meshlet-logs');
+				if (!j.logs || !j.logs.length) {
+					empty_row('meshlet-logs', '暂无 meshlet 日志');
+				} else {
+					j.logs.forEach(function(line) { add_row('meshlet-logs', [line]); });
+				}
+			})
+			.catch(function() {
+				var err = document.getElementById('meshlet-error');
+				err.textContent = '无法获取状态（接口请求失败）';
+				err.style.display = '';
+			})
+			.finally(function() { inflight = false; });
+	}
+
+	load();
+	setInterval(load, 10000);
+})();
+</script>
+<%+footer%>

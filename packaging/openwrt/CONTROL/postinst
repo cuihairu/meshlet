@@ -1,0 +1,22 @@
+#!/bin/sh
+# Idempotent post-install: key/state dirs + service enablement. Both roles
+# stay disabled in UCI until the user turns them on, so enabling the init
+# links only wires boot start; nothing actually runs until enabled=1.
+# The LuCI leaf dirs are pre-created here because opkg's unpacker does not
+# create missing parent directories (learned on the acceptance router:
+# view/meshlet/ was absent, so status.htm failed to unpack).
+mkdir -p /etc/meshlet
+mkdir -p /var/lib/meshlet
+mkdir -p /var/lib/meshlet-agent
+mkdir -p /usr/lib/lua/luci/controller
+mkdir -p /usr/lib/lua/luci/model/cbi
+mkdir -p /usr/lib/lua/luci/view/meshlet
+chmod 0755 /etc/meshlet
+[ -x /etc/init.d/meshlet-server ] && /etc/init.d/meshlet-server enable
+[ -x /etc/init.d/meshlet-agent ] && /etc/init.d/meshlet-agent enable
+# Bring enabled roles back up: opkg runs prerm (stop) before unpack, so an
+# upgrade would otherwise leave an enabled hub dark until manual start or
+# reboot. No-op while the role is disabled in UCI.
+[ "$(uci -q get meshlet.server.enabled)" = "1" ] && /etc/init.d/meshlet-server start >/dev/null 2>&1
+[ "$(uci -q get meshlet.agent.enabled)" = "1" ] && /etc/init.d/meshlet-agent start >/dev/null 2>&1
+exit 0

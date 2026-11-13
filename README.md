@@ -79,6 +79,22 @@ Packages create the service account and state directory, but deliberately do not
 
 The workflow must be merged into the default branch and run successfully once before download assets exist. `install.sh` requires Linux with systemd; Windows agents install with `install.ps1` from the [Windows support](#windows-support) section below. See the [installation guide](docs/guide/install.md) for configuration details.
 
+**Install on OpenWrt / iStoreOS (opkg):**
+
+The nightly release ships three `.ipk` packages per architecture (x86_64 and aarch64): `meshlet-nightly-openwrt-<arch>.ipk` (static musl binaries, procd init scripts and the UCI config), `meshlet-nightly-openwrt-luci-app.ipk` (LuCI settings + status pages) and `meshlet-nightly-openwrt-app-meta.ipk` (iStore metadata; installing it pulls the other two via dependencies). Install order follows the dependency chain:
+
+```bash
+opkg install meshlet-nightly-openwrt-x86_64.ipk        # or -aarch64
+opkg install meshlet-nightly-openwrt-luci-app.ipk
+opkg install meshlet-nightly-openwrt-app-meta.ipk      # optional; pulls the rest
+```
+
+Typical deployments: a hub router runs the server role (plus optionally the agent role to put the router itself into the mesh); member routers run the agent role only. Both roles live in `/etc/config/meshlet` with independent `enabled` flags and stay off until you turn them on. The procd init scripts render `/var/etc/meshlet-{server,agent}.toml` from UCI on every start — UCI is the single source of truth, and Apply in LuCI restarts the services. WireGuard keys are generated on first start (`wg` tool required; iStoreOS ships it). The hub dataplane additionally needs `kmod-wireguard`. Upgrades preserve `/etc/config/meshlet` (diverging defaults land in `/etc/config/meshlet-opkg`) and bring enabled roles back up automatically.
+
+LuCI lives under **Services → Meshlet 组网**: a settings page for both roles and a status page (service state, online device counts, recent `logread` excerpt, 10 s auto-refresh). The device counts need a read-scope API token (minted in the server console) pasted into the settings page's `api_token` field; the page only ever displays a masked prefix. LuCI is an operations surface, not the full management console — device approval, revisions and topology live in the server's web console (reach it over the hub's own HTTP/HTTPS address; the default `127.0.0.1:8080` bind is loopback-only, so set a LAN-facing bind or front it with a reverse proxy).
+
+The server role is optional on a router: measured on the x86_64 acceptance router (iStoreOS 24.10, 1.6 GB RAM), the hub with dataplane enabled idles at ~10.5 MB RSS and the agent at ~6.4 MB.
+
 ## Windows support
 
 Windows is a data-plane target gated behind real-machine acceptance

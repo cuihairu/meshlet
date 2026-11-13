@@ -45,10 +45,19 @@ jobs:
       - run: cargo test --locked --workspace
       - name: Validate installer
         run: |
-          sudo apt-get update && sudo apt-get install -y msitools wixl wixl-data
-          bash -n scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh scripts/validate-wix.sh
+          sudo apt-get update && sudo apt-get install -y msitools wixl wixl-data lua5.1
+          bash -n scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh scripts/package-openwrt.sh scripts/validate-wix.sh
           scripts/install.sh --help
-          shellcheck scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh
+          shellcheck scripts/install.sh scripts/package-release.sh scripts/package-deb-rpm.sh scripts/package-openwrt.sh
+          sh -n packaging/openwrt/build-ipk.sh \
+            packaging/openwrt/etc/init.d/meshlet-server \
+            packaging/openwrt/etc/init.d/meshlet-agent \
+            packaging/openwrt/CONTROL/postinst packaging/openwrt/CONTROL/prerm
+          shellcheck packaging/openwrt/build-ipk.sh
+          # LuCI app gate: parse the Lua controller/model with Lua 5.1
+          # (the interpreter LuCI runs on OpenWrt).
+          luac5.1 -p packaging/openwrt/usr/lib/lua/luci/controller/meshlet.lua \
+            packaging/openwrt/usr/lib/lua/luci/model/cbi/meshlet.lua
           # Offline wxs gate for the Windows MSI (see apps/cli/wix/main.wxs).
           scripts/validate-wix.sh
           if command -v pwsh >/dev/null; then
@@ -207,6 +216,11 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y rpm
           scripts/package-deb-rpm.sh '${{ matrix.target }}' '${{ matrix.deb_arch }}' '${{ matrix.rpm_arch }}'
+      # OpenWrt .ipk set (meshlet / luci-app-meshlet / app-meta-meshlet).
+      # luci-app and app-meta are arch=all, so both matrix legs build them;
+      # the publish job uploads with --clobber, so the duplicate is harmless.
+      - name: Build OpenWrt ipk packages
+        run: scripts/package-openwrt.sh '${{ matrix.target }}' '${{ matrix.arch }}'
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: nightly-binary-${{ matrix.arch }}
@@ -236,20 +250,21 @@ jobs:
           cp scripts/install.sh dist/install.sh
           cp scripts/install.ps1 dist/install.ps1
           cd dist
-          sha256sum meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 > SHA256SUMS
+          sha256sum meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-openwrt-*.ipk meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 > SHA256SUMS
                     cat > notes.md <<NOTES
           Automated prerelease from commit ${GITHUB_SHA}.
           Linux x86_64 and ARM64 static binaries, web console, systemd units, and per-component deb/rpm packages
-          (meshlet-server / meshlet-agent / meshlet-cli) are included, plus a Windows agent+CLI zip, a Windows MSI
-          installer (meshlet-nightly-windows-x86_64.msi) and install.ps1 / install.sh one-command installers.
+          (meshlet-server / meshlet-agent / meshlet-cli) are included, plus OpenWrt .ipk packages
+          (meshlet-nightly-openwrt-<arch>.ipk with luci-app and iStore metadata companions), a Windows agent+CLI zip,
+          a Windows MSI installer (meshlet-nightly-windows-x86_64.msi) and install.ps1 / install.sh one-command installers.
           SHA256SUMS verifies the downloaded assets. BUILD_INFO inside each archive records the source commit.
           This build passed the workspace checks and required Linux kernel dataplane tests.
           The nightly tag tracks the most recent successful build.
           NOTES
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true
-            gh release upload nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-openwrt-*.ipk meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit nightly --repo "$GITHUB_REPOSITORY" --prerelease --title 'Nightly' --notes-file notes.md
           else
-            gh release create nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
+            gh release create nightly meshlet-linux-*.tar.gz meshlet-*.deb meshlet-*.rpm meshlet-nightly-openwrt-*.ipk meshlet-nightly-windows-x86_64.zip meshlet-nightly-windows-x86_64.msi install.sh install.ps1 SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title 'Nightly' --notes-file notes.md
           fi

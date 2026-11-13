@@ -1,0 +1,40 @@
+# Meshlet UCI configuration (meshlet package, /etc/config/meshlet).
+#
+# The init scripts render /var/etc/meshlet-{server,agent}.toml from these
+# sections on every start; UCI is the single source of truth (the same
+# model as OpenWrt-native services). Both services default to disabled —
+# enable the roles this router plays:
+#   server: the hub (control plane + WireGuard hub) — set server.enabled=1
+#   agent:  the router joining an existing mesh       — set agent.enabled=1
+# Typical deployments: hub router runs server(+agent), member routers run
+# agent only (see the README OpenWrt section).
+
+config server 'server'
+	option enabled '0'
+	# Listen address for the API/console (LuCI status page curls this).
+	option bind '127.0.0.1:8080'
+	# State directory (SQLite db + instance lock live here).
+	option state_dir '/var/lib/meshlet'
+	# WireGuard hub dataplane; disabled = panel/API only, no mesh.
+	option dataplane '0'
+	option interface 'meshlet'
+	option listen_port '51820'
+	# Hub private key path (generated on first start via wg genkey).
+	option private_key_file '/etc/meshlet/hub.key'
+	# Optional read-scope API token for the LuCI status page (masked).
+	option api_token ''
+
+config agent 'agent'
+	option enabled '0'
+	option server_url 'http://127.0.0.1:8080'
+	# State directory (device_token + agent lock live here).
+	option state_dir '/var/lib/meshlet-agent'
+	option device_name ''
+	# Enrollment bootstrap token issued by the hub (one-time use).
+	option bootstrap_token ''
+	# Hub WireGuard endpoint, e.g. "hub.example.com:51820".
+	option hub_endpoint ''
+	option interface 'meshlet'
+	option listen_port '51821'
+	# Agent private key path (generated on first start via wg genkey).
+	option private_key_file '/etc/meshlet/agent.key'
