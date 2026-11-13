@@ -446,3 +446,171 @@ fn degraded_latency_demotes_even_with_fresh_handshake() {
     );
     assert_eq!(current.get("dev-b").unwrap().state, PeerLinkState::Relay);
 }
+
+/// stranded 根修（2026-11-14 巡检单，候选表纳管 roaming 面的等价机制）：
+/// 回中继后的再晋升优先选回记忆面——上次直连实际在用的 endpoint（含内核
+/// 漫游出来的、不在服务端候选表的 roaming 面）。候选表按最低 IP 取 SameLan
+/// 会拿 10.x ZT 面压过 192.168.x 面（stranded 实锤：re-promote 只能挑表内
+/// ZT 面，回不到健康面，~1-5min direct↔hub 回收）。
+#[test]
+fn repromote_returns_to_remembered_face_over_lower_ip_table_face() {
+    // 表内候选：ZT 面 10.x（SameLan 合格、IP 最低）+ 公网；记忆面 192.168.5.x
+    // （表外 roaming 面，健康且无探测窗口）。
+    let wanted = vec![peer(
+        "dev-b",
+        "10.240.0.3",
+        &[
+            lan("10.147.19.49", 51820),
+            EndpointCandidate::public("203.0.113.5".parse().unwrap(), 51820),
+        ],
+    )];
+    let subnets = [cidr("10.147.19.0/24"), cidr("192.168.5.0/24")];
+    let remembered = lan("192.168.5.11", 51820);
+    let mut current = BTreeMap::new();
+    let mut entry = direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct);
+    entry.last_direct = Some(remembered);
+    current.insert("dev-b".into(), entry);
+
+    // SEL-003 劣化 → 立即回退；已建立的 Direct 保留记忆面。
+    let mut degraded = BTreeMap::new();
+    degraded.insert("dev-b".into(), true);
+    let updates = plan_updates(
+        &wanted,
+        &subnets,
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &degraded,
+        &BTreeSet::new(),
+    );
+    assert!(matches!(&updates[0], DirectUpdate::Demote { .. }));
+    assert_eq!(current.get("dev-b").unwrap().state, PeerLinkState::Relay);
+    assert_eq!(
+        current.get("dev-b").unwrap().last_direct,
+        Some(remembered),
+        "degrade fallback from Direct keeps the remembered face"
+    );
+
+    // 下一周期再晋升：选回记忆面，而不是表内 IP 最低的 ZT 面。
+    let updates = plan_updates(
+        &wanted,
+        &subnets,
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(
+        matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
+        if endpoint.to_string() == "192.168.5.11:51820"),
+        "re-promote must return to the remembered roaming face: {updates:?}"
+    );
+}
+
+/// 记忆面的死面逃生：pending 验证失败（3 拍无握手）的回退弃用记忆——
+/// 对端已漫游走（旧面真死了）时，再晋升退回候选表决策，不死锁旧面。
+#[test]
+fn pending_verify_failure_clears_memory_and_table_decision_wins() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.5.99", 51820)])];
+    let mut current = BTreeMap::new();
+    let mut entry = direct_peer(
+        "dev-b",
+        "10.240.0.3",
+        PeerLinkState::DirectPending {
+            attempts: MAX_PROMOTE_ATTEMPTS,
+        },
+    );
+    entry.last_direct = Some(lan("192.168.5.11", 51820));
+    current.insert("dev-b".into(), entry);
+    let mut ages = BTreeMap::new();
+    ages.insert("dev-b".into(), DIRECT_HEALTH_WINDOW_SECS.saturating_add(1));
+    let updates = plan_updates(
+        &wanted,
+        &[cidr("192.168.5.0/24")],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &ages,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(matches!(&updates[0], DirectUpdate::Demote { .. }));
+    assert_eq!(
+        current.get("dev-b").unwrap().last_direct,
+        None,
+        "pending verify failure must drop the remembered face"
+    );
+
+    // 下一周期：无记忆 → 表内 SameLan 面胜出（旧记忆面不再被选）。
+    let updates = plan_updates(
+        &wanted,
+        &[cidr("192.168.5.0/24")],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(
+        matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
+        if endpoint.to_string() == "192.168.5.99:51820"),
+        "table decision takes over once memory is dropped: {updates:?}"
+    );
+}
+
+/// 恢复门保持中继期间记忆面穿透：门放行后的再晋升仍优先选回它。
+#[test]
+fn hold_relay_preserves_remembered_face() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("10.147.19.49", 51820)])];
+    let mut current = BTreeMap::new();
+    let mut entry = direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay);
+    entry.last_direct = Some(lan("192.168.5.11", 51820));
+    current.insert("dev-b".into(), entry);
+    let mut hold = BTreeSet::new();
+    hold.insert("dev-b".into());
+    let updates = plan_updates(
+        &wanted,
+        &[cidr("192.168.5.0/24"), cidr("10.147.19.0/24")],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &hold,
+    );
+    assert!(updates.is_empty(), "held peer stays relay: {updates:?}");
+    assert_eq!(
+        current.get("dev-b").unwrap().last_direct,
+        Some(lan("192.168.5.11", 51820)),
+        "hold must not wipe the remembered face"
+    );
+}
+
+/// 首次晋升（无记忆）与已建立直连的周期不受影响：表决策原样（既有回归
+/// 不松动）；promote 动作把要拨的面记入记忆，供下次回退后选回。
+#[test]
+fn first_promote_records_the_dialed_face_as_memory() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.5.99", 51820)])];
+    let mut current = BTreeMap::new();
+    let updates = plan_updates(
+        &wanted,
+        &[cidr("192.168.5.0/24")],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
+    if endpoint.to_string() == "192.168.5.99:51820"));
+    assert_eq!(
+        current.get("dev-b").unwrap().last_direct,
+        Some(lan("192.168.5.99", 51820)),
+        "promote records the dialed face for future re-promotes"
+    );
+}

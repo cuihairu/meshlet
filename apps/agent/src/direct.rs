@@ -56,6 +56,13 @@ pub struct DirectPeer {
     /// SEL-004 候选端点详情（端点/RTT/丢包/当前选中与原因）；由 agent 探测
     /// 周期填充（[DirectManager::record_candidates]）。
     pub candidates: Vec<meshlet_domain::DirectCandidateStatus>,
+    /// 记忆面：上次直连实际在用的 endpoint（promote 时记下、内核读数随
+    /// wg roaming 刷新）。回中继后的再晋升（re-promote）优先选回它——这类
+    /// 面（尤其内核漫游出来的源面）常不在服务端候选表，是「无探测目标 →
+    /// 永无 SEL-003 劣化误判」的最稳面；候选表按最低 IP 取 SameLan 会拿
+    /// 10.x ZT 面压过它（2026-11-13 stranded 实锤）。pending 验证失败
+    /// （3 拍无握手）即清除——死面不死锁。重启后清零（ledger 不存）。
+    pub last_direct: Option<meshlet_domain::EndpointCandidate>,
 }
 
 /// 直连管理器：对端公钥 → 管理状态。跨周期持留（状态机要记住 pending 尝试次数）。
@@ -193,6 +200,7 @@ impl DirectManager {
                     rx_bytes: 0,
                     tx_bytes: 0,
                     candidates: vec![],
+                    last_direct: None,
                 },
             );
         }
@@ -252,11 +260,14 @@ impl DirectManager {
             .collect()
     }
 
-    /// 记录已建立的直连 endpoint（Promote 成功后由执行侧调用；§12.3 状态
-    /// 上报与控制台/CLI 展示）。对端不在管或处于 Relay（无直连链路）则 no-op。
+    /// 记录已建立的直连 endpoint（Promote 成功后与内核读数刷新时由执行侧
+    /// 调用；§12.3 状态上报与控制台/CLI 展示）。对端不在管或处于 Relay
+    /// （无直连链路）则 no-op。记忆面跟随内核实况——wg roaming 后的真实
+    /// 源面（常不在候选表）正是再晋升要能选回的对象。
     pub fn record_endpoint(&mut self, public_key: &str, endpoint: String) {
         if let Some(peer) = self.peers.get_mut(public_key) {
             if peer.state != PeerLinkState::Relay {
+                peer.last_direct = crate::agent::endpoint::parse_endpoint_candidate(&endpoint);
                 peer.endpoint = endpoint;
             }
         }
@@ -341,14 +352,27 @@ pub fn plan_updates(
 
     for peer in wanted {
         let key = peer.public_key.clone();
-        let decision = decide_direct_path(my_lan_subnets, &peer.endpoints);
         let state = current
             .get(&key)
             .map(|entry| entry.state)
             .unwrap_or(PeerLinkState::Relay);
+        // 决策直连路径。回中继后的再晋升（re-promote）优先选回记忆面：
+        // 上次直连实际在用的 endpoint（含内核漫游出来的、不在服务端候选表
+        // 的面）。候选表决策只在无记忆时兜底（首次晋升 / 记忆已因验证失败
+        // 清除）。
+        let decision = match state {
+            PeerLinkState::Relay => current
+                .get(&key)
+                .and_then(|entry| entry.last_direct)
+                .map(DirectDecision::SameLan)
+                .unwrap_or_else(|| decide_direct_path(my_lan_subnets, &peer.endpoints)),
+            _ => decide_direct_path(my_lan_subnets, &peer.endpoints),
+        };
         // SEL-003 恢复门：回中继后未连续健康 N 轮 → 保持中继（不立即切回，
-        // 防抖）。健康已稳定（ready）后才允许状态机重新 Promote。
+        // 防抖）。健康已稳定（ready）后才允许状态机重新 Promote。记忆面
+        // 穿透保持——门放行后的再晋升仍优先选回它。
         if hold_relay.contains(&key) && matches!(state, PeerLinkState::Relay) {
+            let last_direct = current.get(&key).and_then(|entry| entry.last_direct);
             current.insert(
                 key.clone(),
                 DirectPeer {
@@ -363,6 +387,7 @@ pub fn plan_updates(
                     rx_bytes: 0,
                     tx_bytes: 0,
                     candidates: vec![],
+                    last_direct,
                 },
             );
             continue;
@@ -378,6 +403,13 @@ pub fn plan_updates(
                 PeerLinkState::Direct | PeerLinkState::DirectPending { .. }
             )
         {
+            // 劣化回退的记忆面：已建立的 Direct 保留（面大概率还在，真死了
+            // 下次 promote 验证失败自然清除）；pending 被打断的 endpoint 尚未
+            // 验证过握手，弃用。
+            let mut last_direct = current.get(&key).and_then(|entry| entry.last_direct);
+            if matches!(state, PeerLinkState::DirectPending { .. }) {
+                last_direct = None;
+            }
             current.insert(
                 key.clone(),
                 DirectPeer {
@@ -392,6 +424,7 @@ pub fn plan_updates(
                     rx_bytes: 0,
                     tx_bytes: 0,
                     candidates: vec![],
+                    last_direct,
                 },
             );
             updates.push(DirectUpdate::Demote { public_key: key });
@@ -411,6 +444,23 @@ pub fn plan_updates(
             _ => classify_probe(state, handshake_age, DIRECT_HEALTH_WINDOW_SECS),
         };
         let (next_state, action) = on_probe(state, decision, probe, MAX_PROMOTE_ATTEMPTS);
+        // 记忆面维护：promote 记下要拨的面；pending 验证失败的回退弃用记忆
+        // （该 endpoint 未能建立握手，死面不锁死再晋升）；已建立直连的回退
+        // 保留（面大概率还在，见劣化分支同款语义）。
+        let mut last_direct = current.get(&key).and_then(|entry| entry.last_direct);
+        match &action {
+            PeerLinkAction::Promote(path) => {
+                if let DirectDecision::SameLan(c) | DirectDecision::HolePunch(c) = *path {
+                    last_direct = Some(c);
+                }
+            }
+            PeerLinkAction::Demote => {
+                if matches!(state, PeerLinkState::DirectPending { .. }) {
+                    last_direct = None;
+                }
+            }
+            PeerLinkAction::Keep => {}
+        }
         current.insert(
             key.clone(),
             DirectPeer {
@@ -430,6 +480,7 @@ pub fn plan_updates(
                 rx_bytes: 0,
                 tx_bytes: 0,
                 candidates: vec![],
+                last_direct,
             },
         );
         match action {

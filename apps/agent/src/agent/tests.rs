@@ -437,6 +437,7 @@ mod tests {
             rx_bytes: 0,
             tx_bytes: 0,
             candidates: vec![],
+            last_direct: None,
         };
         let (ok, mode, _) = dial_verdict(Some(&peer(PeerLinkState::Direct)));
         assert!(ok);

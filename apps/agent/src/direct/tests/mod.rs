@@ -27,6 +27,7 @@ fn direct_peer(key: &str, vip: &str, state: PeerLinkState) -> DirectPeer {
         rx_bytes: 0,
         tx_bytes: 0,
         candidates: vec![],
+        last_direct: None,
     }
 }
 

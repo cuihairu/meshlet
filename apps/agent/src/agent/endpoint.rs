@@ -6,7 +6,7 @@ use meshlet_domain::EndpointCandidate;
 
 /// SEL-002：从直连端点字符串（`ip:port`）解析候选。无法解析（空 / 畸形）→
 /// `None`（调用方按「无已下发直连候选」处理，不切换）。
-pub(super) fn parse_endpoint_candidate(endpoint: &str) -> Option<EndpointCandidate> {
+pub(crate) fn parse_endpoint_candidate(endpoint: &str) -> Option<EndpointCandidate> {
     let (ip, port) = endpoint.rsplit_once(':')?;
     let ip = ip.parse::<Ipv4Addr>().ok()?;
     let port = port.parse::<u16>().ok()?;

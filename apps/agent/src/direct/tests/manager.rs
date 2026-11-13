@@ -169,3 +169,41 @@ fn direct_peer_status_records_only_managed_non_relay() {
         Some(1_700_000_000)
     );
 }
+
+/// 记忆面（last_direct）读写边界：record_endpoint 随内核实况刷新（含 wg
+/// roaming 出来的表外面），clear_endpoint 只清现值不清记忆（回中继后的
+/// 再晋升要靠它选回）；Relay 对端无直连链路，两路都 no-op。
+#[test]
+fn record_endpoint_refreshes_memory_and_clear_keeps_it() {
+    let mut manager = DirectManager::new();
+    manager.peers.insert(
+        "peer-a".into(),
+        direct_peer("peer-a", "10.240.0.3", PeerLinkState::Direct),
+    );
+    manager.record_endpoint("peer-a", "192.168.5.11:51820".into());
+    assert_eq!(
+        manager.peers["peer-a"].last_direct,
+        Some(lan("192.168.5.11", 51820))
+    );
+    // 内核漫游到新面（表外）→ 记忆跟随实况。
+    manager.record_endpoint("peer-a", "192.168.5.117:51821".into());
+    assert_eq!(
+        manager.peers["peer-a"].last_direct,
+        Some(lan("192.168.5.117", 51821))
+    );
+    // 回退清现值，记忆保留。
+    manager.clear_endpoint("peer-a");
+    assert_eq!(manager.peers["peer-a"].endpoint, "");
+    assert_eq!(
+        manager.peers["peer-a"].last_direct,
+        Some(lan("192.168.5.117", 51821)),
+        "demote clears the endpoint but keeps the remembered face"
+    );
+    // Relay 对端 no-op（记忆随 plan_updates 的劣化分支维护）。
+    manager.peers.insert(
+        "peer-b".into(),
+        direct_peer("peer-b", "10.240.0.4", PeerLinkState::Relay),
+    );
+    manager.record_endpoint("peer-b", "192.168.5.11:51820".into());
+    assert_eq!(manager.peers["peer-b"].last_direct, None);
+}
