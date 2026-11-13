@@ -59,3 +59,7 @@
 - LuCI 浏览器端人工点验（有凭据后 1 分钟事）
 - aarch64 真机 opkg 链路
 - iStore 上架（后续项）
+
+## CI 验证（commit cf69094）
+
+nightly 手动 dispatch run [43526574250](https://github.com/cuihairu/meshlet/actions/runs/43526574250) 全绿：checks（shellcheck + luac5.1 + sh -n 门禁步）、双架构 build（package-openwrt.sh 在 CI 真跑）、publish。rolling nightly release 新增 4 资产：`meshlet-nightly-openwrt-x86_64.ipk`（12.7 MB）、`meshlet-nightly-openwrt-aarch64.ipk`（12.3 MB）、`meshlet-nightly-openwrt-luci-app.ipk`、`meshlet-nightly-openwrt-app-meta.ipk`。
