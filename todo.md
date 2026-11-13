@@ -93,3 +93,12 @@
 - [ ] [P2] SEL-002 直连切换在 Windows 数据面接线后的端到端验收（crates/meshlet-network/src/dial.rs 切换事件+迟滞闸已实现，Linux 已验；P0 探测接线已落地 df21f88，Windows 真机验收待 R-05 席位，不冒充已验）
 - [x] [P2] 断线重连场景集成测试：kill WireGuard 隧道 → agent 感知 → 重建 → server 状态收敛，全链路 ≤60s —— fe695fb：dual_site_e2e 新增 tunnel_recovery 用例（apps/server/tests/dual_site_e2e/tunnel_recovery.rs，netns 真跑全链路）：站点2 业务路由+别名铺底 → 杀掉 client 的 wg0 接口（`ip link del`，即 Windows WireGuardNT 崩溃的 netns 等价物；控制面走 underlay 不受影响）→ agent 一轮 tick 对账重建（账本仍在，内核漂移被收敛）→ 与 hub 重新握手 → server 侧 laptop-a 时间线严格前进（last_seen_at > 杀前值）+ 在线判定回 `online` 且来源 agent_report + 无修订卡在 applying → 跨隧道 echo 恢复。**实测自愈链路 930ms**（kill→重建→握手→server 视图→echo，--nocapture 打印），预算 ≤60s；dual_site_e2e 全 6 用例 90.5s 绿，全 workspace 944 passed/0 failed。如实标注：harness 的 agent 是单拍 tick（感知=对账内核漂移），常驻循环的感知（退避+网络事件唤醒）由 [P1] 两项的本机实证覆盖。
 - [x] 审核发现（2026-11-13 本机）：instance_lock 单测 `second_open_of_the_same_state_dir_is_rejected` 在全量并行轮询下偶发「释放后重拿」WouldBlock（~5%；solo 60 连绿、裸 flock 序列 5000 连绿曾全部排假）。**根因已定位（strace 现场取证命中，失败与 ping fork 同帧可见）**：flock 挂在打开的文件描述（OFD）上，`fork()` 复制整张 fd 表（含持锁 fd），`O_CLOEXEC` 到 exec **成功**才关——库测试二进制里其它单测并发 fork 真进程（hostname/sh/ip/wg/ping，strace 实测一轮 1773 次 execve；direct_rtt.rs:289/312 单测真 ping `10.240.0.3`、ssh_sync.rs:285 真 hostname），ping 子进程 PATH 徒步期（一串 ENOENT，每次 exec 都不关 fd）锁活过测试线程 `drop(first)`=close，「释放后重拿」µs 窗口被 ms 级 fork 窗口偶发跨越；C 程序确定性复现机制（close 后重拿 EWOULDBLOCK、子 exec 后重拿成功）。**修复（无 retry、无掩盖）**：锁语义测试搬出库测试二进制——`apps/agent/tests/instance_lock_semantics.rs`（3 个语义测试，独立二进制内零并发 fork，竞态结构上不存在）+ `apps/agent/tests/instance_lock_fork_window.rs`（机制哨兵：确定性断言「pre-exec fd 副本让锁活过 close、exec 后释放」，独占二进制防自污染）；`src/instance_lock.rs` 的 `#[cfg(test)]` 移除、模块文档补「fork 窗口」已知边界（对产品为 ms 级窗口，agent 子进程 exec 快、重启间隔远大于窗口）；ed67e1e 的 /proc/locks 取证随测试移入语义二进制。修复后 agent 套件压测 12 连绿（此前 ~5%）。
+
+## SEL-002 真机验收与三机 nightly 升级（2026-11-13，用户令）
+
+- [x] imac 升级到最新 nightly（MSI 11-13 00:37 构建，exit=0）：Program Files 服务位已更新，AppData 运行位以新版覆盖并重启 agent（1 进程，instance lock 生效）；dev→10.240.0.7 ping 通 7ms——升级后隧道工作正常
+- [x] openclaw 确认 v0.1.0=nightly 同构建（文件时间 11-12），1 进程健康；imac→openclaw、openclaw→work5 隧道 ping 通
+- [x] 连通性矩阵实测：dev→imac ✅ / dev→work5 ✅ / imac→openclaw ✅ / openclaw→work5 ✅ / **imac→work5 ❌**（仅此一条不通）
+- [ ] work5 SSH sshd 半死（端口开、连接即 reset，5 连败）：需 RDP（3389 通）进桌面重启 sshd 服务 + 升级 meshlet；imac→work5 不通疑似同因（work5 侧防火墙/sshd 异常），修复 SSH 后复验
+- [ ] SEL-002 端到端真机验收：等 work5 修复后跑 imac↔work5 直连/中继切换场景
+- [ ] 稳定持续跑：三机 nightly 新版运行，观察 24-48h 断线事件（presence_watcher 已可观测），作为 R-07 soak 前置数据
