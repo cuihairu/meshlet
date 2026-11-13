@@ -15,6 +15,16 @@
 //! 已知边界（如实记录）：锁是 advisory，只约束同样走本机制的 meshlet-agent
 //! 进程；拿同一凭证但写不同 `state_dir` 的两份配置绕得过它——那一类属于配置
 //! 错误，由服务端的设备身份判定兜底。锁文件只承载锁，不含任何数据。
+//!
+//! fork 窗口（2026-11-13 flake 根因，strace 现场 + C 复现双证实）：flock 挂
+//! 在打开的文件描述（OFD）上，`fork()` 复制 fd 表（含持锁 fd），`O_CLOEXEC`
+//! 到 exec **成功**才关——子进程停在 exec 前的窗口里，锁活过持有者的 close
+//! （乃至持有进程的退出）。对本产品影响为毫秒级窗口（agent 的 ping/wg 子进程
+//! exec 极快、重启间隔远大于窗口）；对**测试**是实打实的坑——锁语义测试必须
+//! 住在无并发 fork 的独立集成测试二进制
+//! （`tests/instance_lock_semantics.rs` / `tests/instance_lock_fork_window.rs`），
+//! 不能搬回本文件的 `#[cfg(test)]`（库测试二进制里其它单测并发 fork 真进程，
+//! 实测一轮 1773 次 execve，「释放后重拿」微秒窗口被偶发跨越，~5% 概率红）。
 
 use std::fs::File;
 use std::io;
@@ -54,113 +64,4 @@ pub fn try_acquire(state_dir: &Path) -> io::Result<InstanceLock> {
         .open(lock_path(state_dir))?;
     file.try_lock()?;
     Ok(InstanceLock { holder: Some(file) })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 每测试独立目录，避免并行测试之间互相踩锁。
-    fn scratch_state_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "meshlet-agent-instance-lock-{tag}-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    /// 双路互斥。flock / LockFileEx 的锁挂在**打开的文件描述或句柄**上，不是
-    /// 挂在进程上，所以两次独立 `open` 就是两个「进程」：第二路必须被 OS 拒绝，
-    /// 互斥不靠代码自觉。锁释放后再拿必须成功（句柄关闭即归还）。
-    #[test]
-    fn second_open_of_the_same_state_dir_is_rejected() {
-        let state_dir = scratch_state_dir("mutex");
-        let first = try_acquire(&state_dir).expect("first acquire succeeds");
-        let Err(err) = try_acquire(&state_dir) else {
-            panic!("second acquire while the first holder is alive must be rejected");
-        };
-        assert_eq!(
-            err.kind(),
-            io::ErrorKind::WouldBlock,
-            "rejection must be the lock being held, not another io failure: {err}"
-        );
-        drop(first);
-        #[cfg(target_os = "linux")]
-        let _released = try_acquire(&state_dir).unwrap_or_else(|e| {
-            // 现场取证（flake 2026-11-13，~1/8 全量轮询复现）：`/proc/locks`
-            // 直接给出**持有者 pid**——是我们自己漏关了 fd，还是另一个进程
-            // 拿着锁，panic 消息里当场见分晓。
-            panic!(
-                "acquire succeeds again after release (err {e}); kernel lock table:\n{}own fds:\n{}",
-                read_proc_locks_for(&state_dir),
-                read_own_fds(),
-            )
-        });
-        #[cfg(not(target_os = "linux"))]
-        let _released = try_acquire(&state_dir).expect("acquire succeeds again after release");
-    }
-
-    /// 取证一：内核锁表里落在本锁文件 inode 上的锁（每行含持有者 pid）。
-    #[cfg(target_os = "linux")]
-    fn read_proc_locks_for(state_dir: &Path) -> String {
-        let ino = match std::fs::metadata(lock_path(state_dir)) {
-            Ok(meta) => std::os::unix::fs::MetadataExt::ino(&meta),
-            Err(_) => return "  (lock file metadata unavailable)\n".into(),
-        };
-        let Ok(table) = std::fs::read_to_string("/proc/locks") else {
-            return "  (/proc/locks unavailable)\n".into();
-        };
-        let mut hit = format!("  (looking for inode {ino})\n");
-        let mut found = false;
-        for line in table.lines() {
-            // /proc/locks 每行形如 `1: FLOCK ADVISORY WRITE <pid> 0:38:<ino> ...`。
-            if line.split([':', ' ']).any(|tok| tok == ino.to_string()) {
-                found = true;
-                hit.push_str("  ");
-                hit.push_str(line);
-                hit.push('\n');
-            }
-        }
-        if !found {
-            hit.push_str("  (no lock row matches this inode)\n");
-        }
-        hit
-    }
-
-    /// 取证二：本进程还开着的 fd（泄漏的句柄一览）。
-    #[cfg(target_os = "linux")]
-    fn read_own_fds() -> String {
-        let mut out = String::new();
-        if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
-            for entry in entries.flatten() {
-                if let Ok(target) = std::fs::read_link(entry.path()) {
-                    out.push_str(&format!(
-                        "  {} -> {}\n",
-                        entry.file_name().to_string_lossy(),
-                        target.display()
-                    ));
-                }
-            }
-        }
-        out
-    }
-
-    /// 不同 `state_dir` 是不同设备身份：两路必须都能拿到锁（互斥只约束同设备）。
-    #[test]
-    fn distinct_state_dirs_do_not_conflict() {
-        let root = scratch_state_dir("distinct");
-        let a = root.join("device-a");
-        let b = root.join("device-b");
-        let _first = try_acquire(&a).expect("device-a acquires");
-        let _second = try_acquire(&b).expect("device-b acquires while device-a holds its own");
-    }
-
-    #[test]
-    fn lock_path_lives_inside_the_state_dir() {
-        assert_eq!(
-            lock_path(Path::new("/var/lib/meshlet")),
-            PathBuf::from("/var/lib/meshlet/agent.lock")
-        );
-    }
 }
