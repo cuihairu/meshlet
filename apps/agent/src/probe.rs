@@ -37,6 +37,9 @@ pub struct ProbeRuntime {
     /// SEL-002 迟滞闸：agent 主循环只读评估结果，状态由 `evaluate_switch`
     /// 就地推进（短临界区，探测线程不触碰）。
     gate: Arc<Mutex<SwitchGate>>,
+    /// SEL-003 时延劣化阈值（毫秒，`ProbeConfig::degrade_rtt_ms`）：窗口
+    /// RTT 中位数 ≥ 此值判劣化（is_degraded 时延维度的配置入口）。
+    degrade_rtt_ms: u64,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -88,6 +91,7 @@ impl ProbeRuntime {
             cache,
             tracker,
             gate,
+            degrade_rtt_ms: config.degrade_rtt_ms,
             stop,
             handle,
         }
@@ -119,14 +123,14 @@ impl ProbeRuntime {
         lock(&self.gate).evaluate(peer, current, &snapshot)
     }
 
-    /// SEL-003：从窗口快照推导各对端是否劣化（丢包尖峰/超时）。
+    /// SEL-003：从窗口快照推导各对端是否劣化（丢包尖峰/超时/RTT 深劣化）。
     /// 公钥 → 劣化布尔。探测关 / 无窗口 → 空 map（不武断回中继）。
     pub fn degraded_map(&self) -> BTreeMap<String, bool> {
         let snapshot = self.snapshot();
         let mut map = BTreeMap::new();
         for ((peer, _), window) in &snapshot {
             // 任一候选劣化即标记该对端（直连路径劣化）。
-            if is_degraded(window) {
+            if is_degraded(window, self.degrade_rtt_ms) {
                 map.insert(peer.clone(), true);
             }
         }
@@ -201,6 +205,7 @@ mod tests {
             switch_required: 3,
             switch_margin: 0.30,
             recovery_required: 3,
+            degrade_rtt_ms: 800,
         }
     }
 
@@ -261,6 +266,34 @@ mod tests {
         // 空窗口 → 空 map。
         let empty = ProbeRuntime::start(&config());
         assert!(empty.degraded_map().is_empty());
+    }
+
+    /// 时延维度（2026-11-13 残余跟进）：探测全程成功但 RTT 持续深劣化
+    /// （真机实录 1715ms probe_ok 钉直连）→ degraded_map 标劣化。
+    #[test]
+    fn degraded_map_marks_sustained_high_rtt_without_loss() {
+        let rt = ProbeRuntime::start(&config());
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        {
+            let mut tracker = lock(&rt.tracker);
+            // dev-b：持续 ~1715ms（0% 丢）→ 时延劣化。
+            for v in [1715u64, 1600, 1800, 1715] {
+                tracker.record("dev-b", c1, ProbeSample::Rtt(v));
+            }
+            // dev-d：健康低 RTT → 不劣化。
+            for _ in 0..4 {
+                tracker.record("dev-d", c1, ProbeSample::Rtt(9));
+            }
+        }
+        let degraded = rt.degraded_map();
+        assert!(
+            degraded.get("dev-b").copied().unwrap_or(false),
+            "sustained 1715ms without loss must degrade"
+        );
+        assert!(
+            !degraded.get("dev-d").copied().unwrap_or(false),
+            "dev-d healthy"
+        );
     }
 
     #[test]

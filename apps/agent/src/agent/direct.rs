@@ -125,7 +125,8 @@ impl super::Agent {
             .unwrap_or(0);
         let handshake_ages =
             merge_handshake_ages(handshake_ages, dump_handshake_ages(net.as_ref(), now_secs));
-        // SEL-003：从探测窗口推导各对端直连路径是否劣化（丢包尖峰/超时）。
+        // SEL-003：从探测窗口推导各对端直连路径是否劣化（丢包尖峰/超时/RTT
+        // 深劣化——中位数 ≥ degrade_rtt_ms，2026-11-13 补时延维度）。
         let degraded = self.probe.degraded_map();
         // SEL-003 恢复门：对处于直连状态的对端记录本轮健康度；回中继后连续
         // N 轮健康才放行切回。健康 = 未劣化且握手年龄在健康窗口内。

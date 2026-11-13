@@ -426,19 +426,29 @@ pub const LOSS_SPIKE_THRESHOLD: f64 = 0.5;
 /// - 空窗口 → `false`（尚无读数，不武断回中继）；
 /// - 窗口丢包率 ≥ [`LOSS_SPIKE_THRESHOLD`]（丢包尖峰）→ `true`；
 /// - 最近一次探测超时（[`ProbeSample::Lost`]，超时）→ `true`；
+/// - 窗口 RTT 中位数 ≥ `degrade_rtt_ms`（时延劣化）→ `true`；
 /// - 其余 → `false`。
 ///
 /// 任一命中即「立即回中继」：劣化直连路径不再承载流量，hub peer 整段路由
 /// 自动接管（/32 直连 peer 移除后最长前缀匹配回落 hub）。恢复须经
 /// [`RecoveryGate`] 迟滞切回。
-pub fn is_degraded(window: &ProbeWindow) -> bool {
+///
+/// **时延维度**（2026-11-13 SEL-002 双机验收残余跟进）：此前只有丢包/超时
+/// 两条规则——探测全程成功但 RTT 深劣化的路径（真机实录 1715ms `probe_ok`）
+/// 永不劣化，直连被「链路活着」的证据钉死。中位数判定天然等价「连续 N 拍
+/// 超阈值」：单点/少数尖峰拉不动中位数（防抖），持续深劣化才命中。阈值由
+/// agent 配置 `ProbeConfig::degrade_rtt_ms` 下发（默认 800ms，依据见其文档）。
+pub fn is_degraded(window: &ProbeWindow, degrade_rtt_ms: u64) -> bool {
     if window.is_empty() {
         return false;
     }
     if window.loss_rate() >= LOSS_SPIKE_THRESHOLD {
         return true;
     }
-    matches!(window.samples().back(), Some(ProbeSample::Lost))
+    if matches!(window.samples().back(), Some(ProbeSample::Lost)) {
+        return true;
+    }
+    window.rtt_ms().is_some_and(|rtt| rtt >= degrade_rtt_ms)
 }
 
 /// 恢复门（SEL-003）：直连劣化回中继后，须连续 `required` 轮健康才允许
@@ -856,27 +866,74 @@ mod tests {
 
     #[test]
     fn degraded_detects_loss_spike_and_timeout() {
+        const DEGRADE_RTT_MS: u64 = 800;
         // 丢包尖峰（≥50% 丢包）→ 劣化。
         let mut w = ProbeWindow::new(4);
         w.record(ProbeSample::Rtt(10));
         w.record(ProbeSample::Rtt(10));
         w.record(ProbeSample::Lost);
         w.record(ProbeSample::Lost);
-        assert!(is_degraded(&w), "50% loss is a spike");
+        assert!(is_degraded(&w, DEGRADE_RTT_MS), "50% loss is a spike");
         // 最近一次超时（丢包 <50% 但末次 Lost）→ 劣化。
         let mut t = ProbeWindow::new(4);
         t.record(ProbeSample::Rtt(10));
         t.record(ProbeSample::Rtt(10));
         t.record(ProbeSample::Rtt(10));
         t.record(ProbeSample::Lost);
-        assert!(is_degraded(&t), "latest timeout degrades");
+        assert!(is_degraded(&t, DEGRADE_RTT_MS), "latest timeout degrades");
         // 健康：全 RTT、丢包率低、末次 Rtt → 不劣化。
         let mut ok = ProbeWindow::new(4);
         ok.record(ProbeSample::Rtt(10));
         ok.record(ProbeSample::Rtt(12));
-        assert!(!is_degraded(&ok));
+        assert!(!is_degraded(&ok, DEGRADE_RTT_MS));
         // 空窗口（尚无读数）→ 不武断回中继。
-        assert!(!is_degraded(&ProbeWindow::new(4)));
+        assert!(!is_degraded(&ProbeWindow::new(4), DEGRADE_RTT_MS));
+    }
+
+    /// 时延维度（2026-11-13 残余跟进）：探测全程成功但 RTT 持续深劣化
+    /// （真机实录 1715ms `probe_ok` 钉直连）也必须判劣化。中位数判定等价
+    /// 「连续 N 拍超阈值」——少数尖峰拉不动中位数（防抖）。
+    #[test]
+    fn degraded_when_median_rtt_is_sustained_over_threshold() {
+        const DEGRADE_RTT_MS: u64 = 800;
+        // 持续深劣化：全样本 ≥ 阈值 → 中位数 900/1715 命中。
+        let mut bad = ProbeWindow::new(8);
+        for v in [900, 1715, 950, 880] {
+            bad.record(ProbeSample::Rtt(v));
+        }
+        assert!(
+            is_degraded(&bad, DEGRADE_RTT_MS),
+            "sustained 900ms degrades"
+        );
+        // 边界：中位数恰等于阈值 → 命中（≥ 语义，与丢包尖峰一致）。
+        let mut edge = ProbeWindow::new(4);
+        edge.record(ProbeSample::Rtt(800));
+        edge.record(ProbeSample::Rtt(800));
+        assert!(
+            is_degraded(&edge, DEGRADE_RTT_MS),
+            "median == threshold hits"
+        );
+        // 少数尖峰拉不动中位数：8 拍里 2 拍 1500ms，中位数仍 ~10ms → 不劣化。
+        let mut spiky = ProbeWindow::new(8);
+        for _ in 0..6 {
+            spiky.record(ProbeSample::Rtt(10));
+        }
+        spiky.record(ProbeSample::Rtt(1500));
+        spiky.record(ProbeSample::Rtt(1500));
+        assert!(
+            !is_degraded(&spiky, DEGRADE_RTT_MS),
+            "minority spikes must not degrade"
+        );
+        // 多数拍超阈值：[10,900,900,1500] → 中位数 900 ≥ 800 → 持续劣化命中。
+        let mut half = ProbeWindow::new(4);
+        half.record(ProbeSample::Rtt(10));
+        half.record(ProbeSample::Rtt(900));
+        half.record(ProbeSample::Rtt(900));
+        half.record(ProbeSample::Rtt(1500));
+        assert!(
+            is_degraded(&half, DEGRADE_RTT_MS),
+            "majority sustained degrades"
+        );
     }
 
     #[test]

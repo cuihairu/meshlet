@@ -36,6 +36,9 @@ struct RawProbeConfig {
     switch_margin_percent: Option<f64>,
     /// SEL-003 恢复门：直连劣化回中继后须连续 N 轮健康才切回（默认 3）。
     recovery_required: Option<usize>,
+    /// SEL-003 时延劣化阈值（毫秒）：窗口 RTT 中位数 ≥ 此值判劣化回中继
+    /// （默认 800，依据见 ProbeConfig::degrade_rtt_ms）。
+    degrade_rtt_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -242,6 +245,20 @@ pub struct ProbeConfig {
     /// SEL-003 恢复门：直连劣化回中继后须**连续** N 轮健康才允许切回（防抖）。
     /// 默认 3。
     pub recovery_required: usize,
+    /// SEL-003 时延劣化阈值（毫秒）：探测窗口 RTT 中位数 ≥ 此值判直连劣化，
+    /// 立即回中继。默认 800。
+    ///
+    /// **默认值依据**（2026-11-13 残余跟进，SEL-002 双机验收实锤）：探测传输
+    /// 超时是 1000ms（Linux `ping -W 1` / Windows `ping -w 1000`）——超时的
+    /// 样本记 Lost，已由丢包/超时规则兜住；800ms 恰好补上「探测成功但 RTT
+    /// 深劣化」的超时前盲带（真机实录 1715ms `probe_ok` 仍钉直连数小时）。
+    /// 800ms ≈ 健康网格基线（实测 8–17ms）的 50 倍，远超同网段 LAN 直连的
+    /// 合理水位；此劣化程度下 hub 中继（hub 侧视野实测同窗 8–14ms）严格更优。
+    /// 中位数语义 = 「连续 N 拍超阈值」（window 容量 20 @5s ≈ 持续 100s 才
+    /// 命中，单点抖动不触发）；恢复仍走 recovery_required 迟滞。
+    /// 注意：>1000 的取值落在探测超时之外，几乎不可达（样本已记 Lost），
+    /// 配大等于关闭时延维度。
+    pub degrade_rtt_ms: u64,
 }
 
 impl Default for ProbeConfig {
@@ -253,6 +270,7 @@ impl Default for ProbeConfig {
             switch_required: 3,
             switch_margin: 0.30,
             recovery_required: 3,
+            degrade_rtt_ms: 800,
         }
     }
 }
@@ -368,6 +386,9 @@ impl AgentConfig {
             recovery_required: raw_probe
                 .recovery_required
                 .unwrap_or(default.dataplane.probe.recovery_required),
+            degrade_rtt_ms: raw_probe
+                .degrade_rtt_ms
+                .unwrap_or(default.dataplane.probe.degrade_rtt_ms),
         };
         if probe.interval_secs < 1 {
             return Err(ConfigError::InvalidDataPlane(
@@ -392,6 +413,11 @@ impl AgentConfig {
         if probe.recovery_required < 1 {
             return Err(ConfigError::InvalidDataPlane(
                 "dataplane.probe.recovery_required must be at least 1".into(),
+            ));
+        }
+        if probe.degrade_rtt_ms < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.degrade_rtt_ms must be at least 1".into(),
             ));
         }
         Ok(Self {

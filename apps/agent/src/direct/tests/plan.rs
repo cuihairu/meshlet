@@ -411,3 +411,38 @@ fn sel003_fallback_and_recovery_timeline() {
         "round 3 healthy after fallback: switch back {u3:?}"
     );
 }
+
+/// 「握手新鲜短路」补口子（2026-11-13 SEL-002 双机验收实锤）：直连对端
+/// 握手证据新鲜（classify_probe 按 240s 健康窗口必判 Healthy）但探测窗口
+/// 持续深劣化（真机实录 1715ms probe_ok / hs 冻结 133–203s 钉直连）时，
+/// 劣化闸必须优先于 freshness——立即 Demote 回中继，探测参与判定。
+#[test]
+fn degraded_latency_demotes_even_with_fresh_handshake() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
+    );
+    // 握手年龄 5s（远在 240s 健康窗口内——freshness 证据满分）。
+    let mut ages = BTreeMap::new();
+    ages.insert("dev-b".to_string(), 5u64);
+    // 探测窗口持续深劣化（时延维度，is_degraded 的中位数规则命中）。
+    let mut degraded = BTreeMap::new();
+    degraded.insert("dev-b".to_string(), true);
+    let updates = plan_updates(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &ages,
+        &degraded,
+        &BTreeSet::new(),
+    );
+    assert!(
+        matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"),
+        "fresh handshake must not outrank sustained degradation: {updates:?}"
+    );
+    assert_eq!(current.get("dev-b").unwrap().state, PeerLinkState::Relay);
+}
