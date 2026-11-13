@@ -123,15 +123,26 @@ impl ProbeRuntime {
         lock(&self.gate).evaluate(peer, current, &snapshot)
     }
 
-    /// SEL-003：从窗口快照推导各对端是否劣化（丢包尖峰/超时/RTT 深劣化）。
-    /// 公钥 → 劣化布尔。探测关 / 无窗口 → 空 map（不武断回中继）。
-    pub fn degraded_map(&self) -> BTreeMap<String, bool> {
+    /// SEL-003：从窗口快照推导各对端**当前直连路径**是否劣化（丢包尖峰/
+    /// 超时/RTT 深劣化）。公钥 → 劣化布尔。
+    ///
+    /// 只评估 `current` 给出的现役 endpoint（`wg` 实际下发的直连候选）的
+    /// 窗口：候选列表里其余候选（公网 NAT / 异网 LAN 常年 ICMP 不达）与
+    /// 现役路径无关——2026-11-13 真死复验实锤「任一候选劣化 → 整 peer
+    /// 劣化」会把健康直连永久误降级。探测关 / 无窗口 → 空 map（不武断
+    /// 回中继）。
+    pub fn degraded_map(
+        &self,
+        current: &BTreeMap<String, EndpointCandidate>,
+    ) -> BTreeMap<String, bool> {
         let snapshot = self.snapshot();
         let mut map = BTreeMap::new();
-        for ((peer, _), window) in &snapshot {
-            // 任一候选劣化即标记该对端（直连路径劣化）。
+        for (public_key, candidate) in current {
+            let Some(window) = snapshot.get(&(public_key.clone(), *candidate)) else {
+                continue;
+            };
             if is_degraded(window, self.degrade_rtt_ms) {
-                map.insert(peer.clone(), true);
+                map.insert(public_key.clone(), true);
             }
         }
         map
@@ -254,7 +265,10 @@ mod tests {
             tracker.record("dev-c", c2, ProbeSample::Rtt(10));
             tracker.record("dev-c", c2, ProbeSample::Lost);
         }
-        let degraded = rt.degraded_map();
+        let mut current = BTreeMap::new();
+        current.insert("dev-b".to_string(), c1);
+        current.insert("dev-c".to_string(), c2);
+        let degraded = rt.degraded_map(&current);
         assert!(
             !degraded.get("dev-b").copied().unwrap_or(false),
             "dev-b healthy"
@@ -265,7 +279,7 @@ mod tests {
         );
         // 空窗口 → 空 map。
         let empty = ProbeRuntime::start(&config());
-        assert!(empty.degraded_map().is_empty());
+        assert!(empty.degraded_map(&current).is_empty());
     }
 
     /// 时延维度（2026-11-13 残余跟进）：探测全程成功但 RTT 持续深劣化
@@ -285,7 +299,10 @@ mod tests {
                 tracker.record("dev-d", c1, ProbeSample::Rtt(9));
             }
         }
-        let degraded = rt.degraded_map();
+        let mut current = BTreeMap::new();
+        current.insert("dev-b".to_string(), c1);
+        current.insert("dev-d".to_string(), c1);
+        let degraded = rt.degraded_map(&current);
         assert!(
             degraded.get("dev-b").copied().unwrap_or(false),
             "sustained 1715ms without loss must degrade"
@@ -293,6 +310,71 @@ mod tests {
         assert!(
             !degraded.get("dev-d").copied().unwrap_or(false),
             "dev-d healthy"
+        );
+    }
+
+    /// 现役路径口径 + 无基线豁免（2026-11-13 SEL-002 真死复验实锤）：只有
+    /// 当前 endpoint 的窗口参与判定——备份候选常年 ICMP 不达（公网 NAT /
+    /// 异网 LAN）不再拖垮整 peer；全程 Lost 的现役路径无基线也不判劣化
+    /// （对端防火墙拦 ICMP，隧道可能健康，真死由握手 classify 兜底）。
+    #[test]
+    fn degraded_map_scopes_to_current_path_and_requires_baseline() {
+        let rt = ProbeRuntime::start(&config());
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        let c2 = EndpointCandidate::lan("192.168.1.60".parse().unwrap(), 51821);
+        let c3 = EndpointCandidate::lan("192.168.1.70".parse().unwrap(), 51821);
+        {
+            let mut tracker = lock(&rt.tracker);
+            // c1：现役健康（全 RTT）。c2：备份全程 Lost（NAT 不答 ICMP）。
+            // c3：由好变坏（50% 尖峰）。
+            for _ in 0..4 {
+                tracker.record("dev-b", c1, ProbeSample::Rtt(10));
+                tracker.record("dev-b", c2, ProbeSample::Lost);
+            }
+            tracker.record("dev-b", c3, ProbeSample::Rtt(10));
+            tracker.record("dev-b", c3, ProbeSample::Rtt(10));
+            tracker.record("dev-b", c3, ProbeSample::Lost);
+            tracker.record("dev-b", c3, ProbeSample::Lost);
+        }
+        let mut current = BTreeMap::new();
+        // 现役 = c1：备份 c2/c3 的窗口与现役无关 → 不劣化。
+        current.insert("dev-b".to_string(), c1);
+        assert!(
+            !rt.degraded_map(&current)
+                .get("dev-b")
+                .copied()
+                .unwrap_or(false),
+            "healthy current path; backup candidates are irrelevant"
+        );
+        // 现役 = c3（由好变坏）→ 劣化。
+        let mut current = BTreeMap::new();
+        current.insert("dev-b".to_string(), c3);
+        assert!(
+            rt.degraded_map(&current)
+                .get("dev-b")
+                .copied()
+                .unwrap_or(false),
+            "current path degraded by loss spike with baseline"
+        );
+        // 现役 = c2（全程 Lost，无基线）→ 不劣化。
+        let mut current = BTreeMap::new();
+        current.insert("dev-b".to_string(), c2);
+        assert!(
+            !rt.degraded_map(&current)
+                .get("dev-b")
+                .copied()
+                .unwrap_or(false),
+            "never-answered path has no baseline; handshake classify owns true death"
+        );
+        // 现役无窗口（刚切路径）→ 不劣化。
+        let mut current = BTreeMap::new();
+        current.insert("dev-x".to_string(), c1);
+        assert!(
+            !rt.degraded_map(&current)
+                .get("dev-x")
+                .copied()
+                .unwrap_or(false),
+            "no window yet; do not degrade"
         );
     }
 

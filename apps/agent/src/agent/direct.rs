@@ -125,9 +125,18 @@ impl super::Agent {
             .unwrap_or(0);
         let handshake_ages =
             merge_handshake_ages(handshake_ages, dump_handshake_ages(net.as_ref(), now_secs));
-        // SEL-003：从探测窗口推导各对端直连路径是否劣化（丢包尖峰/超时/RTT
-        // 深劣化——中位数 ≥ degrade_rtt_ms，2026-11-13 补时延维度）。
-        let degraded = self.probe.degraded_map();
+        // SEL-003：从探测窗口推导各对端**当前直连路径**是否劣化（丢包尖峰/
+        // 超时/RTT 深劣化——中位数 ≥ degrade_rtt_ms）。只看现役 endpoint 的
+        // 窗口：候选列表里常年 ICMP 不达的备份候选（公网 NAT / 异网 LAN）
+        // 与现役路径无关，任一候选劣化就整 peer 劣化会把健康直连误降级。
+        let current_paths: BTreeMap<_, _> = self
+            .direct
+            .link_statuses()
+            .into_iter()
+            .filter(|s| s.link_state == "direct")
+            .filter_map(|s| parse_endpoint_candidate(&s.endpoint).map(|c| (s.public_key, c)))
+            .collect();
+        let degraded = self.probe.degraded_map(&current_paths);
         // SEL-003 恢复门：对处于直连状态的对端记录本轮健康度；回中继后连续
         // N 轮健康才放行切回。健康 = 未劣化且握手年龄在健康窗口内。
         let mut hold_relay = std::collections::BTreeSet::new();

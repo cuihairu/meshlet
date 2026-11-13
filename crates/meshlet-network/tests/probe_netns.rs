@@ -306,8 +306,9 @@ fn probe_median_rtt(path: &Path) -> Option<u64> {
     for _ in 0..ROUNDS {
         probe_round(&mut tracker, peers, |ip| ping_in_ns(&path.ns, ip));
     }
+    // 窗口按 peer 公钥记键（probe_round 口径，2026-11-13 起）。
     tracker
-        .window("peer", EndpointCandidate::lan(path.peer_host_ip, 51821))
+        .window("peer-key", EndpointCandidate::lan(path.peer_host_ip, 51821))
         .and_then(|w| w.rtt_ms())
 }
 

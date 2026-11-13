@@ -137,7 +137,12 @@ impl ProbeWindow {
 // 每目标跟踪器
 // ---------------------------------------------------------------------------
 
-/// 探测目标标识：对端设备 id + 候选端点。
+/// 探测目标标识：对端 wg 公钥 + 候选端点。
+///
+/// 公钥是全部消费端的统一键：SEL-003 劣化映射 / [`RecoveryGate`]、SEL-002
+/// [`SwitchGate`]、SEL-004 候选详情都按 `PeerEndpoints::public_key` 查窗口
+/// （2026-11-13 SEL-002 真死复验实锤：按 device_id 记键使三路消费全部失配，
+/// 生产环境劣化/切换/候选详情全盲）。
 pub type ProbeTarget = (String, EndpointCandidate);
 
 /// 每 `(peer, candidate)` 一个滑动窗口的跟踪器。
@@ -163,17 +168,17 @@ impl ProbeTracker {
         self.capacity
     }
 
-    /// 记录一次探测到目标 `(device_id, candidate)`。
-    pub fn record(&mut self, device_id: &str, candidate: EndpointCandidate, sample: ProbeSample) {
+    /// 记录一次探测到目标 `(peer 公钥, candidate)`。
+    pub fn record(&mut self, public_key: &str, candidate: EndpointCandidate, sample: ProbeSample) {
         self.windows
-            .entry((device_id.to_string(), candidate))
+            .entry((public_key.to_string(), candidate))
             .or_insert_with(|| ProbeWindow::new(self.capacity))
             .record(sample);
     }
 
     /// 读目标当前窗口（无记录 → `None`）。
-    pub fn window(&self, device_id: &str, candidate: EndpointCandidate) -> Option<&ProbeWindow> {
-        self.windows.get(&(device_id.to_string(), candidate))
+    pub fn window(&self, public_key: &str, candidate: EndpointCandidate) -> Option<&ProbeWindow> {
+        self.windows.get(&(public_key.to_string(), candidate))
     }
 
     /// 当前跟踪目标数（含已无候选的历史目标，[`retain_peers`](Self::retain_peers)
@@ -196,7 +201,7 @@ impl ProbeTracker {
     pub fn retain_peers(&mut self, peers: &[PeerEndpoints]) {
         let live: BTreeSet<ProbeTarget> = peers
             .iter()
-            .flat_map(|p| p.endpoints.iter().map(|c| (p.device_id.to_string(), *c)))
+            .flat_map(|p| p.endpoints.iter().map(|c| (p.public_key.clone(), *c)))
             .collect();
         self.windows.retain(|k, _| live.contains(k));
     }
@@ -240,7 +245,7 @@ pub fn probe_round<F: Fn(Ipv4Addr) -> Option<u128>>(
                     ProbeSample::Lost
                 }
             };
-            tracker.record(&peer.device_id.to_string(), *candidate, sample);
+            tracker.record(&peer.public_key, *candidate, sample);
             issued += 1;
         }
     }
@@ -342,7 +347,7 @@ impl SwitchGate {
     /// - `current`：当前选中的候选（`None` = 尚无直连路径，初始选择由
     ///   DirectManager 负责，本闸只做**已建立路径之间的切换**）；
     /// - `windows`：该 peer 的候选 → 窗口快照（[`ProbeTracker::windows`]
-    ///   按 device_id 过滤后的视图）。
+    ///   按 peer 公钥过滤后的视图）。
     ///
     /// 返回 `Some(SwitchDecision)` 当且仅当：存在一个候选，其得分严格低于
     /// 现路径得分、且 `得分 <= 现路径得分 * (1 - margin)`，且该候选已连续
@@ -424,6 +429,7 @@ pub const LOSS_SPIKE_THRESHOLD: f64 = 0.5;
 
 /// 直连路径劣化判定（SEL-003）：
 /// - 空窗口 → `false`（尚无读数，不武断回中继）；
+/// - 窗口内无任何 RTT 样本（全程 `Lost`）→ `false`（无基线豁免，见下）；
 /// - 窗口丢包率 ≥ [`LOSS_SPIKE_THRESHOLD`]（丢包尖峰）→ `true`；
 /// - 最近一次探测超时（[`ProbeSample::Lost`]，超时）→ `true`；
 /// - 窗口 RTT 中位数 ≥ `degrade_rtt_ms`（时延劣化）→ `true`；
@@ -438,17 +444,29 @@ pub const LOSS_SPIKE_THRESHOLD: f64 = 0.5;
 /// 永不劣化，直连被「链路活着」的证据钉死。中位数判定天然等价「连续 N 拍
 /// 超阈值」：单点/少数尖峰拉不动中位数（防抖），持续深劣化才命中。阈值由
 /// agent 配置 `ProbeConfig::degrade_rtt_ms` 下发（默认 800ms，依据见其文档）。
+///
+/// **无基线豁免**（2026-11-13 SEL-002 imac/openclaw 真死复验实锤）：对端
+/// 防火墙拦 ICMP（Windows 默认拦 echo）时探测全程 `Lost`，但 WG 隧道可能
+/// 完全健康（内核握手持续续期、7–8ms 实测）——与晋升门槛「ICMP 探测失败
+/// 不拦晋升」（Windows 网格防火墙对 wg 接口 100% 丢包取证）同一哲学：没有
+/// 「由好变坏」的窗口证据就不判劣化。真死由握手年龄 classify 兜底（超过
+/// 健康窗口 → Demote），不依赖探测。
 pub fn is_degraded(window: &ProbeWindow, degrade_rtt_ms: u64) -> bool {
     if window.is_empty() {
         return false;
     }
+    // 无基线豁免：窗口内无任何成功采样 → 没有基线可比，「丢包尖峰/超时」
+    // 无从谈起；真死由握手年龄 classify 兜底。
+    let Some(median_rtt) = window.rtt_ms() else {
+        return false;
+    };
     if window.loss_rate() >= LOSS_SPIKE_THRESHOLD {
         return true;
     }
     if matches!(window.samples().back(), Some(ProbeSample::Lost)) {
         return true;
     }
-    window.rtt_ms().is_some_and(|rtt| rtt >= degrade_rtt_ms)
+    median_rtt >= degrade_rtt_ms
 }
 
 /// 恢复门（SEL-003）：直连劣化回中继后，须连续 `required` 轮健康才允许
@@ -702,6 +720,20 @@ mod tests {
         assert_eq!(t.window("dev-b", c1).unwrap().rtt_ms(), Some(5));
     }
 
+    /// 窗口必须记在 `public_key` 下（生产里 device_id ≠ public_key 是常态）：
+    /// 劣化映射 / 迟滞闸 / 候选详情全部按公钥查窗口（2026-11-13 SEL-002
+    /// 真死复验实锤 device_id 记键使三路消费全部失配、生产全盲）。
+    #[test]
+    fn probe_round_keys_windows_by_public_key() {
+        let mut t = ProbeTracker::new(4);
+        let c1 = lan("192.168.1.50", 51821);
+        let mut p = peer("dev-reg-5", "10.240.0.3", &[c1]);
+        p.public_key = "JMrE4SZy-pub".into();
+        probe_round(&mut t, &[p], |_| Some(9));
+        assert!(t.window("JMrE4SZy-pub", c1).is_some());
+        assert!(t.window("dev-reg-5", c1).is_none());
+    }
+
     // -- score ----------------------------------------------------------------
 
     #[test]
@@ -888,6 +920,22 @@ mod tests {
         assert!(!is_degraded(&ok, DEGRADE_RTT_MS));
         // 空窗口（尚无读数）→ 不武断回中继。
         assert!(!is_degraded(&ProbeWindow::new(4), DEGRADE_RTT_MS));
+    }
+
+    /// 无基线豁免（2026-11-13 真死复验实锤）：openclaw-win / windows-desktop
+    /// 防火墙拦 ICMP，候选窗口全程 Lost，但 WG 隧道健康（握手持续续期）——
+    /// 全程 Lost 无「由好变坏」的证据，不判劣化；真死由握手年龄 classify 兜底。
+    #[test]
+    fn degraded_without_rtt_baseline_stays_healthy() {
+        const DEGRADE_RTT_MS: u64 = 800;
+        let mut w = ProbeWindow::new(8);
+        for _ in 0..8 {
+            w.record(ProbeSample::Lost);
+        }
+        assert!(
+            !is_degraded(&w, DEGRADE_RTT_MS),
+            "never-answered path has no baseline; handshake classify owns true death"
+        );
     }
 
     /// 时延维度（2026-11-13 残余跟进）：探测全程成功但 RTT 持续深劣化
