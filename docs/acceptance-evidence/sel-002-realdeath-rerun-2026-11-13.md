@@ -6,6 +6,7 @@
 - 复验的真正产出是**插桩取证揪出三路消费全盲的实现缺陷**：探测窗口按 `device_id` 记键、而全部消费端（SEL-003 劣化映射/恢复门、SEL-002 迟滞闸、SEL-004 候选详情）按 `public_key` 查——生产环境三路全盲。连带修掉两处语义缺陷（「任一候选劣化拖垮整 peer」「无基线全 Lost 判劣化」）。**已修 `4174773`**（单 commit；network 187 / agent lib 135 全绿、clippy -D warnings 净、windows-gnu check 净）。
 - **测量勘误**：PS 5.1 `Get-Date -UFormat %s` 把本地墙钟当 UTC 计算 epoch（+28800s，UTC+8 环境）——此前 recon 采样里「握手冻结 ~28800s / now_minus_ts≈28730」类读数**全部是采样器伪影**。agent（Rust `SystemTime`）、WG 内核握手戳、Linux `date +%s` 三者一致为真 UTC；今晚插桩实测握手年龄 33–120s 持续新鲜。
 - **第二根因（修复部署后现场实锤）**：升级到 4174773 nightly 后两台 Windows 对进入 ~4–5min 的 demote 极限环。切换事件取证实锤：SEL-002 切换闸把「现役路径无探测窗口」（稳定 192.168.5.0/24 roaming 面，不在服务端候选表 → 无读数）按 ∞ 评分处理 → 22:34:02 / 22:35:30 把两台会话踢上 ZT 面 → ZT 面瞬态劣化 → SEL-003 / classify 轮番回收。**已修 `c4e5038`**：现路径无窗口 → 不切换（无证据不动现路径）；握手年龄轨迹证明 demote 发生在 age 56–66s（≪240）且握手正常续期，classify 无辜、触发者是 ZT 面探测瞬态。
+- **c4e5038 双机部署后现场验证（2026-11-14 00:2x–00:4x）**：切换闸修复字段生效（~20min 三轮采样**零新切换事件**、b6tx 恒直连）；残余：JMrE/FSaf 仍 ~1–5min 回收——会话滞留旧构建踢上去的 ZT 面（demote 时 age 56–120s≪240，SEL-003 last-Lost 瞬态触发），re-promote 只能挑候选表（ZT 面）回不到 roaming 面，修复方向属上游（候选表纳管/promote 偏好/last-Lost 触发器软化），本轮如实记录不越界改动。openclaw sshd 在升级窗口 flap（根因未定位，升级经 schtasks 分离执行完成后机器恢复），挂待查。
 
 ## 前置：nightly 升级（巡检单任务 1–3）
 
@@ -86,6 +87,14 @@ hold={}
 - `SwitchGate::evaluate`：现路径取不到窗口 → `?` 提前返回**不切换**（原 `else { return None }` 处改为 `let current_score = windows.get(&(peer.to_string(), current)).and_then(score)?;`）。「无 RTT 读数 = ∞」语义只保留在候选间比较；现路径死亡交给握手年龄 classify 与 SEL-003 劣化闸负责。
 - 回归测试 `switch_gate_spares_current_path_without_window`：现役 c1 无窗口、候选 c2 有窗口（rtt 48）→ 5 轮评分恒 `None` 不切换。
 - 门禁：network lib 33 绿（改后重验）；随 nightly run 43451086220 滚动（`4174773..c4e5038`）。（首次派出 43449300571 失败于 `scripts/verify-systemd.py` 步：runner 上 server 15s 重试窗内未监听 18080——与改动无关的 runner 瞬态；本机同源 c4e5038 重建复跑该脚本 PASS，重新派出。）
+
+## 双机升级到 c4e5038 与现场验证（2026-11-14 00:2x–00:4x）
+
+- **imac**：MSI 对 SHA256SUMS ✓、双位 exe 同哈希 `9B4199D11BCF9AE9`、PID 10932、hub ping ✓。
+- **openclaw（波折）**：升级脚本执行到 msiexec 阶段 sshd 开始 flap（先挂起后连接即断；机器本身一直可达——imac ping 2/2 7-10ms），首次 SSH 会话中断致脚本半途死（agent 被 kill 未重启，overlay 10.240.0.3 100% 丢=真死窗口）。**sshd 恢复后改用 schtasks 分离执行**（`MeshletOcUp` ONCE 任务跑 oc-up.ps1、`*>>` 收 log、任务自删，SSH 只注册+收日志，不受会话断连影响）：MSIEXEC_RC 0、新 PID 2808、双位 exe `9B4199D11BCF9AE9`（与 imac 同构建）✓、hub ping ✓、DONE；MeshletOcUp 已自删确认、Temp 脚本清零（余下 oc-br-*/oc-mem-dream 为机器原有非本轮产物）。**openclaw sshd flap 根因未定位**（升级窗口强相关、简单短命令可过、长脚本/管道易死），挂待查。
+- **切换闸修复字段验证 ✓**：修复部署前后共 ~20min 三轮采样（20×30s 稳定性 + 30×20s keyed），`direct-switch-events.json` 字节数全程恒定 648（=旧三事件，**零新切换**）——∞ 评分踢面消除。
+- **b6tx（coding-vm）恒 p2p_direct**（keyed 30/30 拍，握手 ~120s 正常 rekey）；vLkJ（hub 面）健康。
+- **残余（如实记录，不冒充已修）**：JMrE/FSaf 仍以 ~1–5min 周期 direct↔hub 回收——会话仍停在旧构建 22:34/22:35 踢上去的 ZT 面（wd@.97:51821 / openclaw@.49:51820），ZT 面 ICMP 瞬态（is_degraded 的 last-Lost 触发器对单包丢失即敏感）→ SEL-003 demote（keyed 实测 demote 时 age 56–120s ≪240，classify 无辜）；而 re-promote 只会在服务端候选表里挑（还是 ZT 面），**回不到稳定的 192.168.5.x roaming 面（不在候选表=结构性回不去）**。修复方向属上游决策：候选表纳管 roaming 面 / promote 偏好无探测窗口的健康面 / is_degraded last-Lost 触发器对单包丢失放行（持续 N 拍才判）。本轮不越界改动。
 - 修复语义与 4174773「无基线不行动」同源：**无证据不动现路径**。预期部署后会话停在 .11 roaming 面回到升级前稳定性（该面永无探测目标 → 永无劣化误判 → 无切换）。
 
 ## 测量勘误（修正既有记录）
@@ -111,5 +120,6 @@ hold={}
 - `sel-002-wanted-deviceids-2026-11-13.json`（服务端 device_id↔对端↔候选映射）
 - `sel-002-imac-switch-events-2026-11-13.jsonl`（direct-switch-events.json 原文 3 行，∞ 评分 smoking gun）
 - `sel-002-imac-age-trace-2026-11-13.txt`（10s×48 拍 modes+握手年龄轨迹，demote 时 age 56–66s 定性）
+- `sel-002-imac-keyed-trace-2026-11-14.txt`（c4e5038 部署后 20s×30 拍 keyed 轨迹：b6tx 恒直、零新切换、JMrE/FSaf ZT 面残余回收 demote 时 age 56–120s）
 
 前置文档：`sel-002-imac-openclaw-2026-11-13.md`（首轮验收：防火墙封锁 + 自然劣化窗，252+70 拍零 demote，.17 匿名面实锤）。
