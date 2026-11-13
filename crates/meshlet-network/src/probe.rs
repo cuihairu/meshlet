@@ -431,11 +431,21 @@ impl SwitchGate {
 /// 丢包尖峰阈值（SEL-003）：窗口丢包率 ≥ 此值视为「丢包尖峰」，立即回中继。
 pub const LOSS_SPIKE_THRESHOLD: f64 = 0.5;
 
+/// 末拍超时容忍（SEL-003）：窗口末尾须连续此拍数 `Lost` 才判劣化。窗口
+/// 20 拍 ≈ 100s 证据下，3 拍 ≈ 15s 持续丢包才算真劣化，单拍瞬态不动作
+/// （2026-11-14 真机实录：ZT 面 ICMP 单拍瞬态曾单拍即触发 demote，握手
+/// age 56–120s 新鲜、classify 无辜——JMrE/FSaf ~2min direct↔hub 极限环）。
+pub const LAST_LOST_TOLERANCE: usize = 3;
+
 /// 直连路径劣化判定（SEL-003）：
 /// - 空窗口 → `false`（尚无读数，不武断回中继）；
-/// - 窗口内无任何 RTT 样本（全程 `Lost`）→ `false`（无基线豁免，见下）；
+/// - 窗口不足 [`LAST_LOST_TOLERANCE`] 拍且全 `Lost` → `true`（短窗口小
+///   流量端点不豁免，见下）；
+/// - 窗口 ≥ [`LAST_LOST_TOLERANCE`] 拍且无任何 RTT 样本（全程 `Lost`）→
+///   `false`（无基线豁免，见下）；
 /// - 窗口丢包率 ≥ [`LOSS_SPIKE_THRESHOLD`]（丢包尖峰）→ `true`；
-/// - 最近一次探测超时（[`ProbeSample::Lost`]，超时）→ `true`；
+/// - 窗口末尾连续 [`LAST_LOST_TOLERANCE`] 拍 `Lost`（持续超时）→ `true`；
+///   单拍瞬态不触发；
 /// - 窗口 RTT 中位数 ≥ `degrade_rtt_ms`（时延劣化）→ `true`；
 /// - 其余 → `false`。
 ///
@@ -455,22 +465,44 @@ pub const LOSS_SPIKE_THRESHOLD: f64 = 0.5;
 /// 不拦晋升」（Windows 网格防火墙对 wg 接口 100% 丢包取证）同一哲学：没有
 /// 「由好变坏」的窗口证据就不判劣化。真死由握手年龄 classify 兜底（超过
 /// 健康窗口 → Demote），不依赖探测。
+///
+/// **末拍连续性**（2026-11-14 SEL-003 last-Lost 软化）：原「末拍一拍
+/// `Lost` 即劣化」对 ZT 面单拍瞬态过敏——真机实录 demote 时握手 age
+/// 56–120s 新鲜（classify 无辜），触发者即此类瞬态，构成 JMrE/FSaf
+/// direct↔hub 极限环。改为末尾连续 [`LAST_LOST_TOLERANCE`] 拍才动作；
+/// 窗口不足该拍数时不享受无基线豁免（全 `Lost` 短窗口直判劣化，小流量
+/// 端点不豁免）。丢包尖峰/中位数分支天然多拍，不变。
 pub fn is_degraded(window: &ProbeWindow, degrade_rtt_ms: u64) -> bool {
-    if window.is_empty() {
+    let samples = window.samples();
+    if samples.is_empty() {
         return false;
     }
-    // 无基线豁免：窗口内无任何成功采样 → 没有基线可比，「丢包尖峰/超时」
-    // 无从谈起；真死由握手年龄 classify 兜底。
-    let Some(median_rtt) = window.rtt_ms() else {
+    let median_rtt = window.rtt_ms();
+    if samples.len() < LAST_LOST_TOLERANCE {
+        // 短窗口（< 3 拍，小流量端点）：尾部连续性无从谈起，按现有样本
+        // 直判——全 Lost 即劣化（无基线豁免不适用于短窗口）。
+        if samples.iter().all(|s| matches!(s, ProbeSample::Lost)) {
+            return true;
+        }
+    } else if median_rtt.is_none() {
+        // 无基线豁免：窗口内无任何成功采样 → 没有基线可比，「丢包尖峰/
+        // 超时」无从谈起；真死由握手年龄 classify 兜底。
         return false;
-    };
+    }
     if window.loss_rate() >= LOSS_SPIKE_THRESHOLD {
         return true;
     }
-    if matches!(window.samples().back(), Some(ProbeSample::Lost)) {
+    // 末拍连续性：末尾连续 LAST_LOST_TOLERANCE 拍 Lost 才算真劣化
+    // （单拍瞬态不动作，见 doc）。
+    if samples
+        .iter()
+        .rev()
+        .take(LAST_LOST_TOLERANCE)
+        .all(|s| matches!(s, ProbeSample::Lost))
+    {
         return true;
     }
-    median_rtt >= degrade_rtt_ms
+    median_rtt.is_some_and(|m| m >= degrade_rtt_ms)
 }
 
 /// 恢复门（SEL-003）：直连劣化回中继后，须连续 `required` 轮健康才允许
@@ -931,13 +963,17 @@ mod tests {
         w.record(ProbeSample::Lost);
         w.record(ProbeSample::Lost);
         assert!(is_degraded(&w, DEGRADE_RTT_MS), "50% loss is a spike");
-        // 最近一次超时（丢包 <50% 但末次 Lost）→ 劣化。
+        // 末拍单次超时（丢包 <50%）→ 单拍瞬态不动作（2026-11-14 last-Lost
+        // 软化：须末尾连续 LAST_LOST_TOLERANCE 拍）。
         let mut t = ProbeWindow::new(4);
         t.record(ProbeSample::Rtt(10));
         t.record(ProbeSample::Rtt(10));
         t.record(ProbeSample::Rtt(10));
         t.record(ProbeSample::Lost);
-        assert!(is_degraded(&t, DEGRADE_RTT_MS), "latest timeout degrades");
+        assert!(
+            !is_degraded(&t, DEGRADE_RTT_MS),
+            "single tail lost tolerated"
+        );
         // 健康：全 RTT、丢包率低、末次 Rtt → 不劣化。
         let mut ok = ProbeWindow::new(4);
         ok.record(ProbeSample::Rtt(10));
@@ -945,6 +981,69 @@ mod tests {
         assert!(!is_degraded(&ok, DEGRADE_RTT_MS));
         // 空窗口（尚无读数）→ 不武断回中继。
         assert!(!is_degraded(&ProbeWindow::new(4), DEGRADE_RTT_MS));
+    }
+
+    /// last-Lost 软化（2026-11-14 巡检单）：窗口末尾须连续
+    /// [`LAST_LOST_TOLERANCE`] 拍 `Lost` 才判劣化——ZT 面 ICMP 单拍瞬态
+    /// （真机实录：demote 时握手 age 56–120s 新鲜、classify 无辜，触发者
+    /// 即单拍瞬态）不再动作；短窗口（< 3 拍）全 `Lost` 不享受豁免。
+    #[test]
+    fn last_lost_requires_consecutive_tail_loss() {
+        const DEGRADE_RTT_MS: u64 = 800;
+        // 末尾恰好 1 拍 Lost → 不劣化。
+        let mut one = ProbeWindow::new(8);
+        for _ in 0..7 {
+            one.record(ProbeSample::Rtt(10));
+        }
+        one.record(ProbeSample::Lost);
+        assert!(
+            !is_degraded(&one, DEGRADE_RTT_MS),
+            "single tail lost tolerated"
+        );
+        // 末尾恰好 2 拍 Lost → 不劣化。
+        let mut two = ProbeWindow::new(8);
+        for _ in 0..6 {
+            two.record(ProbeSample::Rtt(10));
+        }
+        two.record(ProbeSample::Lost);
+        two.record(ProbeSample::Lost);
+        assert!(
+            !is_degraded(&two, DEGRADE_RTT_MS),
+            "two tail losts tolerated"
+        );
+        // 末尾连续 3 拍 Lost → 劣化（丢包率 3/8 < 尖峰阈值，纯末拍规则命中）。
+        let mut three = ProbeWindow::new(8);
+        for _ in 0..5 {
+            three.record(ProbeSample::Rtt(10));
+        }
+        for _ in 0..3 {
+            three.record(ProbeSample::Lost);
+        }
+        assert!(
+            is_degraded(&three, DEGRADE_RTT_MS),
+            "three consecutive tail losts degrade"
+        );
+        // 3 拍 Lost 但中间夹 1 拍 Rtt（尾部连续被打断）→ 不劣化。
+        let mut broken = ProbeWindow::new(8);
+        for _ in 0..4 {
+            broken.record(ProbeSample::Rtt(10));
+        }
+        broken.record(ProbeSample::Lost);
+        broken.record(ProbeSample::Rtt(10));
+        broken.record(ProbeSample::Lost);
+        broken.record(ProbeSample::Lost);
+        assert!(
+            !is_degraded(&broken, DEGRADE_RTT_MS),
+            "interleaved rtt breaks the tail run"
+        );
+        // 窗口 < 3 拍全 Lost → 劣化（短窗口小流量端点不豁免）。
+        let mut short = ProbeWindow::new(2);
+        short.record(ProbeSample::Lost);
+        short.record(ProbeSample::Lost);
+        assert!(
+            is_degraded(&short, DEGRADE_RTT_MS),
+            "short all-lost window degrades"
+        );
     }
 
     /// 无基线豁免（2026-11-13 真死复验实锤）：openclaw-win / windows-desktop

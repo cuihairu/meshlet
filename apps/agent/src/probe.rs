@@ -257,13 +257,17 @@ mod tests {
         let c2 = EndpointCandidate::lan("192.168.1.60".parse().unwrap(), 51821);
         {
             let mut tracker = lock(&rt.tracker);
-            // dev-b：健康（全 RTT）。dev-c：末次超时（劣化）。
+            // dev-b：健康（全 RTT）。dev-c：末尾连续 3 拍超时（劣化；
+            // last-Lost 软化后单拍瞬态不再动作）。
             for _ in 0..3 {
                 tracker.record("dev-b", c1, ProbeSample::Rtt(10));
             }
-            tracker.record("dev-c", c2, ProbeSample::Rtt(10));
-            tracker.record("dev-c", c2, ProbeSample::Rtt(10));
-            tracker.record("dev-c", c2, ProbeSample::Lost);
+            for _ in 0..4 {
+                tracker.record("dev-c", c2, ProbeSample::Rtt(10));
+            }
+            for _ in 0..3 {
+                tracker.record("dev-c", c2, ProbeSample::Lost);
+            }
         }
         let mut current = BTreeMap::new();
         current.insert("dev-b".to_string(), c1);
