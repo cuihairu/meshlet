@@ -137,6 +137,9 @@ impl super::Agent {
             .filter_map(|s| parse_endpoint_candidate(&s.endpoint).map(|c| (s.public_key, c)))
             .collect();
         let degraded = self.probe.degraded_map(&current_paths);
+        // promote 偏好健康面：当前探测窗口劣化的面集合（晋升选路前置过滤，
+        // 见 plan_updates_logged——劣化面上 re-promote 只会立刻再降级）。
+        let unhealthy_faces = self.probe.degraded_faces();
         // SEL-003 恢复门：对处于直连状态的对端记录本轮健康度；回中继后连续
         // N 轮健康才放行切回。健康 = 未劣化且握手年龄在健康窗口内。
         let mut hold_relay = std::collections::BTreeSet::new();
@@ -166,6 +169,7 @@ impl super::Agent {
             plan.tunnel.address,
             &handshake_ages,
             &degraded,
+            &unhealthy_faces,
             &hold_relay,
         );
         if !updates.is_empty() {

@@ -222,7 +222,7 @@ pub struct DecisionEvent {
     pub public_key: String,
     /// 对端名称（候选里读到的展示名）。
     pub peer_name: String,
-    /// 动作：`promote` / `demote` / `hold_relay` / `probe`。
+    /// 动作：`promote` / `demote` / `hold_relay` / `probe` / `defer`。
     pub action: String,
     /// 判定前模式（`p2p_direct` / `direct_pending` / `hub_relay`）。
     pub from_mode: String,

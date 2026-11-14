@@ -12,7 +12,7 @@
 //! 统计供 SEL-002（评分 / 迟滞切换）与 SEL-004（console 展示）消费；SEL-001
 //! 阶段以 debug 日志呈现（5s 一条，默认日志级别下不刷屏）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -146,6 +146,25 @@ impl ProbeRuntime {
             }
         }
         map
+    }
+
+    /// promote 偏好健康面（2026-11-14 巡检单 nov14-1410）：当前探测窗口
+    /// 劣化的 (public_key, candidate) 面集合，供晋升选路前置过滤（劣化面
+    /// 上 re-promote 只会立刻再降级——930f137 决策日志实录的 demote→记忆
+    /// 面回拨→再降级翻转循环）。
+    ///
+    /// 口径与 [`Self::degraded_map`] 同源（is_degraded 同一判定）：无基线
+    /// （全 Lost / 无采样）不判——不武断封掉没探测过的面；探测关 → 空集合
+    /// （过滤整体失效，行为与旧版一致）。
+    pub fn degraded_faces(&self) -> BTreeSet<(String, EndpointCandidate)> {
+        let snapshot = self.snapshot();
+        let mut set = BTreeSet::new();
+        for ((public_key, candidate), window) in snapshot {
+            if is_degraded(&window, self.degrade_rtt_ms) {
+                set.insert((public_key, candidate));
+            }
+        }
+        set
     }
 
     /// 决策日志的判据输入：某对端某候选的探测窗口摘要（如
@@ -458,5 +477,43 @@ mod tests {
         assert!(summary.contains("med=Some(27)"), "summary={summary}");
         // 其它 peer 无窗口。
         assert!(rt.window_summary("dev-x", c1).is_none());
+    }
+
+    /// promote 偏好健康面的面集合：只收「有基线后劣化」的面；健康面不收、
+    /// 全程 Lost 无基线面不收（不武断封面）、探测关（无采样）为空集合。
+    #[test]
+    fn degraded_faces_marks_baseline_degraded_faces_only() {
+        let rt = ProbeRuntime::start(&config());
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        let c2 = EndpointCandidate::lan("192.168.1.60".parse().unwrap(), 51821);
+        let c3 = EndpointCandidate::lan("192.168.1.70".parse().unwrap(), 51821);
+        {
+            let mut tracker = lock(&rt.tracker);
+            // dev-b@c1 健康；dev-b@c2 由好变坏（末尾 3 拍连续 Lost）；
+            // dev-b@c3 全程 Lost（无基线，真死由握手 classify 兜底）。
+            for _ in 0..4 {
+                tracker.record("dev-b", c1, ProbeSample::Rtt(10));
+                tracker.record("dev-b", c2, ProbeSample::Rtt(10));
+                tracker.record("dev-b", c3, ProbeSample::Lost);
+            }
+            for _ in 0..3 {
+                tracker.record("dev-b", c2, ProbeSample::Lost);
+            }
+        }
+        let faces = rt.degraded_faces();
+        assert!(
+            !faces.contains(&("dev-b".into(), c1)),
+            "healthy face not marked"
+        );
+        assert!(
+            faces.contains(&("dev-b".into(), c2)),
+            "baseline + tail Lost run marked"
+        );
+        assert!(
+            !faces.contains(&("dev-b".into(), c3)),
+            "no-baseline face not marked"
+        );
+        // 探测关 / 无采样 → 空集合（过滤整体失效 = 旧口径）。
+        assert!(ProbeRuntime::start(&config()).degraded_faces().is_empty());
     }
 }

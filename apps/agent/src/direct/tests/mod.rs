@@ -44,3 +44,7 @@ fn peer(key: &str, vip: &str, endpoints: &[EndpointCandidate]) -> PeerEndpoints 
 fn lan(ip: &str, port: u16) -> EndpointCandidate {
     EndpointCandidate::lan(ip.parse().unwrap(), port)
 }
+
+fn public(ip: &str, port: u16) -> EndpointCandidate {
+    EndpointCandidate::public(ip.parse().unwrap(), port)
+}

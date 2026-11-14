@@ -24,9 +24,9 @@ use std::path::Path;
 
 use meshlet_domain::{
     classify_probe, classify_promote_probe, decide_direct_path, direct_peer_allowed_ips, on_probe,
-    DirectDecision, DirectLinkStatus, Ipv4Cidr, PeerEndpoints, PeerLinkAction, PeerLinkState,
-    DIRECT_HEALTH_WINDOW_SECS, DIRECT_PERSISTENT_KEEPALIVE_SECS, DIRECT_PROMOTE_FRESH_SECS,
-    MAX_PROMOTE_ATTEMPTS,
+    DirectDecision, DirectLinkStatus, EndpointCandidate, Ipv4Cidr, PeerEndpoints, PeerLinkAction,
+    PeerLinkState, DIRECT_HEALTH_WINDOW_SECS, DIRECT_PERSISTENT_KEEPALIVE_SECS,
+    DIRECT_PROMOTE_FRESH_SECS, MAX_PROMOTE_ATTEMPTS,
 };
 
 /// 单个对端的直连管理状态（域层状态机状态 + 对端 overlay 地址）。
@@ -124,6 +124,7 @@ impl DirectManager {
         self_vip: Ipv4Addr,
         handshake_ages: &BTreeMap<String, u64>,
         degraded: &BTreeMap<String, bool>,
+        unhealthy_faces: &BTreeSet<(String, EndpointCandidate)>,
         hold_relay: &BTreeSet<String>,
     ) -> (Vec<DirectUpdate>, Vec<PeerDecisionRecord>) {
         plan_updates_logged(
@@ -134,6 +135,7 @@ impl DirectManager {
             &mut self.peers,
             handshake_ages,
             degraded,
+            unhealthy_faces,
             hold_relay,
         )
     }
@@ -323,7 +325,7 @@ pub struct PeerDecisionRecord {
     pub from_mode: &'static str,
     /// 判定后模式。
     pub to_mode: &'static str,
-    /// 动作：`promote` / `demote` / `hold_relay` / `probe`。
+    /// 动作：`promote` / `demote` / `hold_relay` / `probe` / `defer`。
     pub action: &'static str,
     /// 判定原因（人读）。
     pub reason: String,
@@ -359,6 +361,8 @@ fn mode_str(state: PeerLinkState) -> &'static str {
 /// - 候选集之内：`decide_direct_path` 无可行路径 → 保持中继（不报错）；
 ///   有路径 → `on_probe` 跃迁（Relay→Promote、Pending 超时→Demote、
 ///   Direct 断开→Demote、恢复→再 Promote）。
+/// - `unhealthy_faces`：探测窗口判劣化的 (公钥, 候选面) 集合（promote 偏好
+///   健康面：晋升选路前置过滤）。探测关/空集合 = 不过滤（旧口径）。
 #[allow(clippy::too_many_arguments)]
 pub fn plan_updates_logged(
     wanted: &[PeerEndpoints],
@@ -368,6 +372,7 @@ pub fn plan_updates_logged(
     current: &mut BTreeMap<String, DirectPeer>,
     handshake_ages: &BTreeMap<String, u64>,
     degraded: &BTreeMap<String, bool>,
+    unhealthy_faces: &BTreeSet<(String, EndpointCandidate)>,
     hold_relay: &BTreeSet<String>,
 ) -> (Vec<DirectUpdate>, Vec<PeerDecisionRecord>) {
     let mut updates = Vec::new();
@@ -410,15 +415,46 @@ pub fn plan_updates_logged(
         // 上次直连实际在用的 endpoint（含内核漫游出来的、不在服务端候选表
         // 的面）。候选表决策只在无记忆时兜底（首次晋升 / 记忆已因验证失败
         // 清除）。
+        //
+        // promote 偏好健康面（2026-11-14 巡检单 nov14-1410 代决，三选一之二）：
+        // 记忆面/候选面若正处探测窗口劣化（unhealthy_faces），本轮不选它——
+        // 劣化面上 re-promote 只会立刻再降级（SEL-003 demote → 记忆面回拨 →
+        // 再降级的翻转循环，930f137 决策日志实录）。滤后有健康面用健康面；
+        // 只剩劣化面 → 本轮 defer（保持中继等面恢复，决策记录留痕）。无基线
+        // /探测关的面不在 unhealthy_faces（不武断封面），行为同旧口径。
         let mut used_memory_face = false;
+        let mut deferred_face: Option<EndpointCandidate> = None;
+        let unhealthy = |c: &EndpointCandidate| unhealthy_faces.contains(&(key.clone(), *c));
         let decision = match state {
-            PeerLinkState::Relay => match current.get(&key).and_then(|entry| entry.last_direct) {
-                Some(c) => {
-                    used_memory_face = true;
-                    DirectDecision::SameLan(c)
+            PeerLinkState::Relay => {
+                let memory = current.get(&key).and_then(|entry| entry.last_direct);
+                match memory {
+                    Some(c) if !unhealthy(&c) => {
+                        used_memory_face = true;
+                        DirectDecision::SameLan(c)
+                    }
+                    _ => {
+                        let healthy: Vec<_> = peer
+                            .endpoints
+                            .iter()
+                            .filter(|c| !unhealthy(c))
+                            .copied()
+                            .collect();
+                        let filtered = decide_direct_path(my_lan_subnets, &healthy);
+                        if matches!(filtered, DirectDecision::Relay) {
+                            let full = decide_direct_path(my_lan_subnets, &peer.endpoints);
+                            if let DirectDecision::SameLan(c) | DirectDecision::HolePunch(c) = full
+                            {
+                                deferred_face = Some(c);
+                            } else if let Some(c) = memory {
+                                // 候选表无路而记忆面被劣化否决：坏点即记忆面。
+                                deferred_face = Some(c);
+                            }
+                        }
+                        filtered
+                    }
                 }
-                None => decide_direct_path(my_lan_subnets, &peer.endpoints),
-            },
+            }
             _ => decide_direct_path(my_lan_subnets, &peer.endpoints),
         };
         // SEL-003 恢复门：回中继后未连续健康 N 轮 → 保持中继（不立即切回，
@@ -436,6 +472,41 @@ pub fn plan_updates_logged(
                 handshake_age_secs: handshake_ages.get(&key).copied(),
                 degraded: degraded.get(&key).copied().unwrap_or(false),
                 endpoint: String::new(),
+            });
+            current.insert(
+                key.clone(),
+                DirectPeer {
+                    virtual_ipv4: peer.virtual_ipv4,
+                    state: PeerLinkState::Relay,
+                    last_handshake_age_secs: None,
+                    peer_name: peer.name.clone(),
+                    endpoint: String::new(),
+                    rtt_ms: None,
+                    rtt_source: None,
+                    last_handshake_at: None,
+                    rx_bytes: 0,
+                    tx_bytes: 0,
+                    candidates: vec![],
+                    last_direct,
+                },
+            );
+            continue;
+        }
+        // promote defer：候选里只剩劣化面 → 本轮不晋升（保持中继等面恢复）。
+        // 不在劣化面上打洞/握手——那只会立刻被 SEL-003 再降级成翻转噪声。
+        // 记忆面保留不清（面恢复后记忆面照常优先选回）。
+        if let Some(face) = deferred_face {
+            let last_direct = current.get(&key).and_then(|entry| entry.last_direct);
+            records.push(PeerDecisionRecord {
+                public_key: key.clone(),
+                peer_name: peer.name.clone(),
+                from_mode: "hub_relay",
+                to_mode: "hub_relay",
+                action: "defer",
+                reason: "promote deferred: candidate face degraded (probe window)".into(),
+                handshake_age_secs: handshake_ages.get(&key).copied(),
+                degraded: true,
+                endpoint: face.socket().to_string(),
             });
             current.insert(
                 key.clone(),
@@ -648,7 +719,7 @@ pub fn plan_updates_logged(
     (updates, records)
 }
 
-/// 仅取动作序列的便捷封装（决策记录不需要时的旧签名入口）。
+/// 仅取动作序列的便捷封装（决策记录不需要时的入口）。
 #[allow(clippy::too_many_arguments)]
 pub fn plan_updates(
     wanted: &[PeerEndpoints],
@@ -658,6 +729,7 @@ pub fn plan_updates(
     current: &mut BTreeMap<String, DirectPeer>,
     handshake_ages: &BTreeMap<String, u64>,
     degraded: &BTreeMap<String, bool>,
+    unhealthy_faces: &BTreeSet<(String, EndpointCandidate)>,
     hold_relay: &BTreeSet<String>,
 ) -> Vec<DirectUpdate> {
     plan_updates_logged(
@@ -668,6 +740,7 @@ pub fn plan_updates(
         current,
         handshake_ages,
         degraded,
+        unhealthy_faces,
         hold_relay,
     )
     .0

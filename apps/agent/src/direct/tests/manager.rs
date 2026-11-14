@@ -19,6 +19,7 @@ fn link_statuses_report_active_direct_links_only() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         &BTreeSet::new(),
+        &BTreeSet::new(),
     );
     assert_eq!(
         manager.link_statuses(),
@@ -50,6 +51,7 @@ fn link_statuses_report_active_direct_links_only() {
         &ages,
         &BTreeMap::new(),
         &BTreeSet::new(),
+        &BTreeSet::new(),
     );
     assert_eq!(
         manager.link_statuses(),
@@ -79,6 +81,7 @@ fn link_statuses_report_active_direct_links_only() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         &BTreeSet::new(),
+        &BTreeSet::new(),
     );
     assert!(manager.link_statuses().is_empty());
 }
@@ -97,6 +100,7 @@ fn ledger_round_trips_the_keep_set_and_restores_as_direct() {
         "10.240.0.2".parse().unwrap(),
         &BTreeMap::new(),
         &BTreeMap::new(),
+        &BTreeSet::new(),
         &BTreeSet::new(),
     );
     manager.save(&path).expect("ledger write");
