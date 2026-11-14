@@ -194,15 +194,17 @@ Each iteration forks a fresh `curl` process, so these are floors set by client p
    prerequisite now documented.
 - The nightly workflow's build step pinned the toolchain to `stable` while `rust-toolchain.toml` pins 1.99.0,
    failing every build with E0463 after the pin was introduced; the workflow now requests the pinned version.
-   That is why the release page still shows a 2026-10-17 nightly and no dated releases exist.
+   That is why the release page still shows a 2026-10-17 nightly and no dated releases exist. The pin is fixed and the rolling `nightly` tag advances again; the release keeps the 2026-10-17 creation date while its assets roll.
 
 ## Not accepted
 
 - Windows client: remains not fully accepted.
-  - **2026-11-12 update**: R-05 real-machine acceptance (tunnel lifecycle, elevation exec,
+  - **2026-11-13 update**: R-05 real-machine acceptance (tunnel lifecycle, elevation exec,
     boot-recovery) passed on imac on 2026-11-12, and the data-plane backend is wired
-    (`1324dd2`, ADR-008 tunnel-only v1). What is still open: the end-to-end apply walkthrough
-    and the MSI/tray-host reinstall confirmation.
+    (`1324dd2`, ADR-008 tunnel-only v1). The end-to-end apply walkthrough and the
+    MSI/tray-host real-machine acceptance passed on 2026-11-13 (AGENT-WIN-3, NIGHTLY-MSI-1, #52).
+    Still open: the long-run soak and wide cross-NAT punch acceptance on real machines; NAT-bearing
+    plans are explicitly rejected per ADR-008.
   - **2026-11-05 update**: three Windows machines have been provided (imac 192.168.5.117,
     openclaw 10.240.0.3, work win11 `cuihaitao` 10.240.0.5); the R-05 acceptance is running on
     imac and the cuihaitao node is installed (agent + tray host) and online (plan applied,

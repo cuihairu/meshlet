@@ -1,6 +1,6 @@
 # migrations
 
-SQLx migrations 落库目录。当前版本：`016_tasks_confirm.sql`。
+SQLx migrations 落库目录。当前版本：`017_device_labels.sql`。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -20,6 +20,7 @@ SQLx migrations 落库目录。当前版本：`016_tasks_confirm.sql`。
 | 014_user_totp | 控制台 TOTP 二次认证：`users` 增 `totp_secret`（base32，服务端唯一持有）与 `totp_enabled`（0/1，激活后登录需第二步） |
 | 015_tasks | MT-002 通用任务通道：`tasks`（id 幂等键 / 目标设备 / cmd+workdir+timeout / 状态 / retry_limit / result_ref / exit_code / log_tail / 时间戳）+ `idx_tasks_target_state` |
 | 016_tasks_confirm | MT-003 用户确认交互：`tasks` 增 `confirmed_at` / `rejected_at`（用户侧确认/驳回时刻，agent 端点无确认能力）+ `parent_task_id`（重跑新代指向被驳回任务） |
+| 017_device_labels | MT-005 设备标签任务路由：`devices.labels`（JSON 对象，默认 `'{}'`）+ `tasks.required_labels`（调度约束随载荷持久化，重启不丢） |
 
 ## 应用方式
 

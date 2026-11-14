@@ -61,13 +61,13 @@ nightly 同时按组件发布两种架构的包。`meshlet-server` 含服务端�
 
 ```bash
 # Debian / Ubuntu（ARM 平台把 amd64 换成 arm64）
-curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0~nightly_amd64.deb
-curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0~nightly_amd64.deb
-sudo apt install ./meshlet-server_0.0.0~nightly_amd64.deb ./meshlet-agent_0.0.0~nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server_0.0.0.nightly_amd64.deb
+curl -fLO https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent_0.0.0.nightly_amd64.deb
+sudo apt install ./meshlet-server_0.0.0.nightly_amd64.deb ./meshlet-agent_0.0.0.nightly_amd64.deb
 
 # Fedora / RHEL（ARM 平台把 x86_64 换成 aarch64）
-sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0~nightly-1.x86_64.rpm
-sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0~nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-server-0.0.0.nightly-1.x86_64.rpm
+sudo dnf install https://github.com/cuihairu/meshlet/releases/download/nightly/meshlet-agent-0.0.0.nightly-1.x86_64.rpm
 ```
 
 包会创建服务账户与状态目录，但刻意不生成活动配置（配置因机而异，含密钥与 token）：复制 `/etc/meshlet/*.toml.example` 填好。生成密钥（服务端 `wg genkey > /etc/meshlet/hub.key`），再 `sudo systemctl enable --now meshlet-server`（或 `meshlet-agent`）。想要引导式首次安装请用上面的 `install.sh`。
@@ -181,8 +181,8 @@ meshlet-agent.exe C:\ProgramData\meshlet\agent.toml
 （自举码 → 待审批 → 批准/拒绝）均已就位。
 
 本轮架构修复及 Linux 回归记录见 [P0 修复与 nightly 实施记录](docs/implementation/fixes-and-nightly-2026-10-17.md)。
-整体部署验收仍未完成：ARM64 构建、默认分支首次 nightly 发布、空 VPS 一键安装和真实设备走查保持
-待验证；Windows 侧数据面接线（R-05）已于 2026-11-12 通过真机验收，安装包/托盘真机验收与端到端 apply 走查已于 2026-11-13 通过——见 [Windows 支持](#windows-支持)。
+整体部署验收仍未完成：空 VPS 一键安装和真实设备走查保持待验证（nightly 现已覆盖 x86_64 / ARM64
+构建并从默认分支滚动发布）；Windows 侧数据面接线（R-05）已于 2026-11-12 通过真机验收，安装包/托盘真机验收与端到端 apply 走查已于 2026-11-13 通过——见 [Windows 支持](#windows-支持)。
 当前工作以 [TODO](todo.md) 顶部清单为准，本地测试不替代真实部署验收。
 
 ## 本地测试口径

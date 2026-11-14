@@ -134,11 +134,13 @@ hub 密钥是服务器唯一持有的传输秘密；设备密钥留在设备上�
 - install.sh 的 apt 行往容器里塞 100+ MB 内核镜像；现改为 `--no-install-recommends`。
 - README 一行式假定存在 `curl` 与 `sudo`，原版最小 Debian 容器两者皆无；现已补前置条件。
 - nightly 工作流的构建步骤钉了 `stable`，而 `rust-toolchain.toml` 钉 1.99.0，自钉工具链起每次构建都因 E0463 失败；工作流现改用钉定版本。
-  这也是 release 页仍停在 2026-10-17、且没有任何带日期 release 的原因。
+  这也是 release 页仍停在 2026-10-17、且没有任何带日期 release 的原因。该钉定已修复，滚动 `nightly` tag 重新推进；release 保留 2026-10-17 创建日期，资产随之滚动更新。
 
 ## 未验收的部分
 
-- Windows 客户端：本席位无 Windows 真机，R-05 保持未勾。仅 `x86_64-pc-windows-msvc` 的 check/clippy 为绿，仅此而已。
+- Windows 客户端：仍不算完整验收。
+  - **2026-11-13 更新**：R-05 三项真机验收（隧道生命周期、提权执行、开机恢复）2026-11-12 在 imac 全过，数据面后端已接线（`1324dd2`，ADR-008 tunnel-only v1）；端到端 apply 走查与 MSI/托盘真机验收 2026-11-13 通过（AGENT-WIN-3、NIGHTLY-MSI-1、#52）。仍未完成：长期浸泡、广域跨 NAT 打洞真机验收，NAT-bearing 计划按 ADR-008 显式拒绝。
+  - **2026-11-05 更新**：三台 Windows 真机已到位（imac 192.168.5.117、openclaw 10.240.0.3、work win11 `cuihaitao` 10.240.0.5）；R-05 在 imac 上执行，cuihaitao 节点已装（agent + tray host）并在线（计划已应用、隧道已起）。
 - 长期稳定性浸泡：本轮是数小时量级，不是数周。没有多日的持续流量观察。
 - LAN 路由、别名映射、NAT 与网关 agent 仅以「缺席」形式（诊断里的 `not_applicable`/`unavailable`）验证，未在真实网关上做正向验证。
 - hub 的 MTU 跟随已 apply 的修订，设备 MTU 跟随实时配置，所以改 MTU 后 hub 停在 1420、设备已到 1480，直到新修订立账并 apply；记录见
