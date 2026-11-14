@@ -179,3 +179,80 @@ agent 在窗口内只翻模式，没有再对 `wg set endpoint` 做漫游。
   自 `agent-decisions.jsonl` 按 ts 切出）
 - switch-events 同窗统计已录入本节（imac `direct-switch-events.json`，
   窗口内 582 条全 mode_flip，与 decisions 一一对应）
+
+## 04:4x 检查点（巡检单 meshlet-fliploop-checkpoint-0848，2026-11-14 20:48Z 取证）
+
+**取证时刻口径校正（重要）**：本单标题写「08:48 CST」、正文写「约 20:48Z、窗口应达
+~29.5h」、背景写「距 24h 门槛还差约 6.5h」，三者互斥——20:48Z 对应 **04:48 CST**，
+13.49h 才过。三个数都不自洽，**以本机 UTC 时钟实测为准**：取证时刻
+**2026-11-14 20:48:10Z（04:48 CST）**，日志最后事件 20:49:17Z。窗口 =
+07:19Z → 20:48Z = **13.49 h**，距 24h 门槛**还差 10.51 h**。按实测数记录，
+不采纳单据的 29.5h / 6.5h 口径，不外推。
+
+数据面：`agent-decisions.jsonl`（559,745 B / 1,583 事件，末事件 20:49:17Z）、
+`direct-switch-events.json`（905 事件）、`direct-peers.json`（实况见下）。
+
+### JMrE（windows-desktop）：环仍在续，节奏略慢
+
+窗口增量 20:00:37Z→20:49Z（48min）**57 事件**，全部属 windows-desktop：
+promote 22 / hold_relay 20 / demote 11 / probe 4；endpoint `.97:51821` 25 条、
+`180.152.54.66:51821` 13 条，两面互拽照旧。
+
+窗口累计（07:19Z→20:49:17Z，1,081 事件）：windows-desktop **870** 条（promote 333 /
+hold_relay 327 / demote 170 / probe 39 / defer 1），openclaw-win 211 条（见下节）。
+
+**周期节奏（同一 peer 内相邻 promote→demote 配对，146 个周期，中位 0.78min）**：
+
+| 时段 | 周期数 | 中位 | 最短 | 最长 |
+|---|---|---|---|---|
+| 07–11Z | 44 | 0.78 min | 0.72 | 10.63 |
+| 11–15Z | 50 | 0.78 min | 0.72 | 8.25 |
+| 15–19Z | 46 | 0.87 min | 0.72 | 6.73 |
+| 19–20Z | 24 | 1.48 min | 0.72 | 2.28 |
+
+计数口径 = 至日志末事件 20:49:17Z（取证时已落盘的最新一条，较取证时刻
+20:48:10Z 晚 67 秒，如实标注）；raw 文件与之一致，1,081 行。
+
+节奏**未收口、末段略慢**（0.78→1.48min）但仍在分钟级翻转，不构成「已缓解」。
+窗口末：20:47:02Z promote `180.152.54.66:51821`（candidate table）→ 20:47:46Z
+pending verified（probe Healthy）→ **20:49:17Z demote `.97:51821`（sel003 degraded）**。
+取证时刻 `direct-peers.json` 实况：windows-desktop `mode=hub_relay`、endpoint 空——
+即末拍降级后正落在中继态。
+
+### FSaf（openclaw-win）：静默延续，2h37m → 3.42h
+
+末事件仍为 17:22:59Z（promote `192.168.5.11:51820` verified），此后 **3.42 h 零事件**。
+窗口内 FSaf 计数与 04:0x 检查点完全一致（211 条：promote 76 / hold_relay 75 /
+demote 37 / probe 23），**无新增**。`direct-peers.json` 实况 `p2p_direct @
+192.168.5.11:51820`、`rtt_source=handshake_fresh`——锚 LAN 面照旧，静默稳定。
+openclaw 侧数据留空：ZT 面 No route to host，按巡检单禁重试 SSH。
+
+### 切换闸口径复核：零 endpoint_roam 延续
+
+增量 33 条切换事件**全为 `mode_flip`**，**0 条 `endpoint_roam`**；全文件
+905 条 = 901 mode_flip + 4 endpoint_roam，最末 roam 仍早于观察窗
+（`10.147.19.130:51820 → 192.168.5.188:51820`）。
+
+### 无新签名
+
+增量 8 种 reason 文本**全在 20:00Z 前已出现的 10 种之内，零新增**。
+`defer` 仍仅 1 条（窗口早期）。无新 endpoint 面。
+
+### 24h 门槛判定（本检查点）
+
+**未过 24h 门槛（13.49h / 24h，差 10.51h），无法按门槛口径判定，如实记录如下：**
+
+- 「稳定持续跑」前置数据的要求是观察 24–48h 断线事件。本窗口内 imac 侧
+  JMrE **持续翻转未收口**（146 个 promote→demote 周期），**不满足**「前置数据
+  记录要求」——它记录的是未稳定，不是稳定。
+- 如实列不达标项：①窗口未满（差 10.51h）；②JMrE fliploop 未消；③FSaf 侧虽静默
+  但属「锚 LAN 面后停止动作」，非跨 NAT 广域打洞已验。
+- **R-07 soak 本体（≥7 天）维持 BLOCKED 不动**；本判定仅为 soak 前置数据记录，
+  不构成 soak 通过。
+- 三选一修复方向仍待用户拍板；本轮未动 `crates/`、未改状态机、未 bump 版本。
+
+### raw 清单（本轮新增）
+
+- `fliploop-imac-decisions-window2-2026-11-14.txt`（窗口 07:19Z–20:49Z 全段 1,081 条，
+  自 `agent-decisions.jsonl` 按 ts 切出）
+- switch-events 同窗统计已录入本节（增量 33 条全 mode_flip，与 decisions 对应）
