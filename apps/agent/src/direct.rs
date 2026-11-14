@@ -112,8 +112,9 @@ impl DirectManager {
         self.peers.get(public_key)
     }
 
-    /// 一个周期：拉候选 → 域层状态机 → 就地更新 → 返回待下发动作。
-    /// 见 [plan_updates]；执行层拿到动作后逐个 `wg set`（失败只记日志）。
+    /// 一个周期：拉候选 → 域层状态机 → 就地更新 → 返回待下发动作与决策记录。
+    /// 见 [plan_updates_logged]；执行层拿到动作后逐个 `wg set`（失败只记
+    /// 日志），决策记录补全判据摘要后落盘（决策日志 + 模式翻转事件）。
     #[allow(clippy::too_many_arguments)]
     pub fn apply_plan(
         &mut self,
@@ -124,8 +125,8 @@ impl DirectManager {
         handshake_ages: &BTreeMap<String, u64>,
         degraded: &BTreeMap<String, bool>,
         hold_relay: &BTreeSet<String>,
-    ) -> Vec<DirectUpdate> {
-        plan_updates(
+    ) -> (Vec<DirectUpdate>, Vec<PeerDecisionRecord>) {
+        plan_updates_logged(
             wanted,
             my_lan_subnets,
             scope,
@@ -308,7 +309,43 @@ impl DirectManager {
     }
 }
 
+/// 一次对端决策的回放记录（[`plan_updates_logged`] 全分支产出；执行层落
+/// `agent-decisions.jsonl` 决策日志，模式翻转换算成 switch-events 事件）。
+/// 无控制台上下文（Windows 服务 / schtasks SYSTEM）也能事后回放判定原因
+/// 与判据输入（2026-11-14 巡检单诊断缺口）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerDecisionRecord {
+    /// 对端 wg 公钥。
+    pub public_key: String,
+    /// 对端名称（候选里读到的展示名）。
+    pub peer_name: String,
+    /// 判定前模式（`p2p_direct` / `direct_pending` / `hub_relay`）。
+    pub from_mode: &'static str,
+    /// 判定后模式。
+    pub to_mode: &'static str,
+    /// 动作：`promote` / `demote` / `hold_relay` / `probe`。
+    pub action: &'static str,
+    /// 判定原因（人读）。
+    pub reason: String,
+    /// 判据输入：最近直连握手年龄（秒；内核读数快照）。
+    pub handshake_age_secs: Option<u64>,
+    /// 判据输入：SEL-003 探测窗口劣化判定。
+    pub degraded: bool,
+    /// 涉事 endpoint（promote 目标；demote 时的现役面；空 = 无）。
+    pub endpoint: String,
+}
+
+/// [`PeerLinkState`] → 台账/上报模式字符串（决策记录与事件共用口径）。
+fn mode_str(state: PeerLinkState) -> &'static str {
+    match state {
+        PeerLinkState::Direct => "p2p_direct",
+        PeerLinkState::DirectPending { .. } => "direct_pending",
+        PeerLinkState::Relay => "hub_relay",
+    }
+}
+
 /// 一个周期内的状态跃迁计划（纯函数，无 IO；返回按公钥排序，确定性）。
+/// 决策回放版见 [`plan_updates_logged`]。
 ///
 /// - `wanted`：服务端下发的可直连候选（已按本设备路由范围过滤）；
 /// - `my_lan_subnets`：本机局域网子网（同网段判定）；
@@ -323,7 +360,7 @@ impl DirectManager {
 ///   有路径 → `on_probe` 跃迁（Relay→Promote、Pending 超时→Demote、
 ///   Direct 断开→Demote、恢复→再 Promote）。
 #[allow(clippy::too_many_arguments)]
-pub fn plan_updates(
+pub fn plan_updates_logged(
     wanted: &[PeerEndpoints],
     my_lan_subnets: &[Ipv4Cidr],
     scope: Ipv4Cidr,
@@ -332,21 +369,34 @@ pub fn plan_updates(
     handshake_ages: &BTreeMap<String, u64>,
     degraded: &BTreeMap<String, bool>,
     hold_relay: &BTreeSet<String>,
-) -> Vec<DirectUpdate> {
+) -> (Vec<DirectUpdate>, Vec<PeerDecisionRecord>) {
     let mut updates = Vec::new();
+    let mut records = Vec::new();
 
-    // 候选集之外：回退并移除（先收集公钥，避免借用冲突）。
+    // 候选集之外：回退并移除（先收集，避免借用冲突）。
     let wanted_keys: BTreeMap<&str, ()> = wanted
         .iter()
         .map(|peer| (peer.public_key.as_str(), ()))
         .collect();
-    let stale: Vec<String> = current
-        .keys()
-        .filter(|key| !wanted_keys.contains_key(key.as_str()))
-        .cloned()
+    let stale: Vec<(String, PeerLinkState, String)> = current
+        .iter()
+        .filter(|(key, _)| !wanted_keys.contains_key(key.as_str()))
+        .map(|(key, entry)| (key.clone(), entry.state, entry.peer_name.clone()))
         .collect();
-    for key in stale {
+    for (key, state, peer_name) in stale {
+        let handshake_age_secs = handshake_ages.get(&key).copied();
         current.remove(&key);
+        records.push(PeerDecisionRecord {
+            public_key: key.clone(),
+            peer_name,
+            from_mode: mode_str(state),
+            to_mode: "hub_relay",
+            action: "demote",
+            reason: "peer left the candidate set".into(),
+            handshake_age_secs,
+            degraded: false,
+            endpoint: String::new(),
+        });
         updates.push(DirectUpdate::Demote { public_key: key });
     }
 
@@ -360,12 +410,15 @@ pub fn plan_updates(
         // 上次直连实际在用的 endpoint（含内核漫游出来的、不在服务端候选表
         // 的面）。候选表决策只在无记忆时兜底（首次晋升 / 记忆已因验证失败
         // 清除）。
+        let mut used_memory_face = false;
         let decision = match state {
-            PeerLinkState::Relay => current
-                .get(&key)
-                .and_then(|entry| entry.last_direct)
-                .map(DirectDecision::SameLan)
-                .unwrap_or_else(|| decide_direct_path(my_lan_subnets, &peer.endpoints)),
+            PeerLinkState::Relay => match current.get(&key).and_then(|entry| entry.last_direct) {
+                Some(c) => {
+                    used_memory_face = true;
+                    DirectDecision::SameLan(c)
+                }
+                None => decide_direct_path(my_lan_subnets, &peer.endpoints),
+            },
             _ => decide_direct_path(my_lan_subnets, &peer.endpoints),
         };
         // SEL-003 恢复门：回中继后未连续健康 N 轮 → 保持中继（不立即切回，
@@ -373,6 +426,17 @@ pub fn plan_updates(
         // 穿透保持——门放行后的再晋升仍优先选回它。
         if hold_relay.contains(&key) && matches!(state, PeerLinkState::Relay) {
             let last_direct = current.get(&key).and_then(|entry| entry.last_direct);
+            records.push(PeerDecisionRecord {
+                public_key: key.clone(),
+                peer_name: peer.name.clone(),
+                from_mode: "hub_relay",
+                to_mode: "hub_relay",
+                action: "hold_relay",
+                reason: "recovery gate: not yet N consecutive healthy rounds".into(),
+                handshake_age_secs: handshake_ages.get(&key).copied(),
+                degraded: degraded.get(&key).copied().unwrap_or(false),
+                endpoint: String::new(),
+            });
             current.insert(
                 key.clone(),
                 DirectPeer {
@@ -410,6 +474,21 @@ pub fn plan_updates(
             if matches!(state, PeerLinkState::DirectPending { .. }) {
                 last_direct = None;
             }
+            let prev_endpoint = current
+                .get(&key)
+                .map(|e| e.endpoint.clone())
+                .unwrap_or_default();
+            records.push(PeerDecisionRecord {
+                public_key: key.clone(),
+                peer_name: peer.name.clone(),
+                from_mode: mode_str(state),
+                to_mode: "hub_relay",
+                action: "demote",
+                reason: "sel003 degraded: probe window (consecutive-lost / median-rtt gate)".into(),
+                handshake_age_secs: handshake_ages.get(&key).copied(),
+                degraded: true,
+                endpoint: prev_endpoint,
+            });
             current.insert(
                 key.clone(),
                 DirectPeer {
@@ -461,6 +540,10 @@ pub fn plan_updates(
             }
             PeerLinkAction::Keep => {}
         }
+        let prev_endpoint = current
+            .get(&key)
+            .map(|e| e.endpoint.clone())
+            .unwrap_or_default();
         current.insert(
             key.clone(),
             DirectPeer {
@@ -470,10 +553,7 @@ pub fn plan_updates(
                 peer_name: peer.name.clone(),
                 // endpoint 在 Promote 动作里给出；Relay/Demote 保留上次值，
                 // 由动作执行侧在 Demote 时清空（见 agent.apply_direct_update）。
-                endpoint: current
-                    .get(&key)
-                    .map(|e| e.endpoint.clone())
-                    .unwrap_or_default(),
+                endpoint: prev_endpoint.clone(),
                 rtt_ms: None,
                 rtt_source: None,
                 last_handshake_at: None,
@@ -483,6 +563,70 @@ pub fn plan_updates(
                 last_direct,
             },
         );
+        // 决策入账：状态迁移或非 Keep 动作都记一条（探测窗口/握手年龄等判据
+        // 输入由执行层补全后落盘，见 agent.reconcile_direct）。
+        if next_state != state || !matches!(action, PeerLinkAction::Keep) {
+            let (action_str, reason) = match &action {
+                PeerLinkAction::Promote(_) => (
+                    "promote",
+                    if matches!(state, PeerLinkState::Relay) {
+                        format!(
+                            "promote attempt via {} (probe {probe:?})",
+                            if used_memory_face {
+                                "memory face (last_direct)"
+                            } else {
+                                "candidate table"
+                            }
+                        )
+                    } else {
+                        format!("pending verified: fresh handshake (probe {probe:?})")
+                    },
+                ),
+                PeerLinkAction::Demote => (
+                    "demote",
+                    match state {
+                        PeerLinkState::Direct => {
+                            format!("handshake stale beyond health window (probe {probe:?})")
+                        }
+                        PeerLinkState::DirectPending { attempts } => {
+                            format!("pending attempts exhausted after {attempts} rounds (probe {probe:?})")
+                        }
+                        PeerLinkState::Relay => "relay demoted".into(),
+                    },
+                ),
+                PeerLinkAction::Keep => {
+                    // Keep 且状态变化 = pending 门槛判定：验成（→Direct）或
+                    // 继续等（attempts+1）。验成与 Promote 同性质（晋升）。
+                    if matches!(next_state, PeerLinkState::Direct) {
+                        (
+                            "promote",
+                            format!("pending verified: fresh handshake (probe {probe:?})"),
+                        )
+                    } else if let PeerLinkState::DirectPending { attempts } = next_state {
+                        (
+                            "probe",
+                            format!("waiting for handshake (attempt {attempts})"),
+                        )
+                    } else {
+                        ("probe", "state advanced (probe gate)".into())
+                    }
+                }
+            };
+            records.push(PeerDecisionRecord {
+                public_key: key.clone(),
+                peer_name: peer.name.clone(),
+                from_mode: mode_str(state),
+                to_mode: mode_str(next_state),
+                action: action_str,
+                reason,
+                handshake_age_secs: handshake_age,
+                degraded: degraded.get(&key).copied().unwrap_or(false),
+                endpoint: match &action {
+                    PeerLinkAction::Promote(path) => path_endpoint(*path).to_string(),
+                    _ => prev_endpoint.clone(),
+                },
+            });
+        }
         match action {
             PeerLinkAction::Keep => {}
             PeerLinkAction::Demote => updates.push(DirectUpdate::Demote { public_key: key }),
@@ -501,7 +645,32 @@ pub fn plan_updates(
             }
         }
     }
-    updates
+    (updates, records)
+}
+
+/// 仅取动作序列的便捷封装（决策记录不需要时的旧签名入口）。
+#[allow(clippy::too_many_arguments)]
+pub fn plan_updates(
+    wanted: &[PeerEndpoints],
+    my_lan_subnets: &[Ipv4Cidr],
+    scope: Ipv4Cidr,
+    self_vip: Ipv4Addr,
+    current: &mut BTreeMap<String, DirectPeer>,
+    handshake_ages: &BTreeMap<String, u64>,
+    degraded: &BTreeMap<String, bool>,
+    hold_relay: &BTreeSet<String>,
+) -> Vec<DirectUpdate> {
+    plan_updates_logged(
+        wanted,
+        my_lan_subnets,
+        scope,
+        self_vip,
+        current,
+        handshake_ages,
+        degraded,
+        hold_relay,
+    )
+    .0
 }
 
 /// 决策路径的 endpoint（SameLan / HolePunch 都给出一个直连地址）。

@@ -21,8 +21,8 @@ use std::time::Duration;
 use meshlet_config::ProbeConfig;
 use meshlet_domain::{EndpointCandidate, PeerEndpoints};
 use meshlet_network::probe::{
-    default_transport, is_degraded, probe_round, ProbeTarget, ProbeTracker, ProbeWindow,
-    SwitchDecision, SwitchGate,
+    default_transport, is_degraded, probe_round, ProbeSample, ProbeTarget, ProbeTracker,
+    ProbeWindow, SwitchDecision, SwitchGate,
 };
 
 /// 探测运行时：一个后台线程 + 候选缓存（reconcile 写 / 探测线程读）+
@@ -148,6 +148,28 @@ impl ProbeRuntime {
         map
     }
 
+    /// 决策日志的判据输入：某对端某候选的探测窗口摘要（如
+    /// `23,31,L,L loss=50% med=27ms`；`L` = 丢拍）。探测关 / 无窗口 →
+    /// `None`（决策事件里该字段缺席，不冒充「探测过且健康」）。
+    pub fn window_summary(&self, public_key: &str, candidate: EndpointCandidate) -> Option<String> {
+        let snapshot = self.snapshot();
+        let window = snapshot.get(&(public_key.to_string(), candidate))?;
+        let samples = window
+            .samples()
+            .iter()
+            .map(|s| match s {
+                ProbeSample::Rtt(v) => v.to_string(),
+                ProbeSample::Lost => "L".into(),
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        Some(format!(
+            "{samples} loss={:.0}% med={:?}ms",
+            window.loss_rate() * 100.0,
+            window.rtt_ms()
+        ))
+    }
+
     /// SEL-004：汇总某对端全部候选端点的详情（端点/RTT/丢包/当前选中与原因）。
     ///
     /// `current_endpoint` = 当前已下发的直连 endpoint（`ip:port`；空 = 未选中）。
@@ -206,7 +228,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use meshlet_network::probe::ProbeSample;
 
     fn config() -> ProbeConfig {
         ProbeConfig {
@@ -415,5 +436,27 @@ mod tests {
         assert_eq!(c2s.loss_rate, 0.5);
         // 其它 peer 候选不影响。
         assert!(rt.candidate_statuses("dev-x", "").is_empty());
+    }
+
+    /// 决策日志判据输入（2026-11-14 巡检单）：窗口摘要串带逐拍采样与
+    /// loss/med 汇总；无窗口（探测关/未采样）→ None，不冒充「探测过」。
+    #[test]
+    fn window_summary_reports_samples_and_aggregates_or_none() {
+        let rt = ProbeRuntime::start(&config());
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        assert!(rt.window_summary("dev-b", c1).is_none(), "no window yet");
+        {
+            let mut tracker = lock(&rt.tracker);
+            tracker.record("dev-b", c1, ProbeSample::Rtt(23));
+            tracker.record("dev-b", c1, ProbeSample::Rtt(31));
+            tracker.record("dev-b", c1, ProbeSample::Lost);
+            tracker.record("dev-b", c1, ProbeSample::Lost);
+        }
+        let summary = rt.window_summary("dev-b", c1).expect("summary");
+        assert!(summary.starts_with("23,31,L,L"), "summary={summary}");
+        assert!(summary.contains("loss=50%"), "summary={summary}");
+        assert!(summary.contains("med=Some(27)"), "summary={summary}");
+        // 其它 peer 无窗口。
+        assert!(rt.window_summary("dev-x", c1).is_none());
     }
 }

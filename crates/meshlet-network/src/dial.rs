@@ -86,19 +86,37 @@ pub struct DirectPeerView {
 /// 事件可查（任务书「切换事件可查」）：agent 每成功执行一次
 /// `wg set endpoint` 漫游就追加一条到 `{state_dir}/direct-switch-events.json`
 /// （JSON Lines），CLI / 运维可直接读该文件审计切换历史。
+///
+/// 事件类型由可选 `kind` 区分（缺省 = endpoint 漫游，旧事件/旧读者零感知）：
+/// - 缺省：`from`/`to` 为 endpoint（`ip:port`）；
+/// - [`SWITCH_KIND_MODE_FLIP`]：直连模式翻转，`from`/`to` 为
+///   `p2p_direct` / `direct_pending` / `hub_relay`，`detail` 携带判据摘要。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SwitchEvent {
     /// 对端 wg 公钥。
     pub public_key: String,
-    /// 切换前 endpoint（`ip:port`）。
+    /// 切换前 endpoint（`ip:port`）或模式（`kind = mode_flip` 时）。
     pub from: String,
-    /// 切换后 endpoint（`ip:port`）。
+    /// 切换后 endpoint（`ip:port`）或模式（`kind = mode_flip` 时）。
     pub to: String,
     /// 切换理由（SEL-002 迟滞闸给出）。
     pub reason: String,
     /// 事件时刻（Unix 毫秒字符串）。
     pub at_ms: String,
+    /// 事件类型（缺省 = endpoint 漫游；[`SWITCH_KIND_MODE_FLIP`] = 模式翻转）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// 判据摘要（模式翻转事件携带：握手年龄 / 劣化 / endpoint）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// RFC3339 UTC 时刻（新事件携带；旧事件只有 `at_ms`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
 }
+
+/// [`SwitchEvent::kind`]：直连模式翻转事件（`p2p_direct` ↔ `hub_relay` /
+/// `direct_pending` 之间迁移，含降级回中继与再晋升）。
+pub const SWITCH_KIND_MODE_FLIP: &str = "mode_flip";
 
 /// 拨号请求路径：`{state_dir}/direct-dial.json`。
 pub fn dial_request_path(state_dir: &Path) -> PathBuf {
@@ -185,6 +203,95 @@ pub fn load_switch_events(state_dir: &Path) -> Vec<SwitchEvent> {
     raw.lines()
         .filter_map(|l| serde_json::from_str::<SwitchEvent>(l).ok())
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// 决策日志（无控制台上下文的事后回放）
+// ---------------------------------------------------------------------------
+
+/// agent 决策日志事件（[`decision_log_path`] JSONL 追加）：classify / 切换闸
+/// 判定逐条入账，Windows 服务 / schtasks SYSTEM 等无控制台上下文也能事后
+/// 回放降级/晋升的原因与判据输入（2026-11-14 巡检单：真机 demote 原因无
+/// 文件级回放能力的诊断缺口）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DecisionEvent {
+    /// 时刻（RFC3339 真 UTC；PS 5.1 `Get-Date -UFormat %s` 有 +28800s 伪影，
+    /// 禁用该口径——这里由 chrono `Utc` 生成）。
+    pub ts: String,
+    /// 对端 wg 公钥。
+    pub public_key: String,
+    /// 对端名称（候选里读到的展示名）。
+    pub peer_name: String,
+    /// 动作：`promote` / `demote` / `hold_relay` / `probe`。
+    pub action: String,
+    /// 判定前模式（`p2p_direct` / `direct_pending` / `hub_relay`）。
+    pub from_mode: String,
+    /// 判定后模式。
+    pub to_mode: String,
+    /// 判定原因（人读）。
+    pub reason: String,
+    /// 判据输入：最近直连握手年龄（秒；内核读数快照）。
+    pub handshake_age_secs: Option<u64>,
+    /// 判据输入：SEL-003 探测窗口劣化判定。
+    pub degraded: bool,
+    /// 涉事 endpoint（promote 目标 / demote 时的现役面；空 = 无）。
+    pub endpoint: String,
+    /// 判据输入：现役路径探测窗口摘要（如 `23,31,L,L loss=50% med=27ms`；
+    /// 探测关 / 未采样为 `None`）。
+    pub probe_window: Option<String>,
+}
+
+/// 决策日志路径：`{state_dir}/agent-decisions.jsonl`。
+pub fn decision_log_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("agent-decisions.jsonl")
+}
+
+/// 决策日志单文件上限（超过即滚动为 `.jsonl.1`，覆盖上一份滚动件）。
+/// 逐事件一行的量级 ≈ 300B × 每周期每对端一条，8MiB 足以覆盖数周。
+pub const DECISION_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 追加一条决策日志（JSON Lines；超限滚动）。
+pub fn append_decision_event(state_dir: &Path, event: &DecisionEvent) -> std::io::Result<()> {
+    append_decision_event_capped(state_dir, event, DECISION_LOG_MAX_BYTES)
+}
+
+/// 读取全部决策日志（缺失/损坏文件 → 空列表）。
+pub fn load_decision_events(state_dir: &Path) -> Vec<DecisionEvent> {
+    let Ok(raw) = std::fs::read_to_string(decision_log_path(state_dir)) else {
+        return Vec::new();
+    };
+    raw.lines()
+        .filter_map(|l| serde_json::from_str::<DecisionEvent>(l).ok())
+        .collect()
+}
+
+fn append_decision_event_capped(
+    state_dir: &Path,
+    event: &DecisionEvent,
+    max_bytes: u64,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(state_dir)?;
+    let path = decision_log_path(state_dir);
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > max_bytes {
+            let rotated = path.with_extension("jsonl.1");
+            let _ = std::fs::remove_file(&rotated);
+            let _ = std::fs::rename(&path, &rotated);
+        }
+    }
+    let mut line = serde_json::to_vec(event).map_err(io_err)?;
+    line.push(b'\n');
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    f.write_all(&line)
+}
+
+/// 当前时刻 RFC3339 UTC（秒精度；决策日志时间戳口径）。
+pub fn rfc3339_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
@@ -283,6 +390,9 @@ mod tests {
             to: "192.168.1.60:51821".into(),
             reason: "score 60 beats 100 by >=30%".into(),
             at_ms: "1000".into(),
+            kind: None,
+            detail: None,
+            ts: None,
         };
         let e2 = SwitchEvent {
             public_key: "key-a".into(),
@@ -290,6 +400,9 @@ mod tests {
             to: "192.168.1.50:51821".into(),
             reason: "score 40 beats 60 by >=30%".into(),
             at_ms: "2000".into(),
+            kind: None,
+            detail: None,
+            ts: None,
         };
         append_switch_event(&dir, &e1).unwrap();
         append_switch_event(&dir, &e2).unwrap();
@@ -298,5 +411,81 @@ mod tests {
         // 缺失文件 → 空。
         assert!(load_switch_events(&dir.join("missing")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switch_event_parses_legacy_lines_without_new_fields() {
+        // 旧事件行（无 kind/detail/ts）必须原样可读——向后兼容红线。
+        let legacy = r#"{"public_key":"k","from":"1.2.3.4:51820","to":"5.6.7.8:51820","reason":"score","at_ms":"42"}"#;
+        let parsed: SwitchEvent = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.at_ms, "42");
+        assert_eq!(parsed.kind, None);
+        assert_eq!(parsed.detail, None);
+        assert_eq!(parsed.ts, None);
+    }
+
+    #[test]
+    fn mode_flip_event_round_trips_in_the_same_file() {
+        let dir = std::env::temp_dir().join(format!("meshlet-mode-flip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let flip = SwitchEvent {
+            public_key: "key-a".into(),
+            from: "p2p_direct".into(),
+            to: "hub_relay".into(),
+            reason: "sel003 degraded: probe window".into(),
+            at_ms: "3000".into(),
+            kind: Some(SWITCH_KIND_MODE_FLIP.into()),
+            detail: Some("hs_age=Some(56) degraded=true ep=10.147.19.49:51820".into()),
+            ts: Some("2026-11-14T02:03:04+00:00".into()),
+        };
+        append_switch_event(&dir, &flip).unwrap();
+        assert_eq!(load_switch_events(&dir), vec![flip]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn decision_event(action: &str, from: &str, to: &str) -> DecisionEvent {
+        DecisionEvent {
+            ts: "2026-11-14T02:03:04+00:00".into(),
+            public_key: "key-a".into(),
+            peer_name: "dev-b".into(),
+            action: action.into(),
+            from_mode: from.into(),
+            to_mode: to.into(),
+            reason: "sel003 degraded: probe window".into(),
+            handshake_age_secs: Some(56),
+            degraded: true,
+            endpoint: "10.147.19.49:51820".into(),
+            probe_window: Some("23,31,L,L,L loss=60% med=27ms".into()),
+        }
+    }
+
+    #[test]
+    fn decision_events_append_load_and_rotate() {
+        let dir = std::env::temp_dir().join(format!("meshlet-decisions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let e1 = decision_event("demote", "p2p_direct", "hub_relay");
+        let e2 = decision_event("promote", "hub_relay", "direct_pending");
+        append_decision_event(&dir, &e1).unwrap();
+        append_decision_event(&dir, &e2).unwrap();
+        assert_eq!(load_decision_events(&dir), vec![e1, e2]);
+        assert!(load_decision_events(&dir.join("missing")).is_empty());
+
+        // 滚动：超过上限后旧内容整体挪到 .jsonl.1，主文件重新起头。
+        let e3 = decision_event("hold_relay", "hub_relay", "hub_relay");
+        append_decision_event_capped(&dir, &e3, 1).unwrap();
+        assert_eq!(load_decision_events(&dir), vec![e3]);
+        let rotated = decision_log_path(&dir).with_extension("jsonl.1");
+        let rotated_raw = std::fs::read_to_string(rotated).unwrap();
+        assert!(rotated_raw.contains("\"demote\""));
+        assert!(rotated_raw.contains("\"promote\""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rfc3339_now_is_true_utc_with_z_suffix() {
+        let ts = rfc3339_now();
+        // 真 UTC（Z 结尾、无 +28800 偏移伪影），可被标准解析器往返。
+        assert!(ts.ends_with('Z'), "ts={ts}");
+        assert!(chrono::DateTime::parse_from_rfc3339(&ts).is_ok());
     }
 }

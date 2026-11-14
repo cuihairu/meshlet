@@ -2577,6 +2577,7 @@ name = "meshlet-network"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "meshlet-domain",
  "meshlet-publish",
  "rand_core 0.6.4",

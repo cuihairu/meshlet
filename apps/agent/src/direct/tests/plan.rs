@@ -614,3 +614,268 @@ fn first_promote_records_the_dialed_face_as_memory() {
         "promote records the dialed face for future re-promotes"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 决策记录（plan_updates_logged；2026-11-14 观测性欠账：无控制台上下文的
+// 事后回放——每条迁移/动作带 mode、reason、判据输入）
+// ---------------------------------------------------------------------------
+
+/// 劣化降级：决策记录带 mode 迁移方向、劣化标记、判据（握手年龄）与
+/// 涉事 endpoint（降级前的现役面）。
+#[test]
+fn degraded_demote_records_decision_with_judgement_inputs() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    let mut entry = direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct);
+    entry.endpoint = "192.168.1.50:51821".into();
+    current.insert("dev-b".into(), entry);
+    let mut degraded = BTreeMap::new();
+    degraded.insert("dev-b".into(), true);
+    let mut ages = BTreeMap::new();
+    ages.insert("dev-b".into(), 5u64);
+    let (updates, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &ages,
+        &degraded,
+        &BTreeSet::new(),
+    );
+    assert!(matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"));
+    assert_eq!(records.len(), 1);
+    let r = &records[0];
+    assert_eq!(r.public_key, "dev-b");
+    assert_eq!(r.peer_name, "dev-b-name");
+    assert_eq!(r.action, "demote");
+    assert_eq!(r.from_mode, "p2p_direct");
+    assert_eq!(r.to_mode, "hub_relay");
+    assert!(r.degraded);
+    assert_eq!(r.handshake_age_secs, Some(5));
+    assert_eq!(r.endpoint, "192.168.1.50:51821", "endpoint = demoted face");
+    assert!(r.reason.contains("sel003 degraded"));
+}
+
+/// 记忆面再晋升（880b49a 语义）：候选表为空、仅 last_direct 可行 → 决策
+/// 记录写明来源是记忆面（回放时能区分「候选表选路」与「选回上次的面」）。
+#[test]
+fn memory_face_promote_records_its_source() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[])];
+    let mut current = BTreeMap::new();
+    let mut entry = direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay);
+    entry.last_direct = Some(lan("192.168.1.77", 51821));
+    current.insert("dev-b".into(), entry);
+    let (updates, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
+    if endpoint.to_string() == "192.168.1.77:51821"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].action, "promote");
+    assert_eq!(records[0].from_mode, "hub_relay");
+    assert_eq!(records[0].to_mode, "direct_pending");
+    assert!(records[0].reason.contains("memory face"));
+    assert_eq!(records[0].endpoint, "192.168.1.77:51821");
+}
+
+/// 候选表首次晋升（无记忆）：来源标 candidate table。
+#[test]
+fn candidate_table_promote_records_its_source() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    let (_, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].action, "promote");
+    assert_eq!(records[0].from_mode, "hub_relay");
+    assert_eq!(records[0].to_mode, "direct_pending");
+    assert!(records[0].reason.contains("candidate table"));
+    assert_eq!(records[0].endpoint, "192.168.1.50:51821");
+}
+
+/// pending 验成（Keep 动作但状态迁移 direct_pending → p2p_direct）：
+/// 也记 promote——mode_flip 事件靠 from_mode ≠ to_mode 触发，不漏这次翻转。
+#[test]
+fn pending_verified_promotion_records_the_flip_transition() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer(
+            "dev-b",
+            "10.240.0.3",
+            PeerLinkState::DirectPending {
+                attempts: MAX_PROMOTE_ATTEMPTS,
+            },
+        ),
+    );
+    let mut ages = BTreeMap::new();
+    ages.insert("dev-b".into(), 30u64);
+    let (updates, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &ages,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(updates.is_empty(), "promotion is a keep, no churn");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].action, "promote");
+    assert_eq!(records[0].from_mode, "direct_pending");
+    assert_eq!(records[0].to_mode, "p2p_direct");
+    assert!(records[0].reason.contains("pending verified"));
+    assert_eq!(records[0].handshake_age_secs, Some(30));
+}
+
+/// pending 等待轮（attempts+1，模式不变）：决策记录逐轮入账（回放等待
+/// 过程），但 from_mode = to_mode 不产生 mode_flip 事件。
+#[test]
+fn waiting_round_records_probe_without_mode_change() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer(
+            "dev-b",
+            "10.240.0.3",
+            PeerLinkState::DirectPending { attempts: 1 },
+        ),
+    );
+    let (updates, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(updates.is_empty());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].action, "probe");
+    assert_eq!(records[0].from_mode, "direct_pending");
+    assert_eq!(records[0].to_mode, "direct_pending");
+    assert!(records[0].reason.contains("attempt 2"));
+}
+
+/// 恢复门 hold_relay：逐轮入账（回放「为什么还不切回」），模式不变。
+#[test]
+fn hold_relay_records_the_recovery_gate_verdict() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay),
+    );
+    let mut hold = BTreeSet::new();
+    hold.insert("dev-b".into());
+    let (updates, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &hold,
+    );
+    assert!(updates.is_empty());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].action, "hold_relay");
+    assert_eq!(records[0].from_mode, "hub_relay");
+    assert_eq!(records[0].to_mode, "hub_relay");
+    assert!(records[0].reason.contains("recovery gate"));
+    assert_eq!(
+        current.get("dev-b").map(|p| p.state),
+        Some(PeerLinkState::Relay)
+    );
+}
+
+/// 对端离开候选集（撤销/下线/换段）：决策记录留痕（from_mode 取迁移前
+/// 状态），管理状态移除。
+#[test]
+fn peer_leaving_candidates_records_a_demote_decision() {
+    let wanted = vec![];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
+    );
+    let (updates, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].action, "demote");
+    assert_eq!(records[0].from_mode, "p2p_direct");
+    assert_eq!(records[0].to_mode, "hub_relay");
+    assert_eq!(records[0].reason, "peer left the candidate set");
+    assert!(current.is_empty());
+}
+
+/// 稳态不刷屏：健康直连保持、无路径中继保持都是 Keep 且状态不变 →
+/// 零决策记录（决策日志只收迁移与动作，不给每对端每周期一条噪声）。
+#[test]
+fn steady_state_keeps_emit_no_decision_records() {
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
+    );
+    let mut ages = BTreeMap::new();
+    ages.insert("dev-b".into(), 5u64);
+    let (_, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &ages,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(records.is_empty(), "healthy keep: no records");
+
+    // 无可行路径的中继保持：同样零记录。
+    let mut current = BTreeMap::new();
+    let (updates, records) = plan_updates_logged(
+        &[peer("dev-c", "10.240.0.4", &[])],
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    );
+    assert!(updates.is_empty());
+    assert!(records.is_empty(), "relay keep without a path: no records");
+}

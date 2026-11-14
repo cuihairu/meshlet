@@ -16,7 +16,7 @@ use crate::agent::rtt_source::honest_rtt_source;
 use crate::agent::scope::direct_scope;
 use crate::agent::verdict::dial_verdict;
 use crate::agent::views::direct_peer_views;
-use crate::direct::{keepalive_secs, merge_handshake_ages, DirectUpdate};
+use crate::direct::{keepalive_secs, merge_handshake_ages, DirectUpdate, PeerDecisionRecord};
 use crate::direct_rtt::{RttCandidate, RttProbe};
 use crate::server;
 
@@ -159,7 +159,7 @@ impl super::Agent {
         // 回收不在候选集里的恢复计数。
         let live_keys: Vec<String> = wanted.iter().map(|p| p.public_key.clone()).collect();
         self.recovery.retain(&live_keys);
-        let updates = self.direct.apply_plan(
+        let (updates, decisions) = self.direct.apply_plan(
             &wanted,
             &my_lan_subnets,
             scope,
@@ -174,6 +174,11 @@ impl super::Agent {
             }
             self.save_direct_ledger();
         }
+        // 决策落盘（2026-11-14 巡检单观测性欠账）：classify / 切换闸判定逐条
+        // 写决策日志，模式翻转另记 `mode_flip` 切换事件——无控制台上下文
+        // （Windows 服务 / schtasks SYSTEM）也能事后回放降级/晋升原因。
+        // 判据输入摘要（探测窗口）按**本轮**现役路径查窗口快照。
+        self.record_decisions(&decisions, &current_paths);
         // R-DIAG-2：对处于直连状态的对端刷新读数（wg 端点/握手/流量）+ 实测
         // 直连路径 RTT——即使本周期无动作也要刷新，供心跳与控制台/CLI 展示。
         self.enrich_direct_peers(net.as_ref(), now_secs);
@@ -335,6 +340,9 @@ impl super::Agent {
                 to: decision.to.socket().to_string(),
                 reason: decision.reason.clone(),
                 at_ms: dial::now_millis(),
+                kind: None,
+                detail: None,
+                ts: Some(dial::rfc3339_now()),
             };
             if let Err(e) = dial::append_switch_event(Path::new(&self.state_dir), &event) {
                 tracing::warn!(error = %e, "direct switch event not recorded");
@@ -349,6 +357,65 @@ impl super::Agent {
             // 更新直连管理器记录的 endpoint（下一轮以此为现路径基准）。
             self.direct
                 .record_endpoint(&status.public_key, event.to.clone());
+        }
+    }
+
+    /// 决策落盘（2026-11-14 巡检单：无控制台上下文的事后回放）：状态机每条
+    /// 判定追加决策日志（`{state_dir}/agent-decisions.jsonl`，超限滚动）；
+    /// 模式翻转（`from_mode ≠ to_mode`）另记一条 `mode_flip` 切换事件到
+    /// `direct-switch-events.json`（旧字段不动，向后兼容）。写失败只记日志
+    /// ——观测是增益，绝不干扰数据面循环。
+    fn record_decisions(
+        &self,
+        decisions: &[PeerDecisionRecord],
+        current_paths: &BTreeMap<String, meshlet_domain::EndpointCandidate>,
+    ) {
+        let state_dir = Path::new(&self.state_dir);
+        for d in decisions {
+            let probe_window = current_paths
+                .get(&d.public_key)
+                .and_then(|c| self.probe.window_summary(&d.public_key, *c));
+            let event = dial::DecisionEvent {
+                ts: dial::rfc3339_now(),
+                public_key: d.public_key.clone(),
+                peer_name: d.peer_name.clone(),
+                action: d.action.to_string(),
+                from_mode: d.from_mode.to_string(),
+                to_mode: d.to_mode.to_string(),
+                reason: d.reason.clone(),
+                handshake_age_secs: d.handshake_age_secs,
+                degraded: d.degraded,
+                endpoint: d.endpoint.clone(),
+                probe_window,
+            };
+            if let Err(e) = dial::append_decision_event(state_dir, &event) {
+                tracing::warn!(error = %e, "decision log not written");
+            }
+            if d.from_mode != d.to_mode {
+                let flip = dial::SwitchEvent {
+                    public_key: d.public_key.clone(),
+                    from: d.from_mode.to_string(),
+                    to: d.to_mode.to_string(),
+                    reason: d.reason.clone(),
+                    at_ms: dial::now_millis(),
+                    kind: Some(dial::SWITCH_KIND_MODE_FLIP.into()),
+                    detail: Some(format!(
+                        "hs_age={:?} degraded={} ep={}",
+                        d.handshake_age_secs, d.degraded, d.endpoint
+                    )),
+                    ts: Some(event.ts.clone()),
+                };
+                if let Err(e) = dial::append_switch_event(state_dir, &flip) {
+                    tracing::warn!(error = %e, "mode flip event not recorded");
+                }
+                tracing::info!(
+                    public_key = %d.public_key,
+                    from = %d.from_mode,
+                    to = %d.to_mode,
+                    reason = %d.reason,
+                    "direct mode flipped"
+                );
+            }
         }
     }
 
