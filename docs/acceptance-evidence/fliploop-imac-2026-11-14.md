@@ -110,3 +110,72 @@ demote .49（handshake stale 243s）→09:35:07 promote .49（memory）→09:35:
 - coding-vm↔imac 稳 `p2p_direct @ 192.168.5.117`（rtt≤1）；imac↔coding-vm 稳
   `.188`——LAN 面对零翻转照旧。
 - 本机 agent 仍 2de57b1（无 agent-decisions.jsonl，台账口径）；无隧道残留。
+
+## 04:0x 检查点（巡检单 meshlet-fliploop-checkpoint-1115，2026-11-14 20:00Z 取证）
+
+取证时刻 **2026-11-15 04:00:37 CST（2026-11-14 20:00:37Z）**（取证时 agent-decisions.jsonl
+最后事件 20:00:36Z）。
+窗口 = 起点 07:19Z（15:19 CST）至取证时刻，**12.69 h**；距 24h 门槛**还差 11.31 h**，
+未达标、不外推。
+
+数据面：`%LOCALAPPDATA%\meshlet\state\agent-decisions.jsonl`（539,530 B，1,525 事件；
+窗口内 1,023 事件）、`direct-switch-events.json`（265,797 B，871 事件）、`direct-peers.json`
+（714 B）。窗口内事件按 peer/动作：
+
+| peer | 窗口内 | promote | demote | hold_relay | probe | defer |
+|---|---|---|---|---|---|---|
+| windows-desktop（JMrE） | 812 | 311 | 158 | 307 | 35 | 1 |
+| openclaw-win（FSaf） | 211 | 76 | 37 | 75 | 23 | 0 |
+
+### JMrE（windows-desktop）：环仍在续，节奏中位 0.78 min
+
+窗口内 165 个「promote→紧接 demote」周期，间隔中位 **0.78 min**，最短 0.7 min——仍是
+分钟级翻转，未收口。窗口末端（取样止）：19:56:55Z / 19:57:39Z 两次 promote `.97:51821`
+→ 19:58:23Z demote `.97`（sel003）→ 19:59:07Z、19:59:52Z hold_relay → **20:00:36Z
+promote `180.152.54.66:51821`**（candidate table, probe Unhealthy），末拍即新环起点。
+签名分布：`.97:51821` 331 条 / `180.152.54.66:51821` 174 条，ZT 面与公网面互拽照旧。
+demote 主因 `sel003 degraded: probe window`（`.97` 154 条 / `.49` 32 条）。
+
+**本轮不重复 19:11Z / 21:39Z 已记的结论**（sel003 瞬态回收、hold_relay 恢复门未过、
+漂移环交替），只记新证据。
+
+### FSaf（openclaw-win）：17:23Z 起静默，锚定 LAN 面
+
+窗口内前段仍翻（37 次 demote / 76 次 promote），但**最后一条事件是 17:22:59Z**
+（promote `192.168.5.11:51820`，pending verified: fresh handshake, probe Healthy），
+此后 **2h37m 零事件**（`ts >= 17:23Z` 计 0 条）。窗口内 3 条 `192.168.5.11:51820`
+事件是本检查点**新签名**：openclaw-win 漫游回家后的真 L2 NAT 面被 imac 侧记忆面
+（`promote attempt via memory face (last_direct)`）接住并验证通过。`direct-peers.json`
+实况亦印证——`openclaw-win` `mode=p2p_direct @ 192.168.5.11:51820`、`rtt_source=
+handshake_fresh`。21:39Z 检查点记的「openclaw 回家未自动传导到 imac 侧决策」缺口，
+在本检查点由 `880b49a` 的记忆面 re-promote 机制消化（非候选表纳管，见下）。
+
+### 切换事件面：窗口内 582 条全为 mode_flip，零 endpoint_roam
+
+窗口内 582 条切换事件 **100% `kind=mode_flip`**（`hub_relay` ↔ `direct_pending`），
+**0 条 endpoint 漫游事件**；全文件 4 条 endpoint_roam 的最末一条早于本窗口
+（`10.147.19.130:51820 → 192.168.5.188:51820`）。即「切换闸零新触发」口径成立——
+agent 在窗口内只翻模式，没有再对 `wg set endpoint` 做漫游。
+
+### 新签名汇总
+
+- `192.168.5.11:51820`（FSaf 的 LAN 面）3 条——窗口内新增，见上节。
+- `180.153.160.8:51820` 27 条（公网面，JMrE/FSaf 共用候选）。
+- 无新 reason 文本；`defer` 仅 1 条（`promote deferred: candidate face degraded`，
+  `.97:51821`）。
+
+### 结论与边界
+
+- **fliploop 仍在续**：JMrE 每分钟级一翻，至取样末未收；FSaf 是本检查点起转静的一侧
+  （17:23Z 起 2h37m 无事件，锚 LAN 面）。
+- **未宣称修复**：三选一修复方向（候选表纳管 roaming 面 / 下发面锚定 / demote backoff）
+  仍待用户拍板，本轮不动代码、不改状态机、不碰 `crates/`。
+- **窗口未满**：12.69 h / 24 h，差 11.31 h；不得外推为「已达标」。
+- openclaw 侧数据留空：其 ZT 面 No route to host，按巡检单禁重试 SSH。
+
+### raw 清单（本轮新增）
+
+- `fliploop-imac-decisions-window-2026-11-14.txt`（窗口 07:19Z–20:00Z 全段 1,023 条，
+  自 `agent-decisions.jsonl` 按 ts 切出）
+- switch-events 同窗统计已录入本节（imac `direct-switch-events.json`，
+  窗口内 582 条全 mode_flip，与 decisions 一一对应）
