@@ -1,0 +1,16 @@
+--- round 1 07:25:58Z
+windows-desktop p2p_direct 10.147.19.97:51821 rtt 13 hs 1794641109
+imac p2p_direct 192.168.5.117:51820 rtt 0 hs 1794641062
+openclaw-win p2p_direct 10.147.19.49:51820 rtt 8 hs 1794641114
+--- round 2 07:26:28Z
+windows-desktop p2p_direct 10.147.19.97:51821 rtt 1808 hs 1794641109
+imac p2p_direct 192.168.5.117:51820 rtt 0 hs 1794641062
+openclaw-win p2p_direct 10.147.19.49:51820 rtt 7 hs 1794641114
+--- round 3 07:26:58Z
+windows-desktop p2p_direct 10.147.19.97:51821 rtt None hs 1794641109
+imac p2p_direct 192.168.5.117:51820 rtt 1 hs 1794641184
+openclaw-win p2p_direct 10.147.19.49:51820 rtt 20 hs 1794641114
+--- round 4 07:27:28Z
+windows-desktop p2p_direct 10.147.19.97:51821 rtt 11 hs 1794641235
+imac p2p_direct 192.168.5.117:51820 rtt 1 hs 1794641184
+openclaw-win p2p_direct 10.147.19.49:51820 rtt 14 hs 1794641238
