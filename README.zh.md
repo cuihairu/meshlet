@@ -4,7 +4,7 @@
 
 <h1 align="center">meshlet</h1>
 
-<p align="center"><a href="https://github.com/cuihairu/meshlet/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://github.com/cuihairu/meshlet/actions/workflows/ci.yml"><img src="https://github.com/cuihairu/meshlet/actions/workflows/ci.yml/badge.svg" alt="Tests"></a> <a href="https://github.com/cuihairu/meshlet/actions/workflows/docs.yml"><img src="https://github.com/cuihairu/meshlet/actions/workflows/docs.yml/badge.svg" alt="Docs deploy"></a> <a href="https://cuihairu.github.io/meshlet/zh/"><img src="https://img.shields.io/badge/docs-site-brightgreen" alt="Docs"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a> <a href="https://cuihairu.github.io/meshlet/zh/design/logo-preview.html"><img src="https://img.shields.io/badge/logo-B%20amber%20copper-C97B2E" alt="logo-B amber copper (approved)"></a></p>
+<p align="center"><a href="https://github.com/cuihairu/meshlet/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://github.com/cuihairu/meshlet/actions/workflows/ci.yml"><img src="https://github.com/cuihairu/meshlet/actions/workflows/ci.yml/badge.svg" alt="Tests"></a> <a href="https://github.com/cuihairu/meshlet/actions/workflows/docs.yml"><img src="https://github.com/cuihairu/meshlet/actions/workflows/docs.yml/badge.svg" alt="Docs deploy"></a> <a href="https://cuihairu.github.io/meshlet/zh/"><img src="https://img.shields.io/badge/docs-site-brightgreen" alt="Docs"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a> <a href="https://cuihairu.github.io/meshlet/design/logo-preview.html"><img src="https://img.shields.io/badge/logo-B%20amber%20copper-C97B2E" alt="logo-B amber copper (approved)"></a></p>
 
 基于自有 VPS 的自托管私人虚拟网络 —— Rust + WireGuard。
 
@@ -20,8 +20,8 @@
 
 ## 每日构建与一键安装
 
-[每日构建](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) 每天北京时间 **03:17** 触发，也可在 Actions 中手动运行。全部检查与 Linux 内核数据面测试通过后，发布 [nightly 预发布版本](https://github.com/cuihairu/meshlet/releases/tag/nightly)，同时保留带日期的不可变版本。发布包含 Linux x86_64 / ARM64 静态 tar 归档，以及按组件拆分的 `deb`/`rpm` 包（`meshlet-server` / `meshlet-agent` / `meshlet-cli`）。Windows agent+CLI+tray-host zip 与 `install.sh` / `install.ps1` 一键安装脚本同时发布。
-在 VPS 安装服务端：
+[每日构建](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) 每天北京时间 **03:17** 触发，也可在 Actions 中手动运行。全部检查与 Linux 内核数据面测试通过后，发布 [nightly 预发布版本](https://github.com/cuihairu/meshlet/releases/tag/nightly)——单一可变 tag，每次成功构建覆盖。当前无带日期的 release。发布包含 Linux x86_64 / ARM64 静态 tar 归档，以及按组件拆分的 `deb`/`rpm` 包（`meshlet-server` / `meshlet-agent` / `meshlet-cli`）。Windows agent+CLI+tray-host zip 与 `install.sh` / `install.ps1` 一键安装脚本同时发布。
+**在 VPS 安装服务端：**
 
 ```bash
 curl -fsSL https://github.com/cuihairu/meshlet/releases/download/nightly/install.sh | sudo bash -s -- server
@@ -35,7 +35,7 @@ ssh -L 8080:127.0.0.1:8080 user@你的VPS
 
 打开 `http://127.0.0.1:8080` 创建管理员、网络和设备自举码。在 VPS 防火墙放行对应 UDP 端口：第一个网络默认 `51820`，后续网络依次递增。公网管理入口按[安装指南](docs/guide/install.md)配置 HTTPS 反代。
 
-在 Linux 设备安装 agent：
+**在 Linux 设备安装 agent：**
 
 ```bash
 curl -fsSL https://github.com/cuihairu/meshlet/releases/download/nightly/install.sh | sudo bash -s -- agent \
@@ -47,7 +47,7 @@ curl -fsSL https://github.com/cuihairu/meshlet/releases/download/nightly/install
 
 在控制台批准设备，再应用该网络的当前修订。控制台会分别显示 hub 应用结果、设备回执和业务探测状态。
 
-升级与定位版本：重复执行同角色命令即可升级到最新成功的 nightly，已有 TOML、私钥、设备凭据和数据库保留；不会自动每天升级正在运行的设备。安装指定历史版本时，将下载地址中的 `nightly` 替换为 Releases 页上的完整日期标签，并增加 `--version '该标签'`。可用 `--no-start` 只安装不启动。
+升级与定位版本：重复执行同角色命令即可升级到最新成功的 nightly，已有 TOML、私钥、设备凭据和数据库保留；不会自动每天升级正在运行的设备。要定位滚动 `nightly` 以外的 tag（若存在），将下载地址中的 `nightly` 替换为该 tag，并增加 `--version '该tag'`。可用 `--no-start` 只安装不启动。
 
 ```bash
 systemctl status meshlet-server   # 设备端改为 meshlet-agent
@@ -55,7 +55,7 @@ journalctl -u meshlet-server -n 100 --no-pager
 cat /usr/local/share/meshlet/server-build-info
 ```
 
-用 Linux 包（deb / rpm）安装：
+**用 Linux 包（deb / rpm）安装：**
 
 nightly 同时按组件发布两种架构的包。`meshlet-server` 含服务端二进制、systemd 单元、Web 控制台与示例配置；`meshlet-agent` 含 agent 二进制、systemd 单元与示例配置；`meshlet-cli` 是独立 CLI：
 

@@ -21,7 +21,7 @@
 
 ## 1. 前置条件
 
-- 服务器：Linux x86_64 + systemd（Ubuntu 22.04+ / Debian 12 口径），root 或 sudo；
+- 服务器：Linux x86_64 / aarch64 + systemd（Ubuntu 22.04+ / Debian 12 口径），root 或 sudo；
 - **构建机**（可与服务器同一台）：Rust stable（`rustup`）；
 - **控制台**（可选，建议要）：Node 20+ 与 pnpm（`corepack enable`）；
 - 对外端口：443/TCP（HTTPS 反代）+ WireGuard 的 UDP 端口

@@ -56,6 +56,7 @@ Meshlet 每个「开启后有效果」的开关，附 off/on 截图与切换动�
 - tray 应用：开机自启 / 动效 / 语言 —— 桌面 Tauri 窗口（系统托盘）。需 Windows 或 macOS 图形会话；本 Linux 主机无桌面显示。在桌面宿主运行 tray 应用并捕获其设置窗口（`apps/tray-app`）。
 - agent `[dataplane] enabled` —— 效果是 agent 将 WireGuard 配置真正应用到真实接口（需 `NET_ADMIN` 与可达 hub）。用 `MESHLET_REQUIRE_DATAPLANE=1` 且具备数据面的宿主录制（见 ADR-007）。
 - Agent `[dataplane.direct_connect] enabled` — **默认开启**（2026-11-06 起；显式 `enabled = false` 关闭）。效果 = 控制台拓扑页出现**实线直连边 + RTT 标注**（数据源：devices API 的 `direct_links[].connection_mode = p2p_direct`），以及各端 `wg show` 出现对端 `/32` 直连 peer。需真实第二台 meshlet 节点才能看到效果，本流水线（单机回环）无法录制；双真机走查已完成：coding-vm ↔ cuihaitao（Windows）经 Tailscale underlay 建立直连，拓扑 API 报 RTT 18ms（2026-11-06，证据见 todo.md P2P 账本）。
+- Agent `[dataplane.probe] enabled` — **默认开启**（2026-11-13 起，spoke 事故后；显式 `enabled = false` 关闭；`crates/meshlet-config/src/agent.rs:273-284`，默认 5s / 20 样本窗口 / 连切 3 拍 / margin 30% / 连恢复 3 拍 / 劣化阈值 800ms）。效果 = 候选端点 ICMP 探测，喂 SEL-001/SEL-003 晋升/降级闸；可见痕迹是 `{state_dir}/agent-decisions.jsonl` 的 `probe_window` 字段与 `probe` 动作（见[可观测性](../architecture/observability)）。本机单机回环无可探测候选端点，无法录制。
 - 服务通知 / `status_notifier_item` —— 桌面托盘指示器，宿主限制同上。
 
 以上均不冒充通过：列为本机暂不可录制，而非展示为「通过」。

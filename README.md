@@ -23,7 +23,7 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 
 ## Nightly builds and one-command installation
 
-The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and the required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly). It also publishes an immutable dated release. The release carries Linux x86_64 / ARM64 static tar archives. It also carries per-component `deb` and `rpm` packages (`meshlet-server` / `meshlet-agent` / `meshlet-cli`). A Windows agent+CLI+tray-host zip and the `install.sh` / `install.ps1` installers ship alongside.
+The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and the required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly) — a single mutable tag, overwritten on every successful run. No dated releases exist today. The release carries Linux x86_64 / ARM64 static tar archives. It also carries per-component `deb` and `rpm` packages (`meshlet-server` / `meshlet-agent` / `meshlet-cli`). A Windows agent+CLI+tray-host zip and the `install.sh` / `install.ps1` installers ship alongside.
 **Install the server on your VPS:**
 
 ```bash
@@ -52,7 +52,7 @@ curl -fsSL https://github.com/cuihairu/meshlet/releases/download/nightly/install
 
 Approve the device in the console, then apply the network's current revision. Hub execution, device receipts and connectivity probes are reported separately.
 
-Re-run the same role to upgrade to the latest successful nightly. Existing TOML files, private keys, device credentials and databases are preserved. Installed devices do not automatically upgrade each day. To install a dated release, replace `nightly` in the download URL with its full release tag and pass `--version 'THAT_TAG'`. Use `--no-start` to install without starting the service.
+Re-run the same role to upgrade to the latest successful nightly. Existing TOML files, private keys, device credentials and databases are preserved. Installed devices do not automatically upgrade each day. To pin a tag other than the rolling `nightly` (when one exists), replace `nightly` in the download URL with that tag and pass `--version 'THAT_TAG'`. Use `--no-start` to install without starting the service.
 
 ```bash
 systemctl status meshlet-server   # use meshlet-agent on a device

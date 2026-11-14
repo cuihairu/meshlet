@@ -15,3 +15,18 @@ A recent agent report does not prove a working tunnel. A WireGuard handshake doe
 ## Operations
 
 Metrics and audit APIs are authenticated. Agent-side status artifacts should tell the user what the agent observed and when it last reconciled. Logging and metrics help locate faults but do not replace network tests.
+
+## Agent-side artifacts
+
+The agent writes its ledger and decision history under `{state_dir}`. These are the operator-facing evidence for dataplane behavior:
+
+| Artifact | Written by | What it records |
+| --- | --- | --- |
+| `applied.json` | agent reconcile loop | last successfully applied plan hash, routes/NAT ownership |
+| `direct.json`, `direct-peers.json` | `apps/agent/src/agent/direct.rs:194,225` | direct-peer view: server candidates merged with current link state (topology page source) |
+| `agent-decisions.jsonl` | `crates/meshlet-network/src/dial.rs:245` (`DecisionEvent`, `:217`) | one line per candidate decision — `action` ∈ `promote` / `demote` / `hold_relay` / `probe` / `defer`, with from/to mode, handshake age, SEL-003 degraded flag, endpoint and probe window. Rolls to `.jsonl.1` at 8 MiB |
+| `direct-switch-events.json` | `crates/meshlet-network/src/dial.rs:127` (`SwitchEvent`, `:95`) | one line per successful `wg set endpoint` roam; `kind = mode_flip` events carry direct mode changes (`p2p_direct` ↔ `direct_pending` ↔ `hub_relay`) with the criteria summary (written at `apps/agent/src/agent/direct.rs:370`) |
+| `direct-dial.json` | `crates/meshlet-network/src/dial.rs:122` | active dial requests |
+| `status.json`, `tasks.json`, `ssh-sync.json`, `restart-requested.json`, `agent.lock`, `tray/` | agent | state, task queue, tray status PNGs and lock state |
+
+Read `agent-decisions.jsonl` and `direct-switch-events.json` first when a link flaps or a direct edge disappears; the metrics only show that a switch happened, these show why.

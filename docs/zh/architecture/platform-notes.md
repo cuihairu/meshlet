@@ -1,6 +1,6 @@
 # Windows / Linux 配置管理差异清单
 
-> 来源：[存档 §15](../review/chatgpt-2026-10-13.md#_15-跨平台网络后端) + [ADR-007](../decisions/adr-007-linux-network-backend.md) / [ADR-008](../decisions/adr-008-windows-network-backend.md)。Phase 0 调研结论；Windows 侧需在真实环境原型验证后修订。
+> 来源：[存档 §15](../review/chatgpt-2026-10-13.md#_15-跨平台网络后端) + [ADR-007](../decisions/adr-007-linux-network-backend.md) / [ADR-008](../decisions/adr-008-windows-network-backend.md)。Phase 0 调研结论；Windows 侧已于 2026-11-12/13 通过真机验收（R-05 隧道生命周期/提权/开机恢复，安装包/托盘/端到端 apply；见 [R-05](../implementation/r05-windows-acceptance.md)），NAT 按 ADR-008 仍不做。下表保留为调研口径，验收后的差异以验收记录为准。
 
 ## 差异总表
 

@@ -130,3 +130,18 @@
 测试证据：`cargo test -p meshlet-agent tray`（状态映射、四态轮廓两两不同、
 PNG 往返解码、headless no-op 不触碰文件系统）。
 
+
+## 六、agent 侧决策与状态台账（G2 增补）
+
+agent 在 `{state_dir}` 下落一套运维可直接读的台账文件：
+
+| 产物 | 写入方 | 记什么 |
+| --- | --- | --- |
+| `applied.json` | agent 对账环 | 最近一次成功应用的计划哈希、路由/NAT 所有权 |
+| `direct.json`、`direct-peers.json` | `apps/agent/src/agent/direct.rs:194,225` | 直连对端视图：服务端候选集与当前链路状态合并（拓扑页数据源） |
+| `agent-decisions.jsonl` | `crates/meshlet-network/src/dial.rs:245`（`DecisionEvent`，`:217`） | 每次候选判定追加一行——`action` ∈ `promote` / `demote` / `hold_relay` / `probe` / `defer`，含 from/to 模式、握手年龄、SEL-003 劣化判定、涉及 endpoint 与探测窗口摘要；8 MiB 上限滚动为 `.jsonl.1` |
+| `direct-switch-events.json` | `crates/meshlet-network/src/dial.rs:127`（`SwitchEvent`，`:95`） | 每次成功 `wg set endpoint` 漫游追加一行；`kind = mode_flip` 事件携带直连模式迁移（`p2p_direct` ↔ `direct_pending` ↔ `hub_relay`）与判据摘要（写入点 `apps/agent/src/agent/direct.rs:370`） |
+| `direct-dial.json` | `crates/meshlet-network/src/dial.rs:122` | 拨号请求 |
+| `status.json`、`tasks.json`、`ssh-sync.json`、`restart-requested.json`、`agent.lock`、`tray/` | agent | 状态、任务队列、托盘状态 PNG 与锁 |
+
+排查链路翻转或直连消失时，先读 `agent-decisions.jsonl` 与 `direct-switch-events.json`——指标只显示「切换发生了」，这两个文件回答「为什么」。

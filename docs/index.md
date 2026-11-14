@@ -3,7 +3,7 @@ layout: home
 hero:
   name: Meshlet
   text: Self-hosted private networking
-  tagline: Build and manage private virtual networks through your own VPS. The control plane, Linux WireGuard hub and agent, LAN routes, Alias NAT, service publishing and the web console run on Linux today; Windows is not accepted and the TODO says so.
+  tagline: Build and manage private virtual networks through your own VPS. The control plane, WireGuard hub and agent, LAN routes, Alias NAT, service publishing and the web console run on Linux today; the Windows data-plane backend is wired and passed real-machine acceptance (R-05 2026-11-12, installer/tray/apply 2026-11-13), with NAT remaining out of scope per ADR-008.
   actions:
     - theme: brand
       text: Browse analysis

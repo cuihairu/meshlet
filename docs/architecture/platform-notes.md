@@ -2,11 +2,11 @@
 
 ## Support status
 
-Linux is the first complete networking target. It uses WireGuard and host route/NAT operations with explicit ownership and reconciliation. Windows support is a separate backend effort; a command wrapper or partial prototype does not establish a complete agent.
+Linux is the first complete networking target. It uses WireGuard and host route/NAT operations with explicit ownership and reconciliation. Windows is a second backend, now wired: `SystemBackend` maps to the real Windows implementation for tunnel, routes and device plans, and the R-05 real-machine acceptance items passed on 2026-11-12 ([R-05](../implementation/r05-windows-acceptance.md), ADR-008).
 
-## Windows work still needed
+## Windows acceptance state
 
-A production Windows client needs tunnel service lifecycle, elevation and least privilege, and route management. It also needs reboot recovery, cleanup after interrupted operations, and clear reporting. Test service install/uninstall, repeated apply, failures at each operation stage, and recovery after restart.
+The tunnel service lifecycle, elevation exec, boot recovery and route management items passed on real machines on 2026-11-12; the MSI/tray-host installer and the end-to-end apply walkthrough passed on 2026-11-13. A command wrapper or partial prototype does not establish a complete agent — the acceptance record is what counts. Remaining open items: NAT-bearing plans are explicitly rejected per ADR-008, wide cross-NAT punch scenarios still need real-machine acceptance, and the long-run soak needs weeks of data.
 
 ## Linux constraints
 

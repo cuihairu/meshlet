@@ -23,8 +23,8 @@
 
 `Nightly build` 每天 19:17 UTC（北京时间次日 03:17）运行，也支持手动触发。发布依赖格式、Clippy、workspace 测试、控制台/文档构建和严格真实内核门禁。
 
-Linux x86_64 与 ARM64 使用 musl 静态构建，归档包含 server、agent、CLI、控制台、systemd 单元、安装脚本、LICENSE 和 BUILD_INFO。同时发布滚动 `nightly`
- 和带日期的不可变预发布版本，提供 SHA256SUMS；`source_dirty` 标记本地工作区构建，CI 发布基于检出的提交。
+Linux x86_64 与 ARM64 使用 musl 静态构建，归档包含 server、agent、CLI、控制台、systemd 单元、安装脚本、LICENSE 和 BUILD_INFO。同时发布滚动 `nightly`（单一可变 tag，每次成功构建覆盖；当前无带日期的 release）
+ 和 SHA256SUMS；`source_dirty` 标记本地工作区构建，CI 发布基于检出的提交。
 
 安装脚本校验归档，创建专用用户、配置与密钥，安装并启动服务；重复执行保留已有配置、凭据和数据库。中英文 README 已给服务端、agent、升级、版本定位和诊断教程。
 

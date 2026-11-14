@@ -4,7 +4,7 @@ This guide describes the server and agent deployment shape. Automated checks and
 
 ## Requirements
 
-Use a supported Linux x86_64 host with systemd and a Rust stable build environment. Install Node.js and pnpm only if building the console. Expose HTTPS through a reverse proxy and allow the configured WireGuard UDP port when the data plane is enabled.
+Use a supported Linux x86_64 or aarch64 host with systemd and a Rust stable build environment. Install Node.js and pnpm only if building the console. Expose HTTPS through a reverse proxy and allow the configured WireGuard UDP port when the data plane is enabled.
 
 ## Build
 

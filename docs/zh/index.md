@@ -3,7 +3,7 @@ layout: home
 hero:
   name: Meshlet
   text: 自托管私人组网
-  tagline: 用自己的 VPS 建立并管理私人虚拟网络。控制面、Linux WireGuard hub/agent、LAN 路由与 Alias NAT、服务发布与控制台今天在 Linux 上就能跑；Windows 未验收，TODO 里如实挂着。
+  tagline: 用自己的 VPS 建立并管理私人虚拟网络。控制面、WireGuard hub/agent、LAN 路由与 Alias NAT、服务发布与控制台今天在 Linux 上就能跑；Windows 数据面后端已接线并通过真机验收（R-05 2026-11-12，安装包/托盘/端到端 2026-11-13），NAT 按 ADR-008 仍不做。
   actions:
     - theme: brand
       text: 阅读分析整理

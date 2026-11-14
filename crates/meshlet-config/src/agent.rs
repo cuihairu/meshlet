@@ -209,8 +209,9 @@ pub struct DataplaneConfig {
     /// 显式关闭：`[dataplane.direct_connect] enabled = false`。
     pub direct_connect: DirectConnectConfig,
     /// SEL-001 候选端点探测：对每 peer 全部候选端点发 ICMP 轻量探测，采集
-    /// RTT / 丢包 / 抖动滑动窗口。**默认关闭**（数据面子功能默认全关惯例）；
-    /// 开启且 `direct_connect.enabled` 且有候选端点时才真正发探测。
+    /// RTT / 丢包 / 抖动滑动窗口。**默认开启**（2026-11-13 spoke 事故后
+    /// 随 direct_connect 主开关伴生开启——探测是直连安全网）；
+    /// `direct_connect.enabled` 且有候选端点时才真正发探测。
     pub probe: ProbeConfig,
 }
 
