@@ -256,3 +256,74 @@ openclaw 侧数据留空：ZT 面 No route to host，按巡检单禁重试 SSH�
 - `fliploop-imac-decisions-window2-2026-11-14.txt`（窗口 07:19Z–20:49Z 全段 1,081 条，
   自 `agent-decisions.jsonl` 按 ts 切出）
 - switch-events 同窗统计已录入本节（增量 33 条全 mode_flip，与 decisions 对应）
+
+## 06:1x CST 检查点（巡检单 meshlet-fliploop-checkpoint-1219，2026-11-14 22:23Z 取证）
+
+**取证时刻口径（双时区）**：本单标题写「12:19 CST / 04:19Z、窗口应达 ~21h」，但实际
+执行时本机时钟为 **2026-11-15 06:23 CST = 2026-11-14 22:23Z**（imac 侧
+22:24:04Z 互证），比单据标注晚约 2h——窗口实测 **15.08h** 而非 21h。按单据硬要求
+「小时数以本机 date -u 实测计算」，一律以实测为准：取证时刻 **22:23:29Z（06:23 CST）**，
+日志末事件 22:23:08Z。窗口 = 07:19Z → 22:23Z = **15.08h**，距 24h 门槛（2026-11-15
+15:19 CST / 07:19Z）**还差 8.92h**。**本轮不做达标判定**（单据明确排除，判定留给
+15:19 CST 之后的巡检）。
+
+数据面：`agent-decisions.jsonl`（591,085 B / 1,670 事件，末事件 22:23:08Z）、
+`direct-switch-events.json`（955 事件）、`direct-peers.json`（实况见下）。
+
+### 增量（20:49:17Z→22:24Z，95min）：88 事件，全属 windows-desktop
+
+promote 34 / hold_relay 34 / demote 17 / probe 3。末 6 拍：22:18:41Z promote `.97:51821`
+verified → 22:20:14Z demote `.97`（sel003）→ hold_relay ×2 → 22:22:25Z promote
+`180.152.54.66:51821`（candidate table）→ 22:23:08Z verified——**末拍即新环进行中，
+环未收口**。取证时 `direct-peers.json` 实况：windows-desktop `mode=p2p_direct @
+10.147.19.97:51821`（handshake_fresh）——恰在 `.97` 面上的 verified 态。
+
+### 窗口累计（07:19Z→22:23Z，1,168 事件 = 15.08h）
+
+| peer | 条数 | promote | demote | hold_relay | probe | defer |
+|---|---|---|---|---|---|---|
+| windows-desktop（JMrE） | 957 | 367 | 186 | 361 | 42 | 1 |
+| openclaw-win（FSaf） | 211 | 76 | 37 | 75 | 23 | 0 |
+
+### JMrE 周期节奏（180 个 promote→demote 周期）
+
+| 时段 | 周期数 | 中位 | 最短 | 最长 |
+|---|---|---|---|---|
+| 07–11Z | 44 | 0.78 min | 0.72 | 10.63 |
+| 11–15Z | 50 | 0.78 min | 0.72 | 8.25 |
+| 15–19Z | 46 | 0.87 min | 0.72 | 6.73 |
+| 19–23Z | 40 | 1.48 min | 0.72 | 10.58 |
+
+末段（19–23Z）中位维持 1.48min，与上一检查点一致；末 10 个周期 0.87–5.22min
+散布，仍分钟级翻转，**未收口也不构成「已缓解」**。两面互拽照旧（`.97:51821` 与
+`180.152.54.66:51821`）。
+
+### FSaf（openclaw-win）：静默延续 3.42h → 5.02h
+
+末事件仍为 17:22:59Z，此后 **5.02h 零事件**；窗口内 FSaf 计数与上两个检查点完全
+一致（211 条零新增）。`direct-peers.json` 实况 `p2p_direct @ 192.168.5.11:51820`、
+`handshake_fresh`——锚 LAN 面稳定。openclaw 侧数据留空：ZT 面 No route to host，
+按巡检单禁重试 SSH。
+
+### 切换闸口径复核：零 endpoint_roam 延续
+
+增量 51 条切换事件**全为 `mode_flip`**，**0 条 `endpoint_roam`**；全文件 955 条
+= 951 mode_flip + 4 endpoint_roam，最末 roam 仍早于观察窗。口径连续三个检查点成立。
+
+### 无新签名
+
+增量 7 种 reason 文本全在此前已有的 10 种之内，**零新增**；无新 endpoint 面；
+`defer` 全窗仍仅 1 条（窗口早期）。
+
+### 边界与排除（沿用单据）
+
+- 不做 24h 达标判定（窗口 15.08h 未满，差 8.92h；判定留给 2026-11-15 15:19 CST
+  之后的巡检）。
+- 三选一修复方向仍待用户拍板；本轮未动 `crates/`、未改状态机、未实施三选一。
+- 未 bump 版本、未打 tag、未发 release、未 force push。
+
+### raw 清单（本轮新增）
+
+- `fliploop-imac-decisions-window3-2026-11-14.txt`（窗口 07:19Z–22:23Z 全段 1,168 条，
+  自 `agent-decisions.jsonl` 按 ts 切出）
+- switch-events 同窗统计已录入本节（增量 51 条全 mode_flip，与 decisions 对应）
