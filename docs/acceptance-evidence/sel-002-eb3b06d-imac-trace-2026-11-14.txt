@@ -1,0 +1,91 @@
+T=1794617936 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:p2p_direct@10.147.19.97:51821/hs74 | FSaf:hub_relay@/hs- | vLkJ:wgage2 | b6tx:wgage61 | JMrE:wgage39 | swsz=865
+T=1794617956 | b6tx:p2p_direct@192.168.5.188:51820/hs81 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage22 | b6tx:wgage81 | swsz=865
+T=1794617976 | b6tx:p2p_direct@192.168.5.188:51820/hs101 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage42 | b6tx:wgage101 | swsz=865
+T=1794617996 | b6tx:p2p_direct@192.168.5.188:51820/hs121 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage62 | b6tx:wgage1 | swsz=865
+T=1794618016 | b6tx:p2p_direct@192.168.5.188:51820/hs141 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage82 | b6tx:wgage21 | swsz=865
+T=1794618036 | b6tx:p2p_direct@192.168.5.188:51820/hs41 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage102 | b6tx:wgage41 | swsz=865
+T=1794618056 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage122 | b6tx:wgage61 | FSaf:wgage9 | swsz=865
+T=1794618076 | b6tx:p2p_direct@192.168.5.188:51820/hs81 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs29 | vLkJ:wgage16 | b6tx:wgage81 | FSaf:wgage29 | JMrE:wgage3 | swsz=865
+T=1794618096 | b6tx:p2p_direct@192.168.5.188:51820/hs101 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs49 | vLkJ:wgage36 | b6tx:wgage101 | FSaf:wgage49 | JMrE:wgage23 | swsz=865
+T=1794618116 | b6tx:p2p_direct@192.168.5.188:51820/hs121 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs69 | vLkJ:wgage56 | b6tx:wgage1 | FSaf:wgage69 | JMrE:wgage17 | swsz=865
+T=1794618136 | b6tx:p2p_direct@192.168.5.188:51820/hs21 | JMrE:p2p_direct@10.147.19.97:51821/hs37 | FSaf:hub_relay@/hs- | vLkJ:wgage76 | b6tx:wgage21 | JMrE:wgage37 | swsz=865
+T=1794618156 | b6tx:p2p_direct@192.168.5.188:51820/hs41 | JMrE:p2p_direct@10.147.19.97:51821/hs57 | FSaf:hub_relay@/hs- | vLkJ:wgage96 | b6tx:wgage41 | JMrE:wgage57 | swsz=865
+T=1794618176 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:p2p_direct@10.147.19.97:51821/hs77 | FSaf:hub_relay@/hs- | vLkJ:wgage116 | b6tx:wgage61 | JMrE:wgage6 | swsz=865
+T=1794618196 | b6tx:p2p_direct@192.168.5.188:51820/hs81 | JMrE:p2p_direct@10.147.19.97:51821/hs97 | FSaf:hub_relay@/hs- | vLkJ:wgage16 | b6tx:wgage81 | JMrE:wgage26 | swsz=865
+T=1794618216 | b6tx:p2p_direct@192.168.5.188:51820/hs101 | JMrE:p2p_direct@10.147.19.97:51821/hs46 | FSaf:hub_relay@/hs- | vLkJ:wgage36 | b6tx:wgage101 | JMrE:wgage46 | swsz=865
+T=1794618236 | b6tx:p2p_direct@192.168.5.188:51820/hs121 | JMrE:p2p_direct@10.147.19.97:51821/hs66 | FSaf:hub_relay@/hs- | vLkJ:wgage56 | b6tx:wgage1 | JMrE:wgage66 | swsz=865
+T=1794618256 | b6tx:p2p_direct@192.168.5.188:51820/hs21 | JMrE:p2p_direct@10.147.19.97:51821/hs86 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage76 | b6tx:wgage21 | JMrE:wgage86 | swsz=865
+T=1794618276 | b6tx:p2p_direct@192.168.5.188:51820/hs41 | JMrE:p2p_direct@10.147.19.97:51821/hs106 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage96 | b6tx:wgage41 | JMrE:wgage106 | swsz=865
+T=1794618296 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:p2p_direct@10.147.19.97:51821/hs16 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage116 | b6tx:wgage61 | JMrE:wgage16 | swsz=865
+T=1794618316 | b6tx:p2p_direct@192.168.5.188:51820/hs81 | JMrE:p2p_direct@10.147.19.97:51821/hs36 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage12 | b6tx:wgage81 | JMrE:wgage36 | swsz=865
+T=1794618336 | b6tx:p2p_direct@192.168.5.188:51820/hs101 | JMrE:p2p_direct@10.147.19.97:51821/hs56 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage32 | b6tx:wgage101 | JMrE:wgage56 | swsz=865
+T=1794618356 | b6tx:p2p_direct@192.168.5.188:51820/hs121 | JMrE:p2p_direct@10.147.19.97:51821/hs76 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage52 | b6tx:wgage1 | JMrE:wgage12 | swsz=865
+T=1794618376 | b6tx:p2p_direct@192.168.5.188:51820/hs141 | JMrE:p2p_direct@10.147.19.97:51821/hs96 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage72 | b6tx:wgage21 | JMrE:wgage32 | swsz=865
+T=1794618396 | b6tx:p2p_direct@192.168.5.188:51820/hs41 | JMrE:p2p_direct@10.147.19.97:51821/hs52 | FSaf:hub_relay@/hs- | vLkJ:wgage92 | b6tx:wgage41 | JMrE:wgage52 | swsz=865
+T=1794618416 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:p2p_direct@10.147.19.97:51821/hs72 | FSaf:hub_relay@/hs- | vLkJ:wgage112 | b6tx:wgage61 | JMrE:wgage72 | swsz=865
+T=1794618436 | b6tx:p2p_direct@192.168.5.188:51820/hs81 | JMrE:p2p_direct@10.147.19.97:51821/hs92 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage132 | b6tx:wgage81 | JMrE:wgage92 | swsz=865
+T=1794618456 | b6tx:p2p_direct@192.168.5.188:51820/hs101 | JMrE:p2p_direct@10.147.19.97:51821/hs112 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage7 | b6tx:wgage101 | JMrE:wgage112 | swsz=865
+T=1794618476 | b6tx:p2p_direct@192.168.5.188:51820/hs121 | JMrE:p2p_direct@10.147.19.97:51821/hs5 | FSaf:p2p_direct@10.147.19.49:51820/hs7 | vLkJ:wgage27 | b6tx:wgage1 | JMrE:wgage5 | FSaf:wgage7 | swsz=865
+T=1794618496 | b6tx:p2p_direct@192.168.5.188:51820/hs141 | JMrE:p2p_direct@10.147.19.97:51821/hs25 | FSaf:p2p_direct@10.147.19.49:51820/hs27 | vLkJ:wgage47 | b6tx:wgage21 | JMrE:wgage25 | FSaf:wgage27 | swsz=865
+T=1794618516 | b6tx:p2p_direct@192.168.5.188:51820/hs161 | JMrE:p2p_direct@10.147.19.97:51821/hs45 | FSaf:p2p_direct@10.147.19.49:51820/hs47 | vLkJ:wgage67 | b6tx:wgage41 | JMrE:wgage45 | FSaf:wgage19 | swsz=865
+T=1794618536 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs39 | vLkJ:wgage87 | b6tx:wgage61 | FSaf:wgage39 | swsz=865
+T=1794618556 | b6tx:p2p_direct@192.168.5.188:51820/hs81 | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs59 | vLkJ:wgage107 | b6tx:wgage81 | FSaf:wgage59 | swsz=865
+T=1794618576 | b6tx:p2p_direct@192.168.5.188:51820/hs101 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage6 | b6tx:wgage101 | swsz=865
+T=1794618596 | b6tx:p2p_direct@192.168.5.188:51820/hs121 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage26 | b6tx:wgage1 | swsz=865
+T=1794618616 | b6tx:p2p_direct@192.168.5.188:51820/hs21 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage46 | b6tx:wgage21 | swsz=865
+T=1794618636 | b6tx:p2p_direct@192.168.5.188:51820/hs41 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage66 | b6tx:wgage41 | swsz=865
+T=1794618656 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage86 | b6tx:wgage61 | JMrE:wgage6 | swsz=865
+T=1794618676 | b6tx:p2p_direct@192.168.5.188:51820/hs81 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage106 | b6tx:wgage81 | JMrE:wgage26 | swsz=865
+T=1794618696 | b6tx:p2p_direct@192.168.5.188:51820/hs101 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage1 | b6tx:wgage101 | JMrE:wgage46 | swsz=865
+T=1794618717 | b6tx:p2p_direct@192.168.5.188:51820/hs122 | JMrE:p2p_direct@10.147.19.97:51821/hs67 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage22 | b6tx:wgage2 | JMrE:wgage67 | swsz=865
+T=1794618737 | b6tx:p2p_direct@192.168.5.188:51820/hs142 | JMrE:p2p_direct@10.147.19.97:51821/hs87 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage42 | b6tx:wgage22 | JMrE:wgage87 | FSaf:wgage18 | swsz=865
+T=1794618757 | b6tx:p2p_direct@192.168.5.188:51820/hs42 | JMrE:p2p_direct@10.147.19.97:51821/hs107 | FSaf:p2p_direct@10.147.19.49:51820/hs38 | vLkJ:wgage62 | b6tx:wgage42 | JMrE:wgage107 | FSaf:wgage38 | swsz=865
+T=1794618777 | b6tx:p2p_direct@192.168.5.188:51820/hs62 | JMrE:p2p_direct@10.147.19.97:51821/hs127 | FSaf:p2p_direct@10.147.19.49:51820/hs58 | vLkJ:wgage82 | b6tx:wgage62 | JMrE:wgage127 | FSaf:wgage58 | swsz=865
+T=1794618797 | b6tx:p2p_direct@192.168.5.188:51820/hs82 | JMrE:p2p_direct@10.147.19.97:51821/hs14 | FSaf:hub_relay@/hs- | vLkJ:wgage102 | b6tx:wgage82 | JMrE:wgage14 | swsz=865
+T=1794618817 | b6tx:p2p_direct@192.168.5.188:51820/hs102 | JMrE:p2p_direct@10.147.19.97:51821/hs34 | FSaf:hub_relay@/hs- | vLkJ:wgage122 | b6tx:wgage102 | JMrE:wgage34 | swsz=865
+T=1794618837 | b6tx:p2p_direct@192.168.5.188:51820/hs122 | JMrE:p2p_direct@10.147.19.97:51821/hs54 | FSaf:hub_relay@/hs- | vLkJ:wgage18 | b6tx:wgage2 | JMrE:wgage54 | swsz=865
+T=1794618857 | b6tx:p2p_direct@192.168.5.188:51820/hs142 | JMrE:p2p_direct@10.147.19.97:51821/hs74 | FSaf:hub_relay@/hs- | vLkJ:wgage38 | b6tx:wgage22 | JMrE:wgage74 | swsz=865
+T=1794618877 | b6tx:p2p_direct@192.168.5.188:51820/hs162 | JMrE:p2p_direct@10.147.19.97:51821/hs94 | FSaf:hub_relay@/hs- | vLkJ:wgage58 | b6tx:wgage42 | JMrE:wgage94 | swsz=865
+T=1794618897 | b6tx:p2p_direct@192.168.5.188:51820/hs62 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage78 | b6tx:wgage62 | swsz=865
+T=1794618917 | b6tx:p2p_direct@192.168.5.188:51820/hs82 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage98 | b6tx:wgage82 | swsz=865
+T=1794618937 | b6tx:p2p_direct@192.168.5.188:51820/hs102 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage118 | b6tx:wgage102 | swsz=865
+T=1794618957 | b6tx:p2p_direct@192.168.5.188:51820/hs122 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage11 | b6tx:wgage1 | swsz=865
+T=1794618977 | b6tx:p2p_direct@192.168.5.188:51820/hs21 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage31 | b6tx:wgage21 | swsz=865
+T=1794618997 | b6tx:p2p_direct@192.168.5.188:51820/hs41 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage51 | b6tx:wgage41 | swsz=865
+T=1794619017 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage71 | b6tx:wgage61 | JMrE:wgage1 | swsz=865
+T=1794619037 | b6tx:p2p_direct@192.168.5.188:51820/hs81 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage91 | b6tx:wgage81 | JMrE:wgage21 | swsz=865
+T=1794619057 | b6tx:p2p_direct@192.168.5.188:51820/hs101 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage111 | b6tx:wgage101 | JMrE:wgage41 | swsz=865
+T=1794619077 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs61 | FSaf:hub_relay@/hs- | vLkJ:wgage8 | JMrE:wgage3 | swsz=865
+T=1794619097 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs81 | FSaf:hub_relay@/hs- | vLkJ:wgage28 | JMrE:wgage23 | swsz=865
+T=1794619117 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs43 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage48 | JMrE:wgage43 | FSaf:wgage6 | swsz=865
+T=1794619137 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs63 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage68 | JMrE:wgage63 | FSaf:wgage26 | swsz=865
+T=1794619157 | b6tx:hub_relay@/hs- | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs46 | vLkJ:wgage88 | FSaf:wgage46 | swsz=865
+T=1794619177 | b6tx:hub_relay@/hs- | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs66 | vLkJ:wgage108 | FSaf:wgage66 | swsz=865
+T=1794619197 | b6tx:hub_relay@/hs- | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs86 | vLkJ:wgage128 | FSaf:wgage86 | swsz=865
+T=1794619217 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage18 | b6tx:wgage17 | swsz=865
+T=1794619237 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage38 | b6tx:wgage37 | swsz=865
+T=1794619257 | b6tx:p2p_direct@192.168.5.188:51820/hs57 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage58 | b6tx:wgage57 | swsz=865
+T=1794619277 | b6tx:p2p_direct@192.168.5.188:51820/hs77 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage78 | b6tx:wgage77 | swsz=865
+T=1794619297 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage98 | JMrE:wgage7 | swsz=865
+T=1794619317 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage118 | JMrE:wgage27 | swsz=865
+T=1794619337 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs47 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage17 | JMrE:wgage47 | swsz=865
+T=1794619357 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs67 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage37 | JMrE:wgage67 | swsz=865
+T=1794619377 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs87 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage57 | JMrE:wgage87 | swsz=865
+T=1794619397 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs107 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage77 | JMrE:wgage107 | swsz=865
+T=1794619417 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs127 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage97 | JMrE:wgage6 | swsz=865
+T=1794619437 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs26 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage117 | JMrE:wgage26 | FSaf:wgage2 | b6tx:wgage10 | swsz=865
+T=1794619457 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs46 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage1 | JMrE:wgage46 | FSaf:wgage22 | b6tx:wgage30 | swsz=865
+T=1794619477 | b6tx:p2p_direct@192.168.5.188:51820/hs50 | JMrE:p2p_direct@10.147.19.97:51821/hs66 | FSaf:p2p_direct@10.147.19.49:51820/hs15 | vLkJ:wgage21 | JMrE:wgage66 | FSaf:wgage15 | b6tx:wgage50 | swsz=865
+T=1794619497 | b6tx:p2p_direct@192.168.5.188:51820/hs70 | JMrE:p2p_direct@10.147.19.97:51821/hs86 | FSaf:p2p_direct@10.147.19.49:51820/hs35 | vLkJ:wgage41 | JMrE:wgage1 | FSaf:wgage35 | b6tx:wgage70 | swsz=865
+T=1794619517 | b6tx:p2p_direct@192.168.5.188:51820/hs90 | JMrE:p2p_direct@10.147.19.97:51821/hs106 | FSaf:p2p_direct@10.147.19.49:51820/hs55 | vLkJ:wgage61 | JMrE:wgage21 | FSaf:wgage55 | b6tx:wgage90 | swsz=865
+T=1794619537 | b6tx:p2p_direct@192.168.5.188:51820/hs110 | JMrE:p2p_direct@10.147.19.97:51821/hs41 | FSaf:hub_relay@/hs- | vLkJ:wgage81 | JMrE:wgage41 | b6tx:wgage110 | swsz=865
+T=1794619558 | b6tx:p2p_direct@192.168.5.188:51820/hs131 | JMrE:p2p_direct@10.147.19.97:51821/hs62 | FSaf:hub_relay@/hs- | vLkJ:wgage102 | JMrE:wgage62 | b6tx:wgage6 | swsz=865
+T=1794619578 | b6tx:p2p_direct@192.168.5.188:51820/hs26 | JMrE:p2p_direct@10.147.19.97:51821/hs82 | FSaf:hub_relay@/hs- | vLkJ:wgage122 | JMrE:wgage82 | b6tx:wgage26 | swsz=865
+T=1794619598 | b6tx:p2p_direct@192.168.5.188:51820/hs46 | JMrE:p2p_direct@10.147.19.97:51821/hs102 | FSaf:hub_relay@/hs- | vLkJ:wgage17 | JMrE:wgage2 | b6tx:wgage46 | swsz=865
+T=1794619618 | b6tx:p2p_direct@192.168.5.188:51820/hs66 | JMrE:p2p_direct@10.147.19.97:51821/hs22 | FSaf:hub_relay@/hs- | vLkJ:wgage37 | JMrE:wgage22 | b6tx:wgage66 | swsz=865
+T=1794619638 | b6tx:p2p_direct@192.168.5.188:51820/hs86 | JMrE:p2p_direct@10.147.19.97:51821/hs42 | FSaf:hub_relay@/hs- | vLkJ:wgage57 | JMrE:wgage42 | b6tx:wgage86 | swsz=865
+T=1794619658 | b6tx:p2p_direct@192.168.5.188:51820/hs106 | JMrE:p2p_direct@10.147.19.97:51821/hs62 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage77 | JMrE:wgage62 | b6tx:wgage106 | swsz=865
+T=1794619678 | b6tx:p2p_direct@192.168.5.188:51820/hs126 | JMrE:p2p_direct@10.147.19.97:51821/hs82 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage97 | JMrE:wgage82 | b6tx:wgage2 | FSaf:wgage19 | swsz=865
+T=1794619698 | b6tx:p2p_direct@192.168.5.188:51820/hs146 | JMrE:p2p_direct@10.147.19.97:51821/hs102 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage117 | JMrE:wgage102 | b6tx:wgage22 | FSaf:wgage1 | swsz=865
+T=1794619718 | b6tx:p2p_direct@192.168.5.188:51820/hs42 | JMrE:p2p_direct@10.147.19.97:51821/hs122 | FSaf:p2p_direct@10.147.19.49:51820/hs21 | vLkJ:wgage4 | JMrE:wgage19 | b6tx:wgage42 | FSaf:wgage21 | swsz=865
+SAMPLER_DONE

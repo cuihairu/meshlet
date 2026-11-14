@@ -1,0 +1,89 @@
+**********************
+Windows PowerShell 脚本开始
+开始时间: 20261114091614
+用户名: WORKGROUP\SYSTEM
+RunAs 用户: WORKGROUP\SYSTEM
+配置名称: 
+计算机: IMAC (Microsoft Windows NT 10.0.26300.0)
+主机应用程序: powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\imac-block4.ps1
+进程 ID: 44272
+PSVersion: 5.1.26100.9818
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9818
+BuildVersion: 10.0.26100.9818
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+已启动脚本，输出文件为 C:\Windows\Temp\imac-block4.log
+== BASE 40s
+T=1794618974 BASE | b6tx:p2p_direct@192.168.5.188:51820/hs18 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage28 | b6tx:wgage18 | fw=False
+T=1794618987 BASE | b6tx:p2p_direct@192.168.5.188:51820/hs31 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage41 | b6tx:wgage31 | fw=False
+T=1794618997 BASE | b6tx:p2p_direct@192.168.5.188:51820/hs41 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage51 | b6tx:wgage41 | fw=False
+T=1794619007 BASE | b6tx:p2p_direct@192.168.5.188:51820/hs51 | JMrE:hub_relay@/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage61 | b6tx:wgage51 | fw=False
+== BLOCK1 45s soft (<= 2 lost ticks: must NOT demote)
+T=1794619018 BLOCK1 | b6tx:p2p_direct@192.168.5.188:51820/hs62 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage72 | b6tx:wgage62 | JMrE:wgage2 | fw=True
+T=1794619029 BLOCK1 | b6tx:p2p_direct@192.168.5.188:51820/hs73 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage83 | b6tx:wgage73 | JMrE:wgage13 | fw=True
+T=1794619039 BLOCK1 | b6tx:p2p_direct@192.168.5.188:51820/hs83 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage93 | b6tx:wgage83 | JMrE:wgage23 | fw=True
+T=1794619050 BLOCK1 | b6tx:p2p_direct@192.168.5.188:51820/hs94 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage104 | b6tx:wgage94 | JMrE:wgage34 | fw=True
+T=1794619060 BLOCK1 | b6tx:p2p_direct@192.168.5.188:51820/hs104 | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage114 | b6tx:wgage104 | JMrE:wgage44 | fw=True
+== RECOVER 120s
+T=1794619072 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs56 | FSaf:hub_relay@/hs- | vLkJ:wgage3 | JMrE:wgage56 | fw=False
+T=1794619082 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs66 | FSaf:hub_relay@/hs- | vLkJ:wgage13 | JMrE:wgage8 | fw=False
+T=1794619093 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs77 | FSaf:hub_relay@/hs- | vLkJ:wgage24 | JMrE:wgage19 | fw=False
+T=1794619104 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs88 | FSaf:hub_relay@/hs- | vLkJ:wgage35 | JMrE:wgage30 | fw=False
+T=1794619114 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs40 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage45 | JMrE:wgage40 | FSaf:wgage3 | fw=False
+T=1794619125 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs51 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage56 | JMrE:wgage51 | FSaf:wgage14 | fw=False
+T=1794619135 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs61 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage66 | JMrE:wgage61 | FSaf:wgage24 | fw=False
+T=1794619146 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs72 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage77 | JMrE:wgage72 | FSaf:wgage35 | fw=False
+T=1794619156 RECOVER | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs82 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage87 | JMrE:wgage82 | FSaf:wgage45 | fw=False
+T=1794619167 RECOVER | b6tx:hub_relay@/hs- | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs56 | vLkJ:wgage98 | FSaf:wgage56 | fw=False
+T=1794619177 RECOVER | b6tx:hub_relay@/hs- | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs66 | vLkJ:wgage108 | FSaf:wgage66 | fw=False
+T=1794619188 RECOVER | b6tx:hub_relay@/hs- | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs77 | vLkJ:wgage119 | FSaf:wgage77 | fw=False
+== BLOCK2 180s hard (>= 6 lost ticks: MUST demote)
+T=1794619198 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:hub_relay@/hs- | FSaf:p2p_direct@10.147.19.49:51820/hs87 | vLkJ:wgage129 | FSaf:wgage87 | fw=True
+T=1794619209 BLOCK2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage10 | b6tx:wgage9 | fw=True
+T=1794619219 BLOCK2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage20 | b6tx:wgage19 | fw=True
+T=1794619230 BLOCK2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage31 | b6tx:wgage30 | fw=True
+T=1794619240 BLOCK2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage41 | b6tx:wgage40 | fw=True
+T=1794619251 BLOCK2 | b6tx:p2p_direct@192.168.5.188:51820/hs51 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage52 | b6tx:wgage51 | fw=True
+T=1794619261 BLOCK2 | b6tx:p2p_direct@192.168.5.188:51820/hs61 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage62 | b6tx:wgage61 | fw=True
+T=1794619272 BLOCK2 | b6tx:p2p_direct@192.168.5.188:51820/hs72 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage73 | b6tx:wgage72 | fw=True
+T=1794619282 BLOCK2 | b6tx:p2p_direct@192.168.5.188:51820/hs82 | JMrE:hub_relay@/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage83 | b6tx:wgage82 | fw=True
+T=1794619293 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage94 | JMrE:wgage3 | fw=True
+T=1794619303 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage104 | JMrE:wgage13 | fw=True
+T=1794619313 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage114 | JMrE:wgage23 | fw=True
+T=1794619324 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | FSaf:hub_relay@/hs- | vLkJ:wgage4 | JMrE:wgage34 | fw=True
+T=1794619334 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs44 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage14 | JMrE:wgage44 | fw=True
+T=1794619345 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs55 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage25 | JMrE:wgage55 | fw=True
+T=1794619355 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs65 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage35 | JMrE:wgage65 | fw=True
+T=1794619366 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs76 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage46 | JMrE:wgage76 | fw=True
+T=1794619376 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs86 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage56 | JMrE:wgage86 | fw=True
+== RECOVER2 120s
+T=1794619388 RECOVER2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs98 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage68 | JMrE:wgage98 | fw=False
+T=1794619398 RECOVER2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs108 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage78 | JMrE:wgage108 | fw=False
+T=1794619409 RECOVER2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs119 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage89 | JMrE:wgage119 | fw=False
+T=1794619419 RECOVER2 | b6tx:hub_relay@/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs129 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage99 | JMrE:wgage8 | fw=False
+T=1794619429 RECOVER2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs18 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage109 | JMrE:wgage18 | b6tx:wgage2 | fw=False
+T=1794619440 RECOVER2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs29 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage120 | JMrE:wgage29 | FSaf:wgage5 | b6tx:wgage13 | fw=False
+T=1794619450 RECOVER2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs39 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage130 | JMrE:wgage39 | FSaf:wgage15 | b6tx:wgage23 | fw=False
+T=1794619461 RECOVER2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs50 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage5 | JMrE:wgage50 | FSaf:wgage26 | b6tx:wgage34 | fw=False
+T=1794619471 RECOVER2 | b6tx:direct_pending@192.168.5.188:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs60 | FSaf:direct_pending@10.147.19.49:51820/hs- | vLkJ:wgage15 | JMrE:wgage60 | FSaf:wgage9 | b6tx:wgage44 | fw=False
+T=1794619482 RECOVER2 | b6tx:p2p_direct@192.168.5.188:51820/hs55 | JMrE:p2p_direct@10.147.19.97:51821/hs71 | FSaf:p2p_direct@10.147.19.49:51820/hs20 | vLkJ:wgage26 | JMrE:wgage71 | FSaf:wgage20 | b6tx:wgage55 | fw=False
+T=1794619492 RECOVER2 | b6tx:p2p_direct@192.168.5.188:51820/hs65 | JMrE:p2p_direct@10.147.19.97:51821/hs81 | FSaf:p2p_direct@10.147.19.49:51820/hs30 | vLkJ:wgage36 | JMrE:wgage81 | FSaf:wgage30 | b6tx:wgage65 | fw=False
+T=1794619503 RECOVER2 | b6tx:p2p_direct@192.168.5.188:51820/hs76 | JMrE:p2p_direct@10.147.19.97:51821/hs92 | FSaf:p2p_direct@10.147.19.49:51820/hs41 | vLkJ:wgage47 | JMrE:wgage7 | FSaf:wgage41 | b6tx:wgage76 | fw=False
+RULES_CLEAN
+BLOCK4_DONE
+**********************
+Windows PowerShell 脚本结束
+结束时间: 20261114092515
+**********************
+#####
+meshlet-agent 0.1.0
+#####
+
+2026年11月14日 0:34:02
+[{"name":"coding-vm","virtual_ipv4":"10.240.0.4","public_key":"b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=","mode":"p2p_direct","rtt_ms":null,"rtt_source":"handshake_fresh","endpoint":"192.168.5.188:51820","last_handshake_at":1794620298},{"name":"windows-desktop","virtual_ipv4":"10.240.0.5","public_key":"JMrE4SZym030LpgdQKukfr0RuU1yA8A3GBBN05/5bxs=","mode":"p2p_direct","rtt_ms":null,"rtt_source":"handshake_fresh","endpoint":"10.147.19.97:51821","last_handshake_at":1794620391},{"name":"openclaw-win","virtual_ipv4":"10.240.0.3","public_key":"FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=","mode":"hub_relay","rtt_ms":null,"rtt_source":null,"endpoint":"","last_handshake_at":null}]
+
+

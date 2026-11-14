@@ -1,0 +1,212 @@
+**********************
+Windows PowerShell 脚本开始
+开始时间: 20261114091603
+用户名: WORKGROUP\SYSTEM
+RunAs 用户: WORKGROUP\SYSTEM
+配置名称: 
+计算机: OPENCLAW (Microsoft Windows NT 10.0.20348.0)
+主机应用程序: powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\oc-block3b.ps1
+进程 ID: 13624
+PSVersion: 5.1.20348.5386
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.20348.5386
+BuildVersion: 10.0.20348.5386
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+已启动脚本，输出文件为 C:\Windows\Temp\oc-block3b.log
+== BASE 60s
+T=1794618963 BASE mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=12ms TTL=128
+T=1794618977 BASE mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794618991 BASE mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619004 BASE mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619018 BASE mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619031 BASE mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=1260ms TTL=128
+== BLOCK 60s (soft window: <= 2 probe ticks, must NOT demote)
+T=1794619045 BLOCK1 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619057 BLOCK1 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619069 BLOCK1 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619081 BLOCK1 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619093 BLOCK1 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619105 BLOCK1 mode=? ep=- hs=- fw=True vip7= zt226=
+== RECOVER 180s
+T=1794619118 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=8ms TTL=128 zt226=
+T=1794619130 RECOVER mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619142 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=8ms TTL=128 zt226=来自 10.147.19.226 的回复: 字节=32 时间=8ms TTL=128
+T=1794619153 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=8ms TTL=128 zt226=来自 10.147.19.226 的回复: 字节=32 时间=8ms TTL=128
+T=1794619163 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=8ms TTL=128 zt226=来自 10.147.19.226 的回复: 字节=32 时间=7ms TTL=128
+T=1794619174 RECOVER mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=440ms TTL=128
+T=1794619186 RECOVER mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619200 RECOVER mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619213 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=12ms TTL=127 zt226=来自 10.147.19.226 的回复: 字节=32 时间=8ms TTL=128
+T=1794619224 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=12ms TTL=127 zt226=来自 10.147.19.226 的回复: 字节=32 时间=1103ms TTL=128
+T=1794619235 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=13ms TTL=127 zt226=
+T=1794619247 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=12ms TTL=127 zt226=来自 10.147.19.226 的回复: 字节=32 时间=753ms TTL=128
+T=1794619258 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=12ms TTL=127 zt226=来自 10.147.19.226 的回复: 字节=32 时间=13ms TTL=128
+T=1794619269 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=12ms TTL=127 zt226=
+T=1794619281 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=11ms TTL=127 zt226=
+T=1794619293 RECOVER mode=? ep=- hs=- fw=False vip7=来自 10.240.0.7 的回复: 字节=32 时间=12ms TTL=127 zt226=来自 10.147.19.226 的回复: 字节=32 时间=398ms TTL=128
+T=1794619304 RECOVER mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619317 RECOVER mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=13ms TTL=128
+== BLOCK 180s (>= 6 consecutive lost ticks: MUST demote)
+T=1794619329 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619341 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619353 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619365 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619377 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619389 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619401 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619413 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619425 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619437 BLOCK2 mode=? ep=- hs=- fw=True vip7=来自 10.240.0.7 的回复: 字节=32 时间=7ms TTL=128 zt226=
+T=1794619448 BLOCK2 mode=? ep=- hs=- fw=True vip7=来自 10.240.0.7 的回复: 字节=32 时间=7ms TTL=128 zt226=
+T=1794619458 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619470 BLOCK2 mode=? ep=- hs=- fw=True vip7=来自 10.240.0.7 的回复: 字节=32 时间=7ms TTL=128 zt226=
+T=1794619481 BLOCK2 mode=? ep=- hs=- fw=True vip7=来自 10.240.0.7 的回复: 字节=32 时间=10ms TTL=128 zt226=
+T=1794619491 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619503 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619515 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+T=1794619527 BLOCK2 mode=? ep=- hs=- fw=True vip7= zt226=
+== RECOVER2 120s
+T=1794619540 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=9ms TTL=128
+T=1794619552 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=7ms TTL=128
+T=1794619564 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=8ms TTL=128
+T=1794619576 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=7ms TTL=128
+T=1794619588 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=8ms TTL=128
+T=1794619600 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=来自 10.147.19.226 的回复: 字节=32 时间=567ms TTL=128
+T=1794619613 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619626 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619640 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619653 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619666 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=
+T=1794619679 RECOVER2 mode=? ep=- hs=- fw=False vip7= zt226=
+== rule cleanup verify
+RULES_CLEAN
+BLOCK3B_DONE
+**********************
+Windows PowerShell 脚本结束
+结束时间: 20261114092813
+**********************
+#####
+**********************
+Windows PowerShell 脚本开始
+开始时间: 20261114092932
+用户名: WORKGROUP\SYSTEM
+RunAs 用户: WORKGROUP\SYSTEM
+配置名称: 
+计算机: OPENCLAW (Microsoft Windows NT 10.0.20348.0)
+主机应用程序: powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\oc-block5.ps1
+进程 ID: 6756
+PSVersion: 5.1.20348.5386
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.20348.5386
+BuildVersion: 10.0.20348.5386
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+已启动脚本，输出文件为 C:\Windows\Temp\oc-block5.log
+== BASE 30s
+T=1794619772 BASE | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage100 | fw=False ping226=来自 10.147.19.226 的回复: 字节=32 时间=10ms TTL=128
+T=1794619786 BASE | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage114 | fw=False ping226=来自 10.147.19.226 的回复: 字节=32 时间=14ms TTL=128
+T=1794619796 BASE | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage4 | fw=False ping226=来自 10.147.19.226 的回复: 字节=32 时间=95ms TTL=128
+== BLOCK1 45s soft (<= 2 lost ticks: must NOT demote)
+T=1794619807 BLOCK1 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage15 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619818 BLOCK1 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage26 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619828 BLOCK1 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage36 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619839 BLOCK1 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage47 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619849 BLOCK1 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage57 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+== RECOVER 120s
+T=1794619861 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage69 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619873 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage81 | fw=False ping226=来自 10.147.19.226 的回复: 字节=32 时间=431ms TTL=128
+T=1794619884 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage92 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619896 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage104 | fw=False ping226=来自 10.147.19.226 的回复: 字节=32 时间=11ms TTL=128
+T=1794619907 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:hub_relay@/hs- | vLkJ:wgage115 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619919 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:direct_pending@10.147.19.226:51820/hs- | vLkJ:wgage7 | QmAF:wgage9 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619931 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:direct_pending@10.147.19.226:51820/hs- | vLkJ:wgage19 | QmAF:wgage21 | fw=False ping226=
+T=1794619942 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:direct_pending@10.147.19.226:51820/hs- | vLkJ:wgage30 | QmAF:wgage32 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619954 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:direct_pending@10.147.19.226:51820/hs- | vLkJ:wgage42 | QmAF:wgage8 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619966 RECOVER | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:direct_pending@10.147.19.226:51820/hs- | vLkJ:wgage54 | QmAF:wgage20 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619978 RECOVER | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs32 | vLkJ:wgage66 | QmAF:wgage32 | JMrE:wgage4 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794619990 RECOVER | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs44 | vLkJ:wgage78 | QmAF:wgage44 | JMrE:wgage16 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+== BLOCK2 180s hard (>= 6 lost ticks: MUST demote)
+T=1794620002 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs56 | vLkJ:wgage90 | QmAF:wgage56 | JMrE:wgage28 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620012 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs66 | vLkJ:wgage100 | QmAF:wgage66 | JMrE:wgage38 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620023 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs77 | vLkJ:wgage111 | QmAF:wgage77 | JMrE:wgage3 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620033 BLOCK2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs87 | vLkJ:wgage1 | QmAF:wgage87 | JMrE:wgage13 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620044 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs24 | QmAF:p2p_direct@10.147.19.17:51820/hs98 | vLkJ:wgage12 | QmAF:wgage98 | JMrE:wgage24 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620055 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs35 | QmAF:p2p_direct@10.147.19.17:51820/hs109 | vLkJ:wgage23 | QmAF:wgage109 | JMrE:wgage35 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620065 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs45 | QmAF:p2p_direct@10.147.19.17:51820/hs119 | vLkJ:wgage33 | QmAF:wgage119 | JMrE:wgage45 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620076 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs56 | QmAF:p2p_direct@10.147.19.17:51820/hs130 | vLkJ:wgage44 | QmAF:wgage130 | JMrE:wgage56 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620086 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs66 | QmAF:p2p_direct@10.147.19.17:51820/hs140 | vLkJ:wgage54 | QmAF:wgage140 | JMrE:wgage66 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620097 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:p2p_direct@10.147.19.97:51821/hs77 | QmAF:p2p_direct@10.147.19.17:51820/hs151 | vLkJ:wgage65 | QmAF:wgage151 | JMrE:wgage5 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620108 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs162 | vLkJ:wgage76 | QmAF:wgage162 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620118 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs172 | vLkJ:wgage86 | QmAF:wgage172 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620129 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs183 | vLkJ:wgage97 | QmAF:wgage183 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620139 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs193 | vLkJ:wgage107 | QmAF:wgage9 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620150 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs204 | vLkJ:wgage118 | QmAF:wgage20 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620160 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs214 | vLkJ:wgage8 | QmAF:wgage30 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620171 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs41 | vLkJ:wgage19 | QmAF:wgage41 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620181 BLOCK2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs51 | vLkJ:wgage29 | QmAF:wgage51 | b6tx:wgage0 | fw=True ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+== RECOVER2 120s
+T=1794620193 RECOVER2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs63 | vLkJ:wgage41 | QmAF:wgage63 | b6tx:wgage12 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620205 RECOVER2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs75 | vLkJ:wgage53 | QmAF:wgage75 | b6tx:wgage24 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620217 RECOVER2 | b6tx:direct_pending@10.147.19.130:51820/hs- | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs87 | vLkJ:wgage65 | QmAF:wgage87 | b6tx:wgage36 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620229 RECOVER2 | b6tx:p2p_direct@10.147.19.130:51820/hs48 | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs99 | vLkJ:wgage77 | QmAF:wgage99 | b6tx:wgage48 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620241 RECOVER2 | b6tx:p2p_direct@10.147.19.130:51820/hs60 | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs111 | vLkJ:wgage89 | QmAF:wgage111 | b6tx:wgage60 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620253 RECOVER2 | b6tx:p2p_direct@10.147.19.130:51820/hs72 | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs123 | vLkJ:wgage101 | QmAF:wgage123 | b6tx:wgage72 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620265 RECOVER2 | b6tx:p2p_direct@10.147.19.130:51820/hs84 | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs135 | vLkJ:wgage113 | QmAF:wgage135 | b6tx:wgage84 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620277 RECOVER2 | b6tx:p2p_direct@10.147.19.130:51820/hs96 | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs147 | vLkJ:wgage5 | QmAF:wgage147 | b6tx:wgage96 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620289 RECOVER2 | b6tx:p2p_direct@10.147.19.130:51820/hs108 | JMrE:hub_relay@/hs- | QmAF:p2p_direct@10.147.19.17:51820/hs159 | vLkJ:wgage17 | QmAF:wgage159 | b6tx:wgage108 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620301 RECOVER2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.226:51820/hs171 | vLkJ:wgage29 | QmAF:wgage0 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620313 RECOVER2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.226:51820/hs183 | vLkJ:wgage41 | QmAF:wgage12 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+T=1794620325 RECOVER2 | b6tx:hub_relay@/hs- | JMrE:direct_pending@10.147.19.97:51821/hs- | QmAF:p2p_direct@10.147.19.226:51820/hs195 | vLkJ:wgage53 | QmAF:wgage24 | fw=False ping226=数据包: 已发送 = 1，已接收 = 0，丢失 = 1 (100% 丢失)，
+RULES_CLEAN
+BLOCK5_DONE
+**********************
+Windows PowerShell 脚本结束
+结束时间: 20261114093859
+**********************
+#####
+**********************
+Windows PowerShell 脚本开始
+开始时间: 20261114084721
+用户名: WORKGROUP\SYSTEM
+RunAs 用户: WORKGROUP\SYSTEM
+配置名称: 
+计算机: OPENCLAW (Microsoft Windows NT 10.0.20348.0)
+主机应用程序: powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\oc-up2.ps1
+进程 ID: 2340
+PSVersion: 5.1.20348.5386
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.20348.5386
+BuildVersion: 10.0.20348.5386
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+已启动脚本，输出文件为 C:\Windows\Temp\oc-up2.log
+== hash check
+MSI_SHA256=e9fc9ff0707b34021c985e7fb803df826cced728b2f4301c293c1eea4db4289e
+== resolve agent user profile from task principal
+TASK_USER=Administrator
+PROFILE=C:\Users\Administrator
+== stop task and processes
+== msiexec install
+MSIEXEC_RC=0
+== copy PF exe to user AppData
+PF_SHA256=0d42d5c1f17f8c3c2e8da459ab7129e85d4c9ba07c8c2008fde3a09ff252cf9a
+APP_SHA256=0d42d5c1f17f8c3c2e8da459ab7129e85d4c9ba07c8c2008fde3a09ff252cf9a
+== start task
+AGENT_PID=3284
+OC_UP_DONE
+**********************
+Windows PowerShell 脚本结束
+结束时间: 20261114084736
+**********************
+#####
+meshlet-agent 0.1.0
