@@ -88,7 +88,7 @@ opkg install meshlet-nightly-openwrt-app-meta.ipk      # 可选；连带装齐
 
 LuCI 在 **服务 → Meshlet 组网**：双角色设置页 + 状态页（服务状态、设备在线计数、`logread` 日志摘录，10 秒自动刷新）。设备计数需在 server 控制台签发 read scope 的 API token 并填入设置页 `api_token`，页面只显示脱敏前缀。LuCI 是运维面而非完整管理控制台——设备批准、revision、拓扑仍在 server 的 web 控制台操作（默认 `127.0.0.1:8080` 只绑回环，请改成 LAN 可达的 bind 或加反代）。
 
-server 角色在路由器上是可选的：x86_64 验收路由器（iStoreOS 24.10，1.6 GB 内存）实测，hub 开数据面空闲 RSS ~10.5 MB，agent ~6.4 MB。
+server 角色在路由器上是可选的：x86_64 验收路由器（iStoreOS 24.10，1.6 GB 内存）实测，hub 开数据面空闲 RSS ~10.7 MB，agent ~6.4 MB。
 
 ## Windows 支持
 
@@ -102,7 +102,7 @@ Windows 验收现状（2026-11-13，R-05/安装包/托盘/端到端 apply 已全
 
 - agent 数据面后端已按 ADR-008 接线（tunnel-only v1，`1324dd2`）：Windows 的 `SystemBackend` 已映射到真实 Windows 后端（隧道/路由/设备计划），R-05 三项真机验收（隧道生命周期、提权执行层、开机恢复）已于 2026-11-12 全过。NAT-bearing 计划仍按 ADR-008 显式拒绝。端到端真机 apply 走查已于 2026-11-13 通过（新二进制两轮真实 apply：隧道服务重装、路由重放、防火墙规则幂等收敛、ping 10.240.0.1 全程 8-9ms，见 `todo.md` #52）。
 - MSI 已入 nightly，安装包真机验收已通过（NIGHTLY-MSI-1，2026-11-13）。nightly 已附带 Windows agent+CLI+tray-host zip（`meshlet-nightly-windows-x86_64.zip`）与 `install.ps1` 一键安装（[安装方法见下](#在-windows-安装-agent)）。MSI 安装包为 `meshlet-nightly-windows-x86_64.msi`，由 cargo-wix 构建。该 MSI 把 server、agent、CLI 与 tray-host 打进一个包，含开始菜单项与卸载项。zip/install.ps1 真机验收已通过（AGENT-WIN-2，2026-10-31）；MSI 已于 2026-11-12 真机走查安装/卸载/运行（顺带发现并修复 2 个 CLI 缺陷，`6a9ec71`），含 `b988ed8` nightly 的复装确认已于 2026-11-13 通过（哈希校验下载、ARP 项、快捷方式、exe 集合、卸载清理、agent 连续性，见 `todo.md` NIGHTLY-MSI-1）。
-- Windows 托盘宿主已随包发布，真机验收已通过（AGENT-WIN-3，2026-11-13）。`apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`）。已随 nightly zip 发布；`install.ps1` 会把它装进 `%LOCALAPPDATA%\meshlet`、注册 HKCU 登录自启并默认启动（`-NoStartTray` 只跳过立即启动）。真机走查已验证：console 会话下图标状态色像素级命中（`NIM_ADD = 1`）、右键菜单双入口完整渲染、本地面板 HTTP 200。菜单分两个入口：**本地面板**（tray-host 自己在 `127.0.0.1` 上托管的只读页，读本机状态文件展示当前节点 / 直连节点 / 本地路由，**server 挂了也照样打开**）与**控制台(网页)**（打开 `server_url` 托管的控制台）。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知，但 Linux 侧尚无对应的桌面托盘宿主二进制。
+- Windows 托盘宿主已随包发布，真机验收已通过（AGENT-WIN-3，2026-11-13）。`apps/tray-host`（`meshlet-tray-host.exe`，Win32 `Shell_NotifyIcon` 薄封装）消费 agent 写出的四态状态 PNG（`TraySink`）。已随 nightly zip 发布；`install.ps1` 会把它装进 `%LOCALAPPDATA%\meshlet`、注册 HKCU 登录自启并默认启动（`-NoStartTray` 只跳过立即启动）。真机走查已验证：console 会话下图标状态色像素级命中（`NIM_ADD = 1`）、右键菜单双入口完整渲染、本地面板 HTTP 200。菜单分两个入口：**本地面板**（tray-host 自己在 `127.0.0.1` 上托管的只读页，读本机状态文件展示当前节点 / 直连节点 / 本地路由，**server 挂了也照样打开**）与**控制台(网页)**（打开 `server_url` 托管的控制台）。两者之上还有三行展示与一项可点击操作：设备名 + 虚拟 IP + 状态的首行、只读的**直连节点**子菜单（每个直连对端的 IP / 模式 / RTT）、可点击的**连接节点…**子菜单（每个中继候选点击后 spawn `meshlet-cli peer dial <node>`），以及一行 MCP 状态（`apps/tray-host/src/menu.rs`）。Linux 侧 agent 写同样的状态 PNG 并经 D-Bus 发桌面通知，但 Linux 侧尚无对应的桌面托盘宿主二进制。
 
 ### 在 Windows 安装 agent
 

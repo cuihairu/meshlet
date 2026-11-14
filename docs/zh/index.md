@@ -21,7 +21,7 @@ features:
     link: /zh/implementation/r04-linux-agent-e2e
     linkText: 验收记录
   - title: 没做到的不打勾
-    details: R-05 真机验收已于 2026-11-12 在 imac 上全过；端到端 apply 走查与 MSI/托盘真机验收已于 2026-11-13 通过；长期浸泡采集器 2026-10-24 起在跑，需要数周数据；尚无带日期的 release。TODO 里未完成项保持可见。
+    details: R-05 真机验收已于 2026-11-12 在 imac 上全过；端到端 apply 走查与 MSI/托盘真机验收已于 2026-11-13 通过；长期浸泡**当前无活跃观察窗**（首窗 2026-10-24 起，随 2026-10-30 决策 D6 拆掉的隔离 PVE 网格一起终止，其 39.4h 按 D7 只作历史证据、不折算进新窗口）；尚无带日期的 release。TODO 里未完成项保持可见。
     link: /zh/implementation/r07-deployment-acceptance
     linkText: 部署验收
 ---

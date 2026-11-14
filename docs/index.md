@@ -21,7 +21,7 @@ features:
     link: /implementation/r04-linux-agent-e2e
     linkText: Acceptance records
   - title: What is not done stays unchecked
-    details: R-05 real-machine acceptance passed on imac on 2026-11-12; the end-to-end apply walkthrough and the MSI/tray-host real-machine acceptance passed on 2026-11-13; the long-run soak collector started on 2026-10-24 and needs weeks of data, and no dated release exists yet. The TODO keeps the open item visible.
+    details: R-05 real-machine acceptance passed on imac on 2026-11-12; the end-to-end apply walkthrough and the MSI/tray-host real-machine acceptance passed on 2026-11-13; the long-run soak has no active observation window (the first one, opened on 2026-10-24, ended with the isolated PVE grid torn down on 2026-10-30 by decision D6, and its 39.4 h counts as historical evidence only), and no dated release exists yet. The TODO keeps the open item visible.
     link: /implementation/r07-deployment-acceptance
     linkText: Deployment acceptance
 ---
