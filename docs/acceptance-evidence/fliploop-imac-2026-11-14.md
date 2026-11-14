@@ -91,3 +91,22 @@ demote .49（handshake stale 243s）→09:35:07 promote .49（memory）→09:35:
 - `fliploop-imac-decisions-after-0935-2026-11-14.txt`（09:35Z 后至取样末）
 - switch-events 同窗 tail 已录入本文（imac direct-switch-events.json，与 decisions
   一一对应，kind=mode_flip）
+
+## 21:3x 检查点（巡检单 meshlet-nov14-2139，2026-11-14 21:39–21:44 CST）
+
+三机采样（imac/openclaw 直连 ZT 采到，未走隧道备路；coding-vm 本机台账）：
+
+- **JMrE（windows-desktop）环仍在续**（fliploop 自 08:40Z 起已 5h+）：imac
+  13:40:59Z demote `.97` → 13:43:14Z promote `180.152.54.66`；openclaw 同拍
+  13:42:00Z + 13:43:06Z 连续 promote `180.152.54.66`（pending 尝试）。
+- **FSaf（openclaw-win）在 imac 视角仍在续**：13:40:12Z demote `.49` →
+  13:42:31Z promote `.49` → 13:43:14Z probe（waiting handshake）。
+- **新况：openclaw-win 本体已漫游回家**——coding-vm 视角 openclaw-win
+  `p2p_direct @ 192.168.5.11:51820`（rtt=1，hs 13:42:45Z 新鲜；NAT 后的真 L2 面）
+  **稳定直连零翻转**——03:xx 纪要预言的「对端漫游回家解锁收益」几何条件已现。
+  但 **imac↔openclaw kernel 会话仍锚 ZT `.49`**（hs 13:43:47Z 新鲜）：openclaw
+  回家未自动传导到 imac 侧决策——imac 的记忆面/服务端候选表均无
+  192.168.5.11 面，**候选表纳管 roaming 面缺口（三选一之①）在此实锤再现**。
+- coding-vm↔imac 稳 `p2p_direct @ 192.168.5.117`（rtt≤1）；imac↔coding-vm 稳
+  `.188`——LAN 面对零翻转照旧。
+- 本机 agent 仍 2de57b1（无 agent-decisions.jsonl，台账口径）；无隧道残留。
