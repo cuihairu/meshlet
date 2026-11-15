@@ -324,10 +324,8 @@ recovery_confirmations = 5
     assert_eq!(c.dataplane.backoff.recovery_confirmations, 5);
 
     // 只给一项：其余保持默认。
-    let c = AgentConfig::from_toml(
-        "[dataplane]\n[dataplane.backoff]\nbackoff_base_ms = 45_000",
-    )
-    .unwrap();
+    let c = AgentConfig::from_toml("[dataplane]\n[dataplane.backoff]\nbackoff_base_ms = 45_000")
+        .unwrap();
     assert_eq!(c.dataplane.backoff.backoff_base_ms, 45_000);
     assert_eq!(c.dataplane.backoff.backoff_cap_ms, 900_000);
     assert_eq!(c.dataplane.backoff.recovery_confirmations, 3);
@@ -335,10 +333,8 @@ recovery_confirmations = 5
 
 #[test]
 fn agent_backoff_rejects_zero_base_and_cap_below_base() {
-    let err = AgentConfig::from_toml(
-        "[dataplane]\n[dataplane.backoff]\nbackoff_base_ms = 0",
-    )
-    .unwrap_err();
+    let err = AgentConfig::from_toml("[dataplane]\n[dataplane.backoff]\nbackoff_base_ms = 0")
+        .unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
     let err = AgentConfig::from_toml(
@@ -347,9 +343,8 @@ fn agent_backoff_rejects_zero_base_and_cap_below_base() {
     .unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
-    let err = AgentConfig::from_toml(
-        "[dataplane]\n[dataplane.backoff]\nrecovery_confirmations = 0",
-    )
-    .unwrap_err();
+    let err =
+        AgentConfig::from_toml("[dataplane]\n[dataplane.backoff]\nrecovery_confirmations = 0")
+            .unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 }

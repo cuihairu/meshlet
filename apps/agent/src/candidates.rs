@@ -141,11 +141,10 @@ impl CandidateTable {
 
     /// 回收不在候选集里的对端（撤销 / 下线 / 换段）。
     pub fn retain_peers(&mut self, wanted: &[PeerEndpoints]) {
-        let live: std::collections::BTreeSet<&str> = wanted
-            .iter()
-            .map(|p| p.public_key.as_str())
-            .collect();
-        self.entries.retain(|(key, _), _| live.contains(key.as_str()));
+        let live: std::collections::BTreeSet<&str> =
+            wanted.iter().map(|p| p.public_key.as_str()).collect();
+        self.entries
+            .retain(|(key, _), _| live.contains(key.as_str()));
     }
 
     /// 合并为有效候选集：服务端候选顺序在前（原序），表内新增面按
@@ -422,10 +421,6 @@ mod tests {
         assert!(!super::has_probe_healthy_face("pk", &faces, &healthy));
         // 别的 peer 的健康面 → 不放行。
         healthy.insert(("other".to_string(), face_a));
-        assert!(!super::has_probe_healthy_face(
-            "pk",
-            &faces,
-            &healthy
-        ));
+        assert!(!super::has_probe_healthy_face("pk", &faces, &healthy));
     }
 }

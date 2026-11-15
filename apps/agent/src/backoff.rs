@@ -174,7 +174,10 @@ mod tests {
         let mut b = backoff();
         b.on_demote("pk", 1_000);
         assert!(b.suppress_reason("pk", 1_000).is_some(), "suppressed now");
-        assert!(b.suppress_reason("pk", 30_999).is_some(), "still within 30s");
+        assert!(
+            b.suppress_reason("pk", 30_999).is_some(),
+            "still within 30s"
+        );
         assert!(
             b.suppress_reason("pk", 31_000).is_none(),
             "cooldown expired at base × 1"
@@ -193,7 +196,10 @@ mod tests {
             "reason counts consecutive demotes"
         );
         assert!(b.suppress_reason("pk", 5_000 + 60_000 - 1).is_some());
-        assert!(b.suppress_reason("pk", 5_000 + 60_000).is_none(), "2nd window = 60s");
+        assert!(
+            b.suppress_reason("pk", 5_000 + 60_000).is_none(),
+            "2nd window = 60s"
+        );
     }
 
     #[test]
@@ -201,13 +207,16 @@ mod tests {
         let mut b = backoff();
         b.on_demote("pk", 0);
         b.on_demote("pk", 1_000); // demotes=2，冷却 60s
-        // 2 轮健康（< confirmations=3）→ 仍抑制。
+                                  // 2 轮健康（< confirmations=3）→ 仍抑制。
         b.note_health("pk", true, 2_000);
         b.note_health("pk", true, 3_000);
         assert!(b.suppress_reason("pk", 2_000).is_some(), "not yet cleared");
         // 第 3 轮健康 → 整条清零：立即不再抑制，下次 demote 从 base 重来。
         b.note_health("pk", true, 4_000);
-        assert!(b.suppress_reason("pk", 4_000).is_none(), "cleared by 3 healthy rounds");
+        assert!(
+            b.suppress_reason("pk", 4_000).is_none(),
+            "cleared by 3 healthy rounds"
+        );
         assert!(b.is_empty(), "state fully removed");
         b.on_demote("pk", 5_000);
         assert!(b.suppress_reason("pk", 5_000 + 29_999).is_some());
@@ -247,7 +256,10 @@ mod tests {
         b.on_demote("pk-b", 0);
         b.retain(&["pk-a".to_string()]);
         assert!(b.suppress_reason("pk-a", 0).is_some());
-        assert!(b.suppress_reason("pk-b", 0).is_none(), "departed peer reclaimed");
+        assert!(
+            b.suppress_reason("pk-b", 0).is_none(),
+            "departed peer reclaimed"
+        );
     }
 
     #[test]

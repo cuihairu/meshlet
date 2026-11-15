@@ -141,10 +141,8 @@ impl super::Agent {
         // 证据，常不在服务端候选表）。灌入候选表（TTL 内有效）；新面出现即
         // 重合并 + 刷新探测缓存（探测线程一个周期内即采样新面）。hub peer
         // 与内核漂移 peer 不在候选集，不收。
-        let wanted_keys: std::collections::BTreeSet<&str> = wanted
-            .iter()
-            .map(|p| p.public_key.as_str())
-            .collect();
+        let wanted_keys: std::collections::BTreeSet<&str> =
+            wanted.iter().map(|p| p.public_key.as_str()).collect();
         if let Some(net) = &net {
             for wg_peer in &net.wg {
                 if !wanted_keys.contains(wg_peer.public_key.as_str()) {
@@ -227,9 +225,9 @@ impl super::Agent {
                     .is_some_and(|p| p.state == PeerLinkState::Relay)
             {
                 let faces = self.candidates.faces(&peer.public_key);
-                let healthy_face = faces.iter().find(|(c, _)| {
-                    healthy_faces.contains(&(peer.public_key.clone(), *c))
-                });
+                let healthy_face = faces
+                    .iter()
+                    .find(|(c, _)| healthy_faces.contains(&(peer.public_key.clone(), *c)));
                 match healthy_face {
                     Some((face, source)) if !suppress_promote.contains_key(&peer.public_key) => {
                         tracing::info!(
@@ -238,8 +236,7 @@ impl super::Agent {
                             source = source.as_str(),
                             "recovery gate bypassed: probe-healthy face in candidate table"
                         );
-                        gate_bypassed
-                            .push((peer.public_key.clone(), face.socket().to_string()));
+                        gate_bypassed.push((peer.public_key.clone(), face.socket().to_string()));
                     }
                     _ => {
                         // 已回中继且无健康面证据（或退避抑制中）：保持中继

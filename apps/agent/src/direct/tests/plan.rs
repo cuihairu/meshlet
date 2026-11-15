@@ -249,7 +249,7 @@ fn recovery_hold_keeps_relay_until_gate_is_ready() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &hold,
-    &BTreeMap::new(),
+        &BTreeMap::new(),
     );
     assert!(
         updates.is_empty(),
@@ -405,7 +405,7 @@ fn sel003_fallback_and_recovery_timeline() {
             &degraded_map,
             &BTreeSet::new(),
             &hold,
-        &BTreeMap::new(),
+            &BTreeMap::new(),
         )
     }
 
@@ -616,7 +616,7 @@ fn hold_relay_preserves_remembered_face() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &hold,
-    &BTreeMap::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty(), "held peer stays relay: {updates:?}");
     assert_eq!(
@@ -847,7 +847,7 @@ fn hold_relay_records_the_recovery_gate_verdict() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &hold,
-    &BTreeMap::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty());
     assert_eq!(records.len(), 1);
@@ -1167,8 +1167,7 @@ fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
     // 第 2 轮：Relay、恢复门放行（FLIP-001 bypass 语义 = hold_relay 空）；
     // face_a 仍劣化（unhealthy_faces）→ 记忆面被滤 → healthy 滤后候选只剩
     // face_b → promote 落在新面（不经「先 demote 再等恢复门」旧路径）。
-    let unhealthy: BTreeSet<(String, EndpointCandidate)> =
-        [("dev-b".to_string(), face_a)].into();
+    let unhealthy: BTreeSet<(String, EndpointCandidate)> = [("dev-b".to_string(), face_a)].into();
     let (updates, records) = plan_updates_logged(
         &effective,
         &my_lan,
