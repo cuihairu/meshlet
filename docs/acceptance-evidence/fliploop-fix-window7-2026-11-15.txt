@@ -1,0 +1,48 @@
+=== fliploop 修后窗检查点 #7 raw（2026-11-16 01:11:50 CST / 2026-11-15T17:11:50Z 实测取证；单据标题 01:09 差 3min 按实测）===
+window start 2026-11-15T08:57:32Z; age at capture 8h14m18s (8.24h/24h); cp6 capture was 16:24:07Z -> increment window ~48min
+openclaw SSH RECOVERED this round (cp6 timed out; first-try OK now, no leave-empty needed)
+files: imac agent-decisions.jsonl 1137736B / direct-switch-events.json 540561B / direct-peers.json 722B
+       oc   agent-decisions.jsonl 1069540B / direct-switch-events.json 477040B / direct-peers.json 634B
+
+IMAC FULLWIN total=783 (file total 3190) | SINCE_CP6 total=82 (~48min)
+  FULLWIN windows-desktop(JMrE): promote 167 defer 151 hold_relay 112 demote 85 probe 59
+         openclaw-win(FSaf): promote 94 probe 65 demote 50
+  cycles: JMrE n=85 median 0.82min (0.72-14.48) | FSaf n=49 median 2.20min (0.72-171.90)
+  SINCE_CP6 JMrE: promote 14 demote 7 hold_relay 7 probe 4  <- SEGMENT DEFER = 0 (fullwin 151 unchanged, consecutive stays 10)
+  SINCE_CP6 FSaf: promote 24 probe 14 demote 12
+  cycles SINCE_CP6: JMrE n=6 median 3.34min (0.77-5.25) | FSaf n=11 median 0.83min (0.75-6.20)
+  FLIP-002 defer: fullwin 151 (UNCHANGED this segment — promotion ran without backoff interception whole segment), max consecutive still 10
+  FLIP-001 bypass: fullwin JMrE 31 (+4) / FSaf 44 (+14)
+  endpoints fullwin: .97 x109 (+10), 180.152.54.66 x58 (+4), .11:51820 x35, 10.147.19.49 x44 (+12), .11:44249 x15 (+12 NAT-EPHEMERAL FACE RESURRECTED)
+  switch FULLWIN=402 flip=396 roam=6 (unchanged; kernel face drifts still emit no roam events)
+  LAST: FSaf 17:11:39Z promote verified @192.168.5.11:44249 (NAT rebinding re-admitted the ephemeral face, verified again)
+        JMrE 17:10:11Z promote verified @10.147.19.97 -> live @.97 fresh hs=17:10:27Z (dispatched==kernel this time)
+  LIVE (17:11:50Z): coding-vm p2p_direct @192.168.5.188 fresh hs=17:11:26Z
+    JMrE p2p_direct @10.147.19.97 fresh hs=17:10:27Z | FSaf p2p_direct @10.147.19.49 fresh hs=17:10:58Z
+    -> THREE-PAIRS-ALL-DIRECT persists from cp6 capture (~47min later), all handshake_fresh
+  FSaf segment churn: 24 promote/12 demote with faces flipping .49 <-> :44249 (router NAT rebinding cycle), 14 bypass promotes
+
+OC FULLWIN total=665 (file total 3049) | SINCE_CP6 total=82 (~48min)
+  FULLWIN windows-desktop(wd): defer 272 promote 50 hold_relay 43 demote 28 probe 24
+         imac: promote 84 demote 44 probe 42 hold_relay 10 defer 1 | coding-vm: promote 32 demote 17 probe 17
+  cycles: wd n=27 median 2.15min | imac n=43 median 2.15min (max 86.15) | coding-vm n=16 median 10.84min
+  SINCE_CP6: wd defer 27 promote 6 hold 4 demote 2 probe 1 (max consecutive 28, cap region continues)
+             imac promote 16 demote 9 probe 8 (cycles n=8 median 2.83min) | coding-vm promote 4 demote 3 probe 2
+  FLIP-001 bypass: fullwin imac 36 (+11) / coding-vm 16 (+5)
+  endpoints fullwin (imac peer): .17 x55, 180.152.54.66 x37 (wd), .130 x26 (coding-vm), .226 x21, .97 x13 (wd), .117 x8, .188 x6
+  switch FULLWIN=265 flip=255 roam=10  <- +4 NEW ROAMS this segment:
+    #8 16:03:53Z imac .117 -> .226 score 65 | #9 16:22:22Z coding-vm .130 -> 192.168.5.188 score 7 beats 12 (FIRST coding-vm roam, crossed to LAN face)
+    #10 16:42:05Z imac .226 -> .17 score 17.5 beats 55
+  LAST at capture (17:11:33Z, same second): coding-vm demote sel003 -> hub_relay | imac demote sel003 -> hub_relay | wd promote verified @180.152
+  LIVE OC: coding-vm hub_relay endpoint empty | imac hub_relay endpoint empty | wd p2p_direct @.97 fresh hs=17:11:25Z
+    -> OC-view direct broke for coding-vm & imac peer at capture instant (same-second sel003 demotes; WD view dispatched 180.152 vs kernel .97 = drift pattern REPEATS on OC view)
+
+reason set: unchanged (all pre-existing or fix-expected), NO unknown new reason; endpoint face SET unchanged (:44249 is a resurrected existing face, not new)
+
+key facts (not judgments):
+- pending obs #1 (180.152 drift pattern): dispatched 180.152 verified but kernel at .97 REPEATS on OC view at capture (17:11:33Z); imac-view last cycle had dispatched==kernel (.97). Face continues participating (+4 imac view, +37 cumulative on OC view x37 wd)
+- pending obs #2 (three-pairs-all-direct persistence): PERSISTED — imac view three pairs all p2p_direct handshake_fresh at capture, ~47min after cp6's all-direct snapshot
+- JMrE promotion ran the whole segment without backoff interception (defer 0, consecutive frozen at 10) — cycle cadence slowed (segment cycles median 3.34min vs fullwin 0.82min)
+- FSaf churn accelerated (24 promote/12 demote in segment, bypass +14) around router NAT rebinding: faces flip .49 <-> :44249; the ephemeral face got re-admitted and re-verified at 17:11:39Z
+- OC view: imac peer & coding-vm went direct->hub_relay at capture second (same-second sel003); coding-vm made its FIRST roam (to LAN face 192.168.5.188) at 16:22:22Z
+- zero new reasons, zero genuinely-new endpoint faces

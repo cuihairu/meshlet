@@ -271,6 +271,52 @@ JMrE 16:20:41Z verified——取证时两对均为 verified 后 <5min 的直连�
 （非判定）：JMrE 段内 demote 12/70min ≈10.3 次/h（cp5 段 ≈3.7、全窗 ≈10.5、
 修前 33 次/h）；末段环仍 ~44s 快速往复（median 0.75min）。
 
+## 01:0x 检查点（2026-11-16 01:11 CST / 2026-11-15T17:11:50Z 实测，巡检单 fliploop-fixcp7-1121）
+
+**纯取证检查点 #7，窗龄 8.24h/24h——禁中途达标判定、禁外推**（单据标题 01:09
+与实测 01:11 差 3min）。openclaw SSH 本轮**恢复顺通**（cp6 超时后首试即通），
+双机三文件齐取（raw `fliploop-fix-window7-2026-11-15.txt`）。
+
+**挂起观测点核验**：①**`180.152.54.66` 公网面漂移模式延续**——OC 视末拍
+17:11:33Z wd promote verified @ `180.152` → live @ `.97` fresh（下发≠内核
+在 OC 视再现）；imac 视末拍 verified @ `.97` → live @ `.97`（下发=内核一致，
+cp6 末拍漂移态未延续）。公网面持续参选（imac 视 ×54→×58 段内 +4；OC 视 wd
+×37）。②**三对全直连延续**：cp6 取证时三对 p2p_direct 的态在 ~47min 后的
+cp7 取证时**仍全直连**（coding-vm hs=17:11:26Z / JMrE @ `.97`
+hs=17:10:27Z / FSaf @ `.49` hs=17:10:58Z 全 fresh）。③**`:44249` NAT 临时
+端口面复活**（cp6 记录其消亡后）：路由器 NAT 重绑定重新给出临时端口——imac
+视 ×3→×15（段内 +12），FSaf 末拍 17:11:39Z **promote verified @ `:44249`**
+再入并再 verified；FSaf 段内 `.49`↔`:44249` 高频翻转（promote 24/demote
+12/probe 14，bypass +14，cycles n=11 median 0.83min）。
+
+**增量**（08:57:32Z 起 8.24h；cp6 后增量窗约 48min）：imac 全窗 783 决策
+（JMrE promote 167/defer 151/hold 112/demote 85/probe 59；FSaf promote 94/
+demote 50/probe 65）；OC 全窗 665（wd **defer 272**/promote 50/demote 28；
+imac peer promote 84/demote 44；coding-vm 66）。周期中位：imac JMrE 0.82min
+（n=85，max 14.48min 新长周期）/ FSaf 2.20min（n=49）；OC wd 2.15min（n=27）/
+imac 2.15min（n=43）/ coding-vm 10.84min（n=16）。cp6 后增量：imac 82 条
+（JMrE promote 14/demote 7/hold 7/probe 4——**段内 defer=0，全窗 151 不变、
+连击冻结在 10**，promote 整段未被退避拦截，cycles n=6 median 3.34min 比全窗
+0.82min 慢；FSaf promote 24/demote 12）；OC 82 条（wd defer 27/promote 6/
+demote 2——连击升至 **28** cap 区持续；imac peer promote 16/demote 9；
+coding-vm promote 4/demote 3）。段内 bypass：imac JMrE +4/FSaf +14；OC imac
+peer +11/coding-vm +5。
+
+**切换闸**：imac 全窗 402=396 flip+6 roam（零新）；OC 265=255 flip+**10
+roam（段内 +4）**——#8 16:03:53Z imac peer `.117`→`.226` score 65；
+**#9 16:22:22Z coding-vm `.130`→`192.168.5.188` score 7 beats 12
+（coding-vm 首条 roam，跨到 LAN 面）**；#10 16:42:05Z imac peer `.226`→
+`.17` score 17.5 beats 55。端点面集无新面（`:44249` 为复活的存量面非新）；
+reason 全集不变，**无未知新 reason**。
+
+**实况快照**（17:11:50Z）：imac 视三对全 p2p_direct fresh（见挂起观测点②）；
+**OC 视取证瞬间直连断裂**——17:11:33Z 同秒 sel003 demote 使 coding-vm 与
+imac peer 双双回 hub_relay（wd 仍 p2p_direct @ `.97` fresh hs=17:11:25Z），
+OC 视 coding-vm @ `192.168.5.188`、imac peer @ `.226` 的直连在取证秒被打回
+（后续是否恢复未观测）。率事实（非判定）：JMrE 段内 demote 7/48min
+≈8.75 次/h（cp6 段 ≈10.3、全窗 ≈10.3、修前 33 次/h）；wd 段内 2/48min
+≈2.5 次/h。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：
