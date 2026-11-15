@@ -1,0 +1,43 @@
+decisions total=2296
+in-window (>= 2026-11-14T07:19:00+00:00): 1794, no-ts: 0
+JMrE in-window decisions: 1388 by action: {'demote': 269, 'defer': 1, 'hold_relay': 523, 'promote': 530, 'probe': 65}
+    523  recovery gate: not yet N consecutive healthy rounds
+    263  sel003 degraded: probe window (consecutive-lost / median-rtt gate)
+    262  pending verified: fresh handshake (probe Healthy)
+    150  promote attempt via memory face (last_direct) (probe Unhealthy)
+    118  promote attempt via candidate table (probe Unhealthy)
+     36  waiting for handshake (attempt 2)
+     29  waiting for handshake (attempt 3)
+      6  pending attempts exhausted after 3 rounds (probe Unknown)
+      1  promote deferred: candidate face degraded (probe window)
+
+switch events total=1311
+by kind: {'endpoint_roam': 5, 'mode_flip': 1306}
+switch in-window: 1022
+in-window by kind: {'mode_flip': 1021, 'endpoint_roam': 1}
+JMrE mode_flip in-window: 799
+promote->demote cycles: 262
+cycle minutes: median=1.48 min=0.72 max=22.37
+first 3 pairs: [('2026-11-14T07:22:21+00:00', '2026-11-14T07:23:50+00:00'), ('2026-11-14T07:26:48+00:00', '2026-11-14T07:27:39+00:00'), ('2026-11-14T07:30:41+00:00', '2026-11-14T07:31:27+00:00')]
+last 3 pairs: [('2026-11-15T07:00:08+00:00', '2026-11-15T07:11:19+00:00'), ('2026-11-15T07:14:19+00:00', '2026-11-15T07:17:23+00:00'), ('2026-11-15T07:20:21+00:00', '2026-11-15T07:21:07+00:00')]
+last JMrE flip: 2026-11-15T07:21:07+00:00 p2p_direct->hub_relay reason=sel003 degraded: probe window (consecutive-lost / median-rtt
+last JMrE decision: 2026-11-15T07:21:07+00:00 demote sel003 degraded: probe window (consecutive-lost / median-rtt gate)
+
+FSaf in-window decisions: 406
+FSaf switch in-window: 223 by kind: {'mode_flip': 222, 'endpoint_roam': 1}
+  2026-11-15T06:50:21+00:00 hub_relay->direct_pending promote attempt via memory face (last_direct) (pro
+  2026-11-15T06:51:07+00:00 direct_pending->p2p_direct pending verified: fresh handshake (probe Healthy)
+  2026-11-15T07:17:23+00:00 p2p_direct->hub_relay sel003 degraded: probe window (consecutive-lost / 
+  2026-11-15T07:19:35+00:00 hub_relay->direct_pending promote attempt via memory face (last_direct) (pro
+  2026-11-15T07:20:21+00:00 direct_pending->p2p_direct pending verified: fresh handshake (probe Healthy)
+ROAM in-window: 2026-11-14T23:04:09+00:00 {"public_key": "FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=", "from": "10.147.19.49:51820", "to": "192.168.36.153:51820", "reason": "score 10.5 beats current 27.5 by >= 30% for 3 consecutive samples", "at_ms": "1794697449600", "ts": "2026-11-14T23:04:09Z"}
+roam total(all-time)=5
+PROMOTE 2026-11-14T07:21:34+00:00 probe_window=None ep=10.147.19.97:51821
+PROMOTE 2026-11-14T07:22:21+00:00 probe_window=None ep=10.147.19.97:51821
+PROMOTE 2026-11-14T07:26:03+00:00 probe_window=None ep=10.147.19.97:51821
+PROMOTE 2026-11-14T07:26:48+00:00 probe_window=None ep=10.147.19.97:51821
+PROMOTE 2026-11-14T07:29:56+00:00 probe_window=None ep=10.147.19.97:51821
+JMrE flip endpoints (from/to counts):
+    537  hub_relay
+    536  direct_pending
+    525  p2p_direct
