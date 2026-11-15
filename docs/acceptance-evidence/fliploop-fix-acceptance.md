@@ -183,6 +183,48 @@ rtt_source=probe_failed 但握手新鲜）、wd hub_relay。三对直连（FSaf�
 （2.25min）——环仍在但段内 63 条中 37 defer（59%）+6 hold，promote 尝试被
 退避拉稀。
 
+## 23:1x 检查点（2026-11-15 23:14 CST / 15:14:06Z 实测，巡检单 fliploop-fixcp5-1120）
+
+**纯取证检查点 #5，窗龄 6.28h/24h——禁中途达标判定、禁外推**（单据标题 23:13
+与实测 23:14 差 1min）。openclaw ZT SSH 首试即通，双机三文件齐取（raw
+`fliploop-fix-window5-2026-11-15.txt`）。
+
+**增量**（08:57:32Z 起 6.28h；cp4 后增量窗约 49min）：imac 全窗 613 决策
+（JMrE defer 133/promote 128/hold 89/demote 66/probe 46；FSaf promote 66/
+demote 36/probe 49——**13:23:30Z verified 后持续零决策**）；OC 全窗 493
+（wd **defer 201**/promote 37/hold 33/demote 22；imac peer promote 62/
+demote 32；coding-vm 45）。周期中位：imac JMrE 0.82min（n=66）/ FSaf
+2.20min（n=35）；OC wd 2.18min（n=21）/ imac 2.07min（n=31，max 86.15min
+=13:22:48Z verified→14:48:57Z demote 的长稳周期）/ coding-vm 10.38min
+（n=10）。cp4 后增量：imac 66 条（JMrE **defer 51**/promote 6/hold 6/
+demote **3**；FSaf 零）；OC 54 条（wd defer 35/demote 2；imac peer demote
+1/promote 2；coding-vm promote 2/demote 1）。**FLIP-002**：imac 视连续
+demote 升至 **9**（cp4 为 7）、OC 视升至 **22**（cp4 为 20）——末拍
+15:13:37Z cooling 仅余 **135s**（cap 窗将尽，下次 promote 尝试在即，结果
+未观测）；段内 defer 占比 imac 视 51/66=77%（cp4 段 59%），连续 defer 流
+14:25:37Z→14:30:52Z+ 后静默。**段内 bypass**：imac 机 0；OC coding-vm 1
+（14:45:47Z demote→14:46:49Z bypass promote→14:47:51Z verified @ `.130`
+稳直连——恢复路径工作正常）。
+
+**切换闸与新面**：imac 全窗 302=296 flip+6 roam（与 cp3/cp4 持平，13:00:39Z
+后零新）；OC 193=186 flip+**7 roam**——**新增第 7 条 14:47:51Z imac peer
+`.117`→`.226` score 104.5**（SEL-002 评分合法切换），围绕它的段内小环：
+roam→14:48:57Z demote→hold×2→14:52:07Z promote→**14:53:12Z verified @
+`.117`（回 LAN 面）**→取证时 21min 静默稳直连。端点面集与 cp4 完全一致
+（`:44249` ×3、`.17` ×40 等），**零新面**；reason 全集不变，**无未知新
+reason**。
+
+**实况快照与面漂移延续**（15:14Z）：imac——coding-vm p2p_direct @
+`192.168.5.188` fresh、**FSaf p2p_direct @ `192.168.5.11:44249` fresh
+hs=15:14:17Z——cp3 verified 后 111min 零决策稳直连，下发面=内核面跨
+cp4/cp5 持续一致**；JMrE hub_relay（取证时 hold_relay 换挡抑制中）。
+OC——coding-vm @ `.130` fresh、imac peer @ `.117` hs=15:13:26Z
+（probe_failed 但握手新鲜）、wd hub_relay（defer 22 连续 cooling 135s）。
+率事实（非判定）：JMrE 段内 demote imac 视 3/49min ≈3.7 次/h（cp4 段
+≈6.1/h、全窗 ≈10.5/h、修前 33 次/h）、OC 视 2/49min ≈2.4 次/h（cp4 段
+≈3.7/h）——压稀趋势在段间延续；末段 JMrE 环仍 ~44s 快速往复但仅 3 次
+（n=3 median 0.73min）。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：

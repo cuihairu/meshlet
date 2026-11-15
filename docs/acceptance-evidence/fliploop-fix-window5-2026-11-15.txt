@@ -1,0 +1,49 @@
+=== fliploop 修后窗检查点 #5 raw（2026-11-15 23:14 CST / 15:14:06Z 实测取证；单据标题 23:13 差 1min）===
+window start 2026-11-15T08:57:32Z; age at capture 6h16m34s (6.28h/24h); cp4 capture was 14:25:29Z -> increment window ~49min (last record 15:14:28Z)
+openclaw ZT SSH reachable on first try (no retry needed)
+files: imac agent-decisions.jsonl 1075200B / direct-switch-events.json 510036B / direct-peers.json 684B
+       oc   agent-decisions.jsonl 1007016B / direct-switch-events.json 455224B / direct-peers.json 674B
+
+IMAC FULLWIN total=613 (file total 3020) | SINCE_CP4 total=66
+  FULLWIN windows-desktop(JMrE): defer 133 promote 128 hold_relay 89 demote 66 probe 46
+         openclaw-win(FSaf): promote 66 probe 49 demote 36 (ZERO decisions since 13:23:30Z verified)
+  cycles: JMrE n=66 median 0.82min (0.72-6.03) | FSaf n=35 median 2.20min
+  SINCE_CP4 JMrE: defer 51 promote 6 hold_relay 6 demote 3
+  cycles SINCE_CP4: JMrE n=3 median 0.73min (0.72-0.82)
+  FLIP-002 defer: fullwin 133, max consecutive 9 (cp4 was 7)
+  FLIP-001 bypass: fullwin JMrE 23 / FSaf 30 (UNCHANGED from cp4); SINCE_CP4 bypass = 0
+  endpoints fullwin: .97 x85, 180.152.54.66 x43, .11:51820 x35, 10.147.19.49 x28, .11:44249 x3 (unchanged set, no new face)
+  switch FULLWIN=302 flip=296 roam=6 (same 6 as cp3/cp4; zero new roam after 13:00:39Z)
+  LAST: FSaf 13:23:30Z verified @.11:44249 (111min quiet at capture); JMrE 15:14:28Z hold_relay (recovery gate — suppressed at capture, NOT flipping)
+  LIVE: coding-vm p2p_direct @192.168.5.188 fresh hs=15:13:12Z
+        FSaf p2p_direct @192.168.5.11:44249 fresh hs=15:14:17Z  <- 111min stable direct, dispatched==kernel face persists
+        JMrE hub_relay endpoint empty
+
+OC FULLWIN total=493 (file total 2877) | SINCE_CP4 total=54
+  FULLWIN windows-desktop(wd): defer 201 promote 37 hold_relay 33 demote 22 probe 19
+         imac: promote 62 demote 32 probe 30 hold_relay 10 defer 1 | coding-vm: promote 22 probe 12 demote 11
+  cycles: wd n=21 median 2.18min | imac n=31 median 2.07min (1.02-86.15) | coding-vm n=10 median 10.38min
+  SINCE_CP4: wd defer 35 promote 3 probe 3 demote 2 hold_relay 2; imac hold 2 promote 2 demote 1; coding-vm promote 2 probe 1 demote 1
+  cycles SINCE_CP4: wd n=2 median 2.10min
+  FLIP-002 defer: fullwin wd 201 + imac 1, max consecutive 22 (cp4 was 20; LAST 15:13:37Z defer 22 consecutive cooling 135s more — cap window nearly elapsed at capture)
+  FLIP-001 bypass: fullwin imac 25 (unchanged) / coding-vm 11 (+1: 14:46:49Z bypass promote after 14:45:47 demote); SINCE_CP4 bypass = coding-vm 1 only
+  endpoints: same set as cp4 (no new face): .17 x40, 180.152.54.66 x27 (wd), .130 x20, .226 x14, .97 x10 (wd), .117 x8, .188 x2
+  switch FULLWIN=193 flip=186 roam=7  <- NEW 7th roam: 14:47:51Z imac peer 192.168.5.117 -> 10.147.19.226 score 104.5 (SEL-002 legal)
+           prior 6 unchanged; imac-machine roam count stays 6
+  LAST: coding-vm 14:47:51Z verified @.130; imac peer 14:53:12Z verified @192.168.5.117 (21min quiet at capture); wd 15:13:37Z defer (22 consecutive)
+  segment timeline imac peer: 14:47:51 roam .117->.226 | 14:48:57 demote (off .226) | 14:50-14:51 hold x2 | 14:52:07 promote | 14:53:12 verified @.117 (back to LAN face)
+  LIVE: coding-vm p2p_direct @.130 fresh hs=15:11:34Z
+        imac p2p_direct @192.168.5.117:51820 hs=15:13:26Z (rtt_source=probe_failed, handshake fresh)
+        wd hub_relay endpoint empty
+
+reason set (FULLWIN both machines): demote backoff defer / pending verified / sel003 degraded / recovery gate hold /
+  memory face promote / bypass promote / candidate table promote / waiting for handshake / pending attempts exhausted /
+  handshake stale — all pre-existing or fix-expected, NO unknown new reason
+
+key facts (not judgments):
+- FSaf: verified 13:23:30Z -> 111min ZERO decisions, live fresh at 15:14:17Z — face-drift convergence (dispatched==kernel) PERSISTS across cp4/cp5
+- JMrE demote rate keeps dropping: segment 3/49min ~=3.7/h imac-view (cp4 segment ~=6.1/h, fullwin ~=10.5/h, pre-fix 33/h); OC wd-view 2/49min ~=2.4/h (cp4 segment ~=3.7/h)
+- defer share of JMrE segment traffic: imac-view 51/66 = 77% (cp4 segment 59%) — suppression dominates; continuous defer stream 14:25:37Z->14:30:52Z+ then quiet
+- backoff: imac-view consecutive 9 cooling ~cap; OC-view consecutive 22 cooling 135s at capture (cap window nearly over — next promote attempt imminent, outcome unobserved)
+- one bypass in segment (OC coding-vm 14:46:49Z) — recovery path works; coding-vm re-verified @.130 14:47:51Z stable
+- segment has 1 new roam (OC imac peer .117->.226 14:47:51Z) and a small cycle around it: roam -> demote 14:48:57 -> hold x2 -> promote -> re-verified @.117 14:53:12Z -> 21min quiet at capture
