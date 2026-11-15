@@ -1,0 +1,48 @@
+=== fliploop 修后窗检查点 #4 raw（2026-11-15 22:25 CST / 14:25:29Z 实测取证；单据标题 22:22 差 3min 按实测）===
+window start 2026-11-15T08:57:32Z; age at capture 5h27m57s (5.46h/24h); cp3 capture was 13:36:48Z -> increment window ~49min (last record 14:25:37Z)
+openclaw ZT SSH reachable on first try (no No-route-to-host; no retry needed)
+files: imac agent-decisions.jsonl 1051936B / direct-switch-events.json 507300B / direct-peers.json 684B
+       oc   agent-decisions.jsonl 987723B / direct-switch-events.json 451627B / direct-peers.json 674B
+
+IMAC FULLWIN total=548 (file total 2955) | SINCE_CP3 total=63
+  FULLWIN windows-desktop(JMrE): promote 122 hold_relay 83 defer 83 demote 63 probe 46
+         openclaw-win(FSaf): promote 66 probe 49 demote 36
+  cycles: JMrE n=63 median 0.83min (0.72-6.03) | FSaf n=35 median 2.20min (0.72-52.57)
+  SINCE_CP3 JMrE: defer 37 probe 8 promote 7 hold_relay 6 demote 5 | FSaf: ZERO decisions since 13:23:30Z verified (stable direct)
+  cycles SINCE_CP3: JMrE n=5 median 2.25min (0.78-3.02)
+  FLIP-002 defer: fullwin 83, max consecutive 7 (LAST 14:25:37Z defer: 7 consecutive, cooling 723s more ~= cap region)
+  FLIP-001 bypass: fullwin JMrE 23 / FSaf 30; SINCE_CP3 bypass = 0 (JMrE faces probe-unhealthy all segment; FSaf already stable direct, no bypass needed)
+  promote/defer endpoints fullwin: .97 x85, 180.152.54.66:51821 x37, 192.168.5.11:51820 x35, 10.147.19.49:51820 x28, 192.168.5.11:44249 x3
+  switch FULLWIN=293 flip=287 roam=6 (same 6 roams as cp3; ZERO new roam after 13:00:39Z)
+  LAST: FSaf 13:23:30Z promote verified @192.168.5.11:44249 (62min quiet after); JMrE 14:25:37Z defer (7 consecutive, cooling 723s)
+  LIVE: coding-vm p2p_direct @192.168.5.188:51820 handshake_fresh hs=14:24:34Z
+        FSaf p2p_direct @192.168.5.11:44249 handshake_fresh hs=14:25:08Z  <- 62min stable direct after verified, dispatched==kernel face persists
+        JMrE hub_relay endpoint empty (= cooling in backoff)
+
+OC FULLWIN total=439 (file total 2823) | SINCE_CP3 total=38
+  FULLWIN windows-desktop(wd=JMrE): defer 166 promote 34 hold_relay 31 demote 20 probe 16
+         imac: promote 60 demote 31 probe 30 hold_relay 8 defer 1 | coding-vm: promote 20 probe 11 demote 10 hold_relay 1
+  cycles: wd n=19 median 2.18min (1.07-8.98) | imac n=30 median 1.64min (1.02-49.33) | coding-vm n=9 median 9.97min (1.08-105.80)
+  SINCE_CP3 wd: defer 24 promote 5 hold_relay 4 demote 3 probe 2 | cycles n=3 median 3.37min (1.08-7.80)
+  FLIP-002 defer: fullwin wd 166 + imac 1, max consecutive 20 (LAST 14:25:15Z defer: 20 consecutive, cooling 777s; delay(20)=30s*2^19 far beyond 15min cap -> pinned 900s)
+  FLIP-001 bypass: fullwin imac 25 / coding-vm 10; SINCE_CP3 bypass = 0
+  endpoints fullwin (imac peer): 10.147.19.17 x40, 180.152.54.66 x26 (wd), .130 x18 (coding-vm), .226 x14, .97 x8 (wd), 192.168.5.117 x6, .188 x2
+  switch FULLWIN=181 flip=175 roam=6 (same 6 as cp3; ZERO new roam after 13:27:06Z)
+  LAST: imac peer 13:22:48Z verified @192.168.5.117 (63min quiet after); coding-vm 13:27:06Z verified @.130 (58min quiet); wd 14:25:15Z defer (20 consecutive)
+  LIVE: coding-vm p2p_direct @10.147.19.130:51820 fresh hs=14:24:37Z
+        imac p2p_direct @192.168.5.117:51820 hs=14:25:08Z (rtt_source=probe_failed but handshake fresh)
+        wd hub_relay endpoint empty
+
+reason set (FULLWIN, both machines, all heads): pending verified: fresh handshake / sel003 degraded: probe window /
+  recovery gate: not yet N consecutive healthy rounds / promote deferred: demote backoff (FLIP-002) /
+  promote attempt via memory face / recovery gate bypassed: face probe-healthy (FLIP-001) /
+  promote attempt via candidate table / waiting for handshake / pending attempts exhausted after 3 rounds /
+  handshake stale beyond health window — all pre-existing or fix-expected signatures, NO unknown new reason
+
+key facts (not judgments):
+- FSaf: verified @ .11:44249 at 13:23:30Z -> 62min ZERO decisions, live p2p_direct handshake_fresh at capture — cp3 face-drift convergence (dispatched==kernel) PERSISTS
+- OC imac peer: verified @ .117 at 13:22:48Z -> 63min quiet, live fresh; coding-vm stable direct both views
+- JMrE ring persists but compressed by backoff: segment demote 5/49min ~=6.1/h imac-view (cp3 segment ~=10/h, fullwin ~=11.5/h, pre-fix 33/h); OC wd-view 3/49min ~=3.7/h
+- promote attempts sparse: imac JMrE 63 segment events = 37 defer (59%) + 6 hold + 7 promote; last cycle 14:20:24Z promote -> 14:22:39Z demote (2.25min)
+- backoff pinned at cap on both views: imac-view 7 consecutive cooling 723s; OC-view 20 consecutive cooling 777s (delay far beyond 900s cap)
+- segment: zero roam, zero new endpoint faces, zero bypass, zero unknown reasons

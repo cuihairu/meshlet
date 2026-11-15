@@ -145,6 +145,44 @@ handshake_fresh**（verified 后 ≥14min 稳直连）、JMrE hub_relay（endpoi
 verified 距取证 ≥14min 未翻）。率事实（非判定）：imac JMrE cp2 后增量 demote
 8/48min ≈10 次/h（全窗 58/4.65h ≈12.5 次/h）。
 
+## 22:2x 检查点（2026-11-15 22:25 CST / 14:25:29Z 实测，巡检单 fliploop-fixcp4-1120）
+
+**纯取证检查点 #4，窗龄 5.46h/24h——禁中途达标判定、禁外推**（单据标题 22:22
+与实测 22:25 差 3min 按实测）。openclaw ZT SSH 首试即通，双机三文件齐取（raw
+`fliploop-fix-window4-2026-11-15.txt`）。
+
+**增量**（08:57:32Z 起 5.46h；cp3 后增量窗约 49min）：imac 全窗 548 决策
+（JMrE promote 122/hold 83/**defer 83**/demote 63/probe 46；FSaf promote 66/
+demote 36/probe 49——**13:23:30Z verified 后零决策**）；OC 全窗 439（wd=JMrE
+**defer 166**/promote 34/hold 31/demote 20；imac peer promote 60/demote 31；
+coding-vm 41）。周期中位：imac JMrE 0.83min（n=63）/ FSaf 2.20min（n=35）；
+OC wd 2.18min（n=19）/ imac 1.64min（n=30）/ coding-vm 9.97min（n=9）。
+cp3 后增量：imac 63 条（JMrE **defer 37**/promote 7/hold 6/demote 5/probe 8；
+FSaf 零）；OC 38 条（wd defer 24/promote 5/demote 3）。**FLIP-002 退避双视图
+钉死 cap**：imac 视 JMrE 连续 demote 升至 **7**（末拍 14:25:37Z defer cooling
+723s≈cap 区）、OC 视升至 **20**（14:25:15Z defer cooling 777s——delay 远超
+15min cap 钉死 900s）。**段内 bypass=0**（双机）：JMrE 面整段探测不健康无
+放行，FSaf/OC 侧已稳直连无需 bypass（FLIP-001 bypass 全窗计数：imac JMrE
+23/FSaf 30；OC imac peer 25/coding-vm 10——延续性为「存量维持、增量归零」）。
+
+**切换闸与新面**：imac 全窗 293=287 flip+6 roam、OC 181=175 flip+6 roam——
+**roam 计数与 cp3 完全持平（13:00:39Z / 13:27:06Z 后零新 roam），零新
+endpoint 面进决策**（存量面：`.97`/`180.152.54.66`/`.11:51820`/`10.147.19.49`
+/`:44249`；OC 视 `.17`×40/`.226`/`.130`/`.117`）。reason 全集（双机）仍为
+既有+修后预期签名，**无未知新 reason**。
+
+**实况快照与面漂移延续**（14:25Z）：imac——coding-vm p2p_direct @
+`192.168.5.188` fresh、**FSaf p2p_direct @ `192.168.5.11:44249` fresh
+hs=14:25:08Z——cp3 verified（13:23:30Z）后 62min 零决策稳直连，下发面=内核面
+持续一致**；JMrE hub_relay（endpoint 空=冷却）。OC——coding-vm @ `.130`
+fresh、imac peer p2p_direct @ `.117`（verified 13:22:48Z 后 63min 静默，
+rtt_source=probe_failed 但握手新鲜）、wd hub_relay。三对直连（FSaf、OC↔imac、
+双视 coding-vm）全稳，**末拍仅 JMrE 一对在退避冷却**。率事实（非判定）：JMrE
+段内 demote imac 视 5/49min ≈6.1 次/h（cp3 段 ≈10/h、全窗 ≈11.5/h、修前
+33/h）、OC 视 ≈3.7 次/h；末次环 14:20:24Z promote→14:22:39Z demote
+（2.25min）——环仍在但段内 63 条中 37 defer（59%）+6 hold，promote 尝试被
+退避拉稀。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：
