@@ -1,0 +1,62 @@
+=== fliploop 修后窗检查点 #14 raw（2026-11-16 07:07:31 CST / 2026-11-15T23:07:31Z 实测取证；与单据标题 ~06:5x 一致，实测落在 07:0x，节名按实测）===
+window start 2026-11-15T08:57:32Z; age at capture 14h09m59s (14.08h/24h; sheet estimated ~14.1h, matches); cp13 capture was 22:00:27Z -> increment window ~67min
+openclaw SSH reachable on first try (no retry needed)
+files: imac agent-decisions.jsonl 1421401B / direct-switch-events.json 701550B / direct-peers.json 684B
+       oc   agent-decisions.jsonl 1312954B / direct-switch-events.json 575732B / direct-peers.json 676B
+NOTE raw filename per task sheet: window14-2026-11-16.txt (capture-day naming from this sheet on; earlier files used window-open-day naming)
+
+*** FIRST NEW ENDPOINT FACES OF THE WINDOW (both on OC view) ***
+  imac 10.147.19.17:22079  (imac ZT face on NEW port 22079, vs usual :51820)
+    first event 22:40:12Z promote attempt via candidate table -> 22:41:13Z verified (probe Healthy); verified again 23:01:02Z
+    promote/defer count x8, all-action count x14 (incl bypass probes); face entered candidate set and is being probed (FLIP-001 pipeline)
+  coding-vm 114.86.101.169:51820  (coding-vm PUBLIC WAN face, analog of JMrE's 180.152)
+    22:10:40Z coding-vm sel003 demote @.130 -> hold x2 -> 22:14:05 promote attempt via candidate table @114.86.101.169
+    -> 22:16:15Z verified @114.86.101.169 (probe Healthy); NO demote recorded afterwards, LIVE kernel back on .130 fresh hs=23:06:57Z
+       (verified public face + kernel handshake on .130 — dispatch!=kernel variant on the new face; x2 events total)
+
+IMAC FULLWIN total=1541 (file total 3948) | SINCE_CP13 total=142 (~67min)
+  FULLWIN windows-desktop(JMrE): promote 289 defer 151 hold_relay 168 demote 147 probe 105
+         openclaw-win(FSaf): promote 320 probe 196 demote 165
+  cycles: JMrE n=147 median 1.48min (0.72-22.95 <- RECORD UNCHANGED) | FSaf n=164 median 0.80min (0.72-171.90 carryover)
+  SINCE_CP13 JMrE: promote 21 demote 11 hold_relay 12 probe 8  <- DEFER = 0 NINTH SEGMENT IN A ROW (151 frozen, consecutive 10 unchanged)
+  SINCE_CP13 FSaf: promote 43 probe 25 demote 22
+  cycles SINCE_CP13: JMrE n=10 median 2.67min (0.77-7.03) | FSaf n=22 median 0.78min (0.72-4.40, no >30min cycle)
+  segment demote rates (~67min): JMrE 11 -> ~9.8/h (11.2 -> 9.8 down) | FSaf 22 -> ~19.7/h (23.6 -> 19.7)
+  FLIP-002 defer: fullwin 151 unchanged 9th segment; FLIP-001 bypass: fullwin JMrE 71 (+4) / FSaf 156 (+21)
+  endpoints fullwin: .97 x220 (+19), 10.147.19.49 x146 (+19), .11:44249 x139 (+24 accelerating), 180.152.54.66 x69 (+2), .11:51820 x35 frozen
+  switch FULLWIN=930 flip=921 roam=9  <- +1 NEW ROAM (imac view): #9 22:00:59Z FSaf .49 -> 192.168.5.11:44249 score 0 beats 55 (32s after cp13 capture; 3rd SEL-002 roam onto the NAT-ephemeral face, ends 3-segment zero-roam streak)
+  LAST: FSaf 23:07:49Z demote @.49 (sel003) | JMrE 23:05:34Z verified @.97
+  LIVE (23:07Z): coding-vm p2p_direct @192.168.5.188 fresh hs=23:07:17Z
+    JMrE p2p_direct @.97 fresh hs=23:06:06Z (cp13's 180.152 probe_failed resolved back to .97 direct) | FSaf hub_relay (endpoint empty)
+  same-second signature SINCE_CP13: 3x double-demote (22:28:10, 22:37:01, 22:42:20 all JMrE@.97+FSaf@.49)
+    + 5x opposite-cross (22:13:50 + 22:40:04 + 23:05:34 FSaf-d+JMrE-v; 22:54:10 + 23:02:40 JMrE-d+FSaf-v) — 8 events/~67min
+    cumulative imac view: 14 double-demote + 18 cross
+
+OC FULLWIN total=1332 (file total 3716) | SINCE_CP13 total=125 (~67min)
+  FULLWIN windows-desktop(wd): defer 470 promote 86 hold_relay 79 demote 46 probe 36
+         imac: promote 217 demote 111 probe 111 hold_relay 11 defer 1 (pre-cp10) | coding-vm: promote 78 demote 39 probe 41 hold_relay 6
+  cycles: wd n=45 median 1.37min (0.72-10.00 carryover) | imac n=110 median 2.17min (max 86.15) | coding-vm n=38 median 8.82min (max 105.80)
+  SINCE_CP13: wd defer 36 promote 8 hold 6 demote 3 probe 4 | imac promote 30 demote 16 probe 16 | coding-vm hold 2 promote 2 demote 1 probe 1
+  cycles SINCE_CP13: wd n=3 median 1.63min (1.03-4.55) | imac n=15 median 1.15min (1.02-6.50) | coding-vm 0 closed cycles (1 open since 22:16:15 verified)
+  WD EXPIRY CYCLES x4 THIS SEGMENT (G end + H + I + J); conn 43 -> 44 -> 45 -> 46 (defer 434 -> 470, +36):
+    cycle G end: ~22:03:48 expiry -> 22:04:34 attempt @180.152 -> (waiting-hs attempt 2) -> 22:06:50 verified @180.152 -> 22:08:23 sel003 demote @.97 (~93s) -> conn 44 @22:11:47
+    cycle H: 22:24:11 attempt @180.152 -> waiting-hs attempt 2 @180.152 + attempt 3 @.97 -> 22:27:27 verified @.97 -> 22:28:29 sel003 demote @.97 (62s) -> conn 45 @22:31:39
+    cycle I: 22:43:29 attempt @180.152 -> 22:44:38 verified @180.152 -> 22:49:11 demote @.97 via HANDSHAKE-STALE (4m33s hold; OC stale occurrence #4) -> conn 46 @22:52:25
+    cycle J (in flight at capture): 23:04:40 attempt @180.152 -> 23:06:50 verified @180.152 -> LIVE kernel @.97 fresh hs=23:07:20Z (dispatch!=kernel), no demote by file tail
+  FLIP-001 bypass: fullwin imac 102 (+15) / coding-vm 38 FROZEN
+  endpoints fullwin: .17 x157 (+15), 180.152.54.66 x60 (+7, wd expiry attempts), .226 x44 (+7), .130 x42 frozen, 192.168.5.188 x34 frozen, .97 x26 (+1), .117 x8 frozen, NEW :22079 x8 + NEW 114.86.101.169 x2
+  switch FULLWIN=589 flip=577 roam=12  <- ZERO new roam (OC view)
+  LAST: coding-vm 22:16:15Z verified @114.86.101.169 | imac 23:07:53Z demote @.226 (sel003) | wd 23:06:50Z verified @180.152
+  LIVE OC (23:07Z): coding-vm p2p_direct @.130 fresh hs=23:06:57Z | wd p2p_direct @.97 fresh hs=23:07:20Z | imac hub_relay (endpoint empty)
+  OC same-second: 1x double-demote (22:10:40 coding-vm@.130 + imac@.226) — 6th OC-view double, imac peer common factor in all 6
+
+reason set: head set unchanged both machines (11 heads each, no unknown new reason); handshake-stale OC count now 4 (22:49:11Z wd new; prior 08:58:04Z wd, 20:35:23Z wd, 21:16:54Z imac), imac still single 10:39:50Z
+
+pending observations answered:
+1. defer=0 NINTH consecutive segment (151 frozen, consecutive 10 unchanged); OC wd conn 43 -> 46 (+36 defers to 470)
+2. 22.95min record NOT beaten (JMrE segment max 7.03min); FSaf no new >30min cycle (171.90min carryover)
+3. 180.152: imac view +2 (x69) — cp13's JMrE probe_failed on 180.152 resolved, JMrE back direct @.97; OC view +7 (x60, wd expiry attempts incl 2 more verified @180.152)
+4. same-second signature: imac view 8 events/~67min (3 double + 5 cross, elevated band holds); OC view +1 double (22:10:40, imac peer common factor in all 6 OC doubles); cumulative imac view 14 double + 18 cross
+5. wd expiry chain: 4 cycles this segment; new cadence variants: cycle I held 4m33s then handshake-stale demote; cycle H waited handshake attempt-2/3 before verified @.97; cycle J verified @180.152 with kernel on .97 (dispatch!=kernel) and still direct at capture; conn 43 -> 46
+6. JMrE demote rate ~9.8/h (11.2 -> 9.8 down); FSaf ~19.7/h (23.6 -> 19.7), churn still :44249-led (+24) and produced roam #9
+7. LAN rotation: OC imac peer .17 +15 / .226 +7 continue; NEW face :22079 verified x2 (imac ZT port rebind observed from OC); coding-vm NEW public face 114.86.101.169 verified 22:16:15Z then kernel drifted back to .130; roam +1 imac view (22:00:59Z FSaf -> :44249), OC view zero

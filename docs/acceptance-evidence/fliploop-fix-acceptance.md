@@ -604,6 +604,65 @@ peer @ `.226` fresh hs=21:59:50Z（决策层末拍 verified @`.17`，下发≠�
 存）、wd hub_relay（defer 43 连击 cooling 223s）。率事实（非判定）：wd 段内
 demote 3/~48min ≈3.7 次/h（JMrE/FSaf 见⑥）。
 
+## 07:0x 检查点（2026-11-16 07:07 CST / 2026-11-15T23:07:31Z 实测，巡检单 fliploop-fixcp14-1116）
+
+**纯取证检查点 #14，窗龄 14.08h/24h——禁中途达标判定、禁外推**（单据预计
+~14.1h 吻合；实测落在 07:0x，节名按实测；raw 文件自本单起按取证日命名：
+`fliploop-fix-window14-2026-11-16.txt`）。openclaw SSH 首试即通，双机三文件
+齐取。**本段出现全窗首批新端点面（均在 OC 视）**：①**imac ZT 面新端口
+`10.147.19.17:22079`**（区别于惯常 `:51820`）——22:40:12Z 候选表 attempt→
+22:41:13Z verified，23:01:02Z 再次 verified（promote/defer 计数 ×8、全动作
+×14，FLIP-001 候选表纳管+探测管线照常工作）；②**coding-vm 公网面
+`114.86.101.169:51820`**（对标 JMrE 的 `180.152`）——22:10:40Z sel003
+demote @`.130`→hold ×2→22:14:05Z 候选表 attempt→**22:16:15Z verified
+@公网面**，此后无 demote 记录而 LIVE 内核已回 `.130` fresh（新面上的下发≠
+内核变体）。
+
+**承接观测点逐项数据答案**：①**defer=0 第九段延续**（151 冻结、连击冻结
+10；OC wd 连击 **43→44→45→46** 爬升，defer 434→470 段内 +36）；②
+**22.95min 纪录未破**（JMrE 段内 max 7.03min；FSaf 无新 >30min，171.90min
+存量）；③**`180.152` 走势**——imac 视 +2 至 ×69 且 cp13 的 JMrE
+probe_failed 已消解（本段回归 `.97` 直连 fresh）；OC 视 +7 至 ×60（wd 到期
+环尝试，含 2 次再 verified）；④**同秒签名高位延续**——imac 视 8 次/~67min
+（3 双 demote：22:28:10Z/22:37:01Z/22:42:20Z；5 对向交叉），**OC 视 +1 双
+demote**（22:10:40Z coding-vm@`.130`+imac@`.226`——OC 视 6 次双 demote 全
+以 imac peer 为公因子）；累计 imac 视 14 双+18 交叉；⑤**wd 到期环本段四
+环**（G 终局/H/I/J）：环 G 终局 verified @`180.152`→~93s sel003 打回；环
+H 出现**等待握手 attempt-2/3 后 verified @`.97`**→62s 打回；环 I verified
+@`180.152` 后**保持 4m33s 经 handshake-stale 打回**（OC 稀有头第 4 次）；
+环 J 23:06:50Z verified @`180.152` 而 LIVE 内核 @`.97` fresh（下发≠内核），
+至文件尾仍 direct；⑥**段内 demote 率双降**：JMrE ≈9.8 次/h（11.2→9.8）、
+FSaf ≈19.7 次/h（23.6→19.7）；⑦**roam 破零**——imac 视 **+1**：
+22:00:59Z FSaf `.49`→`:44249` score 0 beats 55（cp13 取证后 32s，第三次
+SEL-002 正式切换落 NAT 临时端口面，终结连续三段零 roam）；OC 视仍零
+（12）；LAN 轮换延续（OC 视 imac peer `.17` +15/`.226` +7、FSaf `.49` +19
+与 `:44249` +24 双活、`:44249` 加速）。
+
+**增量**（08:57:32Z 起 14.08h；cp13 后增量窗约 67min）：imac 全窗 1541 决策
+（JMrE promote 289/demote 147/hold 168/defer 151/probe 105；FSaf promote
+320/demote 165/probe 196）；OC 全窗 1332（wd **defer 470**/promote 86/
+demote 46；imac peer promote 217/demote 111；coding-vm promote 78/demote
+39）。周期中位：imac JMrE 1.48min（n=147）/ FSaf 0.80min（n=164）；OC wd
+1.37min（n=45，max 10.00 存量）/ imac 2.17min（n=110）/ coding-vm 8.82min
+（n=38）。cp13 后增量：imac 142 条（JMrE promote 21/demote 11/hold 12/probe
+8/**defer 0**，cycles n=10 median 2.67min；FSaf promote 43/demote 22，cycles
+n=22 median 0.78min）；OC 125 条（wd defer 36/promote 8/demote 3，cycles n=3
+median 1.63min；imac peer promote 30/demote 16，cycles n=15 median 1.15min；
+coding-vm promote 2/demote 1）。段内 bypass：imac JMrE +4/FSaf +21；OC imac
+peer +15/coding-vm +0（冻结）。切换闸：imac 930=921 flip+**9 roam（+1）**、
+OC 589=577 flip+**12 roam（零新）**。端点面 **+2 新面**（见上）；reason 头
+集不变（各 11 头），**无未知新 reason**；handshake-stale OC 计数 +1 至 ×4
+（22:49:11Z wd）。
+
+**实况快照**（23:07Z）：imac 视——coding-vm @ `192.168.5.188` fresh
+hs=23:07:17Z、**JMrE p2p_direct @ `.97` fresh hs=23:06:06Z**（cp13 公网面
+尝试已消解回归直连）、FSaf hub_relay（末拍 23:07:49Z sel003 demote @`.49`）；
+OC 视——coding-vm @ `.130` fresh hs=23:06:57Z（verified @公网面后内核已漂
+回）、wd @ `.97` fresh hs=23:07:20Z（决策层 23:06:50Z verified @`180.152`，
+下发≠内核并存）、imac peer hub_relay（末拍 23:07:53Z sel003 demote
+@`.226`）。率事实（非判定）：wd 段内 demote 3/~67min ≈2.7 次/h（JMrE/FSaf
+见⑥）。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：
