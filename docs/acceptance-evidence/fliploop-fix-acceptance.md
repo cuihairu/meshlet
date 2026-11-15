@@ -102,6 +102,49 @@ coding-vm direct_pending @ `.130`、JMrE 与 imac 均 hub_relay（endpoint 空�
 demote——**环未收口**（事实记录；判定属另单）。率事实（非判定）：imac JMrE
 demote 51/3.85h ≈13.2 次/h vs 修前 24h 窗 33 次/h、12.69h 基线 64 次/h。
 
+## 21:3x 检查点（2026-11-15 21:36 CST / 13:36:48Z 实测，巡检单 fliploop-fixcp3-1120）
+
+**纯取证检查点 #3，窗龄 4.65h/24h——禁中途达标判定、禁外推**（实测与单据标题
+一致）。openclaw ZT SSH 本轮顺通，双机三文件齐取（raw
+`fliploop-fix-window3-2026-11-15.txt`）。
+
+**增量**（08:57:32Z 起 4.65h；cp2 后增量窗约 48min）：imac 全窗 487 决策
+（JMrE 296：promote 115/probe 38/demote 58/hold 79/**defer 46**；FSaf 151：
+promote 66/demote 36/probe 49）；OC 全窗 401（wd=JMrE 215：**defer 142**/
+promote 29/demote 17/hold 27；imac 100；coding-vm 41）。周期中位：imac JMrE
+0.82min（n=58）/ FSaf 2.20min（n=35）；OC wd 2.17min（n=16）/ imac 1.64min
+（n=30）/ coding-vm 9.97min（n=9）。cp2 后增量：imac 102 条（JMrE promote
+14/demote 8/**defer 29**/hold 14；FSaf promote 12/demote 8/6× pending
+attempts exhausted）；OC 79 条（wd defer 33 含 **15→16→17 连续 demote**、
+cooling 至 703s≈15min cap 区——FLIP-002 退避顶到封顶的生产行为可观测；
+OC imac peer 本段首条 defer）。
+
+**切换闸**：imac 全窗 281=275 flip+**6 roam**（第 6 条 13:00:39Z FSaf
+`.49`→`192.168.5.11` score 0 beats 32）；OC 全窗 173=167 flip+**6 roam**
+（新增 13:17:09Z imac peer `.117`→`.226` score 30、13:27:06Z `.117`→**`.17`
+新面** score 42）。
+
+**新 endpoint 面进决策（cp2 后新签名）**：imac 视角 **`192.168.5.11:44249`**
+×7——路由器 NAT 临时端口面（FSaf roam 下发 `.11:51820` 后内核 NAT 漂移出的
+临时端口），13:23:30Z 经 FLIP-001 bypass promote 并 verified @ `:44249`；
+OC 视角 **`10.147.19.17`** ×64 新面（含 verified）。全部 reason 仍为修后预期
+签名（FLIP-002 defer / FLIP-001 bypass / 既有 sel003 / recovery gate /
+pending 系），**无未知新 reason**。FLIP-002 defer 与 FLIP-001 bypass 计数
+延续（cp2 后 defer 增量 63 条、bypass 增量 7 条：imac JMrE 1/FSaf 3/
+OC coding-vm 3）。
+
+**实况快照与面漂移**（13:37Z）：imac——coding-vm p2p_direct @
+`192.168.5.188` 稳定、**FSaf p2p_direct @ `192.168.5.11:44249`
+handshake_fresh**（verified 后 ≥14min 稳直连）、JMrE hub_relay（endpoint
+空=冷却中）；OC——coding-vm p2p_direct @ `.130` fresh、imac p2p_direct @
+`.117` fresh、JMrE hub_relay。**下发面 vs 内核面**：FSaf 链路本轮收敛——
+13:00:39Z roam 下发 `.11:51820` → 内核 NAT 漂到 `:44249` → bypass promote
+落地临时端口面并 verified → 取证时下发面=内核面一致；JMrE 冷却中无直连面
+（无漂移问题）。**末拍（13:37:41Z）imac JMrE 为 hold_relay（恢复门）——
+取证时被抑制未翻转**（对照 cp2 末拍 39s 内 promote→demote 往复；FSaf 末拍
+verified 距取证 ≥14min 未翻）。率事实（非判定）：imac JMrE cp2 后增量 demote
+8/48min ≈10 次/h（全窗 58/4.65h ≈12.5 次/h）。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：

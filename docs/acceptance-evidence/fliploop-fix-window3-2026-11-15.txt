@@ -1,0 +1,39 @@
+=== fliploop 修后窗检查点 #3 raw（2026-11-15 21:36 CST / 13:36:48Z 实测取证，与单据标题一致）===
+window start 2026-11-15T08:57:32Z; age at capture 4h39m16s (4.65h/24h); cp2 capture was 12:48:49Z -> increment window ~48min
+openclaw ZT SSH reachable this round (no No-route-to-host; no retry needed)
+files: imac agent-decisions.jsonl 1030337B / direct-switch-events.json 503667B / direct-peers.json 684B
+       oc   agent-decisions.jsonl 974162B / direct-switch-events.json 449190B / direct-peers.json 677B
+
+IMAC FULLWIN total=487
+  JMrE: promote 115 probe 38 demote 58 hold_relay 79 defer 46 | FSaf: promote 66 probe 49 demote 36
+  cycles: JMrE n=58 median 0.82min (0.72-6.03) | FSaf n=35 median 2.20min (0.72-52.57)
+  switch total=281 mode_flip=275 roam=6 (6th roam 13:00:39Z FSaf .49 -> 192.168.5.11, score 0 beats 32)
+  endpoints fullwin: .97 x169, .49 x74, 192.168.5.11:51820 x70, 180.152.54.66 x42, 192.168.5.11:44249 x7 (NEW: router NAT ephemeral port face)
+
+IMAC SINCE_CP2 (12:48:49Z -> ~13:37Z, ~48min) total=102
+  JMrE: promote 14 demote 8 hold_relay 14 defer 29 probe 2 | FSaf: promote 12 probe 15 demote 8
+  cycles: JMrE n=7 median 0.75min | FSaf n=8 median 2.29min (1.78-9.65)
+  JMrE defer escalation this segment: 4 -> 5 -> 6 consecutive (cooling up to 766s, i.e. 15min cap region)
+  FSaf: 6x pending attempts exhausted (handshake not completing), 3x bypass promote, 3x verified
+  bypass (FLIP-001): JMrE 1, FSaf 3 (vs cp2 window 22/28 - much rarer this segment, faces probe-unhealthy)
+  LAST: JMrE 13:37:41Z hold_relay (recovery gate) - suppression holding, NOT flipping at capture; FSaf 13:23:30Z promote verified @192.168.5.11:44249
+
+OC FULLWIN total=401
+  wd(JMrE): promote 29 probe 14 demote 17 hold 27 defer 142 | imac: promote 60 probe 30 demote 31 hold 8 defer 1 | coding-vm: promote 20 probe 11 demote 10 hold 1
+  cycles: wd n=16 median 2.17min | imac n=30 median 1.64min | coding-vm n=9 median 9.97min (1.08-105.80)
+  switch total=173 mode_flip=167 roam=6 (new: 13:17:09Z imac .117->.226 score 30; 13:27:06Z imac .117->.17 score 42)
+  endpoints fullwin: 10.147.19.17 x64 (NEW face), .226 x50, .130 x37, 180.152.54.66 x36, .97 x23, .117 x7, .188 x4
+
+OC SINCE_CP2 total=79
+  wd: defer 33 promote 4 demote 2 hold 4 | imac: promote 8 probe 6 demote 4 hold 4 defer 1 (first defer for imac peer) | coding-vm: promote 7 probe 3 demote 3
+  FLIP-002 CAP REACHED (oc wd view): 15 -> 16 -> 17 consecutive demotes, cooling up to 703s (~11.7min remaining of 15min cap; delay(17)=30s*2^16 clamped to cap 900s)
+  LAST: wd 13:36:46Z defer (17 consecutive, cooling 62s); imac peer 13:22:48Z promote verified @192.168.5.117 (LAN face); coding-vm 13:27:06Z verified @.130
+
+LIVE SNAPSHOTS (capture ~13:37Z)
+  imac: coding-vm p2p_direct @192.168.5.188:51820 handshake_fresh (stable); FSaf p2p_direct @192.168.5.11:44249 handshake_fresh (stable >=14min since verified 13:23:30Z); JMrE hub_relay (endpoint empty = cooling)
+  oc: coding-vm p2p_direct @10.147.19.130:51820 handshake_fresh; imac p2p_direct @192.168.5.117:51820 handshake_fresh; JMrE hub_relay (endpoint empty)
+  face-drift note: FSaf roam dispatched .11:51820 (13:00:39Z) -> kernel NAT drifted to ephemeral .11:44249 -> bypass promote landed on :44249 and verified; at capture dispatched face == kernel face (consistent, no drift)
+
+new endpoint signatures vs cp2: 192.168.5.11:44249 (imac view, x7, promote-verified + live-fresh) and 10.147.19.17 (oc view, x64, incl verified) — router/NAT and ZT faces participating; no 192.168.36.153-class face in this segment
+early-signal continuity: FLIP-002 defers continued (+63 in segment: 29 imac-JMrE + 33 oc-wd + 1 oc-imac), cap behavior observed; FLIP-001 bypass continued (7 in segment)
+rate fact (not a judgment): JMrE imac-view demote ~10/h in segment (8/48min) vs full-window 12.5/h (58/4.65h) vs pre-fix 24h-window 33/h
