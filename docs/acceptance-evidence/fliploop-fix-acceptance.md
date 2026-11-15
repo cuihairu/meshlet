@@ -317,6 +317,47 @@ OC 视 coding-vm @ `192.168.5.188`、imac peer @ `.226` 的直连在取证秒被
 ≈8.75 次/h（cp6 段 ≈10.3、全窗 ≈10.3、修前 33 次/h）；wd 段内 2/48min
 ≈2.5 次/h。
 
+## 02:0x 检查点（2026-11-16 01:59 CST / 2026-11-15T17:59:04Z 实测，巡检单 fliploop-fixcp8-1122）
+
+**纯取证检查点 #8，窗龄 9.02h/24h——禁中途达标判定、禁外推**（与单据标题
+一致）。openclaw SSH 首试即通，双机三文件齐取（raw
+`fliploop-fix-window8-2026-11-15.txt`）。
+
+**五项挂起观测点全部有数据答案**：①**JMrE 回弹态延续（未再压稀）**——
+连续第三段 defer=0（全窗 151 冻结、连击冻结 10），段内 demote 9/47min
+≈11.5 次/h（cp6 ≈10.3、cp7 ≈8.75），cycles n=8 median 1.50min（含 9min 长
+周期）；②**OC wd 连击继续爬升** 28→**31**（defer 272→298 段内 +26），末拍
+17:58:42Z cooling 514s 仍在 cap 区，本段未观测到退避到期 promote；③**LAN 面
+迁移/轮换延续**——OC 视 imac peer `.17` 成主导面（×55→×75 段内 +20）、
+coding-vm 在 `.130`↔`.188` 轮换（`.188` LAN 面 ×6→×14 +8）；roam 计数 10
+不变（零新 roam）；④**三对直连未全恢复，且同秒 demote 签名可重复**——imac
+视 17:59:17Z **同秒** JMrE @ `.97` + FSaf @ `.49` 双双 sel003 demote 回
+hub_relay（取证瞬间）、OC 视 17:58:42Z imac peer @ `.226` demote 回
+hub_relay（cp7 的 17:11:33Z 同款）；**仅 coding-vm 双视直连稳**（imac 视 @
+`192.168.5.188` fresh hs=17:58:05Z、OC 视 @ `.130` fresh hs=17:57:38Z）；⑤
+**`180.152` 漂移模式重现无新签名**——17:48:39Z promote verified @
+`180.152` → 17:56:16Z demote @ `.97`（内核 7.6min 后在 `.97`）。
+
+**增量**（08:57:32Z 起 9.02h；cp7 后增量窗约 47min）：imac 全窗 887 决策
+（JMrE promote 183/demote 94/hold 117/defer 151/probe 66；FSaf promote 126/
+demote 67/probe 83）；OC 全窗 767（wd **defer 298**/promote 54/demote 31；
+imac peer promote 104/demote 54；coding-vm 88）。周期中位：imac JMrE
+0.86min（n=94）/ FSaf 1.49min（n=66）；OC wd 1.76min（n=30）/ imac 2.12min
+（n=53）/ coding-vm 10.38min（n=20）。cp7 后增量：imac 104 条（JMrE promote
+16/demote 9/hold 5/probe 7/**defer 0**；FSaf promote 32/demote 17——`.49`↔
+`:44249` 翻转持续：`:44249` ×15→×35 +20、`.49` ×44→×56 +12）；OC 102 条
+（wd defer 26/demote 3；imac peer promote 20/demote 10；coding-vm promote
+10/demote 4，cycles n=4 median 6.16min max 20.50min）。段内 bypass：imac
+JMrE +7/FSaf +16；OC imac peer +10/coding-vm +5。切换闸：imac 476=470
+flip+6 roam、OC 316=306 flip+10 roam——**双双零新 roam**；端点面集无新面
+（全部增量落在存量面）；reason 全集不变，**无未知新 reason**。
+
+**实况快照**（17:59Z）：**仅 coding-vm 双视直连**（见挂起④），JMrE（imac
+视 hub_relay、OC 视 wd defer 31 连击 hub_relay）、FSaf（imac 视 hub_relay）、
+OC imac peer（hub_relay）均在退避/恢复门冷却中。率事实（非判定）：JMrE 段内
+demote ≈11.5 次/h（cp6 ≈10.3、cp7 ≈8.75、全窗 ≈10.4、修前 33 次/h）；wd 段
+内 3/47min ≈3.8 次/h。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：

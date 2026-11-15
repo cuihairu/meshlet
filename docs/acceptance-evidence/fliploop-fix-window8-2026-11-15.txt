@@ -1,0 +1,46 @@
+=== fliploop 修后窗检查点 #8 raw（2026-11-16 01:59:04 CST / 2026-11-15T17:59:04Z 实测取证；与单据标题 02:0x 一致）===
+window start 2026-11-15T08:57:32Z; age at capture 9h1m32s (9.02h/24h); cp7 capture was 17:11:50Z -> increment window ~47min
+openclaw SSH reachable on first try (no retry needed)
+files: imac agent-decisions.jsonl 1176980B / direct-switch-events.json 563147B / direct-peers.json 646B
+       oc   agent-decisions.jsonl 1106855B / direct-switch-events.json 492597B / direct-peers.json 638B
+
+IMAC FULLWIN total=887 (file total 3294) | SINCE_CP7 total=104 (~47min)
+  FULLWIN windows-desktop(JMrE): promote 183 defer 151 hold_relay 117 demote 94 probe 66
+         openclaw-win(FSaf): promote 126 probe 83 demote 67
+  cycles: JMrE n=94 median 0.86min (0.72-14.48) | FSaf n=66 median 1.49min (0.72-171.90)
+  SINCE_CP7 JMrE: promote 16 demote 9 hold_relay 5 probe 7  <- DEFER = 0 THIRD SEGMENT IN A ROW (fullwin 151 frozen, consecutive 10 unchanged)
+  SINCE_CP7 FSaf: promote 32 probe 18 demote 17
+  cycles SINCE_CP7: JMrE n=8 median 1.50min (0.72-9.00) | FSaf n=16 median 0.75min (0.72-3.82)
+  FLIP-002 defer: fullwin 151 unchanged 3rd segment, max consecutive still 10 — promotion un-intercepted whole segment
+  FLIP-001 bypass: fullwin JMrE 38 (+7) / FSaf 60 (+16)
+  endpoints fullwin: .97 x123 (+14), 180.152.54.66 x60 (+2), 10.147.19.49 x56 (+12), .11:44249 x35 (+20 RESURRECTED FACE CHURN CONTINUES), .11:51820 x35
+  switch FULLWIN=476 flip=470 roam=6 (zero new roam)
+  JMrE segment detail: promote @.97 x14, promote @180.152 x2 (one verified 17:48:39Z), demote @.97 x9
+    drift pattern repeats: 17:48:39Z promote verified @180.152 -> 17:56:16Z demote @.97 (kernel on .97, 7.6min later)
+    last cycle: 17:57:04Z bypass promote @.97 -> 17:57:49Z verified @.97 -> 17:59:17Z demote sel003 (capture second)
+  FSaf segment churn continues: promote 32/demote 17, faces .49 <-> :44249 flip-flop
+  LAST (17:59:17Z SAME SECOND both peers): JMrE demote @.97 + FSaf demote @.49 (both sel003) -> both hub_relay at capture instant
+  LIVE (17:59Z): coding-vm p2p_direct @192.168.5.188 fresh hs=17:58:05Z | JMrE hub_relay | FSaf hub_relay
+
+OC FULLWIN total=767 (file total 3151) | SINCE_CP7 total=102 (~47min)
+  FULLWIN windows-desktop(wd): defer 298 promote 54 hold_relay 49 demote 31 probe 26
+         imac: promote 104 demote 54 probe 52 hold_relay 10 defer 1 | coding-vm: promote 42 demote 21 probe 23 hold_relay 2
+  cycles: wd n=30 median 1.76min | imac n=53 median 2.12min (max 86.15) | coding-vm n=20 median 10.38min (max 105.80)
+  SINCE_CP7: wd defer 26 hold 6 promote 4 demote 3 probe 2 (max consecutive 31, was 28 — STILL CLIMBING in cap region; LAST 17:58:42Z defer cooling 514s)
+             imac promote 20 demote 10 probe 10 (cycles n=10 median 1.69min) | coding-vm promote 10 demote 4 probe 6 hold 1 (cycles n=4 median 6.16min, max 20.50)
+  FLIP-001 bypass: fullwin imac 46 (+10) / coding-vm 21 (+5)
+  endpoints fullwin (OC view): .17 x75 (+20, DOMINANT face), 180.152.54.66 x38 (wd, +1), .130 x28 (coding-vm, +2), .226 x21, .97 x16 (wd), 192.168.5.188 x14 (coding-vm LAN face, +8), .117 x8
+  switch FULLWIN=316 flip=306 roam=10 (zero new roam)
+  LAST (17:58:42Z): coding-vm promote verified @.130 | imac demote @.226 sel003 -> hub_relay | wd defer (31 consecutive, cooling 514s)
+  LIVE OC (17:59Z): coding-vm p2p_direct @.130 fresh hs=17:57:38Z | wd hub_relay | imac hub_relay
+
+reason set (FULLWIN both machines): unchanged — demote backoff defer / pending verified / sel003 degraded / recovery gate hold /
+  bypass promote / memory face promote / candidate table promote / waiting for handshake / pending attempts exhausted /
+  handshake stale — NO unknown new reason; endpoint face SET unchanged (all growth on existing faces)
+
+pending observations answered:
+1. JMrE rebound persists (NOT re-compressed): 3rd consecutive segment with defer=0; segment demote 9/47min ~=11.5/h (cp6 ~10.3, cp7 ~8.75); cycles median 1.50min
+2. OC wd consecutive climbs 28 -> 31 (defer 298, +26 segment), cooling 514s at capture — still inside cap region, no backoff-expiry promote observed this segment
+3. LAN-face migration/rotation continues: OC imac peer .17 now dominant (x75, +20); coding-vm rotates .130 <-> .188 (LAN face x14, +8); zero NEW roams (count stays 10)
+4. three-pairs-direct did NOT fully recover at capture: same-second sel003 demotes AGAIN (imac view 17:59:17Z JMrE+FSaf; OC view 17:58:42Z imac peer) — repeatable signature, only coding-vm direct on both views
+5. dispatched!=kernel drift repeats: 17:48:39Z verified @180.152 -> 17:56:16Z demote @.97; no new signature type
