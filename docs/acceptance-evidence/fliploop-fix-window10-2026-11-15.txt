@@ -1,0 +1,45 @@
+=== fliploop 修后窗检查点 #10 raw（2026-11-16 03:36:48 CST / 2026-11-15T19:36:48Z 实测取证；与单据标题 03:3x 一致）===
+window start 2026-11-15T08:57:32Z; age at capture 10h39m16s (10.66h/24h); cp9 capture was 18:46:31Z -> increment window ~50min
+openclaw SSH reachable on first try (no retry needed)
+files: imac agent-decisions.jsonl 1245998B / direct-switch-events.json 602687B / direct-peers.json 684B
+       oc   agent-decisions.jsonl 1177400B / direct-switch-events.json 523358B / direct-peers.json 638B
+
+IMAC FULLWIN total=1071 (file total 3478) | SINCE_CP9 total=105 (~50min)
+  FULLWIN windows-desktop(JMrE): promote 211 defer 151 hold_relay 130 demote 108 probe 76
+         openclaw-win(FSaf): promote 184 probe 116 demote 95
+  cycles: JMrE n=108 median 1.46min (0.72-22.95 <- RECORD UNCHANGED) | FSaf n=94 median 0.83min (0.72-171.90)
+  SINCE_CP9 JMrE: promote 17 demote 9 hold_relay 9 probe 5  <- DEFER = 0 FIFTH SEGMENT IN A ROW (151 frozen, consecutive 10 unchanged)
+  SINCE_CP9 FSaf: promote 32 probe 17 demote 16  <- churn intensified (x2 vs cp9 segment)
+  cycles SINCE_CP9: JMrE n=9 median 2.27min (0.73-8.88, record 22.95 not beaten) | FSaf n=15 median 0.77min (0.72-6.62)
+  FLIP-002 defer: fullwin 151 unchanged 5th segment; FLIP-001 bypass: fullwin JMrE 48 (+5) / FSaf 89 (+16)
+  endpoints fullwin: .97 x149 (+14), 10.147.19.49 x79 (+9), .11:44249 x70 (+23 CHURN), 180.152.54.66 x62 (+2 RE-ADMITTED after zero-participation segment), .11:51820 x35
+  switch FULLWIN=606 flip=598 roam=8  <- +2 NEW ROAMS (imac view): 19:22:21Z + 19:36:38Z FSaf .49 -> 192.168.5.11:44249 score 0
+           (the NAT-ephemeral face now formally switched-to via SEL-002, twice in 14min)
+  LAST: FSaf 19:33:39Z verified @.49 (then roamed to :44249 by 19:36:38Z roam event; live @ :44249 fresh hs=19:34:50Z)
+        JMrE 19:36:38Z hold_relay (recovery gate — suppressed at capture)
+  LIVE (19:36Z): coding-vm p2p_direct @192.168.5.188 fresh hs=19:35:28Z
+    FSaf p2p_direct @192.168.5.11:44249 fresh hs=19:34:50Z | JMrE hub_relay (endpoint empty, recovery-gate hold)
+  same-second signature: NEITHER double-demote NOR opposite-cross recurred this segment (last: 17:59:17Z double / 18:46:46Z cross)
+
+OC FULLWIN total=959 (file total 3343) | SINCE_CP9 total=92 (~50min)
+  FULLWIN windows-desktop(wd): defer 352 promote 64 hold_relay 59 demote 36 probe 27
+         imac: promote 140 demote 71 probe 70 hold_relay 10 defer 1 | coding-vm: promote 62 demote 31 probe 33 hold_relay 3
+  cycles: wd n=35 median 2.15min | imac n=70 median 2.13min (max 86.15) | coding-vm n=30 median 8.37min (max 105.80)
+  SINCE_CP9: wd defer 28 promote 6 hold 6 demote 3 probe 1 (max consecutive 33 -> 36 STILL CLIMBING; LAST 19:36:05Z defer cooling 569s; no expiry-promote yet)
+             imac promote 18 demote 9 probe 9 (cycles n=8 median 1.82min) | coding-vm promote 6 demote 3 probe 3 (cycles n=2 median 15.79min, max 30.25)
+  FLIP-001 bypass: fullwin imac 64 (+9) / coding-vm 31 (+3)
+  endpoints fullwin: .17 x103 (+12 dominant), 180.152.54.66 x44 (wd, +4), .130 x32 (coding-vm, +0), 192.168.5.188 x30 (coding-vm LAN, +6), .226 x29, .97 x20 (wd), .117 x8
+  switch FULLWIN=417 flip=405 roam=12  <- +1 NEW ROAM: #12 19:24:49Z imac peer .226 -> .17 score 14 beats 44
+  LAST: imac 19:35:04Z verified @.17 BUT live hub_relay at capture (handshake lost within ~1.5min of verified, demote decision not yet recorded — transient)
+        wd 19:36:05Z defer (36 consecutive, cooling 569s) | coding-vm 19:31:45Z verified @.188 (live fresh hs=19:36:39Z)
+  LIVE OC (19:36Z): coding-vm p2p_direct @.188 fresh | wd hub_relay | imac hub_relay
+
+reason set: unchanged both machines (all 10 heads pre-existing/fix-expected), NO unknown new reason; endpoint face SET unchanged
+
+pending observations answered:
+1. defer=0 FIFTH consecutive segment — promotion still un-intercepted by backoff (151 frozen, consecutive 10)
+2. 22.95min record NOT beaten (segment cycle max 8.88min; fullwin max unchanged)
+3. 180.152 RE-ADMITTED: imac view +2 (x62), OC view +4 (x44) after cp9 zero-participation — no drift snapshot this segment
+4. same-second signature distribution: neither double-demote nor opposite-cross recurred (3 observations so far: 17:11:33Z double, 17:59:17Z double, 18:46:46Z cross)
+5. OC wd consecutive 33 -> 36 (defer 352, +28 segment), cooling 569s — still climbing, still no expiry-promote observed
+6. rotation/flap continuity: FSaf .49<->:44249 churn INTENSIFIED (promote 32/demote 16, :44249 +23 to x70); two new SEL-002 roams to :44249 (19:22:21Z, 19:36:38Z); OC imac peer .17 dominant x103 (+12); coding-vm stable on .188 LAN (x30, +6)

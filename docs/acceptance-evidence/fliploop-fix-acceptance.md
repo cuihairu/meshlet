@@ -401,6 +401,47 @@ hub_relay（取证瞬间刚打回）；OC 视——coding-vm @ `.188` fresh（pr
 hub_relay。率事实（非判定）：JMrE 段内 demote ≈7.7 次/h（全窗 ≈10.1、修前
 33 次/h）；wd 段内 2/47min ≈2.6 次/h。
 
+## 03:3x 检查点（2026-11-16 03:36 CST / 2026-11-15T19:36:48Z 实测，巡检单 fliploop-fixcp10-1124）
+
+**纯取证检查点 #10，窗龄 10.66h/24h——禁中途达标判定、禁外推**（与单据标题
+一致）。openclaw SSH 首试即通，双机三文件齐取（raw
+`fliploop-fix-window10-2026-11-15.txt`）。
+
+**六项挂起观测点全部有数据答案**：①**defer=0 第五段延续**（全窗 151 冻结、
+连击冻结 10，promote 整段未被退避拦截）；②**22.95min 纪录未破**（段内
+cycle max 8.88min，全窗 max 不变）；③**`180.152` 重新参选**——cp9 零参选
+后本段恢复（imac 视 +2 至 ×62、OC 视 +4 至 ×44），本段无漂移快照；④**同秒
+签名本段双型均未再现**（历史三次：17:11:33Z 双 demote、17:59:17Z 双
+demote、18:46:46Z 对向交叉）；⑤**OC wd 连击继续爬升** 33→**36**（defer
+325→352 段内 +28，末拍 19:36:05Z cooling 569s，仍未观测到退避到期
+promote）；⑥**翻转/轮换延续且 FSaf churn 加剧**——promote 32/demote 16
+（约 cp9 段两倍），`:44249` ×47→×70（+23）；**imac 视 roam +2**：
+19:22:21Z 与 19:36:38Z FSaf `.49`→`:44249` score 0（NAT 临时端口面经
+SEL-002 正式切换，14min 内两次）；OC 视 roam +1（#12 19:24:49Z imac peer
+`.226`→`.17` score 14 beats 44），`.17` 主导 +12 至 ×103。
+
+**增量**（08:57:32Z 起 10.66h；cp9 后增量窗约 50min）：imac 全窗 1071 决策
+（JMrE promote 211/demote 108/hold 130/defer 151/probe 76；FSaf promote 184/
+demote 95/probe 116）；OC 全窗 959（wd **defer 352**/promote 64/demote 36；
+imac peer promote 140/demote 71；coding-vm 129）。周期中位：imac JMrE
+1.46min（n=108）/ FSaf 0.83min（n=94）；OC wd 2.15min（n=35）/ imac 2.13min
+（n=70）/ coding-vm 8.37min（n=30）。cp9 后增量：imac 105 条（JMrE promote
+17/demote 9/hold 9/probe 5/**defer 0**，cycles n=9 median 2.27min；FSaf
+promote 32/demote 16）；OC 92 条（wd defer 28/demote 3；imac peer promote
+18/demote 9；coding-vm promote 6/demote 3，cycles n=2 median 15.79min max
+30.25min）。段内 bypass：imac JMrE +5/FSaf +16；OC imac peer +9/coding-vm
++3。切换闸：imac 606=598 flip+**8 roam（+2）**、OC 417=405 flip+**12 roam
+（+1）**。端点面集无新面；reason 全集不变，**无未知新 reason**。
+
+**实况快照**（19:36Z）：imac 视——coding-vm @ `192.168.5.188` fresh、
+**FSaf p2p_direct @ `:44249` fresh hs=19:34:50Z**（roam 落 NAT 临时端口面）、
+JMrE hub_relay（19:36:38Z hold_relay 恢复门抑制中）；OC 视——coding-vm @
+`.188` fresh hs=19:36:39Z、**imac peer hub_relay（19:35:04Z verified @
+`.17` 后 ~1.5min 内握手丢失、demote 决策尚未落盘的瞬态）**、wd hub_relay
+（defer 36 连击 cooling 569s）。率事实（非判定）：JMrE 段内 demote
+9/50min ≈10.8 次/h（cp9 ≈7.7 回弹、全窗 ≈10.1、修前 33 次/h）；wd 段内
+3/50min ≈3.6 次/h。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：
