@@ -468,3 +468,65 @@ pending attempts exhausted——本增量实出现 5 种），**零新增**；`d
 - `fliploop-imac-decisions-window5-2026-11-15.txt`（窗口 07:19Z–00:59Z 全段 1,354 条，
   自 `agent-decisions.jsonl` 按 ts 切出；命名跨日至 2026-11-15）
 - switch-events 同窗统计已录入本节（增量 28 条全 mode_flip）
+
+## 09:4x CST 检查点（巡检单 meshlet-fliploop-checkpoint-0948，2026-11-15 01:52:03Z 取证）
+
+**取证时刻（双时区）**：2026-11-15 **01:52:03Z（09:52 CST）**，imac 侧 01:52:38Z 互证；
+本单标题 09:48 CST / 01:48Z 与实测一致。窗口 = 07:19Z → 01:52Z = **18.56h**，距 24h
+门槛（15:19 CST / 07:19Z）**还差 5.44h**。**本轮不做达标判定**。
+
+数据面：`agent-decisions.jsonl`（686,571 B / 1,940 事件，末事件 01:52:09Z）、
+`direct-switch-events.json`（1,108 事件）、`direct-peers.json`（实况见下）。
+
+### 增量（00:59:43Z→01:52Z，53min）：85 事件
+
+JMrE 49 条（promote 20 / hold_relay 19 / demote 10）；FSaf **36 条**（promote 13 /
+hold_relay 12 / demote 7 / probe 4）。窗口累计 1,438 事件 = 18.56h：
+windows-desktop **1,139** 条（promote 435 / hold_relay 430 / demote 221 / probe 52 /
+defer 1），openclaw-win **299** 条（promote 108 / hold_relay 105 / demote 54 /
+probe 32）。
+
+### JMrE：环仍在续，末段节奏持平
+
+215 个周期分段中位 0.78 → 0.78 → 0.87 → **1.52min**（19Z–01Z+ 段连续三个检查点
+持平）；末 10 周期 0.77–8.35min 散布，仍分钟级。末拍：01:49:07Z FSaf verified 后，
+01:51:23Z JMrE demote `.97:51821`（sel003）→ hold_relay（至取样末）。取证时实况：
+windows-desktop `mode=hub_relay`（中继态）。
+
+### FSaf：复翻确认，`.49` ↔ `180.153.160.8` 分钟级交替
+
+上轮「静默 45min / 收窄暂稳」**未延续**——01:07:31Z 起复翻，增量 5 个
+promote→demote 周期，**中位 2.38min**（1.62–8.45min 散布），节奏比 JMrE（1.52min）
+略慢但仍分钟级。面签名：demote 6 次全在 **`.49:51820`**（sel003 ×5 + pending
+attempts exhausted ×1），promote verified 交替落在 `.49`（memory face ×3）与
+`180.153.160.8`（candidate table ×3）——与 08:0x 检查点的 ZT↔公网互拽同型。
+
+**实况面漂移依旧**：取证时 FSaf 实况 `p2p_direct @ 192.168.5.11:51820`
+（handshake fresh @ 01:50:24Z），而决策日志最后 verified 面是 `180.153.160.8`
+（01:49:07Z）——下发/verified 面 ≠ 内核实况面，WG roaming 漫回家 LAN 面，
+连续第二个检查点如此。
+
+### 切换闸口径复核
+
+增量 50 条切换事件**全为 mode_flip，0 条 endpoint_roam**；全文件 1,108 = 1,103
+flip + 5 roam（第 5 条 roam 仍早于本增量）。新面 `192.168.36.153` 增量 **0 命中**
+（全窗仍 23:04:09Z 一条，来源仍不猜）。
+
+### 无新签名
+
+增量 reason 文本全在此前 10 种之内（本增量实出现 6 种），**零新增**；`defer` 全窗
+仍 1 条；无新 endpoint 面。
+
+### 边界与排除（沿用单据）
+
+- 不做 24h 达标判定（窗口 18.56h 未满，差 5.44h；判定留给 15:19 CST 之后巡检）。
+- FSaf 侧数据留空：ZT 面 No route to host 前科，禁重试 SSH。
+- 三选一修复方向（①候选表纳管 roaming 面 / ②下发面锚定+漂移重下发 / ③demote
+  冷却 backoff）仍待用户拍板；本轮未动 `crates/`、未改状态机、纯取证。
+- 未 bump 版本、未打 tag、未发 release、未 force push。
+
+### raw 清单（本轮新增）
+
+- `fliploop-imac-decisions-window6-2026-11-15.txt`（窗口 07:19Z–01:52Z 全段 1,438 条，
+  自 `agent-decisions.jsonl` 按 ts 切出）
+- switch-events 同窗统计已录入本节（增量 50 条全 mode_flip）
