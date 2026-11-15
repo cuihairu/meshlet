@@ -69,6 +69,39 @@ face degraded (probe window)`，endpoint `.97`）——ZT 劣化面正确拒拨�
 接管道——CI fmt 门与这类「无日志无声失败」都指向同一教训：远端脚本先落一行日志
 再干活，解析错误才能被看见。
 
+## 20:2x 检查点（2026-11-15 20:48 CST / 12:48:49Z 实测，巡检单 meshlet-fixcp2-1120）
+
+**纯取证检查点 #2，窗龄 3.85h/24h——禁中途达标判定、禁外推**（单据标题 20:17 CST
+与实测 20:48 差 31min 按实测记录）。openclaw ZT SSH 本轮顺通，双机三文件齐取
+（raw `fliploop-fix-window2-2026-11-15.txt`）。
+
+**增量**（08:57:32Z 起 3.85h）：imac 388 决策（JMrE 253：promote 101/probe 36/
+demote 51/hold 65/defer 17；FSaf 118：promote 55/probe 35/demote 28）；OC 322
+（wd=JMrE 171：promote 25/hold 23/probe 14/demote 15/**defer 109**；imac 103；
+coding-vm 29）。周期中位（promote→demote）：imac JMrE 0.88min（n=51）/ FSaf
+1.52min（n=27）；OC wd 2.67min（n=14）/ imac 1.12min（n=26）/ coding-vm 9.26min
+（n=6，max 105.8min）。
+
+**切换闸**：imac 240 条=235 flip+**5 roam**（全 FSaf，SEL-002 评分合法切换
+`.49`→`192.168.5.11:51820` 路由器面，score 0 beats 24.5-636 for 3 samples）；
+OC 143 条=139 flip+4 roam（全 imac peer `.117`→`.226`，score 25-1000）。
+
+**修后新签名生产可见（均符合预期，无未知新 reason）**：FLIP-002 defer——imac
+JMrE 17 条（4→5 连续升级、最长连 5 条/3.0min）、OC wd 109 条（3→4→5→6→**7 连续**
+升级、cooling 至 834s、最长连 **13 条/12.9min**）——退避指数拉伸在生产可观测；
+FLIP-001 bypass promote——imac JMrE 22/FSaf 28、OC wd 28（另 coding-vm 12:48:41Z
+bypass promote @ `.130`）。**早期信号（defer 拒劣化面）延续**：部署后首条
+08:56:31Z defer 之后整个窗口持续。端点面：`.97`(155)/`.49`(70)/`192.168.5.11`
+(48，路由器面)/`180.152.54.66`(33)，无 `192.168.36.153` 同类新面进决策。
+
+**实况快照**（12:49Z）：imac——coding-vm p2p_direct @ `192.168.5.188` 稳定、
+JMrE hub_relay（endpoint 空=冷却中）、FSaf direct_pending @ 路由器面；OC——
+coding-vm direct_pending @ `.130`、JMrE 与 imac 均 hub_relay（endpoint 空）。
+**末拍仍在翻**：imac JMrE 12:48:18Z promote verified @ `.97` → 39s 后
+12:49:07Z demote sel003；OC imac peer 12:47:34Z verified @ `.17` → 12:48:41Z
+demote——**环未收口**（事实记录；判定属另单）。率事实（非判定）：imac JMrE
+demote 51/3.85h ≈13.2 次/h vs 修前 24h 窗 33 次/h、12.69h 基线 64 次/h。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：

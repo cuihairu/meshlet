@@ -1,0 +1,33 @@
+=== fliploop 修后窗检查点 #2 raw（2026-11-15 20:48 CST / 12:48:49Z 实测取证）===
+window start 2026-11-15T08:57:32Z (both machines new build + PID confirmed); age at capture 3h51m17s (3.85h/24h)
+openclaw ZT SSH reachable this round (no No-route-to-host; files fetched, no retry needed)
+files: imac agent-decisions.jsonl 995223B / direct-switch-events.json 491290B / direct-peers.json 672B
+       oc   agent-decisions.jsonl 945987B / direct-switch-events.json 440152B / direct-peers.json 629B
+
+IMAC decisions window total=388
+  windows-desktop(JMrE): promote 101 probe 36 demote 51 hold_relay 65 defer 17
+  openclaw-win(FSaf):    promote 55 probe 35 demote 28
+  cycles promote->demote: JMrE n=51 median 0.88min (0.72-6.03) | FSaf n=27 median 1.52min (0.72-52.57)
+  switch events total=240 mode_flip=235 endpoint_roam=5
+  roams (all FSaf, SEL-002 score legal): 09:11:41Z / 11:40:42Z / 12:08:36Z / 12:17:41Z / 12:46:05Z, all .49:51820 -> 192.168.5.11:51820 (score 0.0 beats 24.5-636.0, 3 consecutive samples)
+  defer escalation: 4 consecutive (cooling 14-195s) -> 5 consecutive (cooling 253-343s); max run 5 consecutive, longest 3.0min
+  FLIP-001 bypass events: JMrE 22, FSaf 28 (reason=recovery gate bypassed: face probe-healthy)
+  endpoints in window decisions: .97:51821 x155, .49:51820 x70, 192.168.5.11:51820 x48, 180.152.54.66:51821 x33
+  last shot: JMrE 12:48:18Z promote verified @.97 -> 12:49:07Z demote sel003 (ring NOT closed at capture); FSaf 12:49:07Z bypass promote @ 192.168.5.11 router face
+  live snapshot 12:49Z: coding-vm p2p_direct @192.168.5.188 (stable); JMrE hub_relay (endpoint empty, cooling); FSaf direct_pending @192.168.5.11
+
+OC decisions window total=322
+  windows-desktop(JMrE): promote 25 probe 14 demote 15 hold_relay 23 defer 109
+  imac:                  promote 52 probe 24 demote 27 hold_relay 4
+  coding-vm:             promote 13 probe 8 demote 7 hold_relay 1
+  cycles: JMrE n=14 median 2.67min (1.07-8.98) | imac n=26 median 1.12min (1.02-49.33) | coding-vm n=6 median 9.26min (1.08-105.80)
+  switch events total=143 mode_flip=139 endpoint_roam=4
+  roams (all imac peer, legal): 09:06:53Z / 09:38:24Z / 10:35:31Z / 11:19:15Z, all 192.168.5.117:51820 -> 10.147.19.226:51820 (score 25-1000 beats inf)
+  defer escalation: 3 -> 4 -> 5 -> 6 (cooling up to 705s) -> 7 consecutive (cooling up to 834s); max run 13 consecutive, longest 12.9min
+  FLIP-001 bypass: JMrE 28 (wd view); bypass promote also fired for coding-vm (12:48:41Z @ .130)
+  last shot: imac peer 12:47:34Z promote verified @.17 -> 12:48:41Z demote sel003; JMrE hold_relay continuing; coding-vm bypass promote @.130
+  live snapshot 12:48Z: coding-vm direct_pending @10.147.19.130; JMrE hub_relay (endpoint empty); imac hub_relay (endpoint empty)
+
+new reason signatures in window (vs pre-fix): FLIP-002 "promote deferred: demote backoff (N consecutive demote(s), cooling Xs more; FLIP-002)" (imac 17 + oc 109) and FLIP-001 "recovery gate bypassed: face probe-healthy (FLIP-001)" (imac 50 + oc 28) — both expected post-fix; no other unknown new reasons
+early signal continuity: defer-on-degraded-face continues after first post-deploy defer 08:56:31Z; suppression stretches observable (oc wd 12.9min longest)
+rate fact (not a judgment): imac JMrE demote 51/3.85h = 13.2/h vs pre-fix 24h window 33/h, 12.69h baseline 64/h
