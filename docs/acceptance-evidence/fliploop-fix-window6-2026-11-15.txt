@@ -1,0 +1,43 @@
+=== fliploop 修后窗检查点 #6 raw（2026-11-16 00:24:07 CST / 2026-11-15T16:24:07Z 实测取证；单据标题 00:01 差 23min 按实测）===
+window start 2026-11-15T08:57:32Z; age at capture 7h26m35s (7.44h/24h); cp5 capture was 15:14:06Z -> increment window ~70min (last record 16:24:20Z hs)
+OPENCLAW SIDE EMPTY THIS ROUND: SSH connect timeout (exit 124) on first try -> ZT face unreachable, leave-empty rule applied, NO retry (per iron rule; cp2-cp5 all reachable)
+files (imac only): agent-decisions.jsonl 1107098B / direct-switch-events.json 523156B / direct-peers.json 719B
+
+IMAC FULLWIN total=701 (file total 3108) | SINCE_CP5 total=89 (~70min)
+  FULLWIN windows-desktop(JMrE): promote 153 defer 151 hold_relay 105 demote 78 probe 55
+         openclaw-win(FSaf): promote 70 probe 51 demote 38
+  cycles: JMrE n=78 median 0.82min (0.72-6.03) | FSaf n=37 median 2.20min (0.72-171.90 <- the 111min+ stable direct becomes longest cycle)
+  SINCE_CP5 JMrE: promote 25 defer 18 hold_relay 17 demote 12 probe 9 | FSaf: promote 4 demote 2 probe 2
+  cycles SINCE_CP5: JMrE n=12 median 0.75min (0.72-4.45) | FSaf n=1 0.77min
+  FLIP-002 defer: fullwin 151, segment 18; max consecutive 10 (15:15:15Z; then cleared by health confirmations and rebuilt 2->4->5 — FLIP-002 recovery_confirmations=3 clearing OBSERVED IN PRODUCTION)
+  FLIP-001 bypass: fullwin JMrE 27 (+4) / FSaf 32 (+2); segment bypass = JMrE 4, FSaf 2
+  promote/defer endpoints fullwin: .97 x99 (+14 segment), 180.152.54.66:51821 x54 (+11 segment), .11:51820 x35, 10.147.19.49 x32 (+4), .11:44249 x3 (unchanged, face went stale)
+  switch FULLWIN=345 flip=339 roam=6 (unchanged; kernel face drift 180.152->.97 did NOT emit a roam event, same as cp3 :44249 port drift)
+  PENDING OBSERVATION ANSWERED (backoff expiry first shot):
+    cp5 last defer 15:13:37Z cooling 135s -> one more demote landed before expiry, consecutive 9->10, cooling RESET to 766s
+    (defers 15:15:15Z-15:20:32Z with cooling 766s->449s counting down)
+    expiry ~15:21:18Z: promote @10.147.19.97 via memory face (probe Unhealthy) -> 15:22:01Z promote verified fresh handshake (probe Healthy)
+    -> 15:22:44Z demote sel003 (43s later). Ring persists at capped cadence: attempts ~15:21/15:28/15:34/15:38/15:43/15:49/15:58/16:01/16:07/16:10/16:16/16:19
+    cycle resumption detail: attempts via candidate table @180.152.54.66 (public WAN face, several verified: 15:44/15:50/16:02/16:20) and @.97 (several verified via bypass/memory)
+    last cycle: 16:19:54Z promote @180.152 -> 16:20:41Z verified @180.152 -> kernel drifted to .97 (live fresh hs=16:24:20Z, dispatched != kernel face AGAIN)
+  FSaf stable-direct streak ENDED: zero decisions from 13:23:30Z verified through ~16:15Z (total stable ~172min),
+    16:15:24Z demote @.49 (sel003) -> bypass promote -> verified @.49 16:16:55Z -> 16:17:41Z demote -> bypass promote -> verified @.49 16:19:10Z
+    -> live @10.147.19.49:51820 fresh hs=16:23:47Z (dispatched==kernel consistent again)
+    the .11:44249 NAT ephemeral face never reappeared after 13:23:30Z (x3 unchanged) — NAT port binding expired at some point before 16:15Z
+  LIVE at capture (16:24Z): coding-vm p2p_direct @192.168.5.188 fresh hs=16:22:27Z
+    JMrE p2p_direct @10.147.19.97:51821 fresh hs=16:24:20Z (rtt_source=probe_failed; dispatched face was 180.152.54.66 -> kernel drift)
+    FSaf p2p_direct @10.147.19.49:51820 fresh hs=16:23:47Z
+  LAST per peer: FSaf 16:19:10Z verified @.49 | JMrE 16:20:41Z verified @180.152.54.66
+
+reason set (FULLWIN): demote backoff defer / pending verified / recovery gate hold / sel003 degraded / memory face promote /
+  bypass promote / candidate table promote / waiting for handshake / pending attempts exhausted / handshake stale —
+  all pre-existing or fix-expected, NO unknown new reason
+
+key facts (not judgments):
+- backoff expiry answered the pending observation: promote RESUMED and VERIFIED at expiry, but SEL-003 demoted 43s later — ring persists at capped/health-reset cadence
+- FLIP-002 health-clearing (3 consecutive healthy rounds -> chain reset) observed in production: consecutive count rebuilt 10 -> 2 -> 4 -> 5 within segment
+- segment demote rate rebounded: JMrE 12/70min ~=10.3/h (cp5 segment ~=3.7/h was mostly inside cap cooling window; fullwin ~=10.5/h) — suppression gap vs promotion gap visible
+- bypass promotes fired <1min after demotes in segment (after health-reset shrank cooling to 30s base) — bypass + short-cooldown interplay visible
+- JMrE public WAN face 180.152.54.66 promoted AND verified repeatedly (candidate table admits roaming/public faces) but kernel drifts back to .97 within minutes
+- FSaf: ~172min total stable direct then .49 face churn (2 cycles in 4min), re-verified and stable at capture; :44249 face gone (NAT rebinding)
+- zero new roam events, zero new endpoint faces, zero unknown reasons

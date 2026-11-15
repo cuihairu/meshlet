@@ -225,6 +225,52 @@ OC——coding-vm @ `.130` fresh、imac peer @ `.117` hs=15:13:26Z
 ≈3.7/h）——压稀趋势在段间延续；末段 JMrE 环仍 ~44s 快速往复但仅 3 次
 （n=3 median 0.73min）。
 
+## 00:0x 检查点（2026-11-16 00:24 CST / 2026-11-15T16:24:07Z 实测，巡检单 fliploop-fixcp6-1120）
+
+**纯取证检查点 #6，窗龄 7.44h/24h——禁中途达标判定、禁外推**（单据标题 00:01
+与实测 00:24 差 23min 按实测）。**openclaw SSH 首试超时（exit 124，ZT 面不通）
+——触发留空铁律未重试，本轮 OC 侧留空**（cp2–cp5 均顺通）。仅 imac 三文件
+取证（raw `fliploop-fix-window6-2026-11-15.txt`）。
+
+**挂起观测点解答（cp5 末拍 cooling 135s 将尽 → 退避到期首拍）**：到期前又落
+一次 demote（连击 9→**10**、cooling 重置 766s，15:15:15Z–15:20:32Z 五拍 defer
+倒计时）；到期 ~15:21:18Z **promote 恢复且 verified**（memory face @ `.97`，
+15:22:01Z pending verified fresh handshake）——**43s 后 sel003 打回**。环按
+cap/健康清零节奏延续：段内尝试 ~5–6min 一拍（15:21/15:28/15:34/15:38/15:43/
+15:49/15:58/16:01/16:07/16:10/16:16/16:19），**FLIP-002 的健康清零生产可观测**
+——连击 10 →（连续 3 轮健康确认）→ 清零 → 2→4→5 重涨（15:37:54Z defer 已示
+「2 consecutive」）。
+
+**增量**（08:57:32Z 起 7.44h；cp5 后增量窗约 70min）：imac 全窗 701 决策
+（JMrE promote 153/defer 151/hold 105/demote 78/probe 55；FSaf promote 70/
+demote 38/probe 51）。周期中位：imac JMrE 0.82min（n=78）/ FSaf 2.20min
+（n=37，**max 171.90min=111min+ 稳直连成为最长周期**）。cp5 后增量 89 条
+（JMrE promote 25/defer 18/hold 17/demote 12/probe 9——cycles n=12 median
+0.75min；FSaf promote 4/demote 2/probe 2）。**段内 demote 回弹** ≈10.3 次/h
+（cp5 段 ≈3.7/h 大部分在 cap 冷却窗内被拦；全窗 ≈10.5/h——拦截期与放行期的
+率差可见，非判定）。段内 bypass：JMrE +4/FSaf +2（连击被健康清零后冷却缩到
+base 30s，bypass 在冷却后放行，demote 后 <1min 的 bypass promote 可见）。
+
+**FSaf 稳直连终结**：13:23:30Z verified 起 ~172min 零决策稳直连后，
+16:15:24Z demote @ `.49`（sel003）→ bypass promote → verified 16:16:55Z →
+demote → bypass promote → **16:19:10Z verified @ `.49`** → 取证时 live @
+`.49:51820` fresh（下发面=内核面再次一致）。**`:44249` NAT 临时端口面消亡**
+（16:15Z 前某刻 NAT 端口绑定过期，全窗 ×3 无新增）——cp3/cp4/cp5 追踪的
+FSaf 面漂移链自然收尾。**JMrE 公网 WAN 面 `180.152.54.66:51821` 反复 promote
+且 verified**（候选表纳管公网面参选成果；15:44/15:50/16:02/16:20 四次
+verified），但内核数分钟内漂回 `.97`——末拍 16:20:41Z verified @ `180.152`
+→ live @ `.97` fresh hs=16:24:20Z（**下发面≠内核面再现**，此类内核漂移不产生
+roam 事件，同 cp3 `:44249` 端口漂移）。切换闸 345=339 flip+6 roam（零新
+roam）；端点面集无新面（`.97` +14/`180.152` +11/`.49` +4 增量均为存量面）；
+reason 全集不变，**无未知新 reason**。
+
+**实况快照**（16:24Z）：三对全 p2p_direct——coding-vm @ `192.168.5.188`
+fresh、**JMrE @ `.97` fresh hs=16:24:20Z**（rtt_source=probe_failed 但握手
+新鲜）、**FSaf @ `.49` fresh hs=16:23:47Z**。末拍：FSaf 16:19:10Z verified、
+JMrE 16:20:41Z verified——取证时两对均为 verified 后 <5min 的直连态。率事实
+（非判定）：JMrE 段内 demote 12/70min ≈10.3 次/h（cp5 段 ≈3.7、全窗 ≈10.5、
+修前 33 次/h）；末段环仍 ~44s 快速往复（median 0.75min）。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：
