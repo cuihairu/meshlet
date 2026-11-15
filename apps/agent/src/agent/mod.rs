@@ -101,6 +101,11 @@ pub struct Agent {
     /// 端点发 ICMP 探测，采集 RTT/丢包/抖动滑动窗口。候选集由
     /// [`Agent::reconcile_direct`] 每 30s 刷新（零控制面负载）。
     probe: crate::probe::ProbeRuntime,
+    /// FLIP-001 端点候选表：config（服务端权威）/ roaming（内核观测）/
+    /// discovered（探测证实）三类来源的候选面集合，见 [`crate::candidates`]。
+    /// 回中继后 SEL-001 仍持续探测表内面——健康面走恢复门 bypass 直接
+    /// promote，不再只盯服务端单一 endpoint 等劣化。
+    candidates: crate::candidates::CandidateTable,
     /// SEL-003 恢复门：直连劣化回中继后连续 N 轮健康才允许切回（防抖）。
     recovery: RecoveryGate,
     /// SSH 别名同步开关与状态路径（默认全关：不写 `~/.ssh` 任何文件）。
@@ -206,6 +211,7 @@ impl Agent {
                 },
             ),
             probe,
+            candidates: crate::candidates::CandidateTable::new(),
             recovery: RecoveryGate::new(recovery_required),
             ssh_config_sync: config.ssh_config_sync,
             ssh_sync_status_path: crate::ssh_sync::status_path(&config.state_dir),
@@ -255,6 +261,11 @@ impl Agent {
                         }
                     }
                     last_net_wake = Some(Instant::now());
+                    // FLIP-001：换网事件 → 直连候选表刷新 + 立即探测。重置
+                    // 30s 节流，下一 tick（本轮退避后立即）跑完整直连对账：
+                    // 主动探测所有已知端点，可达的新面即走恢复门 bypass
+                    // promote——不等「先 demote 再等恢复门」旧路径。
+                    self.last_direct_probe = None;
                     tracing::info!("network change observed: retrying immediately");
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}

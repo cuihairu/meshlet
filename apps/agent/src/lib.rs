@@ -15,6 +15,7 @@
 
 pub mod agent;
 pub mod bootstrap;
+pub mod candidates;
 #[cfg(target_os = "linux")]
 pub mod dbus;
 pub mod desktop;

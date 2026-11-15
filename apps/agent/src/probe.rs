@@ -167,6 +167,32 @@ impl ProbeRuntime {
         set
     }
 
+    /// FLIP-001：某 (公钥, 候选) 面是否有「探测证实的健康」证据——恢复门
+    /// bypass 的判据输入（候选表内有健康面 → 不 hold_relay 等门，直接
+    /// promote 该面）。
+    ///
+    /// 口径：窗口非空、**至少一拍 RTT 成功**（正面证据——全程 Lost 的长窗口
+    /// 享受无基线豁免不判劣化，但那不是「健康」，只是「未知」，绝不冒充），
+    /// 且不劣化（[`is_degraded`] 同一判定）。无窗口 / 无成功采样 → `false`。
+    pub fn face_healthy(&self, public_key: &str, candidate: EndpointCandidate) -> bool {
+        let snapshot = self.snapshot();
+        snapshot
+            .get(&(public_key.to_string(), candidate))
+            .is_some_and(|w| window_is_healthy(w, self.degrade_rtt_ms))
+    }
+
+    /// FLIP-001：当前全部「探测证实健康」的面的集合（单快照批量判定——
+    /// 候选表探测证据刷新与恢复门 bypass 共用一轮读数，避免逐面重复克隆
+    /// 快照）。口径同 [`Self::face_healthy`]。
+    pub fn healthy_faces(&self) -> BTreeSet<(String, EndpointCandidate)> {
+        let snapshot = self.snapshot();
+        snapshot
+            .into_iter()
+            .filter(|(_, w)| window_is_healthy(w, self.degrade_rtt_ms))
+            .map(|(target, _)| target)
+            .collect()
+    }
+
     /// 决策日志的判据输入：某对端某候选的探测窗口摘要（如
     /// `23,31,L,L loss=50% med=27ms`；`L` = 丢拍）。探测关 / 无窗口 →
     /// `None`（决策事件里该字段缺席，不冒充「探测过且健康」）。
@@ -242,6 +268,17 @@ impl Drop for ProbeRuntime {
 /// 跟踪器都是短临界区，毒化只可能是探测线程已崩——恢复数据继续用）。
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 「探测证实健康」的窗口口径（FLIP-001）：至少一拍 RTT 成功（正面证据；
+/// 全程 Lost 的无基线窗口是「未知」不是「健康」）且不劣化（[`is_degraded`]
+/// 同一判定）。空窗口 → `false`。
+fn window_is_healthy(window: &ProbeWindow, degrade_rtt_ms: u64) -> bool {
+    window
+        .samples()
+        .iter()
+        .any(|s| matches!(s, ProbeSample::Rtt(_)))
+        && !is_degraded(window, degrade_rtt_ms)
 }
 
 #[cfg(test)]

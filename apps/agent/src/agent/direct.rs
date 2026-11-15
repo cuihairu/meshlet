@@ -41,8 +41,10 @@ impl super::Agent {
     pub fn reconcile_direct(&mut self, plan: &DevicePlan) {
         let request = dial::load_request(Path::new(&self.state_dir));
         if !self.dataplane.direct_connect.enabled {
-            // 直连关 → 无候选可探：清空探测候选缓存（探测线程下一轮 no-op）。
+            // 直连关 → 无候选可探：清空探测候选缓存与候选表（探测线程下一轮
+            // no-op；roaming 面证据一并丢弃，开关重开后从服务端口径重建）。
             self.probe.update_candidates(&[]);
+            self.candidates = crate::candidates::CandidateTable::new();
             let updates = self.direct.demote_all();
             if !updates.is_empty() {
                 for update in &updates {
@@ -65,7 +67,8 @@ impl super::Agent {
             .last_direct_probe
             .map(|last| last.elapsed().as_secs() >= DIRECT_PROBE_INTERVAL_SECS)
             .unwrap_or(true);
-        // 有拨号意图即强制本轮（不等节流）；无意图按正常节流。
+        // 有拨号意图即强制本轮（不等节流）；无意图按正常节流。换网事件的
+        // 「立即探测」由 run() 在网络事件唤醒处重置 last_direct_probe 实现。
         if !due && request.is_none() {
             return;
         }
@@ -85,8 +88,20 @@ impl super::Agent {
                 return;
             }
         };
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // FLIP-001 候选表对账：config 面（服务端权威）插入/保鲜 → 回收出集
+        // 对端与过期 roaming 面 → 合并成有效候选集（config 原序在前，表内
+        // 新增面按地址排序追加）。SEL-001 自此探测**全部已知面**（含内核
+        // roaming 面），不再只盯服务端单一 endpoint 等它劣化。
+        self.candidates.sync_config(&wanted, now_secs);
+        self.candidates.retain_peers(&wanted);
+        self.candidates.expire(now_secs);
+        let effective = self.candidates.merge_into(&wanted);
         // SEL-001：候选集刷新（探测线程复用，不额外请求 server——零控制面负载）。
-        self.probe.update_candidates(&wanted);
+        self.probe.update_candidates(&effective);
         let Some(scope) = direct_scope(plan) else {
             tracing::warn!("direct probe: no routable scope in the plan; keeping hub relay");
             if let Some(req) = request {
@@ -119,12 +134,41 @@ impl super::Agent {
                 None
             }
         };
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         let handshake_ages =
             merge_handshake_ages(handshake_ages, dump_handshake_ages(net.as_ref(), now_secs));
+        // FLIP-001 内核 roaming 观测：wg dump 里各在管对端的当前 endpoint
+        // （内核收到新源面的合法认证包即漫游——对端换网 / 新 face 的最强
+        // 证据，常不在服务端候选表）。灌入候选表（TTL 内有效）；新面出现即
+        // 重合并 + 刷新探测缓存（探测线程一个周期内即采样新面）。hub peer
+        // 与内核漂移 peer 不在候选集，不收。
+        let wanted_keys: std::collections::BTreeSet<&str> = wanted
+            .iter()
+            .map(|p| p.public_key.as_str())
+            .collect();
+        if let Some(net) = &net {
+            for wg_peer in &net.wg {
+                if !wanted_keys.contains(wg_peer.public_key.as_str()) {
+                    continue;
+                }
+                let Some(candidate) = parse_endpoint_candidate(&wg_peer.endpoint) else {
+                    continue;
+                };
+                if self
+                    .candidates
+                    .observe_roaming(&wg_peer.public_key, candidate, now_secs)
+                {
+                    tracing::info!(
+                        public_key = %wg_peer.public_key,
+                        endpoint = %wg_peer.endpoint,
+                        "candidate table: new roaming face observed"
+                    );
+                }
+            }
+        }
+        drop(wanted_keys);
+        // 本轮统一用含 roaming 面的有效候选集（观测后重合并 + 刷新探测缓存）。
+        let effective = self.candidates.merge_into(&wanted);
+        self.probe.update_candidates(&effective);
         // SEL-003：从探测窗口推导各对端**当前直连路径**是否劣化（丢包尖峰/
         // 超时/RTT 深劣化——中位数 ≥ degrade_rtt_ms）。只看现役 endpoint 的
         // 窗口：候选列表里常年 ICMP 不达的备份候选（公网 NAT / 异网 LAN）
@@ -140,10 +184,20 @@ impl super::Agent {
         // promote 偏好健康面：当前探测窗口劣化的面集合（晋升选路前置过滤，
         // 见 plan_updates_logged——劣化面上 re-promote 只会立刻再降级）。
         let unhealthy_faces = self.probe.degraded_faces();
+        // FLIP-001 探测证据刷新：单快照批量取「探测证实健康」面集——候选表
+        // 保鲜（roaming→discovered 升级、last_seen 前移）与恢复门 bypass
+        // 共用同一轮读数。
+        let healthy_faces = self.probe.healthy_faces();
+        self.candidates
+            .refresh_probe_evidence(&healthy_faces, now_secs);
         // SEL-003 恢复门：对处于直连状态的对端记录本轮健康度；回中继后连续
         // N 轮健康才放行切回。健康 = 未劣化且握手年龄在健康窗口内。
+        // FLIP-001 bypass：候选表里存在探测健康面时不等门——换网后新面已
+        // 可达即回直连，不经过「先 demote 再等恢复门」旧路径（门只兜底
+        // 「没有任何健康面证据」的场景）。
         let mut hold_relay = std::collections::BTreeSet::new();
-        for peer in &wanted {
+        let mut gate_bypassed: Vec<(String, String)> = Vec::new();
+        for peer in &effective {
             let healthy = !degraded.get(&peer.public_key).copied().unwrap_or(false)
                 && handshake_ages
                     .get(&peer.public_key)
@@ -155,15 +209,33 @@ impl super::Agent {
                     .status_of(&peer.public_key)
                     .is_some_and(|p| p.state == PeerLinkState::Relay)
             {
-                // 已回中继但尚未连续健康 N 轮：保持中继（防抖切回）。
-                hold_relay.insert(peer.public_key.clone());
+                let faces = self.candidates.faces(&peer.public_key);
+                let healthy_face = faces.iter().find(|(c, _)| {
+                    healthy_faces.contains(&(peer.public_key.clone(), *c))
+                });
+                match healthy_face {
+                    Some((face, source)) => {
+                        tracing::info!(
+                            public_key = %peer.public_key,
+                            face = %face.socket(),
+                            source = source.as_str(),
+                            "recovery gate bypassed: probe-healthy face in candidate table"
+                        );
+                        gate_bypassed
+                            .push((peer.public_key.clone(), face.socket().to_string()));
+                    }
+                    None => {
+                        // 已回中继且无健康面证据：保持中继（防抖切回）。
+                        hold_relay.insert(peer.public_key.clone());
+                    }
+                }
             }
         }
         // 回收不在候选集里的恢复计数。
         let live_keys: Vec<String> = wanted.iter().map(|p| p.public_key.clone()).collect();
         self.recovery.retain(&live_keys);
         let (updates, decisions) = self.direct.apply_plan(
-            &wanted,
+            &effective,
             &my_lan_subnets,
             scope,
             plan.tunnel.address,
@@ -183,6 +255,9 @@ impl super::Agent {
         // （Windows 服务 / schtasks SYSTEM）也能事后回放降级/晋升原因。
         // 判据输入摘要（探测窗口）按**本轮**现役路径查窗口快照。
         self.record_decisions(&decisions, &current_paths);
+        // FLIP-001 观测面：恢复门 bypass 逐条入决策日志（无控制台上下文也
+        // 能回放「为什么没等门」）。
+        self.record_bypass_events(&gate_bypassed, &handshake_ages);
         // R-DIAG-2：对处于直连状态的对端刷新读数（wg 端点/握手/流量）+ 实测
         // 直连路径 RTT——即使本周期无动作也要刷新，供心跳与控制台/CLI 展示。
         self.enrich_direct_peers(net.as_ref(), now_secs);
@@ -192,8 +267,8 @@ impl super::Agent {
         // 是 no-op——绝不影响数据面循环。
         self.apply_switch_decisions();
         // 发布直连对端视图（`direct-peers.json`）：托盘「直连节点 / 连接节点…」
-        // 子菜单与 CLI `peer dial` 解析 `<node>` 的数据源。
-        self.publish_direct_peers(&wanted);
+        // 子菜单与 CLI `peer dial` 解析 `<node>` 的数据源（含候选表 roaming 面）。
+        self.publish_direct_peers(&effective);
         if let Some(req) = request {
             self.finish_dial_for_request(&req);
         }
@@ -419,6 +494,41 @@ impl super::Agent {
                     reason = %d.reason,
                     "direct mode flipped"
                 );
+            }
+        }
+    }
+
+    /// FLIP-001：恢复门 bypass 逐条入决策日志（`agent-decisions.jsonl`，
+    /// action=`probe`、reason 标注 FLIP-001，endpoint 即 bypass 凭据的健康面）。
+    /// 写失败只记日志——观测是增益，绝不干扰数据面循环。
+    fn record_bypass_events(
+        &self,
+        bypassed: &[(String, String)],
+        handshake_ages: &BTreeMap<String, u64>,
+    ) {
+        let state_dir = Path::new(&self.state_dir);
+        for (public_key, face) in bypassed {
+            let probe_window = parse_endpoint_candidate(face)
+                .and_then(|c| self.probe.window_summary(public_key, c));
+            let event = dial::DecisionEvent {
+                ts: dial::rfc3339_now(),
+                public_key: public_key.clone(),
+                peer_name: self
+                    .direct
+                    .status_of(public_key)
+                    .map(|p| p.peer_name.clone())
+                    .unwrap_or_default(),
+                action: "probe".into(),
+                from_mode: "hub_relay".into(),
+                to_mode: "hub_relay".into(),
+                reason: "recovery gate bypassed: face probe-healthy (FLIP-001)".into(),
+                handshake_age_secs: handshake_ages.get(public_key).copied(),
+                degraded: false,
+                endpoint: face.clone(),
+                probe_window,
+            };
+            if let Err(e) = dial::append_decision_event(state_dir, &event) {
+                tracing::warn!(error = %e, "bypass decision log not written");
             }
         }
     }

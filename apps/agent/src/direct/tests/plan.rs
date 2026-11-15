@@ -1082,3 +1082,107 @@ fn empty_unhealthy_set_keeps_legacy_promotion_behavior() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].action, "promote");
 }
+
+/// FLIP-001 集成模拟（翻转序列，域层视角）：旧配置面劣化 → SEL-003 demote
+/// → 有效候选集含内核 roaming 新面（候选表 merge_into 产物、探测健康）→
+/// 下一轮 promote 落在健康新面（记忆面/劣化面被 unhealthy 过滤）→ 第 3 轮
+/// Keep 无动作——断言不产生 promote→demote 环。
+#[test]
+fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
+    let scope = cidr(OVERLAY);
+    let self_vip = "10.240.0.2".parse().unwrap();
+    let face_a = lan("192.168.5.11", 51820); // 服务端候选面（ZT 劣化面）
+    let face_b = lan("192.168.5.23", 51820); // 内核 roaming 新面（健康）
+    let my_lan = [cidr("192.168.5.0/24")];
+    // 服务端候选只有 face_a；候选表 merge 后的有效集含 face_b。
+    let effective = [peer("dev-b", "10.240.0.3", &[face_a, face_b])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
+    );
+    // face_a 直连是当初 promote 建立的（promote 动作写记忆面），夹具对齐。
+    current.get_mut("dev-b").unwrap().last_direct = Some(face_a);
+
+    // 第 1 轮：face_a 探测窗口劣化 → 立即回中继；Direct 记忆面保留。
+    let degraded: BTreeMap<String, bool> = [("dev-b".to_string(), true)].into();
+    let (updates, _) = plan_updates_logged(
+        &effective,
+        &my_lan,
+        scope,
+        self_vip,
+        &mut current,
+        &BTreeMap::new(),
+        &degraded,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    );
+    assert_eq!(
+        updates,
+        vec![DirectUpdate::Demote {
+            public_key: "dev-b".into()
+        }]
+    );
+    assert_eq!(current["dev-b"].state, PeerLinkState::Relay);
+    assert_eq!(
+        current["dev-b"].last_direct,
+        Some(face_a),
+        "Direct demote keeps memory face"
+    );
+
+    // 第 2 轮：Relay、恢复门放行（FLIP-001 bypass 语义 = hold_relay 空）；
+    // face_a 仍劣化（unhealthy_faces）→ 记忆面被滤 → healthy 滤后候选只剩
+    // face_b → promote 落在新面（不经「先 demote 再等恢复门」旧路径）。
+    let unhealthy: BTreeSet<(String, EndpointCandidate)> =
+        [("dev-b".to_string(), face_a)].into();
+    let (updates, records) = plan_updates_logged(
+        &effective,
+        &my_lan,
+        scope,
+        self_vip,
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &unhealthy,
+        &BTreeSet::new(),
+    );
+    assert_eq!(
+        updates,
+        vec![DirectUpdate::Promote {
+            public_key: "dev-b".into(),
+            allowed_ips: vec![cidr("10.240.0.3/32")],
+            endpoint: face_b.socket(),
+        }],
+        "promote lands on the healthy roaming face, not the degraded config face"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|r| r.action == "promote" && r.reason.contains("candidate table")),
+        "reason={:?}",
+        records.iter().map(|r| &r.reason).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        current["dev-b"].last_direct,
+        Some(face_b),
+        "memory face moves to the new healthy face"
+    );
+
+    // 第 3 轮：face_b 直连、握手新鲜（30s，健康窗口内）、探测健康 → Keep
+    // 无动作，环收敛。
+    current.get_mut("dev-b").unwrap().state = PeerLinkState::Direct;
+    let fresh_hs: BTreeMap<String, u64> = [("dev-b".to_string(), 30)].into();
+    let (updates, _) = plan_updates_logged(
+        &effective,
+        &my_lan,
+        scope,
+        self_vip,
+        &mut current,
+        &fresh_hs,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    );
+    assert!(updates.is_empty(), "healthy direct link holds; no ring");
+    assert_eq!(current["dev-b"].state, PeerLinkState::Direct);
+}
