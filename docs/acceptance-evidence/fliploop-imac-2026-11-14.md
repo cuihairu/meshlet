@@ -530,3 +530,67 @@ flip + 5 roam（第 5 条 roam 仍早于本增量）。新面 `192.168.36.153` �
 - `fliploop-imac-decisions-window6-2026-11-15.txt`（窗口 07:19Z–01:52Z 全段 1,438 条，
   自 `agent-decisions.jsonl` 按 ts 切出）
 - switch-events 同窗统计已录入本节（增量 50 条全 mode_flip）
+
+## 12:1x CST 检查点（巡检单 meshlet-fliploop-checkpoint-1216，2026-11-15 04:21:58Z 取证）
+
+**取证时刻（双时区）**：2026-11-15 **04:21:58Z（12:21:58 CST）**，imac 侧 04:21:58.06Z 与
+本机 04:21:21Z 互证；本单标题 12:16 CST 与实测差 5min，按实测记录。窗口 = 07:19Z →
+04:21:58Z = **21.05h**，距 24h 门槛（15:19 CST / 07:19Z）**还差 2.95h**。**本轮不做达标
+判定**。取证时 load 1min=62（<150，按单据确认可执行）。
+
+数据面：`agent-decisions.jsonl`（760,079 B / 2,148 事件，末事件 04:19:26Z）、
+`direct-switch-events.json`（1,225 事件）、`direct-peers.json`（实况见下）。
+
+### 增量（01:52:56Z→04:19:26Z，2.44h）：208 事件
+
+JMrE 135 条（promote 52 / hold_relay 51 / demote 25 / probe 7）；FSaf **73 条**
+（promote 26 / hold_relay 24 / demote 14 / probe 9）。窗口累计 1,646 事件 = 21.05h：
+windows-desktop **1,274** 条（promote 487 / hold_relay 481 / demote 246 / probe 59 /
+defer 1），openclaw-win **372** 条（promote 134 / hold_relay 129 / demote 68 / probe 41）。
+
+### JMrE：环未收口，4h 分段中位续写 1.56min；实况面漂移首次扩散到 JMrE
+
+245 个周期（窗口累计）按 4h 分段中位 0.78 → 0.77 → 1.45 → 0.83 → 1.52 → **1.56min**
+（15/00–04Z 段）→ 15/04 段 3.68min（n=3，取样截断小样本不外推）。增量 25 周期中位
+**1.55min**（0.72–9.20min 散布），仍分钟级。末拍：04:19:26Z promote verified
+`direct_pending→p2p_direct @ 180.152.54.66:51821`（公网面，probe Healthy）。
+
+**新况：实况面漂移扩散到 JMrE**——取证时实况 `p2p_direct @ 10.147.19.97:51821`
+（ZT 面，handshake fresh @ ~04:20:47Z）vs 末拍 verified @ 公网 `180.152.54.66`
+（04:19:26Z）：内核在 verified 后 ~2min 内漫游回 ZT 面，下发/verified 面 ≠ 内核实况面。
+此前各检查点该漂移仅在 FSaf 侧反复出现，本轮首次在 JMrE 侧实证。
+
+### FSaf：复翻延续后再度静默，实况面漂移连续第三检查点
+
+增量 13 周期中位 **2.22min**（0.75–20.52min 散布），02:15Z 起延续复翻（`.49:51820`
+↔ `180.153.160.8` 交替，verified 落 `.49` ×10 / `180.153.160.8` ×2；demote 14 拍中
+sel003 ×12 + pending attempts exhausted ×2，全在 `.49`）。03:01:12Z 后最长空档
+20.5min（03:21:43Z 恢复），03:53:13Z 末拍 promote verified @ `.49` 后**静默 29min**
+至取证时刻（增量内最长静止段）。取证时实况 `p2p_direct @ 192.168.5.11:51820`
+（家 LAN 面，handshake fresh @ ~04:21:01Z）vs 最后 verified @ `.49`（03:53:13Z）——
+**实况面漂移连续第三个检查点**，且静默段实况仍保持 fresh handshake（内核经 LAN 面
+存活，与台账脱钩）。
+
+### 切换闸口径复核
+
+增量 117 条切换事件**全为 mode_flip，0 条 endpoint_roam**（01:53:45Z→04:19:26Z）；
+全文件 1,225 = 1,220 flip + 5 roam（roam 恒 5，第 5 条仍早于本增量）。新面
+`192.168.36.153` 增量 **0 命中**（全窗仍 23:04:09Z 一条，来源仍不猜）。
+
+### 无新签名
+
+增量 reason JMrE 7 种 + FSaf 8 种，逐条与 window6 raw 全集比对**零新增**；
+`defer` 全窗仍 1 条；无新 endpoint 面。
+
+### 边界与排除（沿用单据）
+
+- 不做 24h 达标判定（窗口 21.05h 未满，差 2.95h；判定留给 15:19 CST 之后巡检）。
+- 禁 SSH openclaw（sshd flap 前科）/ win-worker（永久停用）；FSaf 侧数据如需留空则留空。
+- 三选一修复方向（①候选表纳管 roaming 面 / ②下发面锚定+漂移重下发 / ③demote 冷却
+  backoff）仍待用户拍板；本轮未动 `crates/`、未改状态机、纯取证。
+- 未 bump 版本、未打 tag、未发 release、未 force push。
+
+### raw 清单（本轮新增）
+
+- `fliploop-imac-decisions-window7-2026-11-15.txt`（窗口 07:19Z–04:19:26Z 全段 1,646 条，
+  自 `agent-decisions.jsonl` 按 ts 切出）
