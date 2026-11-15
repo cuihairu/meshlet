@@ -1,0 +1,58 @@
+=== fliploop 修后窗检查点 #11 raw（2026-11-16 04:23:47 CST / 2026-11-15T20:23:47Z 实测取证；与单据标题 04:2x 一致）===
+window start 2026-11-15T08:57:32Z; age at capture 11h26m15s (11.44h/24h); cp10 capture was 19:36:48Z -> increment window ~47min
+openclaw SSH reachable on first try (no retry needed)
+files: imac agent-decisions.jsonl 1288167B / direct-switch-events.json 626241B / direct-peers.json 675B
+       oc   agent-decisions.jsonl 1209176B / direct-switch-events.json 535259B / direct-peers.json 705B
+NOTE: task-sheet pending-obs background had 3 stale/wrong figures, corrected by measurement below:
+      (3) "cp10 zero participation of 180.152" -> actually re-admitted +2/+4 at cp10; (5) wd 28->31 was cp8-era (cp10 ended at 36);
+      (7) "cp10 still zero new roam" -> actually imac view +2 / OC view +1 at cp10
+
+IMAC FULLWIN total=1184 (file total 3591) | SINCE_CP10 total=113 (~47min)
+  FULLWIN windows-desktop(JMrE): promote 231 defer 151 hold_relay 142 demote 118 probe 81
+         openclaw-win(FSaf): promote 215 probe 135 demote 111
+  cycles: JMrE n=118 median 1.47min (0.72-22.95 <- RECORD UNCHANGED) | FSaf n=110 median 0.82min (0.72-171.90 <- carryover 13:23:30->16:15:24, NO >30min cycle since cp10)
+  SINCE_CP10 JMrE: promote 20 demote 10 hold_relay 12 probe 5  <- DEFER = 0 SIXTH SEGMENT IN A ROW (151 frozen, consecutive 10 unchanged)
+  SINCE_CP10 FSaf: promote 31 probe 19 demote 16
+  cycles SINCE_CP10: JMrE n=10 median 1.49min (0.73-5.97, record not beaten) | FSaf n=15 median 0.78min (0.72-4.48)
+  segment demote rates: JMrE 10/0.78h ~12.8/h (7.7 -> 10.8 -> 12.8 still climbing) | FSaf 16/0.78h ~20.4/h
+  FLIP-002 defer: fullwin 151 unchanged 6th segment; FLIP-001 bypass: fullwin JMrE 53 (+5) / FSaf 105 (+16)
+  endpoints fullwin: .97 x167 (+18), 10.147.19.49 x99 (+20), .11:44249 x81 (+11), 180.152.54.66 x64 (+2 low-rate participation continues), .11:51820 x35 frozen
+  switch FULLWIN=683 flip=675 roam=8  <- ZERO new roam (imac view), still 8
+  LAST: FSaf 20:23:47Z probe @192.168.5.11:44249 (FLIP-001 bypass) | JMrE 20:23:47Z demote @.97 (sel003)
+  LIVE (20:23Z): coding-vm p2p_direct @192.168.5.188 fresh hs=20:22:04Z
+    FSaf direct_pending @:44249 unprobed | JMrE hub_relay (endpoint empty)
+  same-second signature: EXPLODED this segment — 4x double-demote (19:38:50, 19:44:11, 19:59:31, 20:15:23 all JMrE@.97 + FSaf@.49)
+    + 5x opposite-cross (19:41:55 / 19:54:00 / 20:01:50 FSaf-demote+JMrE-verified; 20:03:18 / 20:12:18 JMrE-demote+FSaf-verified)
+    (prior total was 3 observations over ~9h: 17:11:33 double, 17:59:17 double, 18:46:46 cross)
+
+OC FULLWIN total=1046 (file total 3430) | SINCE_CP10 total=87 (~47min)
+  FULLWIN windows-desktop(wd): defer 382 promote 68 hold_relay 63 demote 38 probe 30
+         imac: promote 151 demote 77 probe 76 hold_relay 11 defer 1 (PRE-cp10 event 12:56:24Z, not new) | coding-vm: promote 71 demote 36 probe 38 hold_relay 4
+  cycles: wd n=37 median 1.37min | imac n=76 median 2.18min (max 86.15) | coding-vm n=35 median 7.88min (max 105.80)
+  SINCE_CP10: wd defer 30 promote 4 hold 4 demote 2 probe 3 | imac promote 11 demote 6 probe 6 hold 1 | coding-vm promote 9 demote 5 probe 5 hold 1
+  cycles SINCE_CP10: wd n=2 median 1.05min (max 1.07) | imac n=5 median 6.43min (max 13.07) | coding-vm n=4 median 1.78min (max 16.43)
+  WD BACKOFF-EXPIRY PROMOTE CYCLES OBSERVED x2 (cp6 pattern reproduced):
+    cycle A: 19:44:50 cooling 45s (conn 36) -> 19:45:52 promote attempt @180.152 (candidate table) -> 19:49:10 verified @.97 (probe Healthy)
+             -> 19:50:12 sel003 demote (62s later) -> conn 36->37, fresh 900s window (19:53:29 cooling 703s)
+    cycle B: 20:04:41 cooling 31s (conn 37) -> 20:05:43 promote attempt @180.152 -> 20:07:59 verified @.97
+             -> ~20:09:04 demote (65s after verified, inferred from cooling arithmetic) -> conn 37->38 (first defer beat 20:12:13 cooling 711s)
+    at capture: 3rd window winding down (conn 38, 20:23:15 cooling 49s more)
+  consecutive 36 -> 37 -> 38 STILL CLIMBING (defer 352 -> 382, +30 segment; both expiry-promotes attempted @180.152 first, then verified @.97)
+  FLIP-001 bypass: fullwin imac 70 (+6) / coding-vm 36 (+5)
+  endpoints fullwin: .17 x112 (+9 dominant), 180.152.54.66 x46 (+2), .130 x37 (coding-vm, +5), 192.168.5.188 x34 (coding-vm LAN, +4), .226 x31 (+2), .97 x22 (+2), .117 x8 frozen
+  switch FULLWIN=456 flip=444 roam=12  <- ZERO new roam (OC view), still 12
+  LAST: coding-vm 20:23:15Z probe @.130 (bypass) | imac 20:23:15Z probe @.17 (bypass) | wd 20:23:15Z defer (38 consecutive, cooling 49s)
+  LIVE OC (20:23Z): coding-vm p2p_direct @.130 fresh hs=20:23:16Z (face rotated .188->.130 vs cp10)
+    imac p2p_direct @.17 fresh hs=20:23:20Z (cp10 transient hub_relay resolved back to direct) | wd direct_pending @.97 unprobed
+  OC same-second: 3x double-demote (19:50:12 wd@.97 + imac@.226; 19:55:49 coding-vm@.188 + imac@.226; 20:22:13 coding-vm@.130 + imac@.226 — imac peer is the common factor in all 3)
+
+reason set: unchanged both machines, NO unknown new reason head (rare handshake-stale x1 per machine both pre-cp10 events: imac 10:39:50Z / OC 08:58:04Z); endpoint face SET unchanged
+
+pending observations answered:
+1. defer=0 SIXTH consecutive segment (imac side 151 frozen, consecutive 10 unchanged; OC imac-peer defer x1 is pre-cp10 carryover at 12:56:24Z, NOT new)
+2. 22.95min record NOT beaten (segment max 5.97min; fullwin unchanged); FSaf 171.90min also carryover, no >30min cycle since cp10
+3. 180.152 continues low-rate participation: imac view +2 (x64) / OC view +2 (x46); both wd expiry-promote attempts went @180.152 first before verified @.97
+4. same-second signature distribution EXPLODED: imac view 4 double-demote + 5 opposite-cross in ~47min (prior total 3 over ~9h); OC view +3 double-demote (all pairing imac peer)
+5. wd consecutive 36 -> 38 climbing (defer +30 to 382) AND two full backoff-expiry promote cycles observed (cp6 pattern reproduced): expiry -> candidate-table attempt @180.152 -> verified @.97 -> sel003 re-demote within 62-65s; 3rd window near expiry at capture (cooling 49s)
+6. JMrE segment demote rate 12.8/h (7.7 -> 10.8 -> 12.8 climbing); FSaf churn up too: 16 demote/0.78h ~20.4/h
+7. LAN rotation continues with ZERO new roam: OC coding-vm .130 +5 / .188 +4 (live face rotated .188->.130); FSaf .49 +20 vs :44249 +11 both alive; roam counts unchanged (imac 8 / OC 12)
