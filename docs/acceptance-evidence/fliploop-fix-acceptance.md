@@ -1,8 +1,8 @@
 # fliploop 修复验收（FLIP-001 候选表纳管 roaming + FLIP-002 demote backoff）— 2026-11-15
 
 巡检单 meshlet-fliploop-fix（用户拍板：①主修 + ③保底，②下发面锚定不做）。本文档
-对账两条修复的实现、单测与集成模拟，并如实标注：**真机修后数据本环境不可采（imac
-仍跑 bc2d356，部署不在本单范围），待部署后另起观察窗对比**。
+对账两条修复的实现、单测与集成模拟；2026-11-15 修复已随 nightly 部署双机（部署
+节），修后 24h 观察窗起点已落盘，**判定与中位对比待窗口满后另单**。
 
 ## 基线（修前，判定口径不许动）
 
@@ -20,11 +20,54 @@
 机理实锤：「无健康面可选 → 拨劣化面 → SEL-003 打回 → RecoveryGate 放行 →
 re-promote 同一劣化面」闭环，正对 FLIP-001/FLIP-002。
 
-## 修后真机数据：本环境不可采，待部署
+## 修后真机数据：观察窗已开（2026-11-15 部署，判定另单）
 
-imac 当前运行 bc2d356（2026-11-14 15:19 部署），修复二进制（f99a7ef + 9f07ecb）
-**未部署**。本环境无法产出修后真机数据，本文不编造任何修后数字。部署属另单范围；
-部署后需重起 ≥24h 观察窗，用同一判定口径（24h 判定文档四项）对比上表基线。
+修复二进制已于 2026-11-15 随 nightly（run 43695140898，tag 5fb7d81）部署双机
+（见下部署节）；**修后 24h 观察窗起点 16:57:32 CST / 08:57:32Z**，判定与中位
+对比等窗口满 24h 后另单执行，本节不预写任何修后指标数字。
+
+## 部署节（2026-11-15 16:2x–17:0x CST，巡检单 meshlet-fliploop-deploy-1115）
+
+**构建链**：nightly run `43694301073`（897fa53）checks job 挂 `cargo fmt --check`
+（flip 测试批量补参留下 if/else 接管道与缩进偏差——本地门禁没跑 fmt 的教训），
+`style: apply rustfmt to fliploop tests`（5fb7d81）修后重跑 nightly run
+`43695140898` success。nightly tag sha = `5fb7d811…0b86f`，`merge-base --is-ancestor`
+f99a7ef / 9f07ecb **双 OK**（release `target_commitish` 显示旧值 a231360——tag ref
+sha 才是权威，巡检单预警的坑属实）。MSI `b6a5478b…d2de`（11,186,176B）对
+SHA256SUMS `sha256sum -c` **OK**。
+
+**双机部署**（schtasks 分离执行，S4U principal，非交互上下文；SSH 只注册+轮询）：
+
+| 机器 | 升级窗(CST) | PID | 双位 exe 哈希 | MSIEXEC_RC | --version |
+|---|---|---|---|---|---|
+| imac | 16:56:11→16:56:16 | 35644→**42676**（单进程） | `EC36C7BA…597B`（PF=AD） | 0 | 0.1.0 |
+| openclaw | 16:57:22→16:57:32 | 8128→**6608**（单进程） | `EC36C7BA…597B`（**与 imac 同构建**） | 0 | 0.1.0 |
+
+两机 MSI 哈希均与本机下载件逐字节同哈希；升级前双机修前状态已采（imac 35644 /
+openclaw 8128，exe `05f75c40…BDA6` = bc2d356 构建，与 11-14 证据一致——即两台
+真机自 11-14 15:19 起持续跑修前构建，24h 判定窗的「修前基线」口径由此坐实）。
+
+**核验**：coding-vm ping imac VIP 10.240.0.7 6/6 包 0% 丢（avg 6.4ms）、ping
+openclaw VIP 10.240.0.3 6/6 包 0% 丢（avg 8.5ms）；两机 `agent-decisions.jsonl`
+升级后持续在写（imac mtime 16:56、openclaw 16:58:04）。**修后行为首批实证**：
+imac 重启后 15 秒（08:56:31Z）JMrE 出现 `defer`（`promote deferred: candidate
+face degraded (probe window)`，endpoint `.97`）——ZT 劣化面正确拒拨（基线机理
+「无健康面可选→拨劣化面→打回」的第一腿已被 defer 拦截）。收尾：两机 Temp 升级
+文件清零、MeshletFlUp2 / MeshletOcFl2 任务自删实证、无残留计划任务。
+
+**修后 24h 观察窗起点：2026-11-15 16:57:32 CST / 08:57:32Z**（两机新构建+新 PID
+均确认时刻取后者）。基线=修前判定（本文件基线表 + fliploop-24h-2026-11-15.md：
+799 flip / 262 环 / 中位 1.48min）。判定与中位对比按窗口满 24h 后另单执行，本单
+只记录起点、不做中途判定、不外推。
+
+**部署过程坑实录**（复用价值）：①schtasks `/Create` 不带 `/RU` 注册成
+「只使用交互式」任务，SSH 非交互上下文 Last Result=1 且脚本一行未跑——imac 上
+需 `Register-ScheduledTask -LogonType S4U -RunLevel Highest`（与
+`MeshletAgentDeploy` 同款）；②`New-ScheduledTask` 产物绑 `-Task` 参数在 PS 5.1
+歧义报错，直接 `-Action/-Principal/-Settings` 传参即可；③升级 ps1 首版
+`if … else … | Out-File` 是解析错误（整脚本不执行、无任何产物），语句不能直接
+接管道——CI fmt 门与这类「无日志无声失败」都指向同一教训：远端脚本先落一行日志
+再干活，解析错误才能被看见。
 
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
@@ -152,9 +195,10 @@ demote 计数（`on_demote`）。
 
 ## 剩余边界
 
-1. **真机修后数据本环境不可采**：imac 跑 bc2d356，修复二进制未部署——部署与
-   ≥24h 修后观察窗不在本单范围（判定口径与基线已备好，部署后按同口径对比）。
-   本环境亦无第二台 Windows 真机可复现 JMrE（ZT underlay 劣化源）。
+1. **修后判定数据未采（本单边界）**：2026-11-15 修复已部署双机（部署节），但
+   24h 观察窗刚起步（16:57:32 CST / 08:57:32Z）——修后判定与中位对比必须等窗口
+   满 24h 后另单执行，本单不预写。本环境亦无第二台 Windows 真机可复现 JMrE
+   （ZT underlay 劣化源）。
 2. **换网侦测的平台对等性未真机验证**：Linux 侧 net_event（netlink）为既有实现
    已真机实证（BACKOFF_MAX_SECS 30s 事件唤醒）；Windows 侧 net_event 平台层的
    接口起落/地址增删事件在 R-05 验收过链路存在性，但「换网 → 候选表刷新 + 立即

@@ -1,0 +1,44 @@
+=== nightly build ===
+run 43694301073 (workflow_dispatch, 897fa53): FAILURE checks job cargo fmt --check (if/else-pipe indent in flip tests; style commit 5fb7d81 fixed)
+run 43695140898 (workflow_dispatch, 5fb7d81): SUCCESS; nightly tag sha = 5fb7d811eca9e586e5a0af6763e12cfe8690b86f
+merge-base --is-ancestor: f99a7ef OK, 9f07ecb OK (target_commitish shows stale a231360 per ticket gotcha; tag ref sha authoritative)
+MSI meshlet-nightly-windows-x86_64.msi 11186176B sha256 b6a5478b8042a24a86002da38eae6293d8f6276264571f9622dd4b1fd3e8d2de (sha256sum -c vs SHA256SUMS: OK)
+
+=== imac fl-up1.log (2026-11-15 16:56 CST) ===
+=== imac fliploop-fix upgrade start 2026-11-15T16:56:11 ===
+BEFORE_PID=35644
+MSI_SHA256=B6A5478B8042A24A86002DA38EAE6293D8F6276264571F9622DD4B1FD3E8D2DE
+MSIEXEC_RC=0
+PF_HASH=EC36C7BAAC3106872B1435DC9C9FE8C98ED34781C2AC3EDF713743B37625597B
+AD_HASH=EC36C7BAAC3106872B1435DC9C9FE8C98ED34781C2AC3EDF713743B37625597B
+AFTER_PID=42676
+PROC_COUNT=1
+VERSION=meshlet-agent 0.1.0
+=== done 2026-11-15T16:56:16 ===
+
+=== openclaw fl-oc1.log (2026-11-15 16:57 CST) ===
+=== oc fliploop-fix upgrade start 2026-11-15T16:57:22 ===
+BEFORE_PID=8128
+MSI_SHA256=B6A5478B8042A24A86002DA38EAE6293D8F6276264571F9622DD4B1FD3E8D2DE
+MSIEXEC_RC=0
+PF_HASH=EC36C7BAAC3106872B1435DC9C9FE8C98ED34781C2AC3EDF713743B37625597B
+AD_HASH=EC36C7BAAC3106872B1435DC9C9FE8C98ED34781C2AC3EDF713743B37625597B
+AFTER_PID=6608
+PROC_COUNT=1
+VERSION=meshlet-agent 0.1.0
+=== done 2026-11-15T16:57:32 ===
+
+=== post-fix tunnel/decisions checks ===
+coding-vm ping 10.240.0.7 (imac): 6/6 0% loss avg 6.4ms (2026-11-15 16:58 CST)
+coding-vm ping 10.240.0.3 (openclaw): 6/6 0% loss avg 8.5ms (2026-11-15 16:58 CST)
+imac agent-decisions.jsonl mtime 16:56 CST writing; first post-fix line 08:56:31Z defer
+  {"action":"defer","reason":"promote deferred: candidate face degraded (probe window)","endpoint":"10.147.19.97:51821"} (JMrE degraded face correctly not promoted)
+openclaw agent-decisions.jsonl mtime 16:58:04 CST writing (tail: probe pending 08:57:11Z, demote stale 08:58:04Z)
+
+=== pre-fix baseline captured ===
+imac PID 35644, openclaw PID 8128 single-proc, both exe 05f75c40...BDA6 (bc2d356 build) before upgrade
+
+=== window start (both new build+PID confirmed) ===
+imac done 2026-11-15 16:56:16 CST / 08:56:16Z (PID 42676)
+openclaw done 2026-11-15 16:57:32 CST / 08:57:32Z (PID 6608)
+WINDOW_START = 2026-11-15 16:57:32 CST / 08:57:32Z (later of the two)
