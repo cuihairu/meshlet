@@ -594,3 +594,66 @@ sel003 ×12 + pending attempts exhausted ×2，全在 `.49`）。03:01:12Z 后�
 
 - `fliploop-imac-decisions-window7-2026-11-15.txt`（窗口 07:19Z–04:19:26Z 全段 1,646 条，
   自 `agent-decisions.jsonl` 按 ts 切出）
+
+## 13:1x CST 检查点（巡检单 meshlet-fliploop-checkpoint-1308，2026-11-15 05:10:57Z 取证）
+
+**取证时刻（双时区）**：2026-11-15 **05:10:57Z（13:10:57 CST）**，imac 侧 05:10:57.29Z 与
+本机 05:10:23Z 互证；本单标题 13:08 CST 与实测差 2min，按实测记录。窗口 = 07:19Z →
+05:10:57Z = **21.88h**，距 24h 门槛（15:19 CST / 07:19Z）**还差 2.13h**。**未过门槛，
+本轮不做达标判定、不外推**。取证时 load 1min=20.6（上单构建三连败的负载根因已消散）。
+
+数据面：`agent-decisions.jsonl`（768,724 B / 2,172 事件，末事件 05:10:31Z）、
+`direct-switch-events.json`（1,239 事件）、`direct-peers.json`（实况见下）。
+
+### 增量（04:28:33Z→05:10:31Z，51min）：24 事件
+
+**速率骤降**：JMrE 21 条（promote 8 / hold_relay 8 / demote 5）；FSaf **3 条**
+（demote 1 / hold_relay 2）——对比上轮增量 2.44h/208 事件，密度降至约 1/4。窗口
+累计 1,670 事件 = 21.88h：windows-desktop **1,295** 条（promote 495 / hold_relay 489 /
+demote 251 / probe 59 / defer 1），openclaw-win **375** 条（promote 134 / hold_relay 131 /
+demote 69 / probe 41）。
+
+### JMrE：环未收口，增量 4 周期中位放大到 3.47min
+
+250 周期（窗口累计）4h 分段中位 0.78 → 0.77 → 1.45 → 0.83 → 1.52 → 1.56 →
+**15/04 段 3.68min**（n=8）；增量 4 周期中位 **3.47min**（0.78–22.37min 散布），
+节奏比前段（1.56min）放大但**仍分钟级、未收口**。末拍 05:10:31Z demote
+`10.147.19.97:51821`（sel003）→ hub_relay。
+
+### FSaf：静默 ~75min 后以单拍 demote 落回中继
+
+上轮 03:53:13Z 末拍 verified @ `.49` 后**静默 ~75min**（跨 15/04 段唯一周期
+03:53:13Z→05:08:54Z = 75min，含静默段，不宜当节奏读），05:08:54Z demote
+`.49:51820`（sel003）后 05:10:31Z hold_relay `recovery gate: not yet N consecutive
+healthy rounds`——复翻在静默 75min 后收尾为**落回 hub_relay**，未再翻起。
+
+### 新况：两 peer 同时落回 hub_relay 且 endpoint 空
+
+取证时实况：windows-desktop `hub_relay`（endpoint 空、无 handshake）、openclaw-win
+`hub_relay`（同），仅 coding-vm `p2p_direct @ 192.168.5.188`（handshake fresh @ 92s）。
+此前各检查点实况至少一端保持 p2p_direct；本轮首见**双双退中继**——两端在 sel003
+劣化门后同窗内落回，直连会话整体退场至中继态。
+
+### 切换闸口径复核
+
+增量 14 条切换事件**全为 mode_flip，0 条 endpoint_roam**；全文件 1,239 = 1,234 flip +
+5 roam（roam 恒 5，第 5 条仍早于本增量）。新面 `192.168.36.153` 增量 **0 命中**。
+
+### 无新签名
+
+增量 reason JMrE 4 种 + FSaf 2 种，逐条与 window7 raw 全集比对**零新增**；
+`defer` 全窗仍 1 条；无新 endpoint 面。
+
+### 边界与排除（沿用单据）
+
+- 未过 24h 门槛（窗口 21.88h，差 2.13h）：**不做达标判定、不外推**；判定留给门槛
+  过后首巡检。
+- 三选一修复方向（①候选表纳管 roaming 面 / ②下发面锚定+漂移重下发 / ③demote 冷却
+  backoff）仍待用户拍板；本轮未动 `crates/`、未改状态机、纯取证。
+- 禁 SSH openclaw / win-worker；本轮取证未触碰。
+- 未 bump 版本、未打 tag、未发 release、未 force push。
+
+### raw 清单（本轮新增）
+
+- `fliploop-imac-decisions-window8-2026-11-15.txt`（窗口 07:19Z–05:10:31Z 全段 1,670 条，
+  自 `agent-decisions.jsonl` 按 ts 切出）
