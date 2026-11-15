@@ -126,6 +126,7 @@ impl DirectManager {
         degraded: &BTreeMap<String, bool>,
         unhealthy_faces: &BTreeSet<(String, EndpointCandidate)>,
         hold_relay: &BTreeSet<String>,
+        suppress_promote: &BTreeMap<String, String>,
     ) -> (Vec<DirectUpdate>, Vec<PeerDecisionRecord>) {
         plan_updates_logged(
             wanted,
@@ -137,6 +138,7 @@ impl DirectManager {
             degraded,
             unhealthy_faces,
             hold_relay,
+            suppress_promote,
         )
     }
 
@@ -363,6 +365,10 @@ fn mode_str(state: PeerLinkState) -> &'static str {
 ///   Direct 断开→Demote、恢复→再 Promote）。
 /// - `unhealthy_faces`：探测窗口判劣化的 (公钥, 候选面) 集合（promote 偏好
 ///   健康面：晋升选路前置过滤）。探测关/空集合 = 不过滤（旧口径）。
+/// - `suppress_promote`：FLIP-002 demote backoff 的抑制表（公钥 → defer
+///   理由串）。抑制中的对端本轮**不发起 promote**（保持中继、保留记忆面）
+///   ——只作用 promote 侧，劣化判定 / demote 完全不受影响。空表 = 无抑制
+///   （旧口径）。
 #[allow(clippy::too_many_arguments)]
 pub fn plan_updates_logged(
     wanted: &[PeerEndpoints],
@@ -374,6 +380,7 @@ pub fn plan_updates_logged(
     degraded: &BTreeMap<String, bool>,
     unhealthy_faces: &BTreeSet<(String, EndpointCandidate)>,
     hold_relay: &BTreeSet<String>,
+    suppress_promote: &BTreeMap<String, String>,
 ) -> (Vec<DirectUpdate>, Vec<PeerDecisionRecord>) {
     let mut updates = Vec::new();
     let mut records = Vec::new();
@@ -491,6 +498,43 @@ pub fn plan_updates_logged(
                 },
             );
             continue;
+        }
+        // FLIP-002 demote backoff：抑制中的对端本轮不 promote（保持中继、
+        // 保留记忆面）——指数退避拉开重试间隔，劣化面上的无效重试从分钟级
+        // 循环退化为个位数尝试。只拦 promote：劣化判定与 demote 不受影响。
+        if matches!(state, PeerLinkState::Relay) {
+            if let Some(reason) = suppress_promote.get(&key) {
+                let last_direct = current.get(&key).and_then(|entry| entry.last_direct);
+                records.push(PeerDecisionRecord {
+                    public_key: key.clone(),
+                    peer_name: peer.name.clone(),
+                    from_mode: "hub_relay",
+                    to_mode: "hub_relay",
+                    action: "defer",
+                    reason: reason.clone(),
+                    handshake_age_secs: handshake_ages.get(&key).copied(),
+                    degraded: degraded.get(&key).copied().unwrap_or(false),
+                    endpoint: String::new(),
+                });
+                current.insert(
+                    key.clone(),
+                    DirectPeer {
+                        virtual_ipv4: peer.virtual_ipv4,
+                        state: PeerLinkState::Relay,
+                        last_handshake_age_secs: None,
+                        peer_name: peer.name.clone(),
+                        endpoint: String::new(),
+                        rtt_ms: None,
+                        rtt_source: None,
+                        last_handshake_at: None,
+                        rx_bytes: 0,
+                        tx_bytes: 0,
+                        candidates: vec![],
+                        last_direct,
+                    },
+                );
+                continue;
+            }
         }
         // promote defer：候选里只剩劣化面 → 本轮不晋升（保持中继等面恢复）。
         // 不在劣化面上打洞/握手——那只会立刻被 SEL-003 再降级成翻转噪声。
@@ -731,6 +775,7 @@ pub fn plan_updates(
     degraded: &BTreeMap<String, bool>,
     unhealthy_faces: &BTreeSet<(String, EndpointCandidate)>,
     hold_relay: &BTreeSet<String>,
+    suppress_promote: &BTreeMap<String, String>,
 ) -> Vec<DirectUpdate> {
     plan_updates_logged(
         wanted,
@@ -742,6 +787,7 @@ pub fn plan_updates(
         degraded,
         unhealthy_faces,
         hold_relay,
+        suppress_promote,
     )
     .0
 }

@@ -14,6 +14,7 @@
 //!   `[dataplane] private_key_file` 本地注入。
 
 pub mod agent;
+pub mod backoff;
 pub mod bootstrap;
 pub mod candidates;
 #[cfg(target_os = "linux")]

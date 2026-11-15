@@ -15,6 +15,18 @@ struct RawDataplaneConfig {
     poll_interval_secs: Option<u64>,
     direct_connect: Option<RawDirectConnectConfig>,
     probe: Option<RawProbeConfig>,
+    backoff: Option<RawBackoffConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawBackoffConfig {
+    /// FLIP-002 demote backoff：首次冷却（毫秒，默认 30_000 = 30s）。
+    backoff_base_ms: Option<u64>,
+    /// 冷却封顶（毫秒，默认 900_000 = 15min）。
+    backoff_cap_ms: Option<u64>,
+    /// 连续 M 轮健康面证据清零退避（默认 3）。
+    recovery_confirmations: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -213,6 +225,10 @@ pub struct DataplaneConfig {
     /// 随 direct_connect 主开关伴生开启——探测是直连安全网）；
     /// `direct_connect.enabled` 且有候选端点时才真正发探测。
     pub probe: ProbeConfig,
+    /// FLIP-002 demote backoff：连续 demote 后 promote 侧指数退避冷却
+    /// （只作用 promote，不影响 SEL-003 劣化判定灵敏度）。默认见
+    /// [`BackoffConfig`]。
+    pub backoff: BackoffConfig,
 }
 
 /// P2P 直连开关与 WireGuard 监听端口。
@@ -285,6 +301,36 @@ impl Default for ProbeConfig {
     }
 }
 
+/// FLIP-002 demote backoff 配置：连续 demote 后 promote 侧指数退避。
+///
+/// **默认值依据**（2026-11-15 fliploop 24h 窗判定，JMrE 262 个
+/// promote→demote 环 / 中位 1.48min）：`backoff_base_ms = 30_000`（30s，
+/// ≈ 一个直连对账周期——首个冷却不让 promote 立刻重试同面）；指数 2 倍
+/// 递增、`backoff_cap_ms = 900_000`（15min，任务书口径——劣化源持续时
+/// 无效重试从分钟级循环退化为个位数尝试）；`recovery_confirmations = 3`
+/// （连续 3 轮探测健康面证据清零，与 SEL-003 恢复门 `recovery_required`
+/// 默认同值——同源探测证据、同一防抖口径）。backoff 只作用 promote 侧，
+/// demote 判定灵敏度不受影响。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackoffConfig {
+    /// 首次冷却（毫秒）；第 N 次连续 demote 冷却 = base × 2^(N-1)。默认 30_000。
+    pub backoff_base_ms: u64,
+    /// 冷却封顶（毫秒）。默认 900_000（15min）。
+    pub backoff_cap_ms: u64,
+    /// 连续 M 轮健康面证据清零退避（下次 demote 从 base 重来）。默认 3。
+    pub recovery_confirmations: u32,
+}
+
+impl Default for BackoffConfig {
+    fn default() -> Self {
+        Self {
+            backoff_base_ms: 30_000,
+            backoff_cap_ms: 900_000,
+            recovery_confirmations: 3,
+        }
+    }
+}
+
 impl Default for DataplaneConfig {
     fn default() -> Self {
         Self {
@@ -295,6 +341,7 @@ impl Default for DataplaneConfig {
             poll_interval_secs: 30,
             direct_connect: DirectConnectConfig::default(),
             probe: ProbeConfig::default(),
+            backoff: BackoffConfig::default(),
         }
     }
 }
@@ -430,6 +477,33 @@ impl AgentConfig {
                 "dataplane.probe.degrade_rtt_ms must be at least 1".into(),
             ));
         }
+        let raw_backoff = dataplane.backoff.unwrap_or_default();
+        let backoff = BackoffConfig {
+            backoff_base_ms: raw_backoff
+                .backoff_base_ms
+                .unwrap_or(default.dataplane.backoff.backoff_base_ms),
+            backoff_cap_ms: raw_backoff
+                .backoff_cap_ms
+                .unwrap_or(default.dataplane.backoff.backoff_cap_ms),
+            recovery_confirmations: raw_backoff
+                .recovery_confirmations
+                .unwrap_or(default.dataplane.backoff.recovery_confirmations),
+        };
+        if backoff.backoff_base_ms < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.backoff.backoff_base_ms must be at least 1".into(),
+            ));
+        }
+        if backoff.backoff_cap_ms < backoff.backoff_base_ms {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.backoff.backoff_cap_ms must be >= backoff_base_ms".into(),
+            ));
+        }
+        if backoff.recovery_confirmations < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.backoff.recovery_confirmations must be at least 1".into(),
+            ));
+        }
         Ok(Self {
             server_url,
             state_dir: raw.state_dir.unwrap_or(default.state_dir),
@@ -458,6 +532,7 @@ impl AgentConfig {
                 poll_interval_secs,
                 direct_connect,
                 probe,
+                backoff,
             },
             ssh_config_sync: match raw.ssh_config_sync {
                 Some(raw_sync) => SshConfigSyncConfig {

@@ -17,6 +17,7 @@ fn relay_promotes_a_lan_reachable_peer_with_a_32() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert_eq!(updates.len(), 1);
     assert!(
@@ -43,6 +44,7 @@ fn peer_without_any_path_stays_relay_and_emits_nothing() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty());
     assert_eq!(
@@ -71,6 +73,7 @@ fn healthy_direct_peer_is_kept_without_repromoting() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty(), "healthy direct peer: keep, no churn");
     assert_eq!(
@@ -100,6 +103,7 @@ fn stale_handshake_demotes_but_stale_peer_removed_from_wanted_demotes_too() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"));
     assert_eq!(
@@ -123,6 +127,7 @@ fn stale_handshake_demotes_but_stale_peer_removed_from_wanted_demotes_too() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"));
     assert!(current2.is_empty());
@@ -149,6 +154,7 @@ fn degraded_direct_peer_immediately_falls_back_to_relay() {
         &degraded,
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"));
     assert_eq!(
@@ -179,6 +185,7 @@ fn healthy_direct_peer_is_not_degraded() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty(), "healthy direct peer: no demote");
     assert_eq!(
@@ -208,6 +215,7 @@ fn recovery_after_degradation_repromotes_via_state_machine() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(
         matches!(&updates[0], DirectUpdate::Promote { .. }),
@@ -241,6 +249,7 @@ fn recovery_hold_keeps_relay_until_gate_is_ready() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &hold,
+    &BTreeMap::new(),
     );
     assert!(
         updates.is_empty(),
@@ -282,6 +291,7 @@ fn pending_with_fresh_handshake_promotes_via_plan_updates() {
         &BTreeMap::new(), // 探测全失败 → 无窗口 → degraded 为空
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(
         updates.is_empty(),
@@ -321,6 +331,7 @@ fn pending_with_stale_handshake_times_out_to_relay() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(
         matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"),
@@ -394,6 +405,7 @@ fn sel003_fallback_and_recovery_timeline() {
             &degraded_map,
             &BTreeSet::new(),
             &hold,
+        &BTreeMap::new(),
         )
     }
 
@@ -452,6 +464,7 @@ fn degraded_latency_demotes_even_with_fresh_handshake() {
         &degraded,
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(
         matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"),
@@ -497,6 +510,7 @@ fn repromote_returns_to_remembered_face_over_lower_ip_table_face() {
         &degraded,
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Demote { .. }));
     assert_eq!(current.get("dev-b").unwrap().state, PeerLinkState::Relay);
@@ -517,6 +531,7 @@ fn repromote_returns_to_remembered_face_over_lower_ip_table_face() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(
         matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
@@ -552,6 +567,7 @@ fn pending_verify_failure_clears_memory_and_table_decision_wins() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Demote { .. }));
     assert_eq!(
@@ -571,6 +587,7 @@ fn pending_verify_failure_clears_memory_and_table_decision_wins() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(
         matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
@@ -599,6 +616,7 @@ fn hold_relay_preserves_remembered_face() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &hold,
+    &BTreeMap::new(),
     );
     assert!(updates.is_empty(), "held peer stays relay: {updates:?}");
     assert_eq!(
@@ -624,6 +642,7 @@ fn first_promote_records_the_dialed_face_as_memory() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
     if endpoint.to_string() == "192.168.5.99:51820"));
@@ -662,6 +681,7 @@ fn degraded_demote_records_decision_with_judgement_inputs() {
         &degraded,
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"));
     assert_eq!(records.len(), 1);
@@ -696,6 +716,7 @@ fn memory_face_promote_records_its_source() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
     if endpoint.to_string() == "192.168.1.77:51821"));
@@ -722,6 +743,7 @@ fn candidate_table_promote_records_its_source() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].action, "promote");
@@ -759,6 +781,7 @@ fn pending_verified_promotion_records_the_flip_transition() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty(), "promotion is a keep, no churn");
     assert_eq!(records.len(), 1);
@@ -793,6 +816,7 @@ fn waiting_round_records_probe_without_mode_change() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty());
     assert_eq!(records.len(), 1);
@@ -823,6 +847,7 @@ fn hold_relay_records_the_recovery_gate_verdict() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &hold,
+    &BTreeMap::new(),
     );
     assert!(updates.is_empty());
     assert_eq!(records.len(), 1);
@@ -856,6 +881,7 @@ fn peer_leaving_candidates_records_a_demote_decision() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"));
     assert_eq!(records.len(), 1);
@@ -888,6 +914,7 @@ fn steady_state_keeps_emit_no_decision_records() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(records.is_empty(), "healthy keep: no records");
 
@@ -903,6 +930,7 @@ fn steady_state_keeps_emit_no_decision_records() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty());
     assert!(records.is_empty(), "relay keep without a path: no records");
@@ -931,6 +959,7 @@ fn degraded_only_candidate_defers_promotion() {
         &BTreeMap::new(),
         &unhealthy,
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty(), "degraded face must not be promoted");
     assert_eq!(
@@ -971,6 +1000,7 @@ fn healthy_alternative_is_preferred_over_degraded_low_ip_face() {
         &BTreeMap::new(),
         &unhealthy,
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(
         matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
@@ -1008,6 +1038,7 @@ fn degraded_memory_face_is_skipped_for_healthy_candidate() {
         &BTreeMap::new(),
         &unhealthy,
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(
         matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
@@ -1048,6 +1079,7 @@ fn degraded_memory_face_without_table_path_defers_naming_it() {
         &BTreeMap::new(),
         &unhealthy,
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty());
     assert_eq!(records.len(), 1);
@@ -1076,6 +1108,7 @@ fn empty_unhealthy_set_keeps_legacy_promotion_behavior() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(matches!(&updates[0], DirectUpdate::Promote { endpoint, .. }
     if endpoint.to_string() == "192.168.1.50:51821"));
@@ -1116,6 +1149,7 @@ fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
         &degraded,
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert_eq!(
         updates,
@@ -1145,6 +1179,7 @@ fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
         &BTreeMap::new(),
         &unhealthy,
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert_eq!(
         updates,
@@ -1182,7 +1217,137 @@ fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
     );
     assert!(updates.is_empty(), "healthy direct link holds; no ring");
     assert_eq!(current["dev-b"].state, PeerLinkState::Direct);
+}
+
+#[test]
+fn demote_backoff_suppresses_promote_but_keeps_memory_face() {
+    // FLIP-002：抑制中的 Relay 对端本轮不 promote——state 留中继、记忆面
+    // 原样保留、决策记录 action="defer" 且 reason 来自抑制表。
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay),
+    );
+    current.get_mut("dev-b").unwrap().last_direct = Some(lan("192.168.1.50", 51821));
+    let suppress = [(
+        "dev-b".to_string(),
+        "promote deferred: demote backoff (2 consecutive demote(s), cooling 55s more; FLIP-002)"
+            .to_string(),
+    )]
+    .into();
+    let (updates, records) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &suppress,
+    );
+    assert!(updates.is_empty(), "suppressed peer must not promote");
+    assert_eq!(
+        current.get("dev-b").map(|p| p.state),
+        Some(PeerLinkState::Relay),
+        "suppression holds the peer at relay"
+    );
+    assert_eq!(
+        current["dev-b"].last_direct,
+        Some(lan("192.168.1.50", 51821)),
+        "memory face survives the defer (retry lands on it)"
+    );
+    let defer = records
+        .iter()
+        .find(|r| r.action == "defer")
+        .expect("defer decision record");
+    assert_eq!(defer.public_key, "dev-b");
+    assert!(
+        defer.reason.contains("demote backoff"),
+        "reason comes from the suppress map: {}",
+        defer.reason
+    );
+}
+
+#[test]
+fn demote_backoff_does_not_touch_demote_sensitivity() {
+    // FLIP-002：退避只拦 promote 侧——直连劣化（握手过期）时即使该对端在
+    // 抑制表里，demote 照常发出（判定灵敏度不降）。
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
+    );
+    let mut ages = BTreeMap::new();
+    ages.insert("dev-b".into(), DIRECT_HEALTH_WINDOW_SECS.saturating_add(1));
+    let suppress = [("dev-b".to_string(), "cooling".to_string())].into();
+    let (updates, _) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &ages,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &suppress,
+    );
+    assert!(
+        matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"),
+        "stale handshake demotes even while suppressed"
+    );
+    assert_eq!(current["dev-b"].state, PeerLinkState::Relay);
+}
+
+#[test]
+fn demote_backoff_expiry_restores_normal_promotion() {
+    // FLIP-002：抑制到期（map 不再含该对端）→ promote 恢复，记忆面优先。
+    // 同一夹具：抑制中 defer，随后空表（清零/到期）promote 正常发出。
+    let face = lan("192.168.1.50", 51821);
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[face])];
+    let mut current = BTreeMap::new();
+    current.insert(
+        "dev-b".into(),
+        direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay),
+    );
+    current.get_mut("dev-b").unwrap().last_direct = Some(face);
+    let suppress = [("dev-b".to_string(), "cooling".to_string())].into();
+    let (updates, _) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &suppress,
+    );
+    assert!(updates.is_empty(), "cooling: defer");
+
+    let (updates, _) = plan_updates_logged(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+    );
+    assert!(
+        matches!(&updates[0], DirectUpdate::Promote { endpoint, .. } if *endpoint == face.socket()),
+        "expiry restores promotion, memory face first"
+    );
 }

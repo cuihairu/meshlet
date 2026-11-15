@@ -190,11 +190,28 @@ impl super::Agent {
         let healthy_faces = self.probe.healthy_faces();
         self.candidates
             .refresh_probe_evidence(&healthy_faces, now_secs);
+        // FLIP-002 健康证据记账：对端本轮有任一探测健康面 → 健康轮 +1（连续
+        // M 轮清零退避）；无健康面 → 健康轮清零（连续性打破，抑制保持）。
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        for peer in &effective {
+            let peer_has_healthy_face = healthy_faces
+                .iter()
+                .any(|(public_key, _)| public_key == &peer.public_key);
+            self.backoff
+                .note_health(&peer.public_key, peer_has_healthy_face, now_ms);
+        }
+        // FLIP-002 抑制表：抑制中的对端本轮不 promote（域层 hold_relay 之后
+        // 检查，保记忆面留中继）。
+        let suppress_promote = self.backoff.suppress_map(now_ms);
         // SEL-003 恢复门：对处于直连状态的对端记录本轮健康度；回中继后连续
         // N 轮健康才放行切回。健康 = 未劣化且握手年龄在健康窗口内。
         // FLIP-001 bypass：候选表里存在探测健康面时不等门——换网后新面已
         // 可达即回直连，不经过「先 demote 再等恢复门」旧路径（门只兜底
-        // 「没有任何健康面证据」的场景）。
+        // 「没有任何健康面证据」的场景）。FLIP-002 抑制优先——退避期内
+        // 即便有健康面也不 promote（拉开重试间隔）。
         let mut hold_relay = std::collections::BTreeSet::new();
         let mut gate_bypassed: Vec<(String, String)> = Vec::new();
         for peer in &effective {
@@ -214,7 +231,7 @@ impl super::Agent {
                     healthy_faces.contains(&(peer.public_key.clone(), *c))
                 });
                 match healthy_face {
-                    Some((face, source)) => {
+                    Some((face, source)) if !suppress_promote.contains_key(&peer.public_key) => {
                         tracing::info!(
                             public_key = %peer.public_key,
                             face = %face.socket(),
@@ -224,8 +241,9 @@ impl super::Agent {
                         gate_bypassed
                             .push((peer.public_key.clone(), face.socket().to_string()));
                     }
-                    None => {
-                        // 已回中继且无健康面证据：保持中继（防抖切回）。
+                    _ => {
+                        // 已回中继且无健康面证据（或退避抑制中）：保持中继
+                        // （防抖切回 / 拉开重试间隔）。
                         hold_relay.insert(peer.public_key.clone());
                     }
                 }
@@ -234,6 +252,7 @@ impl super::Agent {
         // 回收不在候选集里的恢复计数。
         let live_keys: Vec<String> = wanted.iter().map(|p| p.public_key.clone()).collect();
         self.recovery.retain(&live_keys);
+        self.backoff.retain(&live_keys);
         let (updates, decisions) = self.direct.apply_plan(
             &effective,
             &my_lan_subnets,
@@ -243,10 +262,19 @@ impl super::Agent {
             &degraded,
             &unhealthy_faces,
             &hold_relay,
+            &suppress_promote,
         );
         if !updates.is_empty() {
             for update in &updates {
                 self.apply_direct_update(update);
+                // FLIP-002：劣化/握手判定产生的 demote 计入退避（连续 demote
+                // 指数拉开重试间隔）。候选集之外的逐出与开关关闭的清场不计
+                // ——那是行政性移除，不是链路质量信号。
+                if let DirectUpdate::Demote { public_key } = update {
+                    if live_keys.contains(public_key) {
+                        self.backoff.on_demote(public_key, now_ms);
+                    }
+                }
             }
             self.save_direct_ledger();
         }

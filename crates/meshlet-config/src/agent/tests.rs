@@ -299,3 +299,57 @@ fn agent_probe_rejects_zero_interval_and_window() {
     let err = AgentConfig::from_toml("[dataplane.probe]\nbogus = 1").unwrap_err();
     assert!(matches!(err, ConfigError::Parse(_)));
 }
+
+#[test]
+fn agent_backoff_defaults_and_parses_explicit_section() {
+    // FLIP-002 默认：30s 基数 / 15min 封顶 / 连续 3 轮健康清零（任务书口径，
+    // confirmations 与 SEL-003 RecoveryGate 同值）。
+    let d = AgentConfig::from_toml("[dataplane]\nenabled = true").unwrap();
+    assert_eq!(d.dataplane.backoff.backoff_base_ms, 30_000);
+    assert_eq!(d.dataplane.backoff.backoff_cap_ms, 900_000);
+    assert_eq!(d.dataplane.backoff.recovery_confirmations, 3);
+
+    let c = AgentConfig::from_toml(
+        r#"
+[dataplane]
+[dataplane.backoff]
+backoff_base_ms = 60_000
+backoff_cap_ms = 600_000
+recovery_confirmations = 5
+"#,
+    )
+    .unwrap();
+    assert_eq!(c.dataplane.backoff.backoff_base_ms, 60_000);
+    assert_eq!(c.dataplane.backoff.backoff_cap_ms, 600_000);
+    assert_eq!(c.dataplane.backoff.recovery_confirmations, 5);
+
+    // 只给一项：其余保持默认。
+    let c = AgentConfig::from_toml(
+        "[dataplane]\n[dataplane.backoff]\nbackoff_base_ms = 45_000",
+    )
+    .unwrap();
+    assert_eq!(c.dataplane.backoff.backoff_base_ms, 45_000);
+    assert_eq!(c.dataplane.backoff.backoff_cap_ms, 900_000);
+    assert_eq!(c.dataplane.backoff.recovery_confirmations, 3);
+}
+
+#[test]
+fn agent_backoff_rejects_zero_base_and_cap_below_base() {
+    let err = AgentConfig::from_toml(
+        "[dataplane]\n[dataplane.backoff]\nbackoff_base_ms = 0",
+    )
+    .unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+    let err = AgentConfig::from_toml(
+        "[dataplane]\n[dataplane.backoff]\nbackoff_base_ms = 600_000\nbackoff_cap_ms = 30_000",
+    )
+    .unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+    let err = AgentConfig::from_toml(
+        "[dataplane]\n[dataplane.backoff]\nrecovery_confirmations = 0",
+    )
+    .unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+}

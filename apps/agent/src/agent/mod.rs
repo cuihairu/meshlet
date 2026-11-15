@@ -106,6 +106,9 @@ pub struct Agent {
     /// 回中继后 SEL-001 仍持续探测表内面——健康面走恢复门 bypass 直接
     /// promote，不再只盯服务端单一 endpoint 等劣化。
     candidates: crate::candidates::CandidateTable,
+    /// FLIP-002 demote backoff：连续 demote 后 promote 侧指数退避冷却
+    /// （只拦 promote，不影响 SEL-003 劣化判定灵敏度），见 [`crate::backoff`]。
+    backoff: crate::backoff::DemoteBackoff,
     /// SEL-003 恢复门：直连劣化回中继后连续 N 轮健康才允许切回（防抖）。
     recovery: RecoveryGate,
     /// SSH 别名同步开关与状态路径（默认全关：不写 `~/.ssh` 任何文件）。
@@ -138,6 +141,12 @@ impl Agent {
         // 会在 struct 字面量里先被 move，探测运行时须在此之前读到 probe 配置。
         let probe = crate::probe::ProbeRuntime::start(&config.dataplane.probe);
         let recovery_required = config.dataplane.probe.recovery_required;
+        // FLIP-002 退避参数提前取出（config 随后被逐字段 move）。
+        let backoff = crate::backoff::DemoteBackoff::new(
+            config.dataplane.backoff.backoff_base_ms,
+            config.dataplane.backoff.backoff_cap_ms,
+            config.dataplane.backoff.recovery_confirmations,
+        );
         // 任务 worker 的参数提前取出（config 随后被逐字段 move，不能再借用）。
         let server_url = config.server_url.clone();
         let device_token = config.device_token.clone().unwrap_or_default();
@@ -212,6 +221,7 @@ impl Agent {
             ),
             probe,
             candidates: crate::candidates::CandidateTable::new(),
+            backoff,
             recovery: RecoveryGate::new(recovery_required),
             ssh_config_sync: config.ssh_config_sync,
             ssh_sync_status_path: crate::ssh_sync::status_path(&config.state_dir),
