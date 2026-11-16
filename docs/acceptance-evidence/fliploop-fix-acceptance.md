@@ -1017,6 +1017,60 @@ reason**（stale OC ×5 不变无新拍）。
 **文件总行数** OC 4541；imac 侧停格 cp16 文件（4122 行），缺口
 00:47:17Z→恢复点留空。
 
+### 修后窗检查点 #21（2026-11-16 15:28:18 CST / 07:28:18Z 实测取证）
+
+窗龄 22h30m46s（**22.51h/24h**，单据预计 ~22.5h 吻合）；cp20 取证
+06:33:53Z→本段增量 ~54min。**纯取证，禁中途判定禁外推**（率/中位一律
+记「率事实非判定」；窗满四项判定 16:57:32 CST 后另单）。
+
+**imac 失联复核**：第五个 OC 单侧段——vIP 10.240.0.7 ping 100% 丢包 +
+LAN 192.168.5.117 无响应 + SSH No route to host（ping/SSH 各一次即止）；
+失联 00:47:17Z 起 **≥6h41m 持续中**，缺口留空不补拍。OC SSH 首试即通，
+三文件齐取（agent-decisions 1634057B / switch-events 678026B / peers
+667B）。
+
+**实况（07:28–07:29Z）**：coding-vm p2p_direct @`.130` fresh
+hs=07:28:22Z（roam #17 起 `.130` 保持 **171min+**）；wd hub_relay
+（conn72 cooling 708s @末条 07:29:34Z）；imac peer direct_pending
+@`:22079` unprobed。
+
+**coding-vm 连续第三段全静默**：SINCE_CP20 = 0 条（全窗计数与 cp20 逐项
+相同 promote 98/demote 49/probe 51/hold 7）；`.188↔.130` 摇摆停歇
+（roam 17 持平）；`114.86.101.169` 第七段休眠延续。
+
+**cp20 后增量（~54min，OC 98 条）**：
+- wd defer 31/hold 4/demote 3/promote 5/probe 3，cycles n=3 median
+  3.10min（2.35–6.37）；
+- imac peer probe 26/demote 13/promote 13，cycles n=12 median 3.20min
+  （3.07–3.45 全耗尽环）；
+- coding-vm 0。
+
+**wd 到期环三环（AG/AH/AI）；连击 69→72（defer 741→772 +31）**：
+- AG：06:39:49 候选表 attempt @`180.152` → 等握手 2/3 → 06:42:55
+  **exhausted @`180.152`**（conn70）；
+- AH：06:58:09 attempt @`180.152` → 等握手 2 → 07:00:27 verified
+  @`180.152` → 07:06:49 sel003 @`.97`（**6.37min 保持**，落双秒）；
+- AI：07:22:55 **memory face/last_direct attempt @`.97`** → 07:24:01
+  verified @`.97` → 07:26:22 sel003 @`.97`（**2.35min 保持**，conn72）。
+- 段内 demote 3（exhausted ×1 @`180.152` + sel003 ×2 @`.97`）≈3.2/h
+  （2.4→3.2，率事实非判定）；`180.152` +3 至 ×90、`.97` +2 至 ×38；
+  无新纪录（14.00 存量保持）。
+
+**imac peer 耗尽环**：13 demote 全 exhausted + 13 promote 全
+@`:22079`（×113→×126），环节奏 ~4min 不变；`.17` ×158/`.226`
+×51 双冻结；**defer 仍 1、bypass 双冻结**（imac 118/coding-vm 48 +0）。
+
+**同秒签名 +1 双**（07:06:49 wd sel003 @`.97` + imac exhausted
+@`:22079`，**OC 累计 18 双全含 imac peer**）+10 交叉（含双秒共 11 对，
+全 imac-demote 一端：wd-defer ×7/wd-promote ×2/wd-demote ×1）。
+
+切换闸：OC 928=911 flip+**17 roam（+0）**。端点面集 **+0 新面**（9 面
+不变）；reason 头集不变（系列口径 11 头，OC 可见 10 头），**无未知新
+reason**（stale OC ×5 不变无新拍）。
+
+**文件总行数** OC 4639；imac 侧停格 cp16 文件（4122 行），缺口
+00:47:17Z→恢复点留空。raw 见 fliploop-fix-window21-2026-11-16.txt。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：
