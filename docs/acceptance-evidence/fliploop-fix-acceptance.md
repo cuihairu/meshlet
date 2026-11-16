@@ -917,6 +917,57 @@ pre-cp10）。切换闸：OC 832=815 flip+**17 roam（+3）**。端点面集 **+
 **文件总行数** OC 4360；imac 侧停格 cp16 文件（4122 行），缺口
 00:47:17Z→恢复点留空。
 
+## 13:4x 检查点（2026-11-16 13:42 CST / 2026-11-16T05:42:23Z 实测，巡检单 fliploop-fixcp19-1116）
+
+**纯取证检查点 #19，窗龄 20.75h/24h——禁中途达标判定、禁外推**（与单据开
+单口径 13:39/05:39 吻合；节名按实测 13:4x；距窗满 ~3.25h）。**imac 侧仍失
+联（第三个 OC 单侧段）**：按单据 ping 一次+SSH 一次即止——meshlet 虚 IP
+`10.240.0.7` ping 100% 丢包、LAN `192.168.5.117` ping 无响应、SSH「No
+route to host」；失联 00:47:17Z→取证 **≥4h55m 持续中**，缺口留空不补拍。
+openclaw SSH 首试即通，oc 三文件齐取（raw
+`fliploop-fix-window19-2026-11-16.txt`，**OC 单侧**）。
+
+**头条实况（05:42Z OC 视）**：coding-vm @ `.130` p2p_direct fresh
+hs=05:40:10Z（roam #17 04:37:15Z 起 `.130` 保持 65min+）；wd hub_relay
+（**取证瞬间 05:42:15Z sel003 demote @`.97`**——AD 环 65s 打回）；imac
+peer direct_pending @`:22079` unprobed（耗尽环延续）。
+
+**coding-vm 首例全静默段**：SINCE_CP18 决策事件 **0 条**（全窗计数与 cp18
+完全一致 promote 98/demote 49/probe 51/hold 7）；`.188` ×50/`.130` ×46/
+`114.86.101.169` ×2 全冻结（**第六段休眠**）；**`.188↔.130` roam 摇摆停
+歇**（roam OC 视 17 持平 +0）。
+
+**承接观测点逐项数据答案（OC 单侧）**：①**imac 未恢复**——失联 ≥4h55m
+持续；imac peer 段内 12 demote **全 exhausted**、13 promote 尝试
+（`:22079` ×90→×101 +11、`.226` +1 至 ×51——某轮尝试落 `.226`），cycles
+n=12 median 3.24min（3.12–3.38 全耗尽环），**defer 仍 1（耗尽环零
+defer）、bypass 仍冻结 118**；②**wd 连击 64→66**（defer 682→708 +26）；
+③**wd 到期环三环**（AB/AC/AD）全 attempt @`180.152`：AB 环 verified
+@`180.152`→67s sel003 @`.97` 打回（下发≠内核）；AC 环等待握手 attempt 2/3
+（attempt 3 落 `.97`）→**05:17:25Z verified @`.97`→05:24:47Z sel003（7.37min
+保持）**；AD 环 verified @`180.152`→65s @`.97` 打回（取证瞬间）；无新纪录
+（14.00 存量）；wd 段内 demote 3 全 sel003 @`.97` ≈3.5 次/h（3.0→3.5）；
+`180.152` +5 至 ×86、`.97` +1 至 ×34；④**同秒双 demote 本段归零**（0 次
+——OC 累计 16 双不变，全含 imac peer）+ 12 次交叉仍全以 imac-demote 为一
+端（wd-defer ×7/wd-promote ×3/wd-demote+imac-promote ×2）——交叉碰撞延
+续（imac 耗尽环与 wd defer/demote 节奏），本段同秒配对未落成双而已；⑤
+22.95min 纪录 imac 视缺测（存量不变）。
+
+**增量**（08:57:32Z 起 20.75h；cp18 后增量窗约 52min，**OC 单侧**）：OC
+全窗 2064 决策（wd **defer 708**/promote 120/demote 67/probe 53/hold 107；
+imac peer promote 318/demote 196/probe 278；coding-vm promote 98/demote
+49/probe 51）。周期中位：OC wd 1.50min（n=66，max 14.00 存量）/ imac peer
+3.18min（n=195，max 86.15 存量）/ coding-vm 9.93min（n=48，max 114.90 存
+量）。cp18 后增量：OC 92 条（wd defer 28/hold 4/demote 3/promote 6/probe
+2，cycles n=3 median 1.12min max 7.37；imac peer probe 24/promote 13/demote
+12，cycles n=12 median 3.24min；coding-vm 0）。段内 bypass **双冻结**（imac
+118/coding-vm 48 均 +0）。切换闸：OC 865=848 flip+**17 roam（+0）**。端点
+面集 **+0 新面**（9 面不变）；reason 头集不变（11 头），**无未知新
+reason**（stale OC ×5 不变无新拍）。
+
+**文件总行数** OC 4448；imac 侧停格 cp16 文件（4122 行），缺口
+00:47:17Z→恢复点留空。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：
