@@ -1,0 +1,59 @@
+=== fliploop 修后窗检查点 #17 raw（2026-11-16 09:34:21 CST / 2026-11-16T01:34:21Z 实测取证；单据标题 09:3x 吻合，节名按实测）===
+window start 2026-11-15T08:57:32Z; age at capture 16h36m49s (16.61h/24h; sheet estimated ~17h, actual recorded); cp16 capture was 00:43:08Z -> increment window ~51min
+*** IMAC SIDE ABSENT THIS CHECKPOINT: imac host UNREACHABLE since ~00:47Z ***
+  scp failed twice (connection closed); ssh "No route to host"; LAN ping 100% loss; re-probe at close: still down
+  OC view pins the outage start: imac-peer handshake-stale demote @.17:51820 at 00:47:17Z (first sign; ~4min after cp16 capture)
+  cp16 file (captured 00:43:08Z) remains the latest imac-side data; nothing newer exists to fetch
+openclaw SSH reachable on first try (no retry needed)
+files: oc agent-decisions.jsonl 1410394B / direct-switch-events.json 608121B / direct-peers.json 638B
+       (imac three files NOT fetched this checkpoint)
+
+*** HEADLINE: IMAC HOST DOWN (OC VIEW), wd RELAYED, ONLY coding-vm STAYS DIRECT ***
+  LIVE OC (01:34Z): coding-vm p2p_direct @192.168.5.188 fresh hs=01:32:17Z | windows-desktop hub_relay (defer conn 54 cooling 126s) | imac hub_relay (endpoint empty, hs null — down)
+
+*** IMAC-PEER EXHAUSTION RING (host-down behavior, OC view) ***
+  first sign 00:47:17Z handshake-stale demote @10.147.19.17:51820 (OC stale occurrence #5, imac-peer's 2nd)
+  then 00:48:18Z memory-face promote attempt @.17 + FLIP-001 bypass probe @:22079 -> waiting-hs attempt 2/3 ->
+    00:51:29Z pending-attempts-exhausted demote @.17
+  then 9 MORE full exhaustion rings @:22079, each ~4m10s apart (attempt -> waiting-hs attempt 2/3 -> exhausted):
+    demotes @:22079 at 00:55:46, 01:00:04, 01:04:29, 01:08:43, 01:12:56, 01:17:13, 01:21:25, 01:25:45, 01:29:59, 01:34:19
+  ZERO verified the whole segment; segment cycles n=11 median 3.22min (3.07-3.32 — all exhaustion rings)
+  :22079 promote count x36 -> x46 (+10 attempts); .17 x157 -> x158 (+1 memory-face attempt); .226 FROZEN x48 (zero events);
+  LAST imac event 01:34:19Z exhausted demote @:22079 (at capture)
+  FLIP-002 defer NOT triggered by exhaustion rings: imac-peer fullwin defer stays 1 (pre-cp10) — factual note
+
+OC FULLWIN total=1606 (file total 3990) | SINCE_CP16 total=97 (~51min)
+  FULLWIN windows-desktop(wd): defer 563 promote 97 hold_relay 89 demote 54 probe 44
+         imac: promote 260 demote 139 probe 164 hold_relay 11 defer 1 (pre-cp10) | coding-vm: promote 88 demote 44 probe 46 hold_relay 6
+  cycles: wd n=53 median 1.63min (0.72-10.00 carryover) | imac n=138 median 2.27min (max 86.15) | coding-vm n=43 median 9.90min (max 105.80)
+  SINCE_CP16: wd defer 34 hold 4 demote 3 promote 3 probe 3 | imac probe 23 demote 12 promote 11 | coding-vm promote 2 demote 1 probe 1
+  cycles SINCE_CP16: wd n=2 median 2.04min (1.02-3.07) | imac n=11 median 3.22min (3.07-3.32) | coding-vm 0 new closed (1 closed 11.12min, 1 open since 00:48:18Z)
+  WD EXPIRY CYCLES: conn 51 -> 52 -> 53 -> 54 (defer 529 -> 563, +34; max consecutive 51 -> 54):
+    cycle O end: cp16's verified @180.152 (kernel @.97, direct at cp16 capture) held ~4.5min -> 00:45:00 sel003 demote @.97 -> hold x2 -> conn 52
+    cycle P: 01:00:04 attempt @180.152 -> waiting-hs attempt 2 -> 01:02:16 verified @180.152 -> 01:03:17 sel003 demote @.97 (61s; dispatch!=kernel) -> hold x2 -> conn 53
+    cycle Q: 01:18:21 attempt @180.152 -> waiting-hs attempt 2/3 -> 01:21:25 pending-attempts-exhausted demote @180.152 -> conn 54
+    at capture: conn 54 backoff (01:34:19 cooling 126s); wd segment demote 3 (~3.5/h, 2.5 -> 3.5 up)
+  FLIP-001 bypass: fullwin imac 118 (+1) / coding-vm 43 (+1)
+  endpoints fullwin: .17 x158 (+1), :22079 x46 (+10, exhaustion-ring attempts), .226 x48 FROZEN (+0), 180.152.54.66 x69 (+3, wd cycles P/Q),
+    .130 x46 FROZEN (+0), 192.168.5.188 x40 (+2), .97 x28 FROZEN (+0), .117 x8 frozen, 114.86.101.169 x2 FROZEN (+0, 4th dormant segment)
+  switch FULLWIN=696 flip=682 roam=14  <- ZERO new roam (OC view; imac view unavailable)
+  coding-vm: cp16 open cycle closed 00:46:11 sel003 demote @.188 (11.12min) -> 00:47:17 memory-face attempt @.188 + bypass probe @.130
+    -> 00:48:18 verified @.188 -> open since, LIVE fresh hs=01:32:17Z (44min direct hold in flight; .188 migration HOLDS)
+  LAST: coding-vm 00:48:18Z verified @.188 | imac 01:34:19Z exhausted demote @:22079 | wd 01:34:19Z defer conn 54 cooling 126s
+  OC same-second SINCE_CP16: 1x double-demote (01:21:25 wd@180.152 exhausted + imac@:22079 exhausted) — 9th OC-view double,
+    imac peer present in all 9; + 10x cross, ALL with imac-demote on one end (wd-defer x8, wd-promote x1, coding-vm-promote x1)
+    — post-outage the ~4m10s exhaustion ring collides with wd ~63s defer chain; imac view unavailable (host down)
+
+reason set: head set unchanged (11 heads, no unknown new reason); handshake-stale OC count now 5 (00:47:17Z imac peer; prior 4 wd/imac events)
+endpoint faces: same 9-face set, +0 new faces
+
+pending observations answered (OC-side only this checkpoint):
+1. defer chain: imac view unavailable; OC wd conn 51 -> 54 (+34 defers to 563), capture state cooling 126s
+2. 22.95min record: imac view unavailable (record unchanged as carryover); OC imac-peer segment max 3.32min
+3. 180.152: imac view unavailable; OC view +3 (x69, wd cycles P/Q incl cycle P verified @180.152 -> 61s demote, kernel @.97)
+4. same-second signature: OC view 1 double (9th, imac peer in all 9) + 10 cross all imac-demote-ended (outage-driven); imac view unavailable
+5. wd expiry chain: cycle O end sel003 @.97 after ~4.5min hold; cycle P verified @180.152 -> 61s sel003 @.97 (dispatch!=kernel);
+   cycle Q exhausted @180.152; conn 51 -> 54, capture conn 54 cooling 126s, wd LIVE hub_relay
+6. rates (OC view): wd ~3.5/h (2.5 -> 3.5); imac peer exhaustion-driven 12 demotes ~14/h (host-down behavior, not health churn); coding-vm 1
+7. faces: :22079 +10 all exhaustion attempts (zero verified — chain :22079<->.226 DEAD since outage; .226 zero events);
+   coding-vm .188 migration HOLDS (44min in flight at capture); 114.86.101.169 4th dormant segment; roams +0 both views (imac view n/a)
