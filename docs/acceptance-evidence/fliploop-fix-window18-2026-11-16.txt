@@ -1,0 +1,67 @@
+=== fliploop 修后窗检查点 #18 raw（2026-11-16 12:50:15 CST / 2026-11-16T04:50:15Z 实测取证；单据标题 ~17.5h 预计、实测窗龄 19.88h 按实测校正，节名按实测 12:5x）===
+window start 2026-11-15T08:57:32Z; age at capture 19h52m43s (19.88h/24h; sheet estimated ~17.5h, actual recorded); cp17 capture was 01:34:21Z -> increment window ~3h17min
+*** IMAC SIDE: STILL DOWN (outage continues; NOT recovered this checkpoint) ***
+  probe set at open: LAN ping 192.168.5.117 100% loss; ssh via LAN "No route to host"
+  sheet asked to ping 10.240.0.3 — that is NOT imac (imac meshlet vIP is 10.240.0.7); 10.240.0.3 answered ping but
+    ssh with imac key -> Permission denied (different host); recorded as sheet correction, imac liveness judged via OC view
+  OC view verdict: SINCE_CP17 imac-peer demotes = 45, ALL pending-attempts-exhausted, ZERO verified / zero stale-new / zero memory-face
+    -> host still not completing handshakes; outage 00:47:17Z -> capture 04:51:20Z >= 4h04m and ongoing
+  NO scp retry loop per sheet rule (probed once at open; OC-side evidence only)
+openclaw SSH reachable on first try (no retry needed)
+files: oc agent-decisions.jsonl 1538257B / direct-switch-events.json 649068B / direct-peers.json 671B
+  (imac three files NOT fetched; cp16 remains latest imac-side data; gap 00:47:17Z->? left EMPTY per sheet, no backfill)
+
+*** LIVE OC (04:51Z) ***
+  coding-vm p2p_direct @10.147.19.130:51820 fresh hs=04:51:02Z (migrated BACK from .188 via roam #17 04:37:15Z)
+  windows-desktop hub_relay (defer conn 64, cooling 267s at capture)
+  imac direct_pending @10.147.19.17:22079 probe_failed (waiting-hs attempt 2 at capture, LAST event 04:51:20Z)
+
+IMAC-PEER (OC view, host-down behavior): 45 demotes ALL exhausted, rings continue ~4m10s cadence
+  cycles n=45 median 3.23min (3.07-3.52); :22079 x46 -> x90 (+44 ALL exhaustion attempts); .226 +2 (attempts); .17 x158 frozen
+  FLIP-002 defer still NOT triggered (fullwin imac defer stays 1 pre-cp10); FLIP-001 bypass FROZEN 118 (+0 — unhealthy face not bypassed)
+
+OC FULLWIN total=1976 (file total 4360) | SINCE_CP17 total=370 (~3h17min)
+  FULLWIN windows-desktop(wd): defer 682 promote 114 hold_relay 103 demote 64 probe 51
+         imac: promote 306 demote 184 probe 255 hold_relay 11 defer 1 (pre-cp10) | coding-vm: promote 98 demote 49 probe 51 hold_relay 7
+  cycles: wd n=63 median 1.63min (0.72-14.00 <- NEW RECORD, was 10.00) | imac n=183 median 3.17min (max 86.15 carryover)
+          coding-vm n=48 median 9.93min (1.05-114.90 <- NEW RECORD closed cycle, was 105.80)
+  SINCE_CP17: wd defer 119 hold 14 demote 10 promote 17 probe 7 | imac probe 91 demote 45 promote 46 | coding-vm promote 10 demote 5 probe 5 hold 1
+  cycles SINCE_CP17: wd n=10 median 2.25min (1.03-14.00) | imac n=45 median 3.23min (3.07-3.52) | coding-vm n=4 median 14.13min (5.60-41.82)
+  WD EXPIRY CYCLES x10 THIS SEGMENT; conn 54 -> 64 (defer 563 -> 682, +119; max consecutive 54 -> 64); ring ledger:
+    R: 01:36:30 attempt @.97 -> 01:37:45 verified @.97 -> 01:38:47 sel003 @.97 (62s) -> conn 55
+    S: 01:54:45 attempt @180.152 -> waiting-hs 2 -> 01:56:51 VERIFIED @.97 (handshake landed on .97 despite 180.152 attempt) -> 01:57:59 sel003 @.97 (68s) -> conn 56
+    T: 02:13:51 attempt @180.152 -> 02:15:02 verified @180.152 -> 02:16:05 sel003 @.97 (63s; dispatch!=kernel) -> conn 57
+    U: 02:31:16 attempt @180.152 -> 02:32:25 verified @180.152 -> 02:46:25 sel003 @.97 -> conn 58  <- verified->demote 14.00min WD NEW RECORD (was 10.00)
+    V: 03:02:16 attempt @180.152 -> 03:03:22 verified @180.152 -> 03:04:31 sel003 @.97 (69s) -> conn 59
+    W: 03:20:40 memory-face attempt @.97 -> 03:21:57 verified @.97 -> 03:26:03 sel003 @.97 (4.10min hold) -> conn 60
+    X: 03:42:00 attempt @180.152 -> waiting-hs 2/3 (attempt 3 @.97) -> 03:45:15 exhausted @.97 -> conn 61
+    Y: 04:01:11 attempt @180.152 -> waiting-hs 2/3 -> 04:04:19 exhausted @.97 -> conn 62
+    Z: 04:20:05 attempt @180.152 -> waiting-hs 2/3 -> 04:23:17 exhausted @180.152 -> conn 63
+    AA: 04:38:17 attempt @180.152 -> 04:39:24 verified @180.152 -> 04:40:46 sel003 @.97 (82s) -> conn 64
+    at capture: conn 64 cooling 267s; wd segment demote 10 (sel003 x7 + exhausted x3) ~3.0/h (3.5 -> 3.0)
+  FLIP-001 bypass: fullwin imac 118 FROZEN (+0) / coding-vm 48 (+6)
+  endpoints fullwin: .17 x158 FROZEN, :22079 x90 (+44), .226 x50 (+2), 180.152.54.66 x81 (+12, wd rings T/U/V/AA verified + X/Y/Z attempts),
+    .130 x46 FROZEN (+0 — roam-landed, no agent promote), 192.168.5.188 x50 (+10), .97 x33 (+5), .117 x8 frozen, 114.86.101.169 x2 FROZEN (+0, 5th dormant segment)
+  switch FULLWIN=832 flip=815 roam=17  <- +3 NEW ROAMS (OC view), ALL coding-vm .188<->.130 oscillation:
+    #15 01:36:30 .188 -> .130 score 12 beats 24 | #16 01:52:40 .130 -> .188 score 7 beats 14 | #17 04:37:15 .188 -> .130 score 12 beats 21 (HOLDS at capture)
+    (imac view unavailable — host down; OC 14 -> 17)
+  coding-vm: cp17 open cycle closed 02:43:12 sel003 @.188 = 114.90min NEW RECORD closed cycle (00:48:18 -> 02:43:12; was 105.80 carryover)
+    then 5 sel003 demote @.188 all recovered via memory-face ~62s (re-verified 02:45:20, 03:29:30, 03:37:11, 03:45:15, 04:10:57);
+    segment closed cycles 41.82 / 5.60 / 5.88 / 22.38 (n=4 median 14.13); after 04:10:57 verified @.188, roam #17 landed .130 at 04:37:15, LIVE fresh @.130
+  LAST: coding-vm 04:10:57Z verified @.188 | imac 04:51:20Z waiting-hs attempt 2 @:22079 | wd 04:51:20Z defer conn 64 cooling 267s
+  OC same-second SINCE_CP17: 7x DOUBLE-DEMOTE (01:38:47, 02:43:12, 03:04:31, 03:26:03, 03:35:06, 04:23:17, 04:40:46 — ALL with
+    imac@:22079 exhausted as common factor) -> sheet's expectation "doubles vanish after outage" REFUTED: doubles persist because the
+    OC-side decision layer keeps knocking back imac-face attempts on the same second as wd/coding-vm demotes; OC cumulative 9+7=16 doubles,
+    imac peer present in all 16; + 38 cross (all imac-demote on one end: wd-defer x33+, wd-promote, coding-vm pairs)
+  imac view: unavailable (host down); 22.95min record untouched as carryover
+
+reason set: head set unchanged (11 heads, no unknown new reason); handshake-stale OC stays x5 (no new stale)
+endpoint faces: same 9-face set, +0 new faces
+
+pending observations answered:
+1. imac recovery: NOT recovered; outage >= 4h04m ongoing; gap 00:47:17Z -> open left empty per sheet
+2. wd chain: conn 54 -> 64 (+119 defers to 682), 10 rings incl NEW 14.00min record (cycle U) and 4 exhausted-variant rings (X/Y/Z)
+3. coding-vm: .188 hosted 5 memory-face recovery rings; roam oscillation #15/#16/#17 .188<->.130; 114.90min NEW RECORD closed cycle;
+   capture state migrated BACK to .130 (roam #17) fresh
+4. same-second signature: 7 doubles this segment (all imac exhausted common factor) — expectation "vanish after outage" refuted
+5. faces/reasons: +0 new faces, 11 heads unchanged, no new stale, 114.86.101.169 5th dormant segment
