@@ -1,0 +1,86 @@
+=== fliploop 修后窗窗满判定 + cp22 增量 raw（2026-11-16 17:11:05 CST / 2026-11-16T09:11:05Z 实测取证）===
+window start 2026-11-15T08:57:32Z; age at capture 24h13m33s (24.23h/24h) — EXPIRY GATE PASSED (16:57:32 CST), verdict authorized
+*** IMAC SIDE: STILL DOWN (outage continues; sixth OC-only checkpoint; verdict runs OC-side with imac caveat) ***
+  probe set at open (one ping + one ssh per sheet rule): meshlet vIP 10.240.0.7 ping 100% loss;
+  LAN 192.168.5.117 no response; ssh "No route to host"
+  outage 00:47:17Z -> capture 09:11:05Z >= 8h24m ongoing; gap left EMPTY
+  imac-side window coverage: 15.76h/24h (data frozen 00:43Z, file 4122 lines) — CAVEAT DECLARED for verdict 2/3
+openclaw SSH reachable on first try (no retry needed)
+files: oc agent-decisions.jsonl 1701625B / direct-switch-events.json 697892B / direct-peers.json 667B (file total 4835 lines)
+
+*** LIVE OC (09:10-09:11Z) ***
+  coding-vm p2p_direct @10.147.19.130:51820 fresh hs=09:10:00Z (.130 re-verified 08:30:23Z, hold 41min+)
+  windows-desktop hub_relay (defer conn 77, cooling 270s at last record 09:11:32Z)
+  imac direct_pending @10.147.19.17:22079 unprobed (exhaustion rings continue, host still down)
+
+*** cp22 SEGMENT (cp21 last 07:29:34Z -> 09:11:32Z, ~1h42m) ***
+OC FULLWIN total=2451 (file total 4835) | SINCE_CP21 total=198
+  FULLWIN windows-desktop(wd): defer 840 promote 137 hold_relay 123 demote 77 probe 65
+         imac: promote 367 demote 245 probe 376 hold_relay 11 defer 1 (pre-cp10) | coding-vm: promote 100 demote 50 probe 52 hold_relay 7
+  cycles FULLWIN: wd n=76 median 1.88min (0.72-14.00 carryover RECORD) | imac n=244 median 3.18min (max 86.15 carryover)
+          coding-vm n=49 median 9.97min (max 257.28 <- NEW RECORD, broke 114.90 carryover; cycle closed 08:28:14 demote @.130,
+          span 04:10:57 verified @.188 -> 08:28:14, includes roam #17 face change mid-cycle)
+  SINCE_CP21: wd defer 69 promote 9 hold 8 demote 5 probe 6 | imac probe 48 demote 24 promote 25 | coding-vm promote 2 demote 1 probe 1
+  cycles SINCE_CP21: wd n=5 median 1.08min (1.03-3.23) | imac n=24 median 3.19min (3.08-3.42, all exhaustion) | coding-vm n=1 (257.28)
+  WD EXPIRY CYCLES x5 (AJ..AN); max consecutive 72 -> 77 (defer 772 -> 840, +68):
+    AJ: 07:41:26 attempt @180.152 -> waiting-hs 2/3 (attempt 3 @.97) -> 07:44:40 exhausted demote @.97 -> conn 73
+    AK: 08:00:32 attempt @180.152 -> waiting-hs 2/3 (attempt 3 @.97) -> 08:03:41 verified @.97 -> 08:04:46 sel003 @.97 (1.08min)
+    AL: 08:20:39 attempt @180.152 -> 08:21:47 verified @180.152 -> 08:23:02 sel003 @.97 (1.23min)
+    AM: 08:38:44 attempt @180.152 -> waiting-hs 2/3 -> 08:41:58 verified @.97 -> 08:43:00 sel003 @.97 (1.03min)
+    AN: 08:58:50 attempt @180.152 -> 08:59:59 verified @180.152 -> 09:01:01 sel003 @.97 (1.03min) -> conn 77
+    wd segment demote 5 (exhausted x1 @.97 + sel003 x4 @.97) ~2.9/h; 180.152 +7 (x97), .97 +4 (x40)
+  CODING-VM SILENCE BROKEN (4th segment resumes): 08:28:14 sel003 demote @.130 (257.28min cycle closed, NEW RECORD)
+    -> 08:29:15 memory-face attempt @.130 + recovery gate bypassed: face probe-healthy (FLIP-001) SAME SECOND (bypass 48 -> 49, +1 first since freeze)
+    -> 08:30:23 verified @.130 (probe Healthy) -> LIVE fresh hs=09:10:00Z hold 41min+
+  FLIP-001 bypass: imac 118 FROZEN / coding-vm 48 -> 49 (+1, unfrozen at 08:29:15Z)
+  endpoints fullwin: .17 x158 FROZEN, :22079 x150 (+24 exhaustion attempts), .226 x51 FROZEN,
+    180.152.54.66 x97 (+7), .130 x48 (+2), 192.168.5.188 x50 FROZEN, .97 x40 (+4), .117 x8 frozen, 114.86.101.169 x2 (+0)
+  switch FULLWIN=994 flip=976 roam=18  <- +1 NEW ROAM (OC view): #18 07:56:17Z coding-vm .130 -> 192.168.5.188
+    (score 8.0 beats current 12.0 by >= 30% for 3 consecutive samples — in-gate trigger, NOT misfire)
+    switch flips by peer: JMrE(wd) 214 / QmAF(imac) 612 / b6tx(cvm) 150; roams: QmAF 11 / b6tx 7 — all 18 in-gate
+  imac-peer (host-down behavior): 24 demotes ALL exhausted; 25 promote attempts all @:22079 (x126 -> x150);
+    rings ~4m10s cadence unchanged; defer STILL 1; bypass STILL frozen 118
+  LAST per peer (fetch instant 09:11:32Z): imac 09:11:32Z promote attempt @:22079 (candidate table)
+    | wd 09:11:32Z defer conn 77 cooling 270s | coding-vm 08:30:23Z verified @.130
+  OC same-second SINCE_CP21: 1x DOUBLE-DEMOTE (08:28:14 coding-vm sel003 @.130 + imac exhausted @:22079, wd defer same second
+    = 3-event second) — OC cumulative 19 doubles, imac peer in all 19
+    + 17x cross (18 pairings incl. the double), ALL imac-demote on one end (wd-defer x15, wd-promote x1, cvm-demote x1 = the double)
+  imac view: unavailable (host down); 22.95min record untouched as carryover
+
+reason set: head set unchanged (11 heads series count, no unknown new reason; OC-visible census 10 heads); handshake-stale OC stays x5
+endpoint faces: same 9-face set, +0 new faces
+
+*** VERDICT DATA (imac frozen-file same-caliber extraction, /tmp/flcp16, window 08:57:32Z -> 00:43:08Z = 15.76h) ***
+  imac switch FULLWIN: 1040 events (JMrE 477 / FSaf 563)
+    JMrE: 477 flips, 0 roams | FSaf: 553 flips + 10 roams
+  imac decisions FULLWIN: 1715 (JMrE promote 316 demote 161 hold 180 defer 151 probe 117, cycles n=161 median 1.52min 0.72-22.95;
+    FSaf promote 320 demote 165 probe 196, cycles n=190 median 0.83min)
+  FSaf from/to face pairs (imac view): state-migration pairs dominate; DIRECT face pairs:
+    10.147.19.49:51820 -> 192.168.5.11:51820 x6, -> 192.168.5.11:44249 x4  (= LAN direct to openclaw x10)
+    NO public/wan endpoint pair on FSaf link in window
+  VERDICT-3 side evidence (OC view, b6tx/cvm link — NOT FSaf): 22:14:05Z promote attempt via candidate table @114.86.101.169:51820
+    (wan endpoint) -> 22:15:09 waiting-hs attempt 2 -> 22:16:15Z pending VERIFIED fresh handshake (probe Healthy) @114.86.101.169
+    cvm FULLWIN verified endpoints: .130 x24 / 192.168.5.188 x25 / 114.86.101.169 x1(wan)
+
+*** FOUR-ITEM VERDICT (each: PASS / FAIL / INSUFFICIENT) ***
+1. WINDOW FULL 24h: PASS — capture 09:11:05Z, age 24h13m33s >= 24h; gate 16:57:32 CST passed at 17:11:05 CST
+2. JMrE RING CLOSURE: PASS on pathology, rate-fact DECLARED not-closed:
+   baseline (imac view JMrE, 24h): 799 flip / 262 rings / median 1.48min, "last beat still flipping"
+   post-fix (imac view JMrE, 15.76h partial): 477 flip / 161 rings / median 1.52min
+     -> rate facts: flip 30.3/h vs 33.3/h (-9%), rings 10.2/h vs 10.9/h (-6%), median +0.04min — RATE LAYER NOT CLOSED (declared)
+   post-fix OC view wd (24.23h full): 214 flip / 76 rings / median 1.88min (no pre-fix OC baseline exists; window-only reference)
+   pathology layer (basis of PASS): fliploop closed-loop each stage broken — FLIP-002 defer intercepted 151 (imac view) + 840 (OC view wd,
+     streak 77); recovery gate hold 180 + 123 (no unconditional bypass); promote faces spread (baseline 100% pinned @.97 single face ->
+     post-fix 180.152 x97 + .97 x40 dual faces); "last beat still flipping" GONE (all 22 checkpoints end in defer/hold/verified-stable,
+     final beat 09:11:32Z = defer cooling 270s); baseline instant re-promote of same degraded face no longer occurs
+   caveat: imac-side coverage 15.76h (<24h), host down truncation, gap NOT backfillable; remaining rings ~10/h are
+     health-management rings driven by REAL face degradation (sel003 consecutive-lost on .97 recurs all window), not fliploop
+3. FSaf WAN HOLE-PUNCH EVIDENCE: INSUFFICIENT — FSaf link (imac view, 15.76h): direct face pairs LAN-ONLY
+   (192.168.5.11:51820/:44249 x10, LAN direct SUCCESS evidence); zero wan endpoint records on FSaf link; imac view frozen 00:43Z
+   side evidence on b6tx link (not FSaf): wan endpoint 114.86.101.169 verified x1 via candidate table (22:16:15Z) — wan punch
+   capability PROVEN on cvm link, but FSaf-chain wan evidence ABSENT in window
+4. SWITCH GATE roam=0 AND no-misfire: FAIL on roam=0 (18 roams in window, OC view; imac view +10 frozen at 15.76h);
+   no-misfire SUBITEM HOLDS: 18/18 OC-view roams all in-gate ("score beats current >= 30% for 3 consecutive samples"),
+   0 out-of-gate roams; composition: 11 imac-peer (face-availability churn, window first half incl. pre-outage) + 7 cvm
+   (.188<->.130 oscillation, rested cp11-cp21 with 0, resumed +1 at 07:56:17Z cp22 segment)
+VERDICT SUMMARY: 1 PASS / 2 PASS(pathology, rate declared) / 3 INSUFFICIENT / 4 FAIL(roam!=0, no-misfire holds)

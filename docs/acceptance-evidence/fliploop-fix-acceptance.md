@@ -1071,6 +1071,71 @@ reason**（stale OC ×5 不变无新拍）。
 **文件总行数** OC 4639；imac 侧停格 cp16 文件（4122 行），缺口
 00:47:17Z→恢复点留空。raw 见 fliploop-fix-window21-2026-11-16.txt。
 
+### 窗满判定（2026-11-16 17:11:05 CST / 09:11:05Z 实测取证，巡检单 fliploop-fixverdict-1116）
+
+**闸门确认**：实测窗龄 24h13m33s（**24.23h/24h**），17:11:05 CST 过
+16:57:32 CST 闸，判定授权成立。imac 恢复复核（ping/SSH 各一次）：
+vIP `.7` 100% 丢包 + LAN 无响应 + SSH No route to host——**判定按 imac
+侧窗龄 15.76h（<24h）单侧口径执行，缺口留空不补拍**；失联 00:47:17Z
+起 ≥8h24m 持续。OC SSH 首试即通，三文件齐取（4835 行）。
+
+**判定结论：① PASS / ② PASS（病理层；率层如实声明未收口）/
+③ 证据不足 / ④ FAIL（roam≠0；无误触发子项成立）**
+
+**① 窗满 24h：PASS**——capture 09:11:05Z 窗龄 24.23h ≥24h（起点
+2026-11-15 16:57:32 CST）。
+
+**② JMrE 环收口：PASS（病理层），率层声明未收口**
+- 基线（imac 视 JMrE，24h）：799 flip / 262 环 / 中位 1.48min，
+  「末拍仍翻」。
+- 修后（imac 视 JMrE，15.76h 部分）：477 flip / 161 环 / 中位
+  1.52min。率事实（非判定口径）：flip 30.3/h vs 33.3/h（-9%）、环
+  10.2/h vs 10.9/h（-6%）、中位 +0.04min——**率层未收口，如实声明**。
+- 修后 OC 视 wd（24.23h 全窗）：214 flip / 76 环 / 中位 1.88min
+  （修前该链无基线数字，仅窗内参考）。
+- **PASS 依据（病理层）**：fliploop 闭环三环节全断——FLIP-002 defer
+  拦截 151（imac 视）+840（OC 视 wd，连击 77）；恢复门 hold 180+123
+  （无裸放行）；promote 面 100% 钉死 `.97` 单面 → `180.152` ×97+`.97`
+  ×40 双面分散（候选表纳管生效）；**「末拍仍翻」消失**（22 个检查点
+  末拍无一在翻，窗末拍 09:11:32Z = defer 冷却 270s）；劣化面秒级立即
+  重拨不再发生。存量环 ~10/h 系**真实面劣化驱动**（`.97` sel003
+  consecutive-lost 全窗反复）的门控健康管理环，非 fliploop。
+- 口径声明：imac 视仅 15.76h（主机失联截断，缺口不可补）；剩余环率
+  与修前持平属面质量事实，修复改变的是「对劣化的响应方式」而非
+  「面质量」。
+
+**③ FSaf 广域打洞证据：证据不足**——FSaf 链（imac 视 15.76h）直连
+面对仅 **LAN `192.168.5.11:51820/:44249` ×10（LAN 直连成功证据）**，
+广域（公网）端点 **0 记录**；imac 视数据止 00:43Z。旁证（非 FSaf
+链）：OC↔coding-vm 链 22:14:05Z 候选表 attempt @`114.86.101.169`
+（公网面）→ 22:16:15Z **verified（probe Healthy）** ×1——广域打洞
+能力在 cvm 链实证，但 FSaf 链窗内无广域记录。
+
+**④ 切换闸 roam=0 且无误触发：FAIL（roam=0 子项）**——修后窗 OC 视
+roam **18 ≠ 0**（imac 视另 +10 停格 15.76h）。**「无误触发」子项
+成立**：18/18 全为判据内触发（「score beats current ≥30% 连续 3 采
+样」），判据外误触发 0 起；构成 = imac peer 11（窗前半段面可用性变
+化期）+ coding-vm 7（`.188↔.130` 摇摆，cp11–cp21 连续 0，cp22 段
+07:56:17Z +1 判据内）。
+
+**判定依据 cp22 增量（07:29:34Z→09:11:32Z，~1h42m，OC 198 条）**：
+wd 五环 AJ–AN（AN verified @`180.152`→sel003 1.03min；AJ exhausted
+@`.97`）；连击 72→77（defer 772→840 +68），cycles n=5 median
+1.08min；**coding-vm 静默打破**（第四段恢复 4 条：08:28:14 sel003
+demote @`.130` **257.28min 环闭环新纪录破 114.90** → 08:29:15
+memory face attempt+**recovery gate bypass（FLIP-001）**同秒
+（bypass 48→49 解冻首例）→ 08:30:23 verified @`.130`）；imac peer
+24 demote 全 exhausted+25 promote 全 @`:22079`（×126→×150）defer 仍
+1/bypass 118 冻结；同秒 +1 双（08:28:14 cvm sel003 @`.130`+imac
+exhausted @`:22079`+wd defer 三事件同秒，**OC 累计 19 双全含 imac
+peer**）+17 交叉（共 18 对全 imac-demote 一端）；roam +1（#18
+07:56:17Z）；端点面 +0 新面（9 面）、reason 无未知新头（系列口径 11
+头、OC 可见 10 头）、stale ×5。切换闸 FULLWIN 994=976 flip+18 roam。
+
+**文件总行数** OC 4835；imac 侧停格 cp16 文件（4122 行），缺口
+00:47:17Z→恢复点留空。raw 见 fliploop-fix-window22-2026-11-16.txt
+（含四项判定英文明细）。
+
 ## FLIP-001：端点候选表纳管 roaming（commit f99a7ef）
 
 实现（`apps/agent/src/candidates.rs` 新建 431 行）：
