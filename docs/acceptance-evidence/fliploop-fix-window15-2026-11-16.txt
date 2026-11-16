@@ -1,0 +1,58 @@
+=== fliploop 修后窗检查点 #15 raw（2026-11-16 07:54:53 CST / 2026-11-15T23:54:53Z 实测取证；单据标题 08:0x 预计、实测落 07:5x，节名按实测）===
+window start 2026-11-15T08:57:32Z; age at capture 14h57m21s (14.96h/24h; sheet estimated ~15.1h, actual recorded); cp14 capture was 23:07:31Z -> increment window ~47min
+openclaw SSH reachable on first try (no retry needed)
+files: imac agent-decisions.jsonl 1453339B / direct-switch-events.json 718570B / direct-peers.json 679B
+       oc   agent-decisions.jsonl 1344862B / direct-switch-events.json 587566B / direct-peers.json 667B
+
+*** cp14 NEW FACES UPDATE ***
+  imac 10.147.19.17:22079  -> SOLIDIFIED: promote/defer x8 -> x21 (+13 this segment);
+    OC-view roam #13 23:16:40Z imac peer 10.147.19.17:51820 -> 10.147.19.17:22079 (score 14 beats 24.5) — formal SEL-002 roam ONTO the new-port face;
+    imac peer face-rotation chain SHIFTED from .17<->.226 to :22079<->.226 (6+ rounds this segment: demote @.226 -> attempt+verified @:22079);
+    .17:51820 promote count FROZEN at x157 (+0); .226 +4 to x48; LIVE imac peer direct_pending @:22079 (unprobed at capture)
+  coding-vm 114.86.101.169:51820 -> FROZEN at x2 (no further events; coding-vm kernel stayed on .130, 2 cycles both @.130 recovered via memory face)
+
+IMAC FULLWIN total=1628 (file total 4035) | SINCE_CP14 total=88 (~47min)
+  FULLWIN windows-desktop(JMrE): promote 302 defer 151 hold_relay 176 demote 155 probe 110
+         openclaw-win(FSaf): promote 342 probe 215 demote 177
+  cycles: JMrE n=155 median 1.50min (0.72-22.95 <- RECORD UNCHANGED) | FSaf n=176 median 0.82min (0.72-171.90 carryover)
+  SINCE_CP14 JMrE: promote 13 demote 8 hold_relay 8 probe 5  <- DEFER = 0 TENTH SEGMENT IN A ROW (151 frozen, consecutive 10 unchanged)
+  SINCE_CP14 FSaf: promote 22 probe 19 demote 13
+  cycles SINCE_CP14: JMrE n=7 median 2.20min (0.73-8.92) | FSaf n=12 median 2.23min (0.72-5.38, no >30min cycle)
+  segment demote rates (~47min): JMrE 8 -> ~10.1/h (9.8 -> 10.1 flat) | FSaf 13 -> ~16.5/h (19.7 -> 16.5 down)
+  FLIP-002 defer: fullwin 151 unchanged 10th segment; FLIP-001 bypass: fullwin JMrE 74 (+3) / FSaf 166 (+10)
+  endpoints fullwin: .97 x228 (+8), 10.147.19.49 x164 (+18), .11:44249 x143 (+4), 180.152.54.66 x74 (+5), .11:51820 x35 frozen
+  switch FULLWIN=986 flip=976 roam=10  <- +1 NEW ROAM (imac view): #10 23:49:14Z FSaf .49 -> 192.168.5.11:44249 score 0 beats 32 (4th SEL-002 roam onto NAT-ephemeral face)
+  LAST: FSaf 23:55:14Z probe @:44249 (waiting for handshake attempt 2) | JMrE 23:55:14Z hold_relay (recovery gate)
+  LIVE (23:55Z): coding-vm p2p_direct @192.168.5.188 fresh hs=23:54:15Z
+    JMrE hub_relay (endpoint empty) | FSaf direct_pending @:44249 probe_failed (NAT-face attempt in flight)
+  same-second signature SINCE_CP14: 1x double-demote (23:34:11 JMrE@.97+FSaf@.49) + 3x opposite-cross (23:20:36 + 23:36:21 + 23:53:45 all FSaf-d+JMrE-v)
+    -> 4 events/~47min, DOWN from cp14's 8; cumulative imac view: 15 double-demote + 21 cross
+
+OC FULLWIN total=1420 (file total 3804) | SINCE_CP14 total=89 (~47min)
+  FULLWIN windows-desktop(wd): defer 497 promote 90 hold_relay 85 demote 49 probe 37
+         imac: promote 234 demote 119 probe 125 hold_relay 11 defer 1 (pre-cp10) | coding-vm: promote 82 demote 41 probe 43 hold_relay 6
+  cycles: wd n=48 median 1.32min (0.72-10.00 carryover) | imac n=118 median 2.17min (max 86.15) | coding-vm n=40 median 9.38min (max 105.80)
+  SINCE_CP14: wd defer 27 hold 6 promote 4 demote 3 probe 1 | imac promote 17 probe 14 demote 9 | coding-vm promote 4 demote 2 probe 2
+  cycles SINCE_CP14: wd n=2 median 1.02min (1.02-1.03) | imac n=8 median 1.67min (1.02-6.88) | coding-vm n=1 median 29.52min <- near-30min direct hold (23:16:40 verified -> 23:46:11 demote, longest closed coding-vm cycle this window bar carryover)
+  WD EXPIRY CYCLES x3 THIS SEGMENT (J end + K + L); conn 46 -> 47 -> 48 -> 49 (defer 470 -> 497, +27):
+    cycle J end: cp14's 23:06:50 verified @180.152 (kernel @.97) held ~4min12s -> 23:11:02 sel003 demote @.97 -> conn 47 @23:14:26
+    cycle K: 23:26:35 attempt @180.152 -> waiting-hs attempt 2 -> 23:28:46 verified @.97 -> 23:29:47 sel003 demote @.97 (61s) -> conn 48 @23:33:03
+    cycle L: 23:44:58 attempt @180.152 -> 23:46:11 verified @180.152 -> 23:47:13 sel003 demote @.97 (62s) -> conn 49 @23:50:32
+    at capture: conn 49 window winding (23:54:53 cooling 440s)
+  FLIP-001 bypass: fullwin imac 111 (+9) / coding-vm 40 (+2)
+  endpoints fullwin: .17 x157 FROZEN (+0), :22079 x21 (+13, see above), .226 x48 (+4), 180.152.54.66 x63 (+3, wd expiry attempts), .130 x46 (+4), 192.168.5.188 x34 frozen, .97 x27 (+1), .117 x8 frozen, 114.86.101.169 x2 frozen
+  switch FULLWIN=628 flip=615 roam=13  <- +1 NEW ROAM (OC view): #13 23:16:40Z imac peer .17:51820 -> .17:22079 score 14 beats 24.5 (first roam onto a NEW face of this window)
+  LAST: coding-vm 23:48:19Z verified @.130 | imac 23:54:53Z probe @:22079 (bypass) | wd 23:54:53Z defer (49 consecutive, cooling 440s)
+  LIVE OC (23:55Z): coding-vm p2p_direct @.130 fresh hs=23:53:17Z | imac direct_pending @:22079 unprobed | wd hub_relay (defer chain conn 49)
+  OC same-second: 1x double-demote (23:47:13 wd@.97 + imac@.226) — 7th OC-view double, imac peer common factor in all 7
+
+reason set: head set unchanged both machines (11 heads each, no unknown new reason); handshake-stale counts unchanged (OC x4, imac x1)
+
+pending observations answered:
+1. defer=0 TENTH consecutive segment (151 frozen, consecutive 10 unchanged); OC wd conn 46 -> 49 (+27 defers to 497)
+2. 22.95min record NOT beaten (JMrE segment max 8.92min); FSaf no new >30min cycle; coding-vm logged a 29.52min near-30min cycle (23:16:40 -> 23:46:11) — longest closed coding-vm cycle this window bar carryover
+3. 180.152: imac view +5 (x74), OC view +3 (x63, wd expiry attempts K/L incl verified @180.152 in cycle L); J-ring end held ~4min12s before sel003
+4. same-second signature: imac view DOWN to 4 events/~47min (1 double + 3 cross); OC view +1 double (23:47:13, imac peer common factor in all 7); cumulative imac view 15 double + 21 cross
+5. wd expiry chain: 3 cycles (J end ~4min12s hold; K verified @.97 after waiting-hs attempt 2 -> 61s; L verified @180.152 -> 62s, kernel @.97); conn 46 -> 49, capture state conn 49 cooling 440s
+6. JMrE demote rate ~10.1/h flat (9.8 -> 10.1); FSaf ~16.5/h down (19.7 -> 16.5)
+7. NEW FACE :22079 SOLIDIFIED — formal roam #13 (23:16:40Z) + rotation chain shifted to :22079<->.226 (.17 frozen x157, :22079 +13 to x21, .226 +4); 114.86.101.169 frozen x2 (did NOT solidify; coding-vm stayed @.130); roams: imac view +1 (#10 23:49:14Z FSaf -> :44249, 4th NAT-face roam), OC view +1 (#13) — both views +1 this segment
