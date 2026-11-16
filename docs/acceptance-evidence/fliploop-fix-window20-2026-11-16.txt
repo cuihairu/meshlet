@@ -1,0 +1,49 @@
+=== fliploop 修后窗检查点 #20 raw（2026-11-16 14:33:53 CST / 2026-11-16T06:33:53Z 实测取证；单据开单口径 14:32/06:32 吻合，节名按实测 14:3x）===
+window start 2026-11-15T08:57:32Z; age at capture 21h36m21s (21.61h/24h; sheet estimated ~21.6h, matches); cp19 capture was 05:42:23Z -> increment window ~51min
+*** IMAC SIDE: STILL DOWN (outage continues; fourth consecutive OC-only checkpoint) ***
+  probe set at open (one ping + one ssh per sheet rule): meshlet vIP 10.240.0.7 ping loss, ssh "No route to host"
+  outage 00:47:17Z -> capture 06:33:53Z >= 5h46m ongoing; gap left EMPTY, cp16 file remains latest imac-side data
+openclaw SSH reachable on first try (no retry needed)
+files: oc agent-decisions.jsonl 1600421B / direct-switch-events.json 667764B / direct-peers.json 664B
+
+*** LIVE OC (06:33Z) ***
+  coding-vm p2p_direct @10.147.19.130:51820 fresh hs=06:33:07Z (probe_failed at peers-read instant = probe in flight; .130 hold since roam #17 04:37:15Z, 116min+)
+  windows-desktop hub_relay (defer conn 69, cooling 327s at capture)
+  imac direct_pending @10.147.19.17:22079 unprobed (exhaustion rings continue)
+
+*** coding-vm SECOND CONSECUTIVE ALL-SILENT SEGMENT ***
+  SINCE_CP19 coding-vm events = 0 (fullwin counters identical to cp19: promote 98 / demote 49 / probe 51 / hold 7)
+  .130 direct hold 116min+ and counting; .188<->.130 oscillation rested (roam 17 flat); 114.86.101.169 7th dormant segment
+
+OC FULLWIN total=2157 (file total 4541) | SINCE_CP19 total=93 (~51min)
+  FULLWIN windows-desktop(wd): defer 741 promote 123 hold_relay 111 demote 69 probe 56
+         imac: promote 330 demote 208 probe 302 hold_relay 11 defer 1 (pre-cp10) | coding-vm: promote 98 demote 49 probe 51 hold_relay 7
+  cycles: wd n=68 median 1.88min (0.72-14.00 carryover RECORD) | imac n=207 median 3.18min (max 86.15 carryover)
+          coding-vm n=48 median 9.93min (max 114.90 carryover RECORD)
+  SINCE_CP19: wd defer 33 hold 4 demote 2 promote 3 probe 3 | imac probe 24 demote 12 promote 12 | coding-vm 0
+  cycles SINCE_CP19: wd n=2 median 3.77min (3.13-4.40) | imac n=11 median 3.17min (3.12-3.37, all exhaustion) | coding-vm none
+  WD EXPIRY CYCLES x2 THIS SEGMENT; max consecutive 66 -> 69 (defer 708 -> 741, +33):
+    AE: 05:58:13 attempt @180.152 -> waiting-hs attempt 2/3 -> 06:01:21 exhausted demote @.97 -> conn 67
+    AF: 06:17:17 attempt @.97 (candidate table) -> waiting-hs attempt 2 -> 06:19:28 verified @.97 -> 06:23:52 sel003 @.97 (4.40min hold) -> conn 69
+    wd segment demote 2 (exhausted x1 + sel003 x1) ~2.4/h (3.5 -> 2.4 down); 180.152 +1 (x87), .97 +2 (x36)
+  FLIP-001 bypass: fullwin imac 118 FROZEN (+0) / coding-vm 48 FROZEN (+0)
+  endpoints fullwin: .17 x158 FROZEN, :22079 x113 (+12 exhaustion attempts), .226 x51 FROZEN (+0),
+    180.152.54.66 x87 (+1), .130 x46 FROZEN, 192.168.5.188 x50 FROZEN, .97 x36 (+2), .117 x8 frozen, 114.86.101.169 x2 FROZEN (+0, 7th dormant)
+  switch FULLWIN=894 flip=877 roam=17  <- ZERO new roam (OC view)
+  imac-peer (host-down behavior): 12 demotes ALL exhausted; 12 promote attempts all @:22079 (x101 -> x113);
+    rings ~4m10s cadence unchanged; cycles n=11 median 3.17min (3.12-3.37); defer STILL 1, bypass STILL frozen
+  LAST: imac 06:33:25Z promote attempt @:22079 | wd 06:33:25Z defer conn 69 cooling 327s (both at capture second)
+  OC same-second SINCE_CP19: 1x DOUBLE-DEMOTE (06:23:52 wd sel003 @.97 + imac exhausted @:22079) — OC cumulative 17 doubles, imac peer in all 17
+    + 11x cross, ALL imac-demote on one end (wd-defer x8, wd-promote x2, imac-demote+wd-promote x1)
+  imac view: unavailable (host down); 22.95min record untouched as carryover
+
+reason set: head set unchanged (11 heads, no unknown new reason); handshake-stale OC stays x5 (no new stale)
+endpoint faces: same 9-face set, +0 new faces
+
+pending observations answered:
+1. imac recovery: NOT recovered; outage >= 5h46m ongoing (00:47:17Z -> 06:33:53Z)
+2. wd chain: max consecutive 66 -> 69 (+33 defers to 741); rings AE (exhausted variant, attempt @180.152 -> demote @.97)
+   and AF (candidate-table attempt @.97 -> verified @.97 -> 4.40min hold); no new record (14.00 stands)
+3. coding-vm: SECOND consecutive all-silent segment (0 events); .130 hold 116min+; oscillation rested (17 flat); 114.86 7th dormant
+4. same-second signature: +1 double (cumulative 17, all with imac peer); 11 crosses all imac-demote-ended
+5. faces/reasons: +0 new faces, 11 heads unchanged, no new stale
