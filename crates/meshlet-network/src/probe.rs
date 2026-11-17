@@ -428,8 +428,13 @@ impl SwitchGate {
 // SEL-003 hub 兜底：直连劣化检测与恢复门（纯逻辑，无 IO）
 // ---------------------------------------------------------------------------
 
-/// 丢包尖峰阈值（SEL-003）：窗口丢包率 ≥ 此值视为「丢包尖峰」，立即回中继。
-pub const LOSS_SPIKE_THRESHOLD: f64 = 0.5;
+/// 丢包尖峰阈值（SEL-003）默认值：窗口丢包率 ≥ 此值视为「丢包尖峰」，立即
+/// 回中继。2026-11-17 从 0.5 收窄到 0.2（用户拍板）：49% 丢包的面在旧阈值下
+/// 是「未达尖峰」的健康面，能作为 FLIP-001 恢复门 bypass 证据把直连拉回来
+/// ——实测 ping 三态横跳（100% 超时 ↔ 1.7-3.3s 巨延迟 ↔ 12ms 满速）里的
+/// 劣化面放行正来自这里。现由 agent 配置 `ProbeConfig::loss_spike` 下发
+/// （默认 0.2），本常量只作配置默认值与测试基准。
+pub const LOSS_SPIKE_THRESHOLD: f64 = 0.2;
 
 /// 末拍超时容忍（SEL-003）：窗口末尾须连续此拍数 `Lost` 才判劣化。窗口
 /// 20 拍 ≈ 100s 证据下，3 拍 ≈ 15s 持续丢包才算真劣化，单拍瞬态不动作
@@ -443,7 +448,8 @@ pub const LAST_LOST_TOLERANCE: usize = 3;
 ///   流量端点不豁免，见下）；
 /// - 窗口 ≥ [`LAST_LOST_TOLERANCE`] 拍且无任何 RTT 样本（全程 `Lost`）→
 ///   `false`（无基线豁免，见下）；
-/// - 窗口丢包率 ≥ [`LOSS_SPIKE_THRESHOLD`]（丢包尖峰）→ `true`；
+/// - 窗口丢包率 ≥ `loss_spike`（丢包尖峰，默认 [`LOSS_SPIKE_THRESHOLD`]，
+///   由 agent 配置 `ProbeConfig::loss_spike` 下发）→ `true`；
 /// - 窗口末尾连续 [`LAST_LOST_TOLERANCE`] 拍 `Lost`（持续超时）→ `true`；
 ///   单拍瞬态不触发；
 /// - 窗口 RTT 中位数 ≥ `degrade_rtt_ms`（时延劣化）→ `true`；
@@ -472,7 +478,7 @@ pub const LAST_LOST_TOLERANCE: usize = 3;
 /// direct↔hub 极限环。改为末尾连续 [`LAST_LOST_TOLERANCE`] 拍才动作；
 /// 窗口不足该拍数时不享受无基线豁免（全 `Lost` 短窗口直判劣化，小流量
 /// 端点不豁免）。丢包尖峰/中位数分支天然多拍，不变。
-pub fn is_degraded(window: &ProbeWindow, degrade_rtt_ms: u64) -> bool {
+pub fn is_degraded(window: &ProbeWindow, degrade_rtt_ms: u64, loss_spike: f64) -> bool {
     let samples = window.samples();
     if samples.is_empty() {
         return false;
@@ -489,7 +495,7 @@ pub fn is_degraded(window: &ProbeWindow, degrade_rtt_ms: u64) -> bool {
         // 超时」无从谈起；真死由握手年龄 classify 兜底。
         return false;
     }
-    if window.loss_rate() >= LOSS_SPIKE_THRESHOLD {
+    if window.loss_rate() >= loss_spike {
         return true;
     }
     // 末拍连续性：末尾连续 LAST_LOST_TOLERANCE 拍 Lost 才算真劣化
@@ -956,31 +962,78 @@ mod tests {
     #[test]
     fn degraded_detects_loss_spike_and_timeout() {
         const DEGRADE_RTT_MS: u64 = 800;
-        // 丢包尖峰（≥50% 丢包）→ 劣化。
+        // 丢包尖峰（≥ 默认 20% 丢包）→ 劣化。
         let mut w = ProbeWindow::new(4);
         w.record(ProbeSample::Rtt(10));
         w.record(ProbeSample::Rtt(10));
         w.record(ProbeSample::Lost);
         w.record(ProbeSample::Lost);
-        assert!(is_degraded(&w, DEGRADE_RTT_MS), "50% loss is a spike");
-        // 末拍单次超时（丢包 <50%）→ 单拍瞬态不动作（2026-11-14 last-Lost
-        // 软化：须末尾连续 LAST_LOST_TOLERANCE 拍）。
-        let mut t = ProbeWindow::new(4);
-        t.record(ProbeSample::Rtt(10));
-        t.record(ProbeSample::Rtt(10));
-        t.record(ProbeSample::Rtt(10));
+        assert!(
+            is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            "50% loss is a spike"
+        );
+        // 末拍单次超时（丢包 1/6 ≈ 16.7% < 20% 尖峰阈值）→ 单拍瞬态不动作
+        // （2026-11-14 last-Lost 软化：须末尾连续 LAST_LOST_TOLERANCE 拍；
+        // 20% 阈值下小窗口须 ≥6 拍才容纳单拍瞬态）。
+        let mut t = ProbeWindow::new(6);
+        for _ in 0..5 {
+            t.record(ProbeSample::Rtt(10));
+        }
         t.record(ProbeSample::Lost);
         assert!(
-            !is_degraded(&t, DEGRADE_RTT_MS),
+            !is_degraded(&t, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "single tail lost tolerated"
         );
         // 健康：全 RTT、丢包率低、末次 Rtt → 不劣化。
         let mut ok = ProbeWindow::new(4);
         ok.record(ProbeSample::Rtt(10));
         ok.record(ProbeSample::Rtt(12));
-        assert!(!is_degraded(&ok, DEGRADE_RTT_MS));
+        assert!(!is_degraded(&ok, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD));
         // 空窗口（尚无读数）→ 不武断回中继。
-        assert!(!is_degraded(&ProbeWindow::new(4), DEGRADE_RTT_MS));
+        assert!(!is_degraded(
+            &ProbeWindow::new(4),
+            DEGRADE_RTT_MS,
+            LOSS_SPIKE_THRESHOLD
+        ));
+    }
+
+    /// 丢包尖峰阈值收窄的钉子（2026-11-17 用户拍板 50% → 20%）：49% 丢包在
+    /// 旧阈值下是「未达尖峰」的健康面，能作为 FLIP-001 恢复门 bypass 证据
+    /// 把直连拉回劣化面（实测 ping 三态横跳的劣化面放行）；49% 必须判劣化、
+    /// <20%（19%）仍健康。
+    #[test]
+    fn loss_spike_threshold_boundary_49_and_19_percent() {
+        const DEGRADE_RTT_MS: u64 = 800;
+        // 49% 丢包（49/100，末拍 Rtt 不触发末拍规则）→ 尖峰劣化。
+        let mut w = ProbeWindow::new(100);
+        for _ in 0..48 {
+            w.record(ProbeSample::Lost);
+        }
+        w.record(ProbeSample::Lost);
+        for _ in 0..51 {
+            w.record(ProbeSample::Rtt(10));
+        }
+        assert!(
+            is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            "49% loss must degrade under the 20% threshold"
+        );
+        // 旧阈值 50% 下同一窗口不判劣化（收窄动机的对照断言）。
+        assert!(
+            !is_degraded(&w, DEGRADE_RTT_MS, 0.5),
+            "49% loss was healthy under the old 50% threshold"
+        );
+        // 19% 丢包（19/100）→ 仍健康。
+        let mut ok = ProbeWindow::new(100);
+        for _ in 0..19 {
+            ok.record(ProbeSample::Lost);
+        }
+        for _ in 0..81 {
+            ok.record(ProbeSample::Rtt(10));
+        }
+        assert!(
+            !is_degraded(&ok, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            "19% loss stays healthy under the 20% threshold"
+        );
     }
 
     /// last-Lost 软化（2026-11-14 巡检单）：窗口末尾须连续
@@ -997,43 +1050,51 @@ mod tests {
         }
         one.record(ProbeSample::Lost);
         assert!(
-            !is_degraded(&one, DEGRADE_RTT_MS),
+            !is_degraded(&one, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "single tail lost tolerated"
         );
-        // 末尾恰好 2 拍 Lost → 不劣化。
-        let mut two = ProbeWindow::new(8);
-        for _ in 0..6 {
+        // 末尾恰好 2 拍 Lost → 不劣化（丢包 2/12 ≈ 16.7% < 20% 尖峰阈值，
+        // 20% 阈值下小窗口须 ≥12 拍才容纳双拍瞬态）。
+        let mut two = ProbeWindow::new(12);
+        for _ in 0..10 {
             two.record(ProbeSample::Rtt(10));
         }
         two.record(ProbeSample::Lost);
         two.record(ProbeSample::Lost);
         assert!(
-            !is_degraded(&two, DEGRADE_RTT_MS),
+            !is_degraded(&two, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "two tail losts tolerated"
         );
-        // 末尾连续 3 拍 Lost → 劣化（丢包率 3/8 < 尖峰阈值，纯末拍规则命中）。
-        let mut three = ProbeWindow::new(8);
-        for _ in 0..5 {
+        // 末尾连续 3 拍 Lost → 劣化（丢包率 3/16 ≈ 18.75% < 20% 尖峰阈值，
+        // 纯末拍规则命中）。
+        let mut three = ProbeWindow::new(16);
+        for _ in 0..13 {
             three.record(ProbeSample::Rtt(10));
         }
         for _ in 0..3 {
             three.record(ProbeSample::Lost);
         }
         assert!(
-            is_degraded(&three, DEGRADE_RTT_MS),
+            is_degraded(&three, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "three consecutive tail losts degrade"
         );
-        // 3 拍 Lost 但中间夹 1 拍 Rtt（尾部连续被打断）→ 不劣化。
-        let mut broken = ProbeWindow::new(8);
-        for _ in 0..4 {
+        // 3 拍 Lost 但中间夹 2 拍 Rtt（尾部连续被打断）→ 不劣化（丢包
+        // 3/16 ≈ 18.75% < 20% 尖峰阈值，纯末拍连续性判定）。
+        let mut broken = ProbeWindow::new(16);
+        for _ in 0..5 {
             broken.record(ProbeSample::Rtt(10));
         }
         broken.record(ProbeSample::Lost);
         broken.record(ProbeSample::Rtt(10));
         broken.record(ProbeSample::Lost);
+        broken.record(ProbeSample::Rtt(10));
         broken.record(ProbeSample::Lost);
+        for _ in 0..6 {
+            broken.record(ProbeSample::Rtt(10));
+        }
+        assert_eq!(broken.len(), 16);
         assert!(
-            !is_degraded(&broken, DEGRADE_RTT_MS),
+            !is_degraded(&broken, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "interleaved rtt breaks the tail run"
         );
         // 窗口 < 3 拍全 Lost → 劣化（短窗口小流量端点不豁免）。
@@ -1041,7 +1102,7 @@ mod tests {
         short.record(ProbeSample::Lost);
         short.record(ProbeSample::Lost);
         assert!(
-            is_degraded(&short, DEGRADE_RTT_MS),
+            is_degraded(&short, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "short all-lost window degrades"
         );
     }
@@ -1057,7 +1118,7 @@ mod tests {
             w.record(ProbeSample::Lost);
         }
         assert!(
-            !is_degraded(&w, DEGRADE_RTT_MS),
+            !is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "never-answered path has no baseline; handshake classify owns true death"
         );
     }
@@ -1074,7 +1135,7 @@ mod tests {
             bad.record(ProbeSample::Rtt(v));
         }
         assert!(
-            is_degraded(&bad, DEGRADE_RTT_MS),
+            is_degraded(&bad, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "sustained 900ms degrades"
         );
         // 边界：中位数恰等于阈值 → 命中（≥ 语义，与丢包尖峰一致）。
@@ -1082,7 +1143,7 @@ mod tests {
         edge.record(ProbeSample::Rtt(800));
         edge.record(ProbeSample::Rtt(800));
         assert!(
-            is_degraded(&edge, DEGRADE_RTT_MS),
+            is_degraded(&edge, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "median == threshold hits"
         );
         // 少数尖峰拉不动中位数：8 拍里 2 拍 1500ms，中位数仍 ~10ms → 不劣化。
@@ -1093,7 +1154,7 @@ mod tests {
         spiky.record(ProbeSample::Rtt(1500));
         spiky.record(ProbeSample::Rtt(1500));
         assert!(
-            !is_degraded(&spiky, DEGRADE_RTT_MS),
+            !is_degraded(&spiky, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "minority spikes must not degrade"
         );
         // 多数拍超阈值：[10,900,900,1500] → 中位数 900 ≥ 800 → 持续劣化命中。
@@ -1103,7 +1164,7 @@ mod tests {
         half.record(ProbeSample::Rtt(900));
         half.record(ProbeSample::Rtt(1500));
         assert!(
-            is_degraded(&half, DEGRADE_RTT_MS),
+            is_degraded(&half, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
             "majority sustained degrades"
         );
     }

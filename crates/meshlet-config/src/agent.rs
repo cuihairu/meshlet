@@ -51,6 +51,9 @@ struct RawProbeConfig {
     /// SEL-003 时延劣化阈值（毫秒）：窗口 RTT 中位数 ≥ 此值判劣化回中继
     /// （默认 800，依据见 ProbeConfig::degrade_rtt_ms）。
     degrade_rtt_ms: Option<u64>,
+    /// SEL-003 丢包尖峰阈值（百分比，20 = 20%）：窗口丢包率 ≥ 此值判劣化
+    /// （默认 20，依据见 ProbeConfig::loss_spike）。
+    loss_spike_percent: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -285,6 +288,17 @@ pub struct ProbeConfig {
     /// 注意：>1000 的取值落在探测超时之外，几乎不可达（样本已记 Lost），
     /// 配大等于关闭时延维度。
     pub degrade_rtt_ms: u64,
+    /// SEL-003 丢包尖峰阈值（0.0..=1.0）：窗口丢包率 ≥ 此值判直连劣化，
+    /// 立即回中继；同一判定也是 FLIP-001「探测证实健康」面的反门槛
+    /// （`window_is_healthy`）。默认 0.20（20%）。
+    ///
+    /// **默认值依据**（2026-11-17 用户拍板收窄，原 0.5）：49% 丢包的面在旧
+    /// 阈值下是「未达尖峰」的健康面——恢复门 bypass 会把直连拉回这样的
+    /// 劣化面，实测 ping 三态横跳（100% 超时 ↔ 1.7-3.3s 巨延迟 ↔ 12ms
+    /// 满速）中的「劣化面放行」体感正来自这里。20% 与 SEL-002 评分的丢包
+    /// 重罚（`LOSS_PENALTY` 10 倍：20% 丢包已把得分拉高 3 倍）同一量级：
+    /// 评分认为「显著变差」的面，劣化判定不再放行。
+    pub loss_spike: f64,
 }
 
 impl Default for ProbeConfig {
@@ -297,6 +311,7 @@ impl Default for ProbeConfig {
             switch_margin: 0.30,
             recovery_required: 3,
             degrade_rtt_ms: 800,
+            loss_spike: 0.20,
         }
     }
 }
@@ -446,6 +461,10 @@ impl AgentConfig {
             degrade_rtt_ms: raw_probe
                 .degrade_rtt_ms
                 .unwrap_or(default.dataplane.probe.degrade_rtt_ms),
+            loss_spike: raw_probe
+                .loss_spike_percent
+                .map(|p| p / 100.0)
+                .unwrap_or(default.dataplane.probe.loss_spike),
         };
         if probe.interval_secs < 1 {
             return Err(ConfigError::InvalidDataPlane(
@@ -475,6 +494,11 @@ impl AgentConfig {
         if probe.degrade_rtt_ms < 1 {
             return Err(ConfigError::InvalidDataPlane(
                 "dataplane.probe.degrade_rtt_ms must be at least 1".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&probe.loss_spike) {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.loss_spike_percent must be 0..=100".into(),
             ));
         }
         let raw_backoff = dataplane.backoff.unwrap_or_default();

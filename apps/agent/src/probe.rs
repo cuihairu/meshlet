@@ -40,6 +40,9 @@ pub struct ProbeRuntime {
     /// SEL-003 时延劣化阈值（毫秒，`ProbeConfig::degrade_rtt_ms`）：窗口
     /// RTT 中位数 ≥ 此值判劣化（is_degraded 时延维度的配置入口）。
     degrade_rtt_ms: u64,
+    /// SEL-003 丢包尖峰阈值（`ProbeConfig::loss_spike`）：窗口丢包率 ≥ 此值
+    /// 判劣化（is_degraded 丢包维度的配置入口；默认 0.2，见其文档）。
+    loss_spike: f64,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -92,6 +95,7 @@ impl ProbeRuntime {
             tracker,
             gate,
             degrade_rtt_ms: config.degrade_rtt_ms,
+            loss_spike: config.loss_spike,
             stop,
             handle,
         }
@@ -141,7 +145,7 @@ impl ProbeRuntime {
             let Some(window) = snapshot.get(&(public_key.clone(), *candidate)) else {
                 continue;
             };
-            if is_degraded(window, self.degrade_rtt_ms) {
+            if is_degraded(window, self.degrade_rtt_ms, self.loss_spike) {
                 map.insert(public_key.clone(), true);
             }
         }
@@ -160,7 +164,7 @@ impl ProbeRuntime {
         let snapshot = self.snapshot();
         let mut set = BTreeSet::new();
         for ((public_key, candidate), window) in snapshot {
-            if is_degraded(&window, self.degrade_rtt_ms) {
+            if is_degraded(&window, self.degrade_rtt_ms, self.loss_spike) {
                 set.insert((public_key, candidate));
             }
         }
@@ -178,7 +182,7 @@ impl ProbeRuntime {
         let snapshot = self.snapshot();
         snapshot
             .get(&(public_key.to_string(), candidate))
-            .is_some_and(|w| window_is_healthy(w, self.degrade_rtt_ms))
+            .is_some_and(|w| window_is_healthy(w, self.degrade_rtt_ms, self.loss_spike))
     }
 
     /// FLIP-001：当前全部「探测证实健康」的面的集合（单快照批量判定——
@@ -188,7 +192,7 @@ impl ProbeRuntime {
         let snapshot = self.snapshot();
         snapshot
             .into_iter()
-            .filter(|(_, w)| window_is_healthy(w, self.degrade_rtt_ms))
+            .filter(|(_, w)| window_is_healthy(w, self.degrade_rtt_ms, self.loss_spike))
             .map(|(target, _)| target)
             .collect()
     }
@@ -273,12 +277,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// 「探测证实健康」的窗口口径（FLIP-001）：至少一拍 RTT 成功（正面证据；
 /// 全程 Lost 的无基线窗口是「未知」不是「健康」）且不劣化（[`is_degraded`]
 /// 同一判定）。空窗口 → `false`。
-fn window_is_healthy(window: &ProbeWindow, degrade_rtt_ms: u64) -> bool {
+fn window_is_healthy(window: &ProbeWindow, degrade_rtt_ms: u64, loss_spike: f64) -> bool {
     window
         .samples()
         .iter()
         .any(|s| matches!(s, ProbeSample::Rtt(_)))
-        && !is_degraded(window, degrade_rtt_ms)
+        && !is_degraded(window, degrade_rtt_ms, loss_spike)
 }
 
 #[cfg(test)]
@@ -294,6 +298,7 @@ mod tests {
             switch_margin: 0.30,
             recovery_required: 3,
             degrade_rtt_ms: 800,
+            loss_spike: 0.20,
         }
     }
 
@@ -552,5 +557,49 @@ mod tests {
         );
         // 探测关 / 无采样 → 空集合（过滤整体失效 = 旧口径）。
         assert!(ProbeRuntime::start(&config()).degraded_faces().is_empty());
+    }
+
+    /// 丢包尖峰阈值收窄的钉子（2026-11-17 用户拍板 50% → 20%，恢复门面）：
+    /// 49% 丢包的面在旧阈值下算「探测证实健康」，能作 FLIP-001 bypass 证据
+    /// 把恢复门放行、直连拉回劣化面——现在不再判健康；<20%（19%）仍健康。
+    #[test]
+    fn face_healthy_rejects_49_percent_loss_but_accepts_19_percent() {
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        let c2 = EndpointCandidate::lan("192.168.1.60".parse().unwrap(), 51821);
+        // 精确边界需要 100 拍窗口（默认测试窗口 8 装不下 49/100）：window=100。
+        let mut cfg = config();
+        cfg.window = 100;
+        let rt = ProbeRuntime::start(&cfg);
+        {
+            let mut tracker = lock(&rt.tracker);
+            for _ in 0..49 {
+                tracker.record("dev-b", c1, ProbeSample::Lost);
+            }
+            for _ in 0..51 {
+                tracker.record("dev-b", c1, ProbeSample::Rtt(10));
+            }
+            for _ in 0..19 {
+                tracker.record("dev-b", c2, ProbeSample::Lost);
+            }
+            for _ in 0..81 {
+                tracker.record("dev-b", c2, ProbeSample::Rtt(10));
+            }
+        }
+        assert!(
+            !rt.face_healthy("dev-b", c1),
+            "49% loss must not count as probe-healthy (no recovery bypass)"
+        );
+        assert!(
+            rt.face_healthy("dev-b", c2),
+            "19% loss stays probe-healthy under the 20% threshold"
+        );
+        // 同一判定源：劣化映射也把 49% 面判劣化（demote 闸一致）。
+        let mut current = BTreeMap::new();
+        current.insert("dev-b".to_string(), c1);
+        assert!(rt
+            .degraded_map(&current)
+            .get("dev-b")
+            .copied()
+            .unwrap_or(false));
     }
 }

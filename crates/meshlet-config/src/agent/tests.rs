@@ -245,6 +245,9 @@ fn agent_probe_defaults_on_5s_and_parses_section() {
     // SEL-003 时延劣化阈值默认：窗口 RTT 中位数 ≥800ms 判劣化（探测超时
     // 1000ms 之前盲带，真机 2026-11-13 1715ms probe_ok 钉直连）。
     assert_eq!(d.degrade_rtt_ms, 800);
+    // SEL-003 丢包尖峰阈值默认：20%（2026-11-17 收窄，原 50%——49% 丢包的
+    // 面在旧阈值下放行成「健康面」，实测 ping 三态横跳的劣化面放行）。
+    assert_eq!(d.loss_spike, 0.20);
     // 缺 [dataplane] 段同样取默认。
     let d = AgentConfig::from_toml("").unwrap().dataplane.probe;
     assert!(d.enabled);
@@ -253,6 +256,7 @@ fn agent_probe_defaults_on_5s_and_parses_section() {
     assert_eq!(d.switch_margin, 0.30);
     assert_eq!(d.recovery_required, 3);
     assert_eq!(d.degrade_rtt_ms, 800);
+    assert_eq!(d.loss_spike, 0.20);
 
     let c = AgentConfig::from_toml(
         r#"
@@ -264,6 +268,7 @@ switch_required = 5
 switch_margin_percent = 40
 recovery_required = 4
 degrade_rtt_ms = 500
+loss_spike_percent = 30
 "#,
     )
     .unwrap();
@@ -274,6 +279,7 @@ degrade_rtt_ms = 500
     assert_eq!(c.dataplane.probe.switch_margin, 0.40);
     assert_eq!(c.dataplane.probe.recovery_required, 4);
     assert_eq!(c.dataplane.probe.degrade_rtt_ms, 500);
+    assert_eq!(c.dataplane.probe.loss_spike, 0.30);
 }
 
 #[test]
@@ -294,6 +300,9 @@ fn agent_probe_rejects_zero_interval_and_window() {
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
     let err = AgentConfig::from_toml("[dataplane.probe]\ndegrade_rtt_ms = 0").unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+    let err = AgentConfig::from_toml("[dataplane.probe]\nloss_spike_percent = 101").unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
     let err = AgentConfig::from_toml("[dataplane.probe]\nbogus = 1").unwrap_err();
