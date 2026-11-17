@@ -1277,3 +1277,25 @@ demote 计数（`on_demote`）。
 5. **roaming TTL 1800s 未真机校准**：demote 后内核观测断流场景下，表项保鲜
    依赖探测成功；若劣化源静默 >30min，表项过期后回到服务端单面候选——此为
    有意设计（表是加速器不是权威），但 TTL 值本身未经长跑校准。
+
+## 补证附录（2026-11-17，b6tx 第三观察点）
+
+判定窗收口后的独立补证，不改上文任何判定与口径：
+
+- **第三观察点 = b6tx（coding-vm，10.240.0.4，Linux）**：内核
+  `wg show wg-mlt` 实录 FSaf peer endpoint=`192.168.5.11:51820`、握手
+  新鲜、transfer 4.85 MiB 收——独立于 imac/OC 两 Windows 机之外的
+  p2p_direct 会话成立。vIP 实测 `10.240.0.3` 0% 丢包 avg 7.64ms。
+- **路径性质**：`192.168.5.11` 为路由器（dropbear SSH 实证），非
+  openclaw 本机——FSaf 的 WG 包经该路由器跨网段 SNAT 进入（openclaw
+  另有 `192.168.36.153` 面）。即第三点旁证的是**跨网段路由器面直连**，
+  不是公网广域打洞。
+- **公网面实测（imac 视角今日决策日志）**：FSaf 公网面
+  `180.153.160.8:51820` 多轮 promote→「waiting for handshake」×3→
+  「pending attempts exhausted」→demote（13:55-14:53Z），握手未完成。
+  剩余边界 3（广域打洞未验）维持开放，补充根因方向：公网 UDP
+  到达性（NAT 类型/防火墙）待 openclaw 侧实测。
+- **b6tx 全景健康快照**（15:04-15:13Z）：imac vIP 120 包 0% 丢包
+  avg 0.78ms；windows-desktop vIP 0% 丢包 avg 10.28ms。白天决策日志
+  中的 20-55% 丢包突发为阵发性，实时快照不可复现持续劣化。
+  详见 `docs/analysis/roam18-attribution-2026-11-17.md` §4。
