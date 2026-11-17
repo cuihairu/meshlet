@@ -54,6 +54,10 @@ struct RawProbeConfig {
     /// SEL-003 丢包尖峰阈值（百分比，20 = 20%）：窗口丢包率 ≥ 此值判劣化
     /// （默认 20，依据见 ProbeConfig::loss_spike）。
     loss_spike_percent: Option<f64>,
+    /// SEL-002 切换宽限（秒，方案 1）：缺省 = interval×required×2（钳 ≤60）。
+    switch_cooldown_secs: Option<u64>,
+    /// SEL-003 年轻窗口豁免下限（方案 1，默认 4）。
+    degrade_min_samples: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -299,6 +303,15 @@ pub struct ProbeConfig {
     /// 重罚（`LOSS_PENALTY` 10 倍：20% 丢包已把得分拉高 3 倍）同一量级：
     /// 评分认为「显著变差」的面，劣化判定不再放行。
     pub loss_spike: f64,
+    /// SEL-002 切换宽限（秒，方案 1）：切换后此时间内禁止再次切换、禁止对
+    /// 现路径判劣化（gate 记 `last_switch_at`）。默认 = interval×required×2
+    /// 且上限 60s（见 [`ProbeConfig::interval_secs`]×[`ProbeConfig::switch_required`]；
+    /// 5×3×2 = 30）。宽限过长延迟真故障切换，显式配置上限同为 60。
+    pub switch_cooldown_secs: u64,
+    /// SEL-003 年轻窗口豁免（方案 1）：窗口样本 < 此值一律不判劣化（同
+    /// 无基线豁免语义——豁免「读数不足」不豁免「读数差」）。默认 4；须
+    /// ≤ `window`（否则窗口永远年轻，劣化判定整体失效）。
+    pub degrade_min_samples: usize,
 }
 
 impl Default for ProbeConfig {
@@ -312,6 +325,9 @@ impl Default for ProbeConfig {
             recovery_required: 3,
             degrade_rtt_ms: 800,
             loss_spike: 0.20,
+            // interval×required×2 = 5×3×2，≤ 60 上限。
+            switch_cooldown_secs: 30,
+            degrade_min_samples: 4,
         }
     }
 }
@@ -442,15 +458,18 @@ impl AgentConfig {
             ));
         }
         let raw_probe = dataplane.probe.unwrap_or_default();
+        // 切换宽限缺省 = interval×required×2（提案口径），须先解出两者。
+        let probe_interval = raw_probe
+            .interval_secs
+            .unwrap_or(default.dataplane.probe.interval_secs);
+        let probe_switch_required = raw_probe
+            .switch_required
+            .unwrap_or(default.dataplane.probe.switch_required);
         let probe = ProbeConfig {
             enabled: raw_probe.enabled.unwrap_or(default.dataplane.probe.enabled),
-            interval_secs: raw_probe
-                .interval_secs
-                .unwrap_or(default.dataplane.probe.interval_secs),
+            interval_secs: probe_interval,
             window: raw_probe.window.unwrap_or(default.dataplane.probe.window),
-            switch_required: raw_probe
-                .switch_required
-                .unwrap_or(default.dataplane.probe.switch_required),
+            switch_required: probe_switch_required,
             switch_margin: raw_probe
                 .switch_margin_percent
                 .map(|p| p / 100.0)
@@ -465,6 +484,12 @@ impl AgentConfig {
                 .loss_spike_percent
                 .map(|p| p / 100.0)
                 .unwrap_or(default.dataplane.probe.loss_spike),
+            switch_cooldown_secs: raw_probe
+                .switch_cooldown_secs
+                .unwrap_or_else(|| (probe_interval * probe_switch_required as u64 * 2).min(60)),
+            degrade_min_samples: raw_probe
+                .degrade_min_samples
+                .unwrap_or(default.dataplane.probe.degrade_min_samples),
         };
         if probe.interval_secs < 1 {
             return Err(ConfigError::InvalidDataPlane(
@@ -499,6 +524,21 @@ impl AgentConfig {
         if !(0.0..=1.0).contains(&probe.loss_spike) {
             return Err(ConfigError::InvalidDataPlane(
                 "dataplane.probe.loss_spike_percent must be 0..=100".into(),
+            ));
+        }
+        if probe.switch_cooldown_secs > 60 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.switch_cooldown_secs must be at most 60".into(),
+            ));
+        }
+        if probe.degrade_min_samples < 1 {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.degrade_min_samples must be at least 1".into(),
+            ));
+        }
+        if probe.degrade_min_samples > probe.window {
+            return Err(ConfigError::InvalidDataPlane(
+                "dataplane.probe.degrade_min_samples must be at most probe.window".into(),
             ));
         }
         let raw_backoff = dataplane.backoff.unwrap_or_default();

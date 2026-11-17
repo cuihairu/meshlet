@@ -311,26 +311,51 @@ pub struct SwitchDecision {
     pub reason: String,
 }
 
+/// 一次切换的簿记（方案 1 宽限的载体）：切换时刻、切换前旧 endpoint（回滚
+/// 目标）、切换后现 endpoint、宽限期内是否已用过一次性回滚（方案 8）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitchRecord {
+    at_ms: u64,
+    from: EndpointCandidate,
+    to: EndpointCandidate,
+    rolled_back: bool,
+}
+
 /// 迟滞闸（SEL-002）：新路径须**连续** `required` 次采样且得分优于现路径
 /// ≥ `margin`（默认 30%）才切换，防抖。纯状态机，无 IO。
 ///
 /// 状态按 `(peer, candidate)` 记录连续更优计数：候选变差 / 现路径重新领先 /
 /// 切换目标变化都会清零相应计数，绝不因单次抖动翻转。
+///
+/// **切换宽限**（方案 1，2026-11-17）：每次切换后 `cooldown_ms` 内（默认
+/// interval×required×2 = 30s，上限 60s）禁止再次切换、禁止对现路径判劣化
+/// （消费方经 [`Self::in_cooldown`] 查询后自行豁免，如 `degraded_map`）。
+/// 用户实测 ping 三态横跳（100% 超时 ↔ 1.7-3.3s 巨延迟 ↔ 12ms 满速）的
+/// 「切换瞬断档」——切换后新路径握手/探测窗口尚未立起来，迟滞闸与劣化闸
+/// 立刻对无读数的新现路径动作，正是横跳的放大器；宽限期把这段真空 shielding
+/// 掉。宽限过长会延迟真故障切换，配置面钳制 ≤60s。
 #[derive(Debug, Clone)]
 pub struct SwitchGate {
     required: usize,
     margin: f64,
+    /// 切换宽限（毫秒）。0 = 关闭宽限（切换后立即可再评估）。
+    cooldown_ms: u64,
     /// `(peer, candidate)` → 连续满足「优于现路径 ≥ margin」的采样数。
     streaks: BTreeMap<ProbeTarget, usize>,
+    /// 对端公钥 → 最近一次切换簿记（宽限与回滚的载体）。
+    last_switch: BTreeMap<String, SwitchRecord>,
 }
 
 impl SwitchGate {
-    /// 新建迟滞闸。`required` 下限 1；`margin` 钳制到 `(0.0, 1.0]`。
-    pub fn new(required: usize, margin: f64) -> Self {
+    /// 新建迟滞闸。`required` 下限 1；`margin` 钳制到 `(0.0, 1.0]`；
+    /// `cooldown_ms` = 切换宽限（0 关闭）。
+    pub fn new(required: usize, margin: f64, cooldown_ms: u64) -> Self {
         Self {
             required: required.max(1),
             margin: margin.clamp(f64::EPSILON, 1.0),
+            cooldown_ms,
             streaks: BTreeMap::new(),
+            last_switch: BTreeMap::new(),
         }
     }
 
@@ -342,22 +367,40 @@ impl SwitchGate {
         self.margin
     }
 
+    /// 该对端是否处于切换宽限内（最近一次切换后 `cooldown_ms` 未满）。
+    /// 宽限语义：禁再切（[`Self::evaluate`] 内部先行拦截）+ 禁对现路径判
+    /// 劣化（劣化消费方调用本方法自行豁免）。
+    pub fn in_cooldown(&self, peer: &str, now_ms: u64) -> bool {
+        self.last_switch
+            .get(peer)
+            .is_some_and(|rec| now_ms < rec.at_ms.saturating_add(self.cooldown_ms))
+    }
+
     /// 评估一轮：给定现路径与全部候选窗口，返回是否切换。
     ///
     /// - `current`：当前选中的候选（`None` = 尚无直连路径，初始选择由
     ///   DirectManager 负责，本闸只做**已建立路径之间的切换**）；
     /// - `windows`：该 peer 的候选 → 窗口快照（[`ProbeTracker::windows`]
-    ///   按 peer 公钥过滤后的视图）。
+    ///   按 peer 公钥过滤后的视图）；
+    /// - `now_ms`：当前 Unix 毫秒（宽限期判定；纯状态机不取系统钟，测试
+    ///   可注入虚拟时间）。
     ///
-    /// 返回 `Some(SwitchDecision)` 当且仅当：存在一个候选，其得分严格低于
-    /// 现路径得分、且 `得分 <= 现路径得分 * (1 - margin)`，且该候选已连续
-    /// `required` 轮满足此条件。达到阈值后重置该候选计数（一次切换一次计数）。
+    /// 返回 `Some(SwitchDecision)` 当且仅当：不在切换宽限内，且存在一个
+    /// 候选，其得分严格低于现路径得分、且 `得分 <= 现路径得分 * (1 - margin)`，
+    /// 且该候选已连续 `required` 轮满足此条件。达到阈值后重置该候选计数
+    /// （一次切换一次计数）并记录切换簿记（宽限起点 = 本轮 `now_ms`）。
     pub fn evaluate(
         &mut self,
         peer: &str,
         current: Option<EndpointCandidate>,
         windows: &BTreeMap<ProbeTarget, ProbeWindow>,
+        now_ms: u64,
     ) -> Option<SwitchDecision> {
+        // 宽限期内冻结评估：streak 不推进（宽限结束后须重新攒满连续计数
+        // ——多花 required×interval 秒，换取「切换后真空期绝不翻转」）。
+        if self.in_cooldown(peer, now_ms) {
+            return None;
+        }
         let current = current?;
         if windows.is_empty() {
             return None;
@@ -414,6 +457,16 @@ impl SwitchGate {
                 *streak
             );
             self.streaks.remove(&key);
+            // 切换簿记：宽限起点 + 旧 endpoint（方案 8 回滚目标）。
+            self.last_switch.insert(
+                peer.to_string(),
+                SwitchRecord {
+                    at_ms: now_ms,
+                    from: current,
+                    to: best_candidate,
+                    rolled_back: false,
+                },
+            );
             Some(SwitchDecision {
                 to: best_candidate,
                 reason,
@@ -475,18 +528,33 @@ pub const LAST_LOST_TOLERANCE: usize = 3;
 /// **末拍连续性**（2026-11-14 SEL-003 last-Lost 软化）：原「末拍一拍
 /// `Lost` 即劣化」对 ZT 面单拍瞬态过敏——真机实录 demote 时握手 age
 /// 56–120s 新鲜（classify 无辜），触发者即此类瞬态，构成 JMrE/FSaf
-/// direct↔hub 极限环。改为末尾连续 [`LAST_LOST_TOLERANCE`] 拍才动作；
-/// 窗口不足该拍数时不享受无基线豁免（全 `Lost` 短窗口直判劣化，小流量
-/// 端点不豁免）。丢包尖峰/中位数分支天然多拍，不变。
-pub fn is_degraded(window: &ProbeWindow, degrade_rtt_ms: u64, loss_spike: f64) -> bool {
+/// direct↔hub 极限环。改为末尾连续 [`LAST_LOST_TOLERANCE`] 拍才动作。
+/// 丢包尖峰/中位数分支天然多拍，不变。
+///
+/// **年轻窗口豁免**（方案 1，2026-11-17）：窗口样本 < `min_samples`（默认
+/// 4，agent 配置 `ProbeConfig::degrade_min_samples` 下发）→ 一律 `false`。
+/// 与无基线豁免同一语义：豁免的是「读数不足」，不是「读数差」——刚切换的
+/// 路径 / 新观测的面窗口尚未立起来，少数几拍的聚合统计（丢包率/中位数）
+/// 方差极大，拿它判劣化就是实测 ping 三态横跳的放大器。代价：原 11-14
+/// 「短窗口全 `Lost` 直判劣化（小流量端点不豁免）」规则在默认 `min_samples`
+/// ≥ 3 下被本豁免取代——读数不足的窗口一律不动作，真死仍由握手年龄
+/// classify 兜底（本函数的既有哲学）。`min_samples` 配 1-2 时短窗口分支
+/// 仍可达（全 `Lost` 直判劣化）。
+pub fn is_degraded(
+    window: &ProbeWindow,
+    degrade_rtt_ms: u64,
+    loss_spike: f64,
+    min_samples: usize,
+) -> bool {
     let samples = window.samples();
-    if samples.is_empty() {
+    // 年轻窗口豁免：读数不足不判劣化（空窗口同样命中 0 < min_samples）。
+    if samples.len() < min_samples.max(1) {
         return false;
     }
     let median_rtt = window.rtt_ms();
     if samples.len() < LAST_LOST_TOLERANCE {
-        // 短窗口（< 3 拍，小流量端点）：尾部连续性无从谈起，按现有样本
-        // 直判——全 Lost 即劣化（无基线豁免不适用于短窗口）。
+        // 短窗口（< 3 拍，仅 min_samples ≤ 2 时可达）：尾部连续性无从谈起，
+        // 按现有样本直判——全 Lost 即劣化（无基线豁免不适用于短窗口）。
         if samples.iter().all(|s| matches!(s, ProbeSample::Lost)) {
             return true;
         }
@@ -565,6 +633,10 @@ impl RecoveryGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 年轻窗口豁免下限的测试基准（与 ProbeConfig::degrade_min_samples
+    /// 默认 4 同值）。
+    const MIN_SAMPLES: usize = 4;
 
     fn lan(ip: &str, port: u16) -> EndpointCandidate {
         EndpointCandidate::lan(ip.parse().unwrap(), port)
@@ -803,7 +875,7 @@ mod tests {
     fn switch_gate_switches_after_required_consecutive_better_samples() {
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
-        let mut gate = SwitchGate::new(3, 0.30);
+        let mut gate = SwitchGate::new(3, 0.30, 0);
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
 
         // 前 2 轮：c2 得分 60 vs c1 得分 100，已满足 ≥30% 但未连续满 3 轮。
@@ -815,7 +887,7 @@ mod tests {
             w2.record(ProbeSample::Rtt(60));
             windows.insert(("dev-b".into(), c1), w1);
             windows.insert(("dev-b".into(), c2), w2);
-            assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+            assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_none());
         }
         // 第 3 轮：连续 3 轮 → 切换。
         windows.clear();
@@ -825,7 +897,9 @@ mod tests {
         w2.record(ProbeSample::Rtt(60));
         windows.insert(("dev-b".into(), c1), w1);
         windows.insert(("dev-b".into(), c2), w2);
-        let decision = gate.evaluate("dev-b", Some(c1), &windows).expect("switch");
+        let decision = gate
+            .evaluate("dev-b", Some(c1), &windows, 0)
+            .expect("switch");
         assert_eq!(decision.to, c2);
         assert!(decision.reason.contains("3 consecutive"));
     }
@@ -835,7 +909,7 @@ mod tests {
         // 抖动场景：c1 与 c2 得分交替领先、差距不足 30% → 永不切换。
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
-        let mut gate = SwitchGate::new(3, 0.30);
+        let mut gate = SwitchGate::new(3, 0.30, 0);
         for round in 0..20u64 {
             let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
             // 交替领先但差距仅 10%（不足 30% 迟滞）。
@@ -847,7 +921,7 @@ mod tests {
             windows.insert(("dev-b".into(), c1), w1);
             windows.insert(("dev-b".into(), c2), w2);
             assert!(
-                gate.evaluate("dev-b", Some(c1), &windows).is_none(),
+                gate.evaluate("dev-b", Some(c1), &windows, 0).is_none(),
                 "jitter must not flip the path (round {round})"
             );
         }
@@ -857,7 +931,7 @@ mod tests {
     fn switch_gate_resets_streak_when_current_is_best_again() {
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
-        let mut gate = SwitchGate::new(3, 0.30);
+        let mut gate = SwitchGate::new(3, 0.30, 0);
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
 
         // 2 轮 c2 更好（连续计数=2）。
@@ -869,7 +943,7 @@ mod tests {
             w2.record(ProbeSample::Rtt(60));
             windows.insert(("dev-b".into(), c1), w1);
             windows.insert(("dev-b".into(), c2), w2);
-            assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+            assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_none());
         }
         // 第 3 轮：c1 回到最佳 → 计数清零，不切换。
         windows.clear();
@@ -879,7 +953,7 @@ mod tests {
         w2.record(ProbeSample::Rtt(100));
         windows.insert(("dev-b".into(), c1), w1);
         windows.insert(("dev-b".into(), c2), w2);
-        assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+        assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_none());
         // 再 3 轮 c2 更好：计数从 0 重新开始 → 需满 3 轮。
         for _ in 0..2 {
             windows.clear();
@@ -889,7 +963,7 @@ mod tests {
             w2.record(ProbeSample::Rtt(60));
             windows.insert(("dev-b".into(), c1), w1);
             windows.insert(("dev-b".into(), c2), w2);
-            assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+            assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_none());
         }
         windows.clear();
         let mut w1 = ProbeWindow::new(8);
@@ -898,7 +972,7 @@ mod tests {
         w2.record(ProbeSample::Rtt(60));
         windows.insert(("dev-b".into(), c1), w1);
         windows.insert(("dev-b".into(), c2), w2);
-        assert!(gate.evaluate("dev-b", Some(c1), &windows).is_some());
+        assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_some());
     }
 
     /// 现路径无窗口（候选表之外的 roaming 面，2026-11-13 真机实锤：稳定的
@@ -908,7 +982,7 @@ mod tests {
     fn switch_gate_spares_current_path_without_window() {
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
-        let mut gate = SwitchGate::new(1, 0.30);
+        let mut gate = SwitchGate::new(1, 0.30, 0);
         // 只有 c2 有读数（48ms）；现路径 c1 无任何窗口。
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
         let mut w = ProbeWindow::new(8);
@@ -916,7 +990,7 @@ mod tests {
         windows.insert(("dev-b".into(), c2), w);
         for _ in 0..5 {
             assert!(
-                gate.evaluate("dev-b", Some(c1), &windows).is_none(),
+                gate.evaluate("dev-b", Some(c1), &windows, 0).is_none(),
                 "no evidence about the current path must not switch"
             );
         }
@@ -927,7 +1001,7 @@ mod tests {
         // 差距 20%（<30%）：即使连续多轮也不切换。
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
-        let mut gate = SwitchGate::new(3, 0.30);
+        let mut gate = SwitchGate::new(3, 0.30, 0);
         for _ in 0..5 {
             let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
             let mut w1 = ProbeWindow::new(8);
@@ -936,7 +1010,7 @@ mod tests {
             w2.record(ProbeSample::Rtt(80));
             windows.insert(("dev-b".into(), c1), w1);
             windows.insert(("dev-b".into(), c2), w2);
-            assert!(gate.evaluate("dev-b", Some(c1), &windows).is_none());
+            assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_none());
         }
     }
 
@@ -945,7 +1019,7 @@ mod tests {
         // 现路径全丢（score=+∞），新路径有 RTT → 一次即切换（required=1）。
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
-        let mut gate = SwitchGate::new(1, 0.30);
+        let mut gate = SwitchGate::new(1, 0.30, 0);
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
         let mut w1 = ProbeWindow::new(8);
         w1.record(ProbeSample::Lost);
@@ -953,8 +1027,49 @@ mod tests {
         w2.record(ProbeSample::Rtt(40));
         windows.insert(("dev-b".into(), c1), w1);
         windows.insert(("dev-b".into(), c2), w2);
-        let decision = gate.evaluate("dev-b", Some(c1), &windows).expect("switch");
+        let decision = gate
+            .evaluate("dev-b", Some(c1), &windows, 0)
+            .expect("switch");
         assert_eq!(decision.to, c2);
+    }
+
+    /// 切换宽限（方案 1，2026-11-17）钉子：切换后 cooldown 内禁再切——即使
+    /// 另一候选持续远优于现路径；宽限一过即按常规迟滞闸动作。宽限期内
+    /// streak 不推进（冻结评估），宽限结束后须重新攒满连续计数。
+    #[test]
+    fn switch_gate_cooldown_blocks_re_switch_within_grace() {
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let c3 = lan("192.168.1.70", 51821);
+        let mut gate = SwitchGate::new(1, 0.30, 30_000);
+        let windows = |entries: [(EndpointCandidate, u64); 3]| {
+            let mut w: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+            for (c, rtt) in entries {
+                let mut pw = ProbeWindow::new(8);
+                pw.record(ProbeSample::Rtt(rtt));
+                w.insert(("dev-b".to_string(), c), pw);
+            }
+            w
+        };
+        // t=1000：c2 得分 60 优于 c1 的 100 ≥30% → 切换（宽限起点）。
+        let w = windows([(c1, 100), (c2, 60), (c3, 300)]);
+        let decision = gate
+            .evaluate("dev-b", Some(c1), &w, 1000)
+            .expect("initial switch fires");
+        assert_eq!(decision.to, c2);
+        assert!(gate.in_cooldown("dev-b", 2000), "within grace");
+        assert!(!gate.in_cooldown("dev-b", 31_001), "grace elapsed");
+        // t=2000（宽限内）：c3 得分 30 远优于现路径 c2 的 60 → 仍禁再切。
+        let w = windows([(c1, 100), (c2, 60), (c3, 30)]);
+        assert!(
+            gate.evaluate("dev-b", Some(c2), &w, 2000).is_none(),
+            "re-switch blocked within grace"
+        );
+        // t=31001（宽限刚过）：同一更优候选 → 常规闸动作。
+        let decision = gate
+            .evaluate("dev-b", Some(c2), &w, 31_001)
+            .expect("switch after grace");
+        assert_eq!(decision.to, c3);
     }
 
     // -- SEL-003: is_degraded / RecoveryGate ----------------------------------
@@ -969,7 +1084,7 @@ mod tests {
         w.record(ProbeSample::Lost);
         w.record(ProbeSample::Lost);
         assert!(
-            is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "50% loss is a spike"
         );
         // 末拍单次超时（丢包 1/6 ≈ 16.7% < 20% 尖峰阈值）→ 单拍瞬态不动作
@@ -981,19 +1096,25 @@ mod tests {
         }
         t.record(ProbeSample::Lost);
         assert!(
-            !is_degraded(&t, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            !is_degraded(&t, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "single tail lost tolerated"
         );
         // 健康：全 RTT、丢包率低、末次 Rtt → 不劣化。
         let mut ok = ProbeWindow::new(4);
         ok.record(ProbeSample::Rtt(10));
         ok.record(ProbeSample::Rtt(12));
-        assert!(!is_degraded(&ok, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD));
+        assert!(!is_degraded(
+            &ok,
+            DEGRADE_RTT_MS,
+            LOSS_SPIKE_THRESHOLD,
+            MIN_SAMPLES
+        ));
         // 空窗口（尚无读数）→ 不武断回中继。
         assert!(!is_degraded(
             &ProbeWindow::new(4),
             DEGRADE_RTT_MS,
-            LOSS_SPIKE_THRESHOLD
+            LOSS_SPIKE_THRESHOLD,
+            MIN_SAMPLES
         ));
     }
 
@@ -1014,12 +1135,12 @@ mod tests {
             w.record(ProbeSample::Rtt(10));
         }
         assert!(
-            is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "49% loss must degrade under the 20% threshold"
         );
         // 旧阈值 50% 下同一窗口不判劣化（收窄动机的对照断言）。
         assert!(
-            !is_degraded(&w, DEGRADE_RTT_MS, 0.5),
+            !is_degraded(&w, DEGRADE_RTT_MS, 0.5, MIN_SAMPLES),
             "49% loss was healthy under the old 50% threshold"
         );
         // 19% 丢包（19/100）→ 仍健康。
@@ -1031,7 +1152,7 @@ mod tests {
             ok.record(ProbeSample::Rtt(10));
         }
         assert!(
-            !is_degraded(&ok, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            !is_degraded(&ok, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "19% loss stays healthy under the 20% threshold"
         );
     }
@@ -1050,7 +1171,7 @@ mod tests {
         }
         one.record(ProbeSample::Lost);
         assert!(
-            !is_degraded(&one, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            !is_degraded(&one, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "single tail lost tolerated"
         );
         // 末尾恰好 2 拍 Lost → 不劣化（丢包 2/12 ≈ 16.7% < 20% 尖峰阈值，
@@ -1062,7 +1183,7 @@ mod tests {
         two.record(ProbeSample::Lost);
         two.record(ProbeSample::Lost);
         assert!(
-            !is_degraded(&two, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            !is_degraded(&two, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "two tail losts tolerated"
         );
         // 末尾连续 3 拍 Lost → 劣化（丢包率 3/16 ≈ 18.75% < 20% 尖峰阈值，
@@ -1075,7 +1196,7 @@ mod tests {
             three.record(ProbeSample::Lost);
         }
         assert!(
-            is_degraded(&three, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            is_degraded(&three, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "three consecutive tail losts degrade"
         );
         // 3 拍 Lost 但中间夹 2 拍 Rtt（尾部连续被打断）→ 不劣化（丢包
@@ -1094,17 +1215,55 @@ mod tests {
         }
         assert_eq!(broken.len(), 16);
         assert!(
-            !is_degraded(&broken, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            !is_degraded(&broken, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "interleaved rtt breaks the tail run"
         );
-        // 窗口 < 3 拍全 Lost → 劣化（短窗口小流量端点不豁免）。
+        // 年轻窗口豁免（方案 1，2026-11-17）取代 11-14「短窗口全 Lost 直判
+        // 劣化」：2 拍全 Lost 在默认 min_samples=4 下读数不足 → 不判劣化
+        // （真死由握手年龄 classify 兜底）。
         let mut short = ProbeWindow::new(2);
         short.record(ProbeSample::Lost);
         short.record(ProbeSample::Lost);
         assert!(
-            is_degraded(&short, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
-            "short all-lost window degrades"
+            !is_degraded(&short, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
+            "young all-lost window exempt"
         );
+        // 同一短窗口在 min_samples ≤ 2 的配置下仍直判劣化（分支保持可达）。
+        assert!(
+            is_degraded(&short, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, 2),
+            "short all-lost window degrades when min_samples = 2"
+        );
+    }
+
+    /// 年轻窗口豁免的钉子（方案 1，2026-11-17）：样本 < min_samples（默认 4）
+    /// 一律不判劣化——刚切换路径/新观测面的少数几拍聚合统计方差极大，拿它
+    /// 判劣化就是实测 ping 三态横跳的放大器；窗口攒满 4 拍后同口径证据即动作。
+    #[test]
+    fn young_window_below_min_samples_is_exempt() {
+        const DEGRADE_RTT_MS: u64 = 800;
+        // 3 拍 [Rtt, L, L]：丢包 2/3 ≥ 20%、末尾连续 2 拍 Lost——两条件都
+        // 「该中」，但 3 < 4 → 年轻窗口豁免。
+        let mut young = ProbeWindow::new(8);
+        young.record(ProbeSample::Rtt(10));
+        young.record(ProbeSample::Lost);
+        young.record(ProbeSample::Lost);
+        assert!(
+            !is_degraded(&young, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
+            "3-sample window is young and exempt"
+        );
+        // 第 4 拍 Lost 落下：窗口攒满 → 末尾连续 3 拍 Lost → 劣化。
+        young.record(ProbeSample::Lost);
+        assert!(
+            is_degraded(&young, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
+            "4th sample fills the window; tail run acts"
+        );
+        // 空窗口同豁免（0 < 4）。
+        assert!(!is_degraded(
+            &ProbeWindow::new(8),
+            DEGRADE_RTT_MS,
+            LOSS_SPIKE_THRESHOLD,
+            MIN_SAMPLES
+        ));
     }
 
     /// 无基线豁免（2026-11-13 真死复验实锤）：openclaw-win / windows-desktop
@@ -1118,7 +1277,7 @@ mod tests {
             w.record(ProbeSample::Lost);
         }
         assert!(
-            !is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            !is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "never-answered path has no baseline; handshake classify owns true death"
         );
     }
@@ -1135,15 +1294,17 @@ mod tests {
             bad.record(ProbeSample::Rtt(v));
         }
         assert!(
-            is_degraded(&bad, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            is_degraded(&bad, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "sustained 900ms degrades"
         );
-        // 边界：中位数恰等于阈值 → 命中（≥ 语义，与丢包尖峰一致）。
+        // 边界：中位数恰等于阈值 → 命中（≥ 语义，与丢包尖峰一致）。4 拍
+        // 攒满年轻窗口下限（min_samples=4），豁免不再适用。
         let mut edge = ProbeWindow::new(4);
-        edge.record(ProbeSample::Rtt(800));
-        edge.record(ProbeSample::Rtt(800));
+        for _ in 0..4 {
+            edge.record(ProbeSample::Rtt(800));
+        }
         assert!(
-            is_degraded(&edge, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            is_degraded(&edge, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "median == threshold hits"
         );
         // 少数尖峰拉不动中位数：8 拍里 2 拍 1500ms，中位数仍 ~10ms → 不劣化。
@@ -1154,7 +1315,7 @@ mod tests {
         spiky.record(ProbeSample::Rtt(1500));
         spiky.record(ProbeSample::Rtt(1500));
         assert!(
-            !is_degraded(&spiky, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            !is_degraded(&spiky, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "minority spikes must not degrade"
         );
         // 多数拍超阈值：[10,900,900,1500] → 中位数 900 ≥ 800 → 持续劣化命中。
@@ -1164,7 +1325,7 @@ mod tests {
         half.record(ProbeSample::Rtt(900));
         half.record(ProbeSample::Rtt(1500));
         assert!(
-            is_degraded(&half, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD),
+            is_degraded(&half, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "majority sustained degrades"
         );
     }

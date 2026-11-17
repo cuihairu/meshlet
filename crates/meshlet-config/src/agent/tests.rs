@@ -248,6 +248,10 @@ fn agent_probe_defaults_on_5s_and_parses_section() {
     // SEL-003 丢包尖峰阈值默认：20%（2026-11-17 收窄，原 50%——49% 丢包的
     // 面在旧阈值下放行成「健康面」，实测 ping 三态横跳的劣化面放行）。
     assert_eq!(d.loss_spike, 0.20);
+    // 方案 1 默认：切换宽限 interval×required×2 = 30s（≤60 上限）、年轻窗口
+    // 豁免下限 4。
+    assert_eq!(d.switch_cooldown_secs, 30);
+    assert_eq!(d.degrade_min_samples, 4);
     // 缺 [dataplane] 段同样取默认。
     let d = AgentConfig::from_toml("").unwrap().dataplane.probe;
     assert!(d.enabled);
@@ -257,6 +261,8 @@ fn agent_probe_defaults_on_5s_and_parses_section() {
     assert_eq!(d.recovery_required, 3);
     assert_eq!(d.degrade_rtt_ms, 800);
     assert_eq!(d.loss_spike, 0.20);
+    assert_eq!(d.switch_cooldown_secs, 30);
+    assert_eq!(d.degrade_min_samples, 4);
 
     let c = AgentConfig::from_toml(
         r#"
@@ -280,6 +286,32 @@ loss_spike_percent = 30
     assert_eq!(c.dataplane.probe.recovery_required, 4);
     assert_eq!(c.dataplane.probe.degrade_rtt_ms, 500);
     assert_eq!(c.dataplane.probe.loss_spike, 0.30);
+    // 宽限缺省 = interval×required×2 = 2×5×2 = 20（≤60 上限内不钳）。
+    assert_eq!(c.dataplane.probe.switch_cooldown_secs, 20);
+    assert_eq!(c.dataplane.probe.degrade_min_samples, 4);
+
+    // 显式宽限/年轻窗豁免照常解析；宽限缺省在超上限时被钳到 60。
+    let c = AgentConfig::from_toml(
+        r#"
+[dataplane.probe]
+interval_secs = 60
+switch_required = 10
+switch_cooldown_secs = 45
+degrade_min_samples = 6
+"#,
+    )
+    .unwrap();
+    assert_eq!(c.dataplane.probe.switch_cooldown_secs, 45);
+    assert_eq!(c.dataplane.probe.degrade_min_samples, 6);
+    let c = AgentConfig::from_toml(
+        r#"
+[dataplane.probe]
+interval_secs = 60
+switch_required = 10
+"#,
+    )
+    .unwrap();
+    assert_eq!(c.dataplane.probe.switch_cooldown_secs, 60, "clamped to cap");
 }
 
 #[test]
@@ -303,6 +335,17 @@ fn agent_probe_rejects_zero_interval_and_window() {
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
     let err = AgentConfig::from_toml("[dataplane.probe]\nloss_spike_percent = 101").unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+    // 方案 1：宽限上限 60s（过长延迟真故障切换）；年轻窗豁免 ≥1 且 ≤ window。
+    let err = AgentConfig::from_toml("[dataplane.probe]\nswitch_cooldown_secs = 61").unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+    let err = AgentConfig::from_toml("[dataplane.probe]\ndegrade_min_samples = 0").unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+
+    let err = AgentConfig::from_toml("[dataplane.probe]\nwindow = 8\ndegrade_min_samples = 9")
+        .unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
     let err = AgentConfig::from_toml("[dataplane.probe]\nbogus = 1").unwrap_err();

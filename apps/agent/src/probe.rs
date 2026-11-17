@@ -43,6 +43,9 @@ pub struct ProbeRuntime {
     /// SEL-003 丢包尖峰阈值（`ProbeConfig::loss_spike`）：窗口丢包率 ≥ 此值
     /// 判劣化（is_degraded 丢包维度的配置入口；默认 0.2，见其文档）。
     loss_spike: f64,
+    /// SEL-003 年轻窗口豁免下限（`ProbeConfig::degrade_min_samples`，方案 1）：
+    /// 窗口样本 < 此值不判劣化。
+    degrade_min_samples: usize,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -56,6 +59,7 @@ impl ProbeRuntime {
         let gate = Arc::new(Mutex::new(SwitchGate::new(
             config.switch_required,
             config.switch_margin,
+            config.switch_cooldown_secs.saturating_mul(1000),
         )));
         let stop = Arc::new(AtomicBool::new(false));
         let handle = if config.enabled {
@@ -96,6 +100,7 @@ impl ProbeRuntime {
             gate,
             degrade_rtt_ms: config.degrade_rtt_ms,
             loss_spike: config.loss_spike,
+            degrade_min_samples: config.degrade_min_samples,
             stop,
             handle,
         }
@@ -118,13 +123,24 @@ impl ProbeRuntime {
     /// 读窗口快照并推进迟滞闸（[`SwitchGate::evaluate`]）。`current` = 当前
     /// 已下发的直连候选；`None` = 尚无直连路径（初始选择不由本闸负责）。
     /// 返回切换决策（含理由），由调用方执行 `wg set endpoint` 并记录事件。
+    /// 切换宽限（方案 1）在闸内判定：宽限期内一律 `None`。
     pub fn evaluate_switch(
         &self,
         peer: &str,
         current: Option<EndpointCandidate>,
     ) -> Option<SwitchDecision> {
+        self.evaluate_switch_at(peer, current, now_ms())
+    }
+
+    /// [`Self::evaluate_switch`] 的时钟注入版（测试用虚拟时间）。
+    fn evaluate_switch_at(
+        &self,
+        peer: &str,
+        current: Option<EndpointCandidate>,
+        now_ms: u64,
+    ) -> Option<SwitchDecision> {
         let snapshot = self.snapshot();
-        lock(&self.gate).evaluate(peer, current, &snapshot)
+        lock(&self.gate).evaluate(peer, current, &snapshot, now_ms)
     }
 
     /// SEL-003：从窗口快照推导各对端**当前直连路径**是否劣化（丢包尖峰/
@@ -139,13 +155,35 @@ impl ProbeRuntime {
         &self,
         current: &BTreeMap<String, EndpointCandidate>,
     ) -> BTreeMap<String, bool> {
+        self.degraded_map_at(current, now_ms())
+    }
+
+    /// [`Self::degraded_map`] 的时钟注入版（测试用虚拟时间）。
+    ///
+    /// 切换宽限（方案 1）：对端处于宽限期内 → 跳过劣化判定（禁对现路径判
+    /// 劣化——刚切换的路径窗口未立起来，宽限内由闸 shield，真死由握手
+    /// classify 兜底）。
+    fn degraded_map_at(
+        &self,
+        current: &BTreeMap<String, EndpointCandidate>,
+        now_ms: u64,
+    ) -> BTreeMap<String, bool> {
         let snapshot = self.snapshot();
+        let gate = lock(&self.gate);
         let mut map = BTreeMap::new();
         for (public_key, candidate) in current {
+            if gate.in_cooldown(public_key, now_ms) {
+                continue;
+            }
             let Some(window) = snapshot.get(&(public_key.clone(), *candidate)) else {
                 continue;
             };
-            if is_degraded(window, self.degrade_rtt_ms, self.loss_spike) {
+            if is_degraded(
+                window,
+                self.degrade_rtt_ms,
+                self.loss_spike,
+                self.degrade_min_samples,
+            ) {
                 map.insert(public_key.clone(), true);
             }
         }
@@ -164,7 +202,12 @@ impl ProbeRuntime {
         let snapshot = self.snapshot();
         let mut set = BTreeSet::new();
         for ((public_key, candidate), window) in snapshot {
-            if is_degraded(&window, self.degrade_rtt_ms, self.loss_spike) {
+            if is_degraded(
+                &window,
+                self.degrade_rtt_ms,
+                self.loss_spike,
+                self.degrade_min_samples,
+            ) {
                 set.insert((public_key, candidate));
             }
         }
@@ -182,7 +225,14 @@ impl ProbeRuntime {
         let snapshot = self.snapshot();
         snapshot
             .get(&(public_key.to_string(), candidate))
-            .is_some_and(|w| window_is_healthy(w, self.degrade_rtt_ms, self.loss_spike))
+            .is_some_and(|w| {
+                window_is_healthy(
+                    w,
+                    self.degrade_rtt_ms,
+                    self.loss_spike,
+                    self.degrade_min_samples,
+                )
+            })
     }
 
     /// FLIP-001：当前全部「探测证实健康」的面的集合（单快照批量判定——
@@ -192,7 +242,14 @@ impl ProbeRuntime {
         let snapshot = self.snapshot();
         snapshot
             .into_iter()
-            .filter(|(_, w)| window_is_healthy(w, self.degrade_rtt_ms, self.loss_spike))
+            .filter(|(_, w)| {
+                window_is_healthy(
+                    w,
+                    self.degrade_rtt_ms,
+                    self.loss_spike,
+                    self.degrade_min_samples,
+                )
+            })
             .map(|(target, _)| target)
             .collect()
     }
@@ -268,6 +325,15 @@ impl Drop for ProbeRuntime {
     }
 }
 
+/// 当前 Unix 毫秒（无 chrono 依赖；时钟倒退时 0 兜底——宽限判定宁可
+/// 放开也不卡死）。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// 上锁并从毒化中恢复：探测线程 panic 不该连带 agent 主循环挂掉（缓存 /
 /// 跟踪器都是短临界区，毒化只可能是探测线程已崩——恢复数据继续用）。
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -277,12 +343,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// 「探测证实健康」的窗口口径（FLIP-001）：至少一拍 RTT 成功（正面证据；
 /// 全程 Lost 的无基线窗口是「未知」不是「健康」）且不劣化（[`is_degraded`]
 /// 同一判定）。空窗口 → `false`。
-fn window_is_healthy(window: &ProbeWindow, degrade_rtt_ms: u64, loss_spike: f64) -> bool {
+fn window_is_healthy(
+    window: &ProbeWindow,
+    degrade_rtt_ms: u64,
+    loss_spike: f64,
+    min_samples: usize,
+) -> bool {
     window
         .samples()
         .iter()
         .any(|s| matches!(s, ProbeSample::Rtt(_)))
-        && !is_degraded(window, degrade_rtt_ms, loss_spike)
+        && !is_degraded(window, degrade_rtt_ms, loss_spike, min_samples)
 }
 
 #[cfg(test)]
@@ -299,6 +370,8 @@ mod tests {
             recovery_required: 3,
             degrade_rtt_ms: 800,
             loss_spike: 0.20,
+            switch_cooldown_secs: 30,
+            degrade_min_samples: 4,
         }
     }
 
@@ -601,5 +674,75 @@ mod tests {
             .get("dev-b")
             .copied()
             .unwrap_or(false));
+    }
+
+    /// 切换宽限钉子（方案 1，2026-11-17）：切换后宽限期内（默认
+    /// interval×required×2 = 30s）①禁再切 ②禁对现路径判劣化；宽限一过
+    /// 两者恢复常规判定。用户实测 ping 三态横跳的「切换瞬断档」即此真空期
+    /// 被闸/劣化判定放大的体感。
+    #[test]
+    fn switch_grace_blocks_reswitch_and_degrade_marking() {
+        let c1 = EndpointCandidate::lan("192.168.1.50".parse().unwrap(), 51821);
+        let c2 = EndpointCandidate::lan("192.168.1.60".parse().unwrap(), 51821);
+        let c3 = EndpointCandidate::lan("192.168.1.70".parse().unwrap(), 51821);
+        let rt = ProbeRuntime::start(&config());
+        // 攒 c2 优于 c1 的连续 3 采样 → 在 t0=1_000 触发切换 c1→c2。
+        {
+            let mut tracker = lock(&rt.tracker);
+            for _ in 0..3 {
+                tracker.record("dev-b", c1, ProbeSample::Rtt(100));
+                tracker.record("dev-b", c2, ProbeSample::Rtt(60));
+            }
+        }
+        assert!(rt.evaluate_switch_at("dev-b", Some(c1), 900).is_none());
+        assert!(rt.evaluate_switch_at("dev-b", Some(c1), 950).is_none());
+        let decision = rt
+            .evaluate_switch_at("dev-b", Some(c1), 1_000)
+            .expect("switch at t0");
+        assert_eq!(decision.to, c2);
+        // 切换后 c2 窗口急转直下（末尾连续 3 拍 Lost，7 拍窗口攒满）且 c3
+        // 远优于 c2——宽限内两者都必须被挡住。
+        {
+            let mut tracker = lock(&rt.tracker);
+            for _ in 0..3 {
+                tracker.record("dev-b", c2, ProbeSample::Lost);
+                tracker.record("dev-b", c3, ProbeSample::Rtt(10));
+            }
+        }
+        let mut current = BTreeMap::new();
+        current.insert("dev-b".to_string(), c2);
+        // 宽限内（t0+5s）：不判劣化、不再切。
+        let map = rt.degraded_map_at(&current, 1_000 + 5_000);
+        assert!(
+            !map.get("dev-b").copied().unwrap_or(false),
+            "degrade marking suppressed within grace"
+        );
+        assert!(
+            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 5_000)
+                .is_none(),
+            "re-switch blocked within grace"
+        );
+        // 宽限过（t0+31s）：同口径读数恢复动作——劣化命中；闸须重新攒满
+        // 连续计数（宽限内冻结评估，streak 从 0 重来），第 3 轮才切。
+        let map = rt.degraded_map_at(&current, 1_000 + 31_000);
+        assert!(
+            map.get("dev-b").copied().unwrap_or(false),
+            "degrade acts after grace"
+        );
+        assert!(
+            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_000)
+                .is_none(),
+            "streak restarts after grace"
+        );
+        assert!(
+            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_001)
+                .is_none(),
+            "streak restarts after grace (2/3)"
+        );
+        assert!(
+            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_002)
+                .is_some(),
+            "gate acts after streak refills"
+        );
     }
 }
