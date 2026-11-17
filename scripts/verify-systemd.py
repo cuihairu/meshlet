@@ -23,6 +23,28 @@ def run(args, check=True):
     return result
 
 
+def diagnose(unit, namespace):
+    """Failure-path forensics: hub journal, unit state, netns links.
+
+    The readiness window only proves "the hub never listened"; without the
+    journal we cannot tell a slow start from a crash loop (Restart=on-failure
+    masks the latter). Dumped on stdout so `tee dataplane-systemd.log` in CI
+    carries it into the evidence artifact.
+    """
+    probes = (
+        ["journalctl", "--no-pager", f"--unit={unit}", "-n", "80", "--output=short-iso"],
+        ["systemctl", "show", unit,
+         "--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts"],
+        ["ip", "netns", "exec", namespace, "ip", "-br", "addr"],
+    )
+    for args in probes:
+        print(f"--- diagnose: {' '.join(args)}", flush=True)
+        result = run(args, check=False)
+        print(result.stdout.strip() or "(no output)", flush=True)
+        if result.stderr.strip():
+            print(result.stderr.strip(), flush=True)
+
+
 def main():
     if os.geteuid() != 0 or len(sys.argv) != 2:
         raise SystemExit("Usage: sudo python3 scripts/verify-systemd.py SERVER_BINARY")
@@ -73,13 +95,17 @@ def main():
             headers, _, data = response.partition("\n\n")
             return headers, json.loads(data) if data.strip() else None
 
-        deadline = time.monotonic() + 15
+        # Readiness window: generous bound for slow/cold hosted runners. A
+        # crash loop will still exhaust it — diagnose() then carries the
+        # journal evidence instead of dying on a bare connection refused.
+        deadline = time.monotonic() + 60
         while True:
             try:
                 api("/api/v1/system/status")
                 break
             except RuntimeError:
                 if time.monotonic() > deadline:
+                    diagnose(unit, namespace)
                     raise
                 time.sleep(0.2)
         headers, _ = api("/api/v1/auth/bootstrap", {"email": "unit@test.local", "password": "systemd-permissions-test"})
