@@ -367,13 +367,41 @@ impl SwitchGate {
         self.margin
     }
 
-    /// 该对端是否处于切换宽限内（最近一次切换后 `cooldown_ms` 未满）。
+    /// 该对端是否处于切换宽限内（最近一次切换后 `cooldown_ms` 内，含端点）。
     /// 宽限语义：禁再切（[`Self::evaluate`] 内部先行拦截）+ 禁对现路径判
     /// 劣化（劣化消费方调用本方法自行豁免）。
+    ///
+    /// 含端点（`now ≤ at + cooldown`）：对账周期与探测周期相差一个 poll
+    /// 间隔（默认 30s = 默认宽限），含端点才能让紧随切换之后的对账轮
+    /// （方案 8 回滚检查）仍落在宽限内。
     pub fn in_cooldown(&self, peer: &str, now_ms: u64) -> bool {
         self.last_switch
             .get(peer)
-            .is_some_and(|rec| now_ms < rec.at_ms.saturating_add(self.cooldown_ms))
+            .is_some_and(|rec| now_ms <= rec.at_ms.saturating_add(self.cooldown_ms))
+    }
+
+    /// 切换宽限内的旧 endpoint 一次性回滚（方案 8）：宽限期内、尚未用过
+    /// 回滚、且现路径仍是上次切换的目标面 → 返回旧 endpoint 并记账（回滚
+    /// 也过宽限：宽限起点重置为本轮 `now_ms`，一次性标记置位——一次切换
+    /// 至多回滚一次，绝不乒乓）。宽限外 / 已回滚 / 现路径已被 roam 或后续
+    /// 动作移走 → `None`。「新路径何时算坏」的触发证据由调用方判定，本闸
+    /// 只管许可与簿记（统一在 SwitchGate 内，提案 (d)）。
+    pub fn rollback(
+        &mut self,
+        peer: &str,
+        current: EndpointCandidate,
+        now_ms: u64,
+    ) -> Option<EndpointCandidate> {
+        if !self.in_cooldown(peer, now_ms) {
+            return None;
+        }
+        let rec = self.last_switch.get_mut(peer)?;
+        if rec.rolled_back || rec.to != current {
+            return None;
+        }
+        rec.rolled_back = true;
+        rec.at_ms = now_ms;
+        Some(rec.from)
     }
 
     /// 评估一轮：给定现路径与全部候选窗口，返回是否切换。
@@ -451,6 +479,18 @@ impl SwitchGate {
         let streak = self.streaks.entry(key.clone()).or_insert(0);
         *streak += 1;
         if *streak >= self.required {
+            // 方案 8 目标预检显式化：切换目标窗口必须非空且至少一拍 RTT
+            // 成功——「全 Lost / 无读数」的面没有可用性证据，绝不作为切换
+            // 目标。score 的 ∞ 排序在正常路径已挡住此类目标（全丢 = 最差、
+            // 严格更优要求有限分），此处把隐含前提落成显式契约：预检失败
+            // 宁可留在现路径，下一周期重攒证据。
+            let target_live = windows.get(&key).is_some_and(|w| {
+                !w.is_empty() && w.samples().iter().any(|s| matches!(s, ProbeSample::Rtt(_)))
+            });
+            if !target_live {
+                self.streaks.remove(&key);
+                return None;
+            }
             let reason = format!(
                 "score {best_score:.1} beats current {current_score:.1} by >= {:.0}% for {} consecutive samples",
                 self.margin * 100.0,
@@ -1070,6 +1110,96 @@ mod tests {
             .evaluate("dev-b", Some(c2), &w, 31_001)
             .expect("switch after grace");
         assert_eq!(decision.to, c3);
+    }
+
+    /// 方案 8 目标预检钉子：目标候选全 Lost 不切换——有 RTT 的面在场时
+    /// score 排序天然排除全丢面（∞ 最差）；现路径与候选同为全 Lost 时
+    /// 「严格更优」亦不可满足。两路合起来锁定契约：无可用性证据的面绝不
+    /// 成为切换目标（evaluate 内的显式预检是防御纵深）。
+    #[test]
+    fn switch_gate_never_targets_all_lost_candidate() {
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let c3 = lan("192.168.1.70", 51821);
+        let mut gate = SwitchGate::new(1, 0.30, 0);
+        // 现路径健康（100），唯一其他候选全 Lost → 不切。
+        let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+        let mut w1 = ProbeWindow::new(8);
+        w1.record(ProbeSample::Rtt(100));
+        let mut w2 = ProbeWindow::new(8);
+        w2.record(ProbeSample::Lost);
+        windows.insert(("dev-b".into(), c1), w1);
+        windows.insert(("dev-b".into(), c2), w2);
+        for round in 0..5u64 {
+            assert!(
+                gate.evaluate("dev-b", Some(c1), &windows, round).is_none(),
+                "all-lost candidate must never be a switch target"
+            );
+        }
+        // 现路径与候选同为全 Lost（均无可用性证据）→ 不切；有 RTT 的第三
+        // 候选在场 → 切它。
+        let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+        let mut dead1 = ProbeWindow::new(8);
+        let mut dead2 = ProbeWindow::new(8);
+        for _ in 0..4 {
+            dead1.record(ProbeSample::Lost);
+            dead2.record(ProbeSample::Lost);
+        }
+        let mut live = ProbeWindow::new(8);
+        live.record(ProbeSample::Rtt(40));
+        windows.insert(("dev-b".into(), c1), dead1);
+        windows.insert(("dev-b".into(), c2), dead2);
+        windows.insert(("dev-b".into(), c3), live);
+        let decision = gate
+            .evaluate("dev-b", Some(c1), &windows, 10)
+            .expect("switch to the live face");
+        assert_eq!(
+            decision.to, c3,
+            "switch goes to the live face, not the all-lost one"
+        );
+    }
+
+    /// 方案 8 回滚钉子：宽限内一次性回滚到旧 endpoint；回滚也过宽限（宽限
+    /// 起点重置为本轮时刻）；一次性——同一切换至多回滚一次；宽限外、或
+    /// 现路径已不是上次切换目标（被 roam 移走）→ 不回滚。
+    #[test]
+    fn rollback_is_one_shot_within_grace_and_extends_it() {
+        let c1 = lan("192.168.1.50", 51821);
+        let c2 = lan("192.168.1.60", 51821);
+        let mut gate = SwitchGate::new(1, 0.30, 30_000);
+        let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
+        let mut w1 = ProbeWindow::new(8);
+        w1.record(ProbeSample::Rtt(100));
+        let mut w2 = ProbeWindow::new(8);
+        w2.record(ProbeSample::Rtt(60));
+        windows.insert(("dev-b".into(), c1), w1);
+        windows.insert(("dev-b".into(), c2), w2);
+        gate.evaluate("dev-b", Some(c1), &windows, 1000)
+            .expect("switch c1->c2");
+        // 宽限内回滚 c2→c1。
+        assert_eq!(gate.rollback("dev-b", c2, 2000), Some(c1));
+        // 一次性：同一宽限内再请求 → None。
+        assert_eq!(gate.rollback("dev-b", c2, 3000), None);
+        // 回滚也过宽限：宽限起点重置为 2000 → 31000 仍在重置后的宽限内。
+        assert!(
+            gate.in_cooldown("dev-b", 31_000),
+            "grace restarts at rollback"
+        );
+        assert!(
+            !gate.in_cooldown("dev-b", 32_001),
+            "and expires from the rollback instant"
+        );
+        // 宽限外不回滚。
+        assert_eq!(gate.rollback("dev-b", c1, 32_001), None);
+        // 现路径不是上次切换目标 → 不回滚（重新切换一次后用错的目标请求）。
+        gate.evaluate("dev-b", Some(c1), &windows, 32_001)
+            .expect("re-switch c1->c2 after grace");
+        assert_eq!(
+            gate.rollback("dev-b", c1, 32_100),
+            None,
+            "rollback target must match the last switch"
+        );
+        assert_eq!(gate.rollback("dev-b", c2, 32_100), Some(c1));
     }
 
     // -- SEL-003: is_degraded / RecoveryGate ----------------------------------

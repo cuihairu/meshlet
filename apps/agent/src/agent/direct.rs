@@ -421,6 +421,46 @@ impl super::Agent {
                 // 尚无已下发的直连 endpoint（异常态）：不切换。
                 continue;
             };
+            // 方案 8：切换宽限内的旧 endpoint 一次性回滚——新面「由好变坏后
+            // 持续全暗」（窗口有 RTT 基线 + 末尾连续 Lost）即回退到切换前的
+            // 旧面，省掉 demote→恢复门→re-promote 的中继绕行。许可（宽限内 +
+            // 一次性，回滚也过宽限）统一在闸内；`wg set` 失败只记日志
+            // （一次性已消耗，下周期按常规闸重判）。
+            if let Some(old) = self.probe.switch_rollback(&status.public_key, current) {
+                if let Err(e) = self
+                    .backend
+                    .set_direct_endpoint_sync(&status.public_key, old.socket())
+                {
+                    tracing::warn!(
+                        public_key = %status.public_key,
+                        error = %e,
+                        "direct endpoint rollback failed; keeping current path"
+                    );
+                    continue;
+                }
+                let event = dial::SwitchEvent {
+                    public_key: status.public_key.clone(),
+                    from: status.endpoint.clone(),
+                    to: old.socket().to_string(),
+                    reason: "rollback within switch grace: path lost probe baseline".into(),
+                    at_ms: dial::now_millis(),
+                    kind: None,
+                    detail: None,
+                    ts: Some(dial::rfc3339_now()),
+                };
+                if let Err(e) = dial::append_switch_event(Path::new(&self.state_dir), &event) {
+                    tracing::warn!(error = %e, "direct rollback event not recorded");
+                }
+                tracing::info!(
+                    public_key = %status.public_key,
+                    from = %event.from,
+                    to = %event.to,
+                    "direct endpoint rolled back (switch grace)"
+                );
+                self.direct
+                    .record_endpoint(&status.public_key, event.to.clone());
+                continue;
+            }
             let Some(decision) = self
                 .probe
                 .evaluate_switch(&status.public_key, Some(current))

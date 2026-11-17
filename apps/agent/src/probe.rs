@@ -22,7 +22,7 @@ use meshlet_config::ProbeConfig;
 use meshlet_domain::{EndpointCandidate, PeerEndpoints};
 use meshlet_network::probe::{
     default_transport, is_degraded, probe_round, ProbeSample, ProbeTarget, ProbeTracker,
-    ProbeWindow, SwitchDecision, SwitchGate,
+    ProbeWindow, SwitchDecision, SwitchGate, LAST_LOST_TOLERANCE,
 };
 
 /// 探测运行时：一个后台线程 + 候选缓存（reconcile 写 / 探测线程读）+
@@ -212,6 +212,45 @@ impl ProbeRuntime {
             }
         }
         set
+    }
+
+    /// 方案 8：切换宽限内的旧 endpoint 一次性回滚。触发证据 = 现路径（上次
+    /// 切换的目标面）「由好变坏后持续全暗」——窗口里有 RTT 基线（切换时该
+    /// 面必有成功读数才可能被选中）且末尾连续 [`LAST_LOST_TOLERANCE`] 拍
+    /// `Lost`；许可与簿记在 [`SwitchGate::rollback`]（宽限内 + 一次性 +
+    /// 回滚也过宽限）。无基线（全程 Lost，Windows 防火墙常见）不触发——
+    /// 那不是「坏掉了」的证据，且这样的面本就不会成为切换目标。返回旧
+    /// endpoint，由调用方 `wg set` 并记录事件。
+    pub fn switch_rollback(
+        &self,
+        peer: &str,
+        current: EndpointCandidate,
+    ) -> Option<EndpointCandidate> {
+        self.switch_rollback_at(peer, current, now_ms())
+    }
+
+    /// [`Self::switch_rollback`] 的时钟注入版（测试用虚拟时间）。
+    fn switch_rollback_at(
+        &self,
+        peer: &str,
+        current: EndpointCandidate,
+        now_ms: u64,
+    ) -> Option<EndpointCandidate> {
+        let dead = self
+            .snapshot()
+            .get(&(peer.to_string(), current))
+            .is_some_and(|w| {
+                w.samples().iter().any(|s| matches!(s, ProbeSample::Rtt(_)))
+                    && w.samples()
+                        .iter()
+                        .rev()
+                        .take(LAST_LOST_TOLERANCE)
+                        .all(|s| matches!(s, ProbeSample::Lost))
+            });
+        if !dead {
+            return None;
+        }
+        lock(&self.gate).rollback(peer, current, now_ms)
     }
 
     /// FLIP-001：某 (公钥, 候选) 面是否有「探测证实的健康」证据——恢复门
@@ -722,27 +761,88 @@ mod tests {
                 .is_none(),
             "re-switch blocked within grace"
         );
-        // 宽限过（t0+31s）：同口径读数恢复动作——劣化命中；闸须重新攒满
-        // 连续计数（宽限内冻结评估，streak 从 0 重来），第 3 轮才切。
-        let map = rt.degraded_map_at(&current, 1_000 + 31_000);
+        // 宽限过（t0+31.5s；宽限含端点边界，31_000 仍在宽限内——回滚检查
+        // 要落在紧随切换的下一对账轮）：同口径读数恢复动作——劣化命中；
+        // 闸须重新攒满连续计数（宽限内冻结评估，streak 从 0 重来），第 3
+        // 轮才切。
+        let map = rt.degraded_map_at(&current, 1_000 + 31_500);
         assert!(
             map.get("dev-b").copied().unwrap_or(false),
             "degrade acts after grace"
         );
         assert!(
-            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_000)
+            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_500)
                 .is_none(),
             "streak restarts after grace"
         );
         assert!(
-            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_001)
+            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_501)
                 .is_none(),
             "streak restarts after grace (2/3)"
         );
         assert!(
-            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_002)
+            rt.evaluate_switch_at("dev-b", Some(c2), 1_000 + 31_502)
                 .is_some(),
             "gate acts after streak refills"
+        );
+    }
+
+    /// 方案 8 回滚钉子（2026-11-18）：死亡证据 = 现路径窗口有 RTT 基线且
+    /// 末尾连续 [`LAST_LOST_TOLERANCE`] 拍全 Lost；许可 = 宽限内 + 一次性
+    /// + 目标面匹配（闸层宽限延长语义在 network 侧钉子覆盖）。
+    #[test]
+    fn switch_rollback_needs_death_evidence_and_is_one_shot() {
+        let c1 = EndpointCandidate::lan("192.168.2.50".parse().unwrap(), 51821);
+        let c2 = EndpointCandidate::lan("192.168.2.60".parse().unwrap(), 51821);
+        let rt = ProbeRuntime::start(&config());
+        // 攒 c2 优于 c1 的连续 3 采样 → 在 t0=1_000 触发切换 c1→c2。
+        {
+            let mut tracker = lock(&rt.tracker);
+            for _ in 0..3 {
+                tracker.record("dev-b", c1, ProbeSample::Rtt(100));
+                tracker.record("dev-b", c2, ProbeSample::Rtt(60));
+            }
+        }
+        assert!(rt.evaluate_switch_at("dev-b", Some(c1), 900).is_none());
+        assert!(rt.evaluate_switch_at("dev-b", Some(c1), 950).is_none());
+        let decision = rt
+            .evaluate_switch_at("dev-b", Some(c1), 1_000)
+            .expect("switch at t0");
+        assert_eq!(decision.to, c2);
+
+        // 无死亡证据（窗口全是好读数）：宽限内也返回 None。
+        assert!(
+            rt.switch_rollback_at("dev-b", c2, 1_000 + 5_000).is_none(),
+            "healthy window is not rollback evidence"
+        );
+        // 目标面不匹配（current 不是上次切换的落点）：不回滚。
+        assert!(
+            rt.switch_rollback_at("dev-b", c1, 1_000 + 5_000).is_none(),
+            "rollback only applies to the face the switch landed on"
+        );
+
+        // 窗口由好变坏：[R,R,R] + [L,L,L] → 死亡证据齐，宽限内回滚 Some(c1)。
+        {
+            let mut tracker = lock(&rt.tracker);
+            for _ in 0..3 {
+                tracker.record("dev-b", c2, ProbeSample::Lost);
+            }
+        }
+        assert_eq!(
+            rt.switch_rollback_at("dev-b", c2, 1_000 + 5_000),
+            Some(c1),
+            "dead target face rolls back to the pre-switch face"
+        );
+
+        // 一次性：同一宽限内证据仍在，也只回滚一次。
+        assert!(
+            rt.switch_rollback_at("dev-b", c2, 1_000 + 6_000).is_none(),
+            "rollback is one shot"
+        );
+        // 宽限过（回滚时刻 5_000 + 30_000）：不再回滚。
+        assert!(
+            rt.switch_rollback_at("dev-b", c2, 35_001).is_none(),
+            "no rollback outside grace"
         );
     }
 }
