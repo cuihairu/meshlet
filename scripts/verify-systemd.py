@@ -118,23 +118,41 @@ def attempt(binary, identity, group, repo, suffix):
     config_dir = Path("/run") / unit
     service = Path("/run/systemd/system") / f"{unit}.service"
     state = Path("/var/lib") / unit
-    # The exec'd binary stays on /run — NOT inside the StateDirectory: with
-    # ProtectSystem=strict + ReadWritePaths + StateDirectory stacked on the
-    # same dir (the shipped unit's sandbox), systemd 259 refuses to exec any
-    # file living under that bind (EACCES → 203/EXEC, reproduced locally
-    # even with /bin/true, while each directive alone execs fine).
-    installed = config_dir / "meshlet-server"
+    # The exec'd binary lives on /usr/local — the shipped production exec
+    # domain (/usr/local/bin) — NOT on /run and NOT inside the StateDirectory.
+    # Two exec-hostile placement traps, both confirmed:
+    #   - hosted runner fleets mount /run noexec on some image versions (run
+    #     44228831360: X_OK false as root with mode 0o100755); that was the
+    #     recurring 203/EXEC flake. ProtectSystem=strict keeps /usr read-only
+    #     inside the unit, which does not affect exec.
+    #   - with ProtectSystem=strict + ReadWritePaths + StateDirectory stacked
+    #     on the same dir, systemd 259 refuses to exec any file under that
+    #     bind (EACCES even for /bin/true; each directive alone execs fine).
+    install_dir = Path("/usr/local") / unit
+    installed = install_dir / "meshlet-server"
     try:
         config_dir.mkdir(mode=0o755)
+        install_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(binary, installed)
         os.chmod(installed, 0o755)
-        # Fail fast on a truncated or corrupted copy instead of discovering
-        # it as an opaque 203/EXEC restart loop.
+        # Fail fast on a truncated or corrupted copy, or an exec-hostile
+        # mount, instead of discovering it as an opaque 203/EXEC loop.
         with installed.open("rb") as fh:
             magic = fh.read(len(ELF_MAGIC))
         if magic != ELF_MAGIC:
             raise RuntimeError(f"copied binary lost ELF magic ({magic!r}); copy is truncated or corrupt")
         if not os.access(installed, os.X_OK):
+            flags = os.statvfs(install_dir).f_flag
+            print(
+                f"--- exec pre-check: X_OK denied on {install_dir} "
+                f"(mode={oct(installed.stat().st_mode)}, statvfs flags={flags:#x}, "
+                f"ST_NOEXEC={'set' if flags & os.ST_NOEXEC else 'clear'})",
+                flush=True,
+            )
+            for args in (["findmnt", "-T", str(install_dir)], ["findmnt", "/usr/local"], ["findmnt", "/run"]):
+                print(f"--- exec pre-check: {' '.join(args)}", flush=True)
+                result = run(args, check=False)
+                print(result.stdout.strip() or "(no output)", flush=True)
             raise RuntimeError(f"copied binary is not executable: {oct(installed.stat().st_mode)}")
         key = config_dir / "hub.key"
         key.write_text(run(["wg", "genkey"]).stdout)
@@ -211,6 +229,7 @@ def attempt(binary, identity, group, repo, suffix):
         service.unlink(missing_ok=True)
         run(["systemctl", "daemon-reload"], check=False)
         run(["ip", "netns", "del", namespace], check=False)
+        shutil.rmtree(install_dir, ignore_errors=True)
         shutil.rmtree(config_dir, ignore_errors=True)
         shutil.rmtree(state, ignore_errors=True)
 
