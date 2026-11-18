@@ -11,6 +11,13 @@ use tauri::{tray::TrayIconBuilder, Manager};
 
 fn main() {
     tauri::Builder::default()
+        // 单实例防护必须最先注册（官方要求，deep-link 场景对注册顺序敏感）：
+        // 第二实例启动即回调本进程携带 argv 后自行退出——这里唤起既有设置
+        // 面板，而不是再开一套托盘+窗口，避免双图标状态互相覆盖、菜单操作
+        // 打到随机实例上。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            second_instance_focus(app);
+        }))
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::get_config,
@@ -102,6 +109,13 @@ fn main() {
                 }
             }
         });
+}
+
+/// 单实例二次启动回调的唤起面：把既有实例的设置面板带到前台。独立成
+/// 泛型函数以便契约测试在 mock runtime 上走与真回调完全相同的调用链
+/// （Wry 的托盘回调与测试的 MockRuntime 句柄都落在这里）。
+fn second_instance_focus<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    windows::open_settings_window(app);
 }
 
 /// 状态轮询：更新 tooltip / 图标 / 菜单摘要行，并把状态推给弹层
@@ -225,5 +239,36 @@ mod tests {
             Some(first),
             first + std::time::Duration::from_millis(160)
         ));
+    }
+
+    /// 契约：单实例二次启动回调作用于既有实例的 settings 窗本身——
+    /// 走 reveal（复用）分支而不是再建一扇窗，也不落到其他 label 上。
+    /// MockRuntime 的 is_visible 恒为 true（mock_runtime.rs 硬编码），
+    /// show/focus 腿在 mock 上不可观测，窗口复用关系用唯一性断言钉住；
+    /// 显示效果真机面由全部打开路径共用的 reveal_window 兜底。
+    #[test]
+    fn second_instance_focus_reuses_existing_settings_window() {
+        let app = tauri::test::mock_app();
+        tauri::WebviewWindowBuilder::new(
+            app.handle(),
+            "settings",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .build()
+        .unwrap();
+        second_instance_focus(app.handle());
+        let windows = app.webview_windows();
+        assert_eq!(windows.len(), 1);
+        assert!(windows.contains_key("settings"));
+    }
+
+    /// 契约（建窗分支）：settings 窗不存在时回调会补建一个（同 label），
+    /// 第二实例唤起的始终是同一个 label 的窗，不会落成孤儿窗口。
+    #[test]
+    fn second_instance_focus_builds_settings_window_when_missing() {
+        let app = tauri::test::mock_app();
+        assert!(app.get_webview_window("settings").is_none());
+        second_instance_focus(app.handle());
+        assert!(app.get_webview_window("settings").is_some());
     }
 }

@@ -79,7 +79,7 @@ pub(crate) fn open_settings_at_zone(app: &tauri::AppHandle, zone: &str) {
 /// `set_focus()` 守卫 `is_visible && !is_minimized && !is_foreground`
 /// （tao-0.37.2 window.rs:139-150）在最小化时是 no-op——只 show+focus 时
 /// 最小化的窗口原封不动留在任务栏，用户看就是「点打开设置没反应」。
-pub(crate) fn reveal_window(window: &tauri::WebviewWindow) {
+pub(crate) fn reveal_window<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     if window.is_minimized().unwrap_or(false) {
         let _ = window.unminimize();
     }
@@ -89,7 +89,7 @@ pub(crate) fn reveal_window(window: &tauri::WebviewWindow) {
 
 /// 显示（或聚焦）设置面板——供右键菜单「打开设置」项使用，行为不变：
 /// 始终把窗口带到前台。
-pub(crate) fn open_settings_window(app: &tauri::AppHandle) {
+pub(crate) fn open_settings_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("settings") {
         reveal_window(&window);
         return;
@@ -122,7 +122,7 @@ pub(crate) fn toggle_settings_window(app: &tauri::AppHandle) {
     build_settings_window(app);
 }
 
-fn build_settings_window(app: &tauri::AppHandle) {
+fn build_settings_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     // 创建失败不再静默吞掉：窗口创建竞态/WebView 故障时至少留一条诊断线
     //（此前 `let _ =` 让「点打开设置没反应」无迹可查）。
     if let Err(error) = tauri::WebviewWindowBuilder::new(
