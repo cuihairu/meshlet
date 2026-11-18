@@ -1,0 +1,36 @@
+=== fliploop 整定批观察窗判定 raw（2026-11-19 01:16-01:2x CST / 2026-11-18T17:16-17:2xZ 实测取证）===
+window start 2026-11-17T17:00:00Z (L158 锁定: 双机新构建+新 PID 齐活后整分; oc 首条 16:55:46Z / imac 16:59:07Z 取后者整分)
+window end   2026-11-18T17:00:00Z; verdict gate at capture 2026-11-18T17:16:15Z (date -u 实测) — 24h 整窗满 (16min 过闸), VERDICT AUTHORIZED
+构建连续性: openclaw meshlet-agent PID 13908 StartTime 2026/11/18 0:55:09 CST = 2026-11-17T16:55:09Z (窗起点前 5min 起, 窗内全程未重启, 2026-11-18T17:2xZ 实测 Get-Process)
+数据: OC agent-decisions.jsonl 3,827,087B (10,891 行) / direct-switch-events.json 1,397,712B (4,635 行), scp 拉取 17:18Z
+IMAC SIDE: 本机不可达 (LAN 192.168.5.117 ping 100% loss, ssh No route to host, 17:16-17:20Z 实测) — imac 侧本机文件取不到, 窗内覆盖 0h (较基线判定 15.76h 更严), 四列判定全按 OC 视单侧口径 (与 L157 锁定基线同视角), 缺口留空
+方法自洽: 同一解析脚本对基线窗 (2026-11-15T08:57:32Z->2026-11-16T09:11:32Z 含端) 复现 flip 975/roam 18 (锁定 976/18, 差 1 条 flip=文件 2.5 天轮转漂移), peer 分布 JMrE 214=214 / QmAF 611 vs 612 / b6tx 150=150, roam QmAF 11=11 / b6tx 7=7 — 口径还原成立
+flip=kind mode_flip 事件; roam=无 kind 端点切换 (score beats); rollback=reason 含 rollback; 环=defB (verified->demote 直连存活期, 基线两端 min/max ±0.01 吻合: 1.02/13.99 vs 0.72-14.00 RECORD; 基线 n=76 的 ad-hoc 定义未入库, n 列存在定义残差, 如实注记)
+
+*** WINDOW STATS (2026-11-17T17:00:00Z -> 2026-11-18T17:00:00Z, OC view) ***
+switch events total=1037 = flip 962 + roam 75
+  flips by peer: JMrE(wd) 227 / QmAF(imac) 441 / b6tx(cvm) 294   [baseline: 214 / 612 / 150 = 976]
+  roams: QmAF 67 (ALL "score X beats current inf" — 现役 ∞ 评分面切换) / b6tx 8 (ALL "beats current <数值>" in-gate 同基线族)   [baseline: QmAF 11 / b6tx 7 = 18, all in-gate]
+  rollback events: 0   [baseline: 0]
+  demote (to hub_relay): JMrE 80 / QmAF 209 / b6tx 98 = 387   [baseline 全体 demote 372]
+  sel003 demote: 187 (b6tx 98 / JMrE 67 / QmAF 22)   [baseline 230] — b6tx 98/98 = 全部 demote 均为 sel003 (20% 尖峰提前拦形态)
+cycles (defB verified->demote):
+  JMrE n=68 median 1.07min max 6.50   [baseline wd n=76 median 1.88 (0.72-14.00 carryover RECORD)]
+  QmAF n=23 median 6.39min max 113.61 (长环=失联期)
+  b6tx n=97 median 3.35min max 69.76
+decisions.jsonl (OC view, 2,691 条窗内):
+  JMrE: defer 887 / hold_relay 138 / demote 80 / probe 58 / promote 147
+  QmAF: probe 385 / promote 232 / demote 209 / defer 51 / hold_relay 21
+  b6tx: promote 196 / hold_relay 116 / probe 65 / demote 98 / defer 8
+  FLIP-001 recovery gate bypassed (face probe-healthy): coding-vm 64 起 (baseline 全窗累计 49)
+  rollback / precheck / grace 字样: decisions 0, switch-events 0 (双面零)
+reason set: 无未知新头; promote attempt via candidate table 313 / exhausted 196 / verified 189 / sel003 187 / memory face 73 / score beats 75 / stale 4 等
+imac peer (QmAF) 窗内小时分布: 17-18Z 26/h -> 20-22Z 静默 5-9/h -> 00Z 起 56-57/h 连续 14h 恒频 (demote<->promote attempt 3min 节奏) -> 14Z 27 -> 16Z 47; last verified 14:59:34Z
+窗末 15min: QmAF promote attempt<->exhausted 环持续 (16:46:35Z->16:59:01Z 最后一条 promote attempt) = 末拍仍翻复现; JMrE 16:49:45Z exhausted 后停
+agent 连续性: OC decisions 窗内 >5min 断档最大 9.9min (静默非重启), PID 13908 跨窗不变
+
+*** 与基线四列逐项 (判定单见 fliploop-fix-window23-verdict-2026-11-19.md) ***
+flip 976 -> 962 (-1.4% 持平; QmAF -28% / b6tx +96% / JMrE +6%) — 未收敛
+roam 18 -> 75 (b6tx 同族 7->8 持平; QmAF 67 全 beats-inf=imac 面全 Lost 期现役 ∞ 评分判据内触发, 与基线 QmAF 11 同族机制放大) — 恶化
+rollback 0 -> 0 — "从 0 起>0" 未达标 (无「有基线面死亡」场景; 全 Lost 无基线人群设计上永不触发)
+sel003 demote 230 -> 187 — "SEL-003 demote 升" 未复现 (b6tx 全 sel003 形态存在但总量反降)
