@@ -16,14 +16,14 @@ Self-hosted private networking on your own VPS — Rust + WireGuard.
 > Evidence comes from the local Linux kernel and unprivileged service regression runs.
 > Windows backend modules are implemented and real-machine verified.
 > Covered: routes, firewall, service control and uninstall cleanup.
-> A Windows agent+CLI+tray-host zip and `install.ps1` now ship in the nightly release.
+> A Windows agent+CLI+tray-app zip and `install.ps1` now ship in the nightly release.
 > The Windows data-plane backend is wired (ADR-008 tunnel-only v1) and R-05 real-machine acceptance passed on 2026-11-12.
 > The end-to-end apply walkthrough and real-machine installer/tray-host acceptance passed on 2026-11-13 on a real machine (AGENT-WIN-3, NIGHTLY-MSI-1; #52 data-plane apply walkthrough included).
 > Long-run soak acceptance remains pending. See [TODO](todo.md).
 
 ## Nightly builds and one-command installation
 
-The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and the required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly) — a single mutable tag, overwritten on every successful run. No dated releases exist today. The release carries Linux x86_64 / ARM64 static tar archives. It also carries per-component `deb` and `rpm` packages (`meshlet-server` / `meshlet-agent` / `meshlet-cli`). A Windows agent+CLI+tray-host zip and the `install.sh` / `install.ps1` installers ship alongside.
+The [nightly workflow](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) runs daily at **19:17 UTC (03:17 Asia/Shanghai)** and supports manual dispatch. After the checks and the required Linux kernel dataplane tests pass, it publishes a rolling [nightly prerelease](https://github.com/cuihairu/meshlet/releases/tag/nightly) — a single mutable tag, overwritten on every successful run. No dated releases exist today. The release carries Linux x86_64 / ARM64 static tar archives. It also carries per-component `deb` and `rpm` packages (`meshlet-server` / `meshlet-agent` / `meshlet-cli`). A Windows agent+CLI+tray-app zip and the `install.sh` / `install.ps1` installers ship alongside.
 **Install the server on your VPS:**
 
 ```bash
@@ -121,7 +121,7 @@ Windows acceptance status (2026-11-13: R-05, installer, tray-host and end-to-end
 
 ### Install the agent on Windows
 
-The nightly release publishes a Windows agent+CLI+tray-host zip and `install.ps1`. Install (PowerShell, no
+The nightly release publishes a Windows agent+CLI+tray-app zip and `install.ps1`. Install (PowerShell, no
 elevation needed — the agent runs in the user session, not as a machine service):
 
 ```powershell
@@ -129,7 +129,7 @@ Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/
 pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken 'TOKEN_FROM_THE_CONSOLE' -DeviceName 'home-windows'
 ```
 
-The installer verifies the zip's SHA-256 against the release `SHA256SUMS`. It installs `meshlet-agent.exe`, `meshlet-cli.exe` and `meshlet-tray-host.exe` into `%LOCALAPPDATA%\meshlet` and adds that directory to the user PATH. It generates an agent key and config once, and registers per-user HKCU Run autostart entries for the hidden agent and tray host.
+The installer verifies the zip's SHA-256 against the release `SHA256SUMS`. It installs `meshlet-agent.exe`, `meshlet-cli.exe`, `meshlet-tray.exe` and `WebView2Loader.dll` into `%LOCALAPPDATA%\meshlet` and adds that directory to the user PATH. It generates an agent key and config once, and registers per-user HKCU Run autostart entries for the hidden agent and the tray app (settings panel).
 Re-run it to upgrade — the existing `agent.toml` and key are preserved, so device credentials
 survive. Offline/staged installs use `$env:MESHLET_INSTALL_ARCHIVE` and
 `$env:MESHLET_INSTALL_SHA256SUMS`. The installer starts the background agent and tray host by default; pass `-NoStartTray` to skip the tray host's immediate start while keeping its logon autostart entry. Data-plane apply on Windows is wired (tunnel-only v1 per ADR-008) and passed the end-to-end real-machine apply walkthrough on 2026-11-13 — see below.

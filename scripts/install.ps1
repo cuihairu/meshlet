@@ -13,13 +13,21 @@ zip) and $env:MESHLET_INSTALL_SHA256SUMS (the SHA256SUMS file) before running.
 Install layout (per-user under %LOCALAPPDATA%\meshlet, so no elevation is
 needed; the agent runs in the user session, not as a machine service):
   meshlet-agent.exe, meshlet-cli.exe   binaries, replaced on every run
-  meshlet-tray-host.exe                tray host, replaced on every run
+  meshlet-tray.exe, WebView2Loader.dll tray app (settings panel), replaced on
+                                       every run; the dll ships beside the exe
+                                       because webview2-com-sys links the
+                                       WebView2 loader dynamically
   agent.toml                           created once, then preserved
   agent.key                            generated once, then preserved
   state\                               agent state directory
 
-Autostart: HKCU Run entries start both the agent (hidden) and tray host at
-logon. The tray host receives the agent state directory as its only argument.
+Autostart: HKCU Run entries start both the agent (hidden) and the tray app at
+logon. The tray app locates its configuration itself (no arguments); its
+autostart entry uses the same 'meshlet' value the app's settings page manages.
+Legacy cleanup: the retired meshlet-tray-host.exe process/Run entry/autostart
+task is stopped and removed on upgrade. Started from an SSH session the tray
+lands in session 0 (icon invisible) — run from a logon session, or use a
+console-session scheduled task, for real-machine walks.
 Data-plane apply is rejected until real-machine acceptance passes — the agent
 registers with the hub, heartbeats and reports status only.
 #>
@@ -43,7 +51,7 @@ $configPath = Join-Path $installDir 'agent.toml'
 $keyPath = Join-Path $installDir 'agent.key'
 $stateDir = Join-Path $installDir 'state'
 $agentExe = Join-Path $installDir 'meshlet-agent.exe'
-$trayExe = Join-Path $installDir 'meshlet-tray-host.exe'
+$trayExe = Join-Path $installDir 'meshlet-tray.exe'
 
 function Fail([string]$Message) {
     throw "meshlet installer: $Message"
@@ -135,17 +143,24 @@ try {
     }
 
     Expand-Archive -Path $archivePath -DestinationPath (Join-Path $work 'package') -Force
-    foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray-host.exe') {
+    foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray.exe', 'WebView2Loader.dll') {
         if (-not (Test-Path (Join-Path $work "package\$name"))) {
             Fail "release archive is incomplete: $name missing"
         }
     }
     Stop-AgentLaunchers $agentExe
     Stop-InstalledProcess 'meshlet-agent'
+    Stop-InstalledProcess 'meshlet-tray'
+    # Legacy cleanup: stop the retired tray host and drop its autostart hooks.
     Stop-InstalledProcess 'meshlet-tray-host'
+    Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+        -Name 'meshlet-tray-host' -ErrorAction SilentlyContinue
+    schtasks /Change /TN MeshletTrayHost /DISABLE 2>$null | Out-Null
+    Remove-Item (Join-Path $installDir 'meshlet-tray-host.exe') -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $work 'package\meshlet-agent.exe') (Join-Path $installDir 'meshlet-agent.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-cli.exe') (Join-Path $installDir 'meshlet-cli.exe') -Force
-    Copy-Item (Join-Path $work 'package\meshlet-tray-host.exe') (Join-Path $installDir 'meshlet-tray-host.exe') -Force
+    Copy-Item (Join-Path $work 'package\meshlet-tray.exe') (Join-Path $installDir 'meshlet-tray.exe') -Force
+    Copy-Item (Join-Path $work 'package\WebView2Loader.dll') (Join-Path $installDir 'WebView2Loader.dll') -Force
 }
 finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
@@ -194,10 +209,10 @@ if ($pathParts -notcontains $installDir) {
     Write-Host "Added $installDir to the user PATH (new terminals pick it up)."
 }
 
-# --- Autostart (HKCU Run; agent hidden, tray host points at its state directory) ---
+# --- Autostart (HKCU Run; agent hidden, tray app needs no arguments) ---
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $agentCmd = "powershell -NoProfile -WindowStyle Hidden -Command `"& '$agentExe' '$configPath'`""
-$trayCmd = "`"$trayExe`" `"$stateDir`""
+$trayCmd = "`"$trayExe`""
 # Set-ItemProperty cannot create a registry key; ensure it exists (a clean
 # image may not have created HKCU Run yet) before writing autostart entries.
 New-Item -Path $runKey -Force | Out-Null
@@ -206,7 +221,9 @@ if ($NoStart) {
 }
 else {
     Set-ItemProperty -Path $runKey -Name 'meshlet-agent' -Value $agentCmd
-    Set-ItemProperty -Path $runKey -Name 'meshlet-tray-host' -Value $trayCmd
+    # Value name 'meshlet' matches the app's own settings-page autostart
+    # toggle (set_autostart), so the installer and the app manage one entry.
+    Set-ItemProperty -Path $runKey -Name 'meshlet' -Value $trayCmd
 }
 
 # --- Start now if it is not already running ---
@@ -216,14 +233,14 @@ if (-not $NoStart -and -not (Get-Process -Name 'meshlet-agent' -ErrorAction Sile
         -WindowStyle Hidden
 }
 
-if (-not $NoStartTray -and -not (Get-Process -Name 'meshlet-tray-host' -ErrorAction SilentlyContinue)) {
-    Start-Process -FilePath $trayExe -ArgumentList $stateDir
+if (-not $NoStartTray -and -not (Get-Process -Name 'meshlet-tray' -ErrorAction SilentlyContinue)) {
+    Start-Process -FilePath $trayExe
 }
 
 Write-Host "Installed Meshlet $Version (agent) into $installDir"
 Write-Host "Configuration: $configPath"
 if ($NoStart) { Write-Host 'Autostart disabled (-NoStart); the agent was not started.' }
 else { Write-Host 'Agent and tray autostart registered for the current user.' }
-if ($NoStartTray) { Write-Host 'The tray host was not started (-NoStartTray); logon autostart remains registered.' }
+if ($NoStartTray) { Write-Host 'The tray app was not started (-NoStartTray); logon autostart remains registered.' }
 Write-Host 'Approve this device in the console, then apply the network revision.'
 Write-Host 'Note: data-plane apply is rejected on Windows until real-machine acceptance passes (see README).'

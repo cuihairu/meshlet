@@ -13,14 +13,14 @@
 > 本轮补充单实例多网络隔离、设备应用回执、hub 恢复、成功计划回滚、Direct LAN SNAT 和正式服务权限，
 > 已有 Linux 真实内核与非 root 服务回归证据。
 > Windows 后端模块已实现并完成路由、防火墙、服务控制与卸载清理的真机验收。
-> nightly 现已附带 Windows agent+CLI+tray-host zip 与 `install.ps1`。
+> nightly 现已附带 Windows agent+CLI+tray-app zip 与 `install.ps1`。
 > agent 数据面接线已按 ADR-008 落地（tunnel-only v1），R-05 三项真机验收 2026-11-12 全过；端到端 apply 真机走查与安装包/托盘真机验收（AGENT-WIN-3、NIGHTLY-MSI-1、#52）已于 2026-11-13 全部通过。
 > 空 VPS 安装和真实设备
 > 走查也仍待完成。每日构建与一键安装见下节，当前验收范围见 [TODO](todo.md)。
 
 ## 每日构建与一键安装
 
-[每日构建](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) 每天北京时间 **03:17** 触发，也可在 Actions 中手动运行。全部检查与 Linux 内核数据面测试通过后，发布 [nightly 预发布版本](https://github.com/cuihairu/meshlet/releases/tag/nightly)——单一可变 tag，每次成功构建覆盖。当前无带日期的 release。发布包含 Linux x86_64 / ARM64 静态 tar 归档，以及按组件拆分的 `deb`/`rpm` 包（`meshlet-server` / `meshlet-agent` / `meshlet-cli`）。Windows agent+CLI+tray-host zip 与 `install.sh` / `install.ps1` 一键安装脚本同时发布。
+[每日构建](https://github.com/cuihairu/meshlet/actions/workflows/nightly.yml) 每天北京时间 **03:17** 触发，也可在 Actions 中手动运行。全部检查与 Linux 内核数据面测试通过后，发布 [nightly 预发布版本](https://github.com/cuihairu/meshlet/releases/tag/nightly)——单一可变 tag，每次成功构建覆盖。当前无带日期的 release。发布包含 Linux x86_64 / ARM64 静态 tar 归档，以及按组件拆分的 `deb`/`rpm` 包（`meshlet-server` / `meshlet-agent` / `meshlet-cli`）。Windows agent+CLI+tray-app zip 与 `install.sh` / `install.ps1` 一键安装脚本同时发布。
 **在 VPS 安装服务端：**
 
 ```bash
@@ -106,14 +106,14 @@ Windows 验收现状（2026-11-13，R-05/安装包/托盘/端到端 apply 已全
 
 ### 在 Windows 安装 agent
 
-nightly 发布 Windows agent+CLI+tray-host zip 与 `install.ps1`。安装（PowerShell，无需管理员——agent 运行在用户会话，不是机器服务）：
+nightly 发布 Windows agent+CLI+tray-app zip 与 `install.ps1`。安装（PowerShell，无需管理员——agent 运行在用户会话，不是机器服务）：
 
 ```powershell
 Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/install.ps1 -OutFile install.ps1
 pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken '控制台里的TOKEN' -DeviceName 'home-windows'
 ```
 
-安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` / `meshlet-tray-host.exe` 装进 `%LOCALAPPDATA%\meshlet`。把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器同时安装并注册托盘宿主 `meshlet-tray-host.exe`（`-NoStartTray` 可跳过立即启动，登录自启仍在），托盘菜单提供**本地面板**与**控制台(网页)**两个入口；Windows 上数据面 apply 已按 ADR-008 接线（tunnel-only v1），端到端真机 apply 走查已于 2026-11-13 通过——见下文。
+安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` / `meshlet-tray.exe`（连同 `WebView2Loader.dll`）装进 `%LOCALAPPDATA%\meshlet`。把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器同时安装并注册托盘应用 `meshlet-tray.exe`（设置面板：诊断/路由表/对等节点；`-NoStartTray` 可跳过立即启动，登录自启仍在）；Windows 上数据面 apply 已按 ADR-008 接线（tunnel-only v1），端到端真机 apply 走查已于 2026-11-13 通过——见下文。
 
 ### 在 Windows 从源码构建并运行 agent
 

@@ -45,9 +45,10 @@ PY
 
 # --- 2. wixl dry run -------------------------------------------------------
 mkdir -p "$stub/bin"
-for exe in meshlet-server meshlet-agent meshlet-cli meshlet-tray-host; do
+for exe in meshlet-server meshlet-agent meshlet-cli meshlet-tray; do
     : > "$stub/bin/$exe.exe"
 done
+: > "$stub/bin/WebView2Loader.dll"
 version=$(python3 - <<'PY'
 import re
 text = open("Cargo.toml").read()
@@ -55,6 +56,11 @@ print(re.search(r'\[workspace\.package\][^[]*?version\s*=\s*"([^"]+)"', text, re
 PY
 )
 sed "s|\$(var.CargoTargetBinDir)\\\\|$stub/bin/|g" "$wxs" > "$stub/main.wxs"
+# wixl is a WiX subset without UtilExtension support; util:CloseApplication
+# (MSI Restart Manager shutdown of the agent/tray/legacy-tray processes) is
+# stripped from the dry run. The real candle/light run on Windows CI
+# validates those elements — cargo-wix passes -ext WixUtilExtension always.
+sed -i "/util:CloseApplication/d" "$stub/main.wxs"
 
 # wixl and cargo-wix must agree on the version define: cargo-wix injects
 # `-dVersion=` (not `CargoPackageVersion`), so the wxs uses `$(var.Version)`.
@@ -68,13 +74,13 @@ echo "msi File table:   $files"
 echo "msi Shortcut tab: $shortcuts"
 echo "msi version:      $version_msi (workspace $version)"
 
-for exe in meshlet-server.exe meshlet-agent.exe meshlet-cli.exe meshlet-tray-host.exe; do
+for f in meshlet-server.exe meshlet-agent.exe meshlet-cli.exe meshlet-tray.exe WebView2Loader.dll; do
     case " $files " in
-        *" $exe "*) ;;
-        *) echo "msi File table is missing $exe"; exit 1 ;;
+        *" $f "*) ;;
+        *) echo "msi File table is missing $f"; exit 1 ;;
     esac
 done
-for sc in "Meshlet CLI" "Meshlet Tray Host" "Uninstall Meshlet"; do
+for sc in "Meshlet CLI" "Meshlet Tray" "Uninstall Meshlet"; do
     case " $shortcuts " in
         *" $sc "*) ;;
         *) echo "msi Shortcut table is missing '$sc'"; exit 1 ;;

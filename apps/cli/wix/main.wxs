@@ -9,11 +9,16 @@
   CNDL0150). Do not build with an explicit target triple: cargo-wix
   resolves candle/light relative paths against the repo root cwd and a
   triple would move the exes (LGHT0103).
-  The manifest packages all four workspace bins; cargo-wix only builds its own
-  package's bin (meshlet-cli), so the nightly workflow pre-builds the other
-  three with the same release-profile build invocation (without a target).
+  The manifest packages the workspace delivery bins; cargo-wix only builds its
+  own package's bin (meshlet-cli), so the nightly workflow pre-builds the rest
+  with the same release-profile build invocation (without a target).
+  WebView2Loader.dll ships beside meshlet-tray.exe: the tray app links the
+  WebView2 loader dynamically (webview2-com-sys), so the dll must sit in the
+  install dir. The legacy meshlet-tray-host.exe was retired from the installer
+  on 2026-11-20 (replaced by the meshlet-tray settings app).
 -->
-<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'
+     xmlns:util='http://schemas.microsoft.com/wix/UtilExtension'>
   <Product
       Id='*'
       Name='Meshlet'
@@ -23,8 +28,16 @@
       Manufacturer='meshlet'
       UpgradeCode='ad61fb0d-6819-4f3e-8072-ded49409b10b'>
 
+    <!-- wixl (offline gate) does not implement util:CloseApplication; the
+         validate-wix.sh dry run strips these elements before wixl. The real
+         candle run validates them: cargo-wix passes -ext WixUtilExtension. -->
+    <util:CloseApplication Target='meshlet-agent.exe' Reinstall='yes' />
+    <util:CloseApplication Target='meshlet-tray.exe' Reinstall='yes' />
+    <!-- Legacy process: closed during upgrades from the pre-2026-11-20 MSI. -->
+    <util:CloseApplication Target='meshlet-tray-host.exe' Reinstall='yes' />
+
     <Package
-        Description='Meshlet overlay network (server, agent, CLI and tray host)'
+        Description='Meshlet overlay network (server, agent, CLI and tray app)'
         Manufacturer='meshlet'
         InstallerVersion='500'
         Compressed='yes'
@@ -61,9 +74,13 @@
         <File Id='MeshletCliFile' Name='meshlet-cli.exe'
               Source='$(var.CargoTargetBinDir)\meshlet-cli.exe' KeyPath='yes' />
       </Component>
-      <Component Id='MeshletTrayHostExe' Guid='87c5a9d0-af79-4d4f-8883-094c9e271617'>
-        <File Id='MeshletTrayHostFile' Name='meshlet-tray-host.exe'
-              Source='$(var.CargoTargetBinDir)\meshlet-tray-host.exe' KeyPath='yes' />
+      <Component Id='MeshletTrayAppExe' Guid='b83957ae-2797-422c-ba97-071d19acdd3e'>
+        <File Id='MeshletTrayAppFile' Name='meshlet-tray.exe'
+              Source='$(var.CargoTargetBinDir)\meshlet-tray.exe' KeyPath='yes' />
+      </Component>
+      <Component Id='MeshletWebView2Dll' Guid='682fde0d-e1bc-4d69-83b3-3266b9eda6e8'>
+        <File Id='MeshletWebView2DllFile' Name='WebView2Loader.dll'
+              Source='$(var.CargoTargetBinDir)\WebView2Loader.dll' KeyPath='yes' />
       </Component>
     </DirectoryRef>
 
@@ -75,9 +92,9 @@
                   Target='[INSTALLDIR]meshlet-cli.exe'
                   WorkingDirectory='INSTALLDIR' />
         <Shortcut Id='MeshletTrayShortcut'
-                  Name='Meshlet Tray Host'
-                  Description='Meshlet system tray status host'
-                  Target='[INSTALLDIR]meshlet-tray-host.exe'
+                  Name='Meshlet Tray'
+                  Description='Meshlet tray and settings panel'
+                  Target='[INSTALLDIR]meshlet-tray.exe'
                   WorkingDirectory='INSTALLDIR' />
         <Shortcut Id='MeshletUninstallShortcut'
                   Name='Uninstall Meshlet'
@@ -98,7 +115,8 @@
       <ComponentRef Id='MeshletServerExe' />
       <ComponentRef Id='MeshletAgentExe' />
       <ComponentRef Id='MeshletCliExe' />
-      <ComponentRef Id='MeshletTrayHostExe' />
+      <ComponentRef Id='MeshletTrayAppExe' />
+      <ComponentRef Id='MeshletWebView2Dll' />
       <ComponentRef Id='MeshletShortcuts' />
     </Feature>
   </Product>

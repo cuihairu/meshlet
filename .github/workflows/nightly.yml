@@ -120,9 +120,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           key: nightly-windows-msvc
-      - name: Build Windows agent, cli and tray host
+      - name: Build Windows agent, cli and tray app
         timeout-minutes: 40
-        run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin meshlet-agent --bin meshlet-cli --bin meshlet-tray-host
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc --bin meshlet-agent --bin meshlet-cli --bin meshlet-tray
       - name: Package Windows zip
         shell: pwsh
         run: scripts/package-windows-zip.ps1 -Target x86_64-pc-windows-msvc
@@ -132,7 +132,7 @@ jobs:
       # the `target/release` dir that CargoTargetBinDir points at.
       - name: Build release binaries for the MSI
         timeout-minutes: 40
-        run: cargo build --locked --release --bin meshlet-server --bin meshlet-agent --bin meshlet-cli --bin meshlet-tray-host
+        run: cargo build --locked --release --bin meshlet-server --bin meshlet-agent --bin meshlet-cli --bin meshlet-tray
       - name: Install cargo-wix
         timeout-minutes: 15
         run: cargo install cargo-wix --version 0.3.9 --locked
