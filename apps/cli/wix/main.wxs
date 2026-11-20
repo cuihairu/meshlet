@@ -29,20 +29,22 @@
       Manufacturer='meshlet'
       UpgradeCode='ad61fb0d-6819-4f3e-8072-ded49409b10b'>
 
-    <!-- wixl (offline gate) does not implement util:CloseApplication; the
-         validate-wix.sh dry run strips these elements before wixl. The real
-         candle run validates them: cargo-wix passes -ext WixUtilExtension. -->
-    <util:CloseApplication Target='meshlet-agent.exe' />
-    <util:CloseApplication Target='meshlet-tray.exe' />
-    <!-- Legacy process: closed during upgrades from the pre-2026-11-20 MSI. -->
-    <util:CloseApplication Target='meshlet-tray-host.exe' />
-
     <Package
         Description='Meshlet overlay network (server, agent, CLI and tray app)'
         Manufacturer='meshlet'
         InstallerVersion='500'
         Compressed='yes'
         InstallScope='perMachine' />
+
+    <!-- wixl (offline gate) does not implement util:CloseApplication; the
+         validate-wix.sh dry run strips these elements before wixl. The real
+         candle run validates them: cargo-wix passes -ext WixUtilExtension.
+         Schema note: Package must be Product's first child; the extension
+         elements come after it (CNDL0107 otherwise). -->
+    <util:CloseApplication Target='meshlet-agent.exe' />
+    <util:CloseApplication Target='meshlet-tray.exe' />
+    <!-- Legacy process: closed during upgrades from the pre-2026-11-20 MSI. -->
+    <util:CloseApplication Target='meshlet-tray-host.exe' />
 
     <MajorUpgrade
         AllowSameVersionUpgrades='yes'
