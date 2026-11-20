@@ -1,8 +1,8 @@
 //! Tray summary/menu construction and popup geometry.
 
-use crate::commands::{get_peers, get_status};
+use crate::commands::get_status;
 use crate::i18n;
-use crate::state::state_tier;
+use crate::state::{get_peers, state_tier};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 /// 菜单首行摘要的当前文案（状态 + 直连计数，语言跟随托盘语言）。

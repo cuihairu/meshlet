@@ -47,8 +47,12 @@ pub(crate) fn save_config(
 }
 
 #[tauri::command]
-pub(crate) fn get_peers() -> Vec<serde_json::Value> {
-    crate::state::get_peers()
+pub(crate) async fn get_peers() -> Vec<serde_json::Value> {
+    // wg 子进程同步执行曾把主线程堵死（设置窗卡死，2026-11-20 imac 实报）；
+    // 移到阻塞线程池，主线程只 await。
+    tauri::async_runtime::spawn_blocking(crate::state::get_peers)
+        .await
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -57,10 +61,15 @@ pub(crate) fn get_commands() -> Vec<meshlet_commands::CommandSpec> {
 }
 
 #[tauri::command]
-pub(crate) fn get_diag() -> Result<meshlet_network::NetworkDiagnostics, String> {
-    meshlet_network::SystemBackend::new()
-        .diagnostics_sync()
-        .map_err(|error| error.to_string())
+pub(crate) async fn get_diag() -> Result<meshlet_network::NetworkDiagnostics, String> {
+    // 诊断是同步全系统探测（同卡死风险类别），与 get_peers 同样移出主线程。
+    tauri::async_runtime::spawn_blocking(|| {
+        meshlet_network::SystemBackend::new()
+            .diagnostics_sync()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -71,10 +80,14 @@ pub(crate) fn set_autostart(enabled: bool) -> Result<(), String> {
 fn set_autostart_impl(enabled: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW：reg.exe 是 console 工具，GUI 进程直接 spawn 会闪窗。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
         if enabled {
-            let output = std::process::Command::new("reg")
+            let mut command = std::process::Command::new("reg");
+            command
                 .args([
                     "add",
                     key,
@@ -86,16 +99,17 @@ fn set_autostart_impl(enabled: bool) -> Result<(), String> {
                     &executable.to_string_lossy(),
                     "/f",
                 ])
-                .output()
-                .map_err(|error| error.to_string())?;
+                .creation_flags(CREATE_NO_WINDOW);
+            let output = command.output().map_err(|error| error.to_string())?;
             if !output.status.success() {
                 return Err(String::from_utf8_lossy(&output.stderr).into_owned());
             }
         } else {
-            let output = std::process::Command::new("reg")
+            let mut command = std::process::Command::new("reg");
+            command
                 .args(["delete", key, "/v", "meshlet", "/f"])
-                .output()
-                .map_err(|error| error.to_string())?;
+                .creation_flags(CREATE_NO_WINDOW);
+            let output = command.output().map_err(|error| error.to_string())?;
             // 删除不存在的值：reg 报 "unable to find"，按幂等成功处理。
             if !output.status.success()
                 && !String::from_utf8_lossy(&output.stderr).contains("unable to find")

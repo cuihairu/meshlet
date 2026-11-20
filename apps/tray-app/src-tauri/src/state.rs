@@ -114,9 +114,16 @@ pub(crate) fn get_status() -> serde_json::Value {
 
 pub(crate) fn get_peers() -> Vec<serde_json::Value> {
     let wg_path = "C:\\Program Files\\WireGuard\\wg.exe";
-    let output = std::process::Command::new(wg_path)
-        .args(["show", "all", "dump"])
-        .output();
+    let mut command = std::process::Command::new(wg_path);
+    command.args(["show", "all", "dump"]);
+    // CREATE_NO_WINDOW：tray 是 GUI 子系统进程，直接 spawn wg.exe 这个
+    // console 工具会在每次轮询时闪一个终端窗口（2026-11-20 imac 实报）。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output();
 
     let mut peers = Vec::new();
     let output = match output {
