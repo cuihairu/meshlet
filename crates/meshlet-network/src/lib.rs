@@ -65,6 +65,7 @@ pub mod windows_probe;
 pub mod windows_routes;
 pub mod windows_service;
 pub mod windows_tunnel;
+pub mod windows_wireguard_nt;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
