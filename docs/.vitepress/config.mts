@@ -88,6 +88,7 @@ export default defineConfig({
             { text: 'Overlapping LAN Aliases', link: '/design/overlapping-lan-alias' },
             { text: 'R-01 Domain Model (Draft)', link: '/design/r01-domain-model' },
             { text: 'Node and Network Identity', link: '/design/meshlet-identity-network-id' },
+            { text: 'Multi-Instance Failure and Userspace WireGuard', link: '/design/userspace-wireguard-analysis' },
           ] }],
           '/guide/': [{ text: 'Guides', items: [
             { text: 'Installation', link: '/guide/install' },
