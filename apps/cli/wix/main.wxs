@@ -32,10 +32,10 @@
     <!-- wixl (offline gate) does not implement util:CloseApplication; the
          validate-wix.sh dry run strips these elements before wixl. The real
          candle run validates them: cargo-wix passes -ext WixUtilExtension. -->
-    <util:CloseApplication Target='meshlet-agent.exe' Reinstall='yes' />
-    <util:CloseApplication Target='meshlet-tray.exe' Reinstall='yes' />
+    <util:CloseApplication Target='meshlet-agent.exe' />
+    <util:CloseApplication Target='meshlet-tray.exe' />
     <!-- Legacy process: closed during upgrades from the pre-2026-11-20 MSI. -->
-    <util:CloseApplication Target='meshlet-tray-host.exe' Reinstall='yes' />
+    <util:CloseApplication Target='meshlet-tray-host.exe' />
 
     <Package
         Description='Meshlet overlay network (server, agent, CLI and tray app)'
