@@ -11,7 +11,6 @@ mod tests {
 
     use crate::agent::direct_report::direct_report_from;
     use crate::direct_rtt::RttProbe;
-    use meshlet_config::DirectConnectConfig;
     use meshlet_domain::{DirectLinkStatus, Ipv4Cidr};
     use meshlet_network::NetworkDiagnostics;
     use meshlet_network::{DevicePlan, SystemBackend};
@@ -342,13 +341,9 @@ mod tests {
     }
 
     #[test]
-    fn direct_report_gates_on_enabled_and_carries_port() {
-        let on = DirectConnectConfig {
-            enabled: true,
-            listen_port: 51820,
-        };
-        let report =
-            direct_report_from(&on, vec!["192.168.1.50".parse().unwrap()]).expect("enabled");
+    fn direct_report_gates_on_resolved_port_and_carries_it() {
+        let report = direct_report_from(Some(51820), vec!["192.168.1.50".parse().unwrap()])
+            .expect("resolved");
         assert_eq!(report.listen_port, 51820);
         assert_eq!(
             report.lan_addrs,
@@ -356,15 +351,12 @@ mod tests {
         );
 
         // 空候选仍合法（对端可尝试公网观测地址）。
-        let report = direct_report_from(&on, vec![]).expect("empty candidates");
+        let report = direct_report_from(Some(51820), vec![]).expect("empty candidates");
         assert!(report.lan_addrs.is_empty());
 
-        // 未开启直连：上报省略（None），不伪造端点。
-        let off = DirectConnectConfig {
-            enabled: false,
-            listen_port: 51820,
-        };
-        assert_eq!(direct_report_from(&off, vec![]), None);
+        // 生效端口缺（未开启 / 未解析 / WIN-PORT-1 B2 全候选被挡关闸）：
+        // 上报省略（None），不伪造端点——报一个绑不上的口等于让对端拨死口。
+        assert_eq!(direct_report_from(None, vec![]), None);
     }
 
     #[test]

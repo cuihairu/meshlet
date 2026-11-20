@@ -2,7 +2,7 @@ use super::parsing::{is_windows_lan_interface, parse_lan_ip_json};
 use crate::nat::NatRule;
 use crate::windows_routes::exec::run_route_command;
 use crate::windows_tunnel::exec::run_wireguard_command;
-use crate::windows_tunnel::exec::write_tunnel_conf;
+use crate::windows_tunnel::exec::{ensure_conf_dir_acl, ensure_conf_file_acl, write_tunnel_conf};
 use crate::windows_tunnel::render_wireguard_conf;
 use crate::windows_tunnel::wireguard_exe;
 use crate::windows_tunnel::WireGuardCommand;
@@ -271,9 +271,13 @@ impl WindowsNetworkBackend {
             private_key,
         };
         let conf = render_wireguard_conf(&tunnel_config);
-        let conf_dir = std::env::temp_dir().join("meshlet");
-        let conf_path = conf_dir.join(format!("{}.conf", self.interface));
+        // WIN-PORT-1 缺陷②：conf 落 ProgramData（受限令牌隧道服务读不到
+        // 用户会话 temp）。目录先收紧 ACL 再写文件——新文件自创建起继承
+        // 收紧后的 ACL，私钥不落宽继承窗口；写后对文件再兜底收紧一次。
+        let conf_path = crate::windows_tunnel::tunnel_conf_path(&self.interface);
+        ensure_conf_dir_acl(&crate::windows_tunnel::tunnel_conf_dir())?;
         write_tunnel_conf(&conf_path, &conf)?;
+        ensure_conf_file_acl(&conf_path)?;
         self.install_tunnel_reconfigured(&exe, &conf_path)?;
         for route in &plan.routes {
             let netsh_cmd = crate::windows_routes::NetshRouteCommand::Add {
@@ -311,10 +315,13 @@ impl NetworkBackend for WindowsNetworkBackend {
         let exe = self.find_wireguard_exe().ok_or_else(|| {
             NetworkError::Unsupported("WireGuard for Windows is not installed".to_string())
         })?;
-        let conf_dir = std::env::temp_dir().join("meshlet");
-        let conf_path = conf_dir.join(format!("{}.conf", config.name));
         let conf = render_wireguard_conf(&config);
+        // 与 apply_device_plan_sync 同口径（WIN-PORT-1 缺陷②）：conf 落
+        // ProgramData + 目录/文件 ACL 收紧，受限令牌服务可读、普通用户不可读。
+        let conf_path = crate::windows_tunnel::tunnel_conf_path(&config.name);
+        ensure_conf_dir_acl(&crate::windows_tunnel::tunnel_conf_dir())?;
         write_tunnel_conf(&conf_path, &conf)?;
+        ensure_conf_file_acl(&conf_path)?;
         // 与 apply_device_plan_sync 同路径：已存在服务必须停/卸载/装新 conf，
         // 绝不把 "already installed" 当成功（那会静默保留旧 key/地址）。
         self.install_tunnel_reconfigured(&exe, &conf_path)?;

@@ -107,6 +107,56 @@ pub fn conf_file_name(tunnel_name: &str) -> String {
     format!("{tunnel_name}.conf")
 }
 
+/// Windows 公共应用数据根（`%ProgramData%`，缺省 `C:\ProgramData`）。
+pub fn program_data_root() -> std::path::PathBuf {
+    std::env::var_os("ProgramData")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"))
+}
+
+/// 受管隧道 conf 目录：`<ProgramData>\meshlet`。
+///
+/// WIN-PORT-1 缺陷②：conf **不落** 用户会话的 `temp_dir`——`WireGuardTunnel$`
+/// 服务以受限令牌运行，读不到用户 temp 下的 conf（真机实证：SYSTEM 运行
+/// agent 落 SystemTemp 才碰巧通）。ProgramData 是全机共享目录，服务必然
+/// 可读；私钥的读面由 [`restrict_acl_args`] 收紧（去继承，只留
+/// SYSTEM/Administrators/CREATOR OWNER），不再依赖 temp 目录的偶然 ACL。
+pub fn tunnel_conf_dir() -> std::path::PathBuf {
+    program_data_root().join("meshlet")
+}
+
+/// 受管隧道 conf 完整路径（纯函数，跨平台单测）：`<root>\meshlet\<name>.conf`。
+pub fn tunnel_conf_path_under(root: &std::path::Path, tunnel_name: &str) -> std::path::PathBuf {
+    root.join("meshlet").join(conf_file_name(tunnel_name))
+}
+
+/// 受管隧道 conf 实际路径（按 [`program_data_root`] 解析）。
+pub fn tunnel_conf_path(tunnel_name: &str) -> std::path::PathBuf {
+    tunnel_conf_path_under(&program_data_root(), tunnel_name)
+}
+
+/// 收紧 conf 路径 ACL 的 `icacls` 参数（计划层，跨平台单测；执行见
+/// [exec]）。
+///
+/// conf 含私钥（ADR-010），而 ProgramData 默认继承 ACL 对本机 Users 可读
+/// ——**不许默默扩大可读面**。参数语义：`/inheritance:r` 去掉继承，
+/// `/grant:r` 只留三个 SID 的完全控制——SYSTEM（`S-1-5-18`，隧道服务本体）、
+/// Administrators（`S-1-5-32-544`，提权执行 `wireguard.exe` 的读面）、
+/// CREATOR OWNER（`S-1-3-0`，谁建的文件谁可重写——agent 换用户运行也能
+/// 幂等 re-apply）。按 `*S-1-…` 传 SID 免名称本地化解析。
+///
+/// 普通用户（非 SYSTEM/Admin）自此**不可读**——诊断时可显式 `icacls <path>`
+/// 或经 R-DIAG 通道取证，不靠放读权换排障便利。
+pub fn restrict_acl_args(path: &std::path::Path, inheritable: bool) -> Vec<String> {
+    let inherit = if inheritable { "(OI)(CI)" } else { "" };
+    let mut args = vec![path.display().to_string(), "/inheritance:r".into()];
+    args.push("/grant:r".into());
+    for sid in ["*S-1-5-18", "*S-1-5-32-544", "*S-1-3-0"] {
+        args.push(format!("{sid}:{inherit}F"));
+    }
+    args
+}
+
 /// 安装策略（BUG 修复：已存在隧道必须重配，不允许静默 no-op）。
 ///
 /// `wireguard.exe` 对**已存在**的隧道服务执行 `/installtunnelservice` 会以
@@ -377,9 +427,10 @@ pub mod exec {
     /// 把渲染好的隧道 conf 写入 agent 本地路径（私钥只落客户端磁盘，服务端
     /// 永不携带）。父目录不存在时创建；写入即整文件覆盖（幂等 re-apply）。
     ///
-    /// conf 含私钥，调用方应置于 agent 的受保护状态目录（与私钥文件同一
-    /// 信任边界）；**ACL 收紧（非管理员可读限制）属仍缺的真机验证项**，本
-    /// 函数只保证原子性足够的整文件写入，不在此处冒充安全措施。
+    /// conf 含私钥，调用方应置于受保护目录——生产路径是
+    /// [`super::tunnel_conf_dir`]（ProgramData），且须先经
+    /// [`Self::restrict_conf_acl`] 收紧目录 ACL 再写文件（新文件自创建瞬间
+    /// 就继承收紧后的 ACL，私钥不落宽继承窗口）。
     pub fn write_tunnel_conf(path: &Path, conf: &str) -> Result<(), NetworkError> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -390,6 +441,44 @@ pub mod exec {
         }
         std::fs::write(path, conf)
             .map_err(|error| NetworkError::Io(format!("write conf {}: {error}", path.display())))
+    }
+
+    /// `icacls` 受控执行（ACL 收紧）：exit 0 = 成功，其余把本地化输出带回
+    /// 错误里（诊断用；分类不做——ACL 失败语义单一，一律 fail closed）。
+    fn run_icacls(args: &[String]) -> Result<(), NetworkError> {
+        let output = std::process::Command::new("icacls")
+            .args(args)
+            .output()
+            .map_err(|error| NetworkError::Io(format!("spawn icacls: {error}")))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let text = format!(
+            "{}{}",
+            crate::windows_console::decode_output(&output.stdout),
+            crate::windows_console::decode_output(&output.stderr),
+        );
+        Err(NetworkError::ApplyRejected(format!(
+            "icacls {} failed (exit {}): {}",
+            args.first().map(String::as_str).unwrap_or("(no path)"),
+            output.status.code().unwrap_or(-1),
+            text.trim()
+        )))
+    }
+
+    /// 创建（或复用）conf 目录并收紧其 ACL（[`super::restrict_acl_args`]，
+    /// 子件可继承）。先于 conf 写入调用：新 conf 文件自创建起继承收紧 ACL。
+    pub fn ensure_conf_dir_acl(dir: &Path) -> Result<(), NetworkError> {
+        std::fs::create_dir_all(dir).map_err(|error| {
+            NetworkError::Io(format!("create conf dir {}: {error}", dir.display()))
+        })?;
+        run_icacls(&super::restrict_acl_args(dir, true))
+    }
+
+    /// 收紧已写入的 conf 文件 ACL（目录收紧的兜底：目录在旧版本下已存在时，
+    /// 其 ACL 可能仍是宽继承——文件级收紧保证现网这份 conf 不漏读）。
+    pub fn ensure_conf_file_acl(path: &Path) -> Result<(), NetworkError> {
+        run_icacls(&super::restrict_acl_args(path, false))
     }
 
     /// 执行一条受控 `wireguard.exe` 命令：成功/幂等成功/分类失败三态。
@@ -430,7 +519,7 @@ mod tests {
     use super::*;
     use crate::PeerConfig;
     use meshlet_domain::Ipv4Cidr;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn hub_peer() -> PeerConfig {
         PeerConfig {
@@ -660,6 +749,56 @@ mod tests {
     fn conf_file_name_appends_extension() {
         assert_eq!(conf_file_name("meshlet-overlay"), "meshlet-overlay.conf");
         assert_eq!(conf_file_name("a b"), "a b.conf");
+    }
+
+    /// WIN-PORT-1 缺陷②：conf 目录口径锁定 ProgramData（受限令牌服务读
+    /// 得到），不再落用户会话 temp。纯函数断言（Linux 亦可跑；分隔符按
+    /// 各平台 PathBuf 语义，断言结构而非字面量）。
+    #[test]
+    fn conf_path_lands_under_programdata_meshlet() {
+        // 结构：<root>\meshlet\<name>.conf——逐级断言，分隔符无关。
+        let path = tunnel_conf_path_under(Path::new(r"D:\ProgramData"), "meshlet");
+        assert_eq!(path.file_name().unwrap(), "meshlet.conf");
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "meshlet");
+        assert_eq!(
+            path.parent().unwrap().parent().unwrap(),
+            Path::new(r"D:\ProgramData")
+        );
+        // 实际路径与纯函数同构（ProgramData 环境变量缺省时回退 C 盘）。
+        assert_eq!(
+            tunnel_conf_path("meshlet-overlay"),
+            tunnel_conf_path_under(&program_data_root(), "meshlet-overlay")
+        );
+        assert_eq!(tunnel_conf_dir(), program_data_root().join("meshlet"));
+    }
+
+    /// ACL 收紧参数：去继承 + 三 SID 完全控制（SYSTEM / Administrators /
+    /// CREATOR OWNER，按 SID 传免本地化解析）；目录带 (OI)(CI) 继承位，
+    /// 文件不带。宽 ACL（ProgramData 默认 Users 可读）必须显式收掉。
+    #[test]
+    fn restrict_acl_args_strip_inheritance_and_grant_three_sids() {
+        let dir = restrict_acl_args(Path::new(r"C:\ProgramData\meshlet"), true);
+        assert_eq!(
+            dir,
+            vec![
+                r"C:\ProgramData\meshlet".to_string(),
+                "/inheritance:r".to_string(),
+                "/grant:r".to_string(),
+                "*S-1-5-18:(OI)(CI)F".to_string(),
+                "*S-1-5-32-544:(OI)(CI)F".to_string(),
+                "*S-1-3-0:(OI)(CI)F".to_string(),
+            ]
+        );
+        let file = restrict_acl_args(Path::new(r"C:\ProgramData\meshlet\meshlet.conf"), false);
+        assert_eq!(file[1], "/inheritance:r");
+        assert_eq!(
+            &file[3..],
+            &[
+                "*S-1-5-18:F".to_string(),
+                "*S-1-5-32-544:F".to_string(),
+                "*S-1-3-0:F".to_string(),
+            ]
+        );
     }
 
     /// wireguard.exe 解析链：显式覆盖 > 环境变量 > PATH 缺省。单函数顺序
@@ -915,6 +1054,30 @@ mod tests {
             let rotated = super::super::render_wireguard_conf(&value);
             super::super::exec::write_tunnel_conf(&path, &rotated).unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), rotated);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// ACL 收紧执行（WIN-PORT-1 缺陷②配套）：目录与文件各收紧一次，
+        /// 再幂等重跑一遍——收紧后写内容仍可读写（CREATOR OWNER 在列，
+        /// 建文件者不被自己锁死）。icacls 系统自带，CI windows-latest 可跑。
+        #[test]
+        fn conf_acl_tightening_runs_and_is_idempotent() {
+            let dir = std::env::temp_dir().join(format!(
+                "meshlet-conf-acl-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let path = dir.join("meshlet.conf");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&path, "[Interface]\n").unwrap();
+            super::super::exec::ensure_conf_dir_acl(&dir).unwrap();
+            super::super::exec::ensure_conf_file_acl(&path).unwrap();
+            super::super::exec::ensure_conf_dir_acl(&dir).unwrap();
+            super::super::exec::ensure_conf_file_acl(&path).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Interface]\n");
             let _ = std::fs::remove_dir_all(&dir);
         }
 

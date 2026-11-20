@@ -6,6 +6,7 @@
 //! 本模块只负责**何时**调用它与**喂什么配置**（计划来自 server，绝非本地拼装
 //! 的 Shell 命令，§16.4）。
 mod direct;
+mod direct_port;
 mod direct_report;
 pub(super) mod endpoint;
 mod evidence;
@@ -88,6 +89,13 @@ pub struct Agent {
     direct: DirectManager,
     /// 直连 keep set 的持久化文件（`{state_dir}/direct.json`）。
     direct_ledger: std::path::PathBuf,
+    /// WIN-PORT-1 B2 生效监听端口（conf/防火墙/上报三处同源）：每轮
+    /// reconcile 解析（Windows 上探测回退，见 [`direct_port`]）；`None` =
+    /// 未解析或全部候选被挡（`direct_report` 据此不上报候选端点）。
+    resolved_direct_port: Option<u16>,
+    /// 生效端口解析当前处于「全候选被挡」态（已显式报错过）：转入/转出
+    /// 各记一次日志，绝不每 30s 刷屏。
+    direct_port_blocked: bool,
     /// 上次直连探测时刻（30s 节流；`None` = 未探测过，首轮即探）。
     last_direct_probe: Option<Instant>,
     /// R-DIAG-2 直连 RTT 后台运行时：独立线程 ping 直连对端（不阻塞 tick）。
@@ -194,6 +202,8 @@ impl Agent {
             publish: PublishRuntime::new(),
             direct_ledger: direct_ledger_path(&config.state_dir),
             direct: DirectManager::load(&direct_ledger_path(&config.state_dir)),
+            resolved_direct_port: None,
+            direct_port_blocked: false,
             last_direct_probe: None,
             direct_rtt,
             task_runtime: crate::tasks::TaskRuntime::start(

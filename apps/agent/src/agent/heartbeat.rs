@@ -47,11 +47,15 @@ impl super::Agent {
     }
 
     /// §12 P2P：本机直连候选端点（WireGuard 监听端口 + RFC1918 局域网地址）。
-    /// 未开启直连时返回 `None`（上报省略，服务端按未上报处理）；LAN 枚举
-    /// 失败只记空候选，不吞掉心跳本身。
+    /// 未开启直连、生效端口未解析或全部候选被挡（WIN-PORT-1 B2）时返回
+    /// `None`（上报省略，服务端按未上报处理，不伪造端点）；LAN 枚举失败
+    /// 只记空候选，不吞掉心跳本身。
     pub fn direct_report(&self) -> Option<DirectEndpointReport> {
+        if !self.dataplane.direct_connect.enabled {
+            return None;
+        }
         direct_report_from(
-            &self.dataplane.direct_connect,
+            self.resolved_direct_port,
             self.backend.lan_addresses_sync().unwrap_or_default(),
         )
     }

@@ -1,4 +1,5 @@
 //! reconcile
+use crate::agent::direct_port::{self, PortResolution};
 use crate::agent::plan_adapter::{enforce_hub_keepalive, plan_with_hub_endpoint};
 use crate::reconcile::{AgentState, Decision};
 
@@ -28,11 +29,61 @@ impl super::Agent {
         // SEL-003 hub 兜底：hub peer 的 keepalive 永不掉——计划里低于常量
         // （或旧版计划缺省 `None`）都强制抬到 [meshlet_network::HUB_KEEPALIVE_SECS]。
         enforce_hub_keepalive(&mut local_plan);
-        // §12：直连开启时把 wg 接口绑定到配置的监听端口——直连对端按
-        // `listen_port` 发包（`direct_report` 上报的正是它）。本地改写不影响
-        // 期望哈希（与 hub_endpoint 兜底同一口径）。
+        // §12：直连开启时把 wg 接口钉到「生效监听端口」——conf 渲染、防火墙
+        // 放行（apply_device_plan_sync 内 ensure_direct_udp_firewall_sync）与
+        // direct_report 上报三处必须同一端口（WIN-PORT-1 B2 硬不变量）。生效
+        // 端口每轮在此解析（Windows 上配置端口被排除段/占用挡住时探测回退，
+        // 防 `WireGuardTunnel$` 0xc0000022 绑定失败；Linux 恒取配置端口，
+        // 行为不变）。本地改写不影响期望哈希（与 hub_endpoint 兜底同一口径）。
         if self.dataplane.direct_connect.enabled {
-            local_plan.tunnel.listen_port = Some(self.dataplane.direct_connect.listen_port);
+            let configured = self.dataplane.direct_connect.listen_port;
+            let is_windows = cfg!(target_os = "windows");
+            let persisted = direct_port::load(&self.state_dir);
+            match direct_port::resolve(
+                configured,
+                snapshot.tunnel_listen_port,
+                persisted,
+                is_windows,
+                &direct_port::probe_bind,
+            ) {
+                PortResolution::Port(port) => {
+                    // 账本只落 Windows（防 churn 的现役证据；Linux 行为不变），
+                    // 且只在解析结果变化时写——30s 轮询不重复落盘。
+                    if is_windows && persisted != Some(port) {
+                        if let Err(error) = direct_port::save(&self.state_dir, Some(port)) {
+                            tracing::warn!(error = %error, "direct-port ledger not saved");
+                        }
+                        tracing::info!(port, configured, "direct listen port resolved");
+                    }
+                    if self.direct_port_blocked {
+                        tracing::info!(port, "direct listen port recovered");
+                        self.direct_port_blocked = false;
+                    }
+                    local_plan.tunnel.listen_port = Some(port);
+                    self.resolved_direct_port = Some(port);
+                }
+                PortResolution::Blocked => {
+                    // 显式报错（转入态记一次，绝不每轮刷屏）：直连关闸——计划
+                    // 不钉端口（hub 中继 overlay 不受影响），direct_report 不
+                    // 上报候选（报一个本机绑不上的口等于让对端拨死口）。
+                    if !self.direct_port_blocked {
+                        tracing::error!(
+                            configured,
+                            "direct connect blocked: no bindable UDP listen port (configured \
+                             port and fallbacks all rejected); inspect with `netsh interface \
+                             ipv4 show excludedportrange protocol=udp`"
+                        );
+                        self.direct_port_blocked = true;
+                        if is_windows {
+                            if let Err(error) = direct_port::save(&self.state_dir, None) {
+                                tracing::warn!(error = %error, "direct-port ledger not saved");
+                            }
+                        }
+                    }
+                    local_plan.tunnel.listen_port = None;
+                    self.resolved_direct_port = None;
+                }
+            }
         }
         for route in &mut local_plan.routes {
             route.interface = self.dataplane.interface.clone();
