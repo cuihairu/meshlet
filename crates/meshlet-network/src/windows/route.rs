@@ -1,4 +1,5 @@
 use super::backend::WindowsNetworkBackend;
+use crate::windows_console::NoWindowCommand;
 use crate::{ApplyResult, NetworkError, RouteConfig};
 
 impl WindowsNetworkBackend {
@@ -19,6 +20,7 @@ impl WindowsNetworkBackend {
                 &payload.to_string(),
                 &target.to_string(),
             ])
+            .no_window()
             .output()
             .map(|out| out.status.success())
             .unwrap_or(false)

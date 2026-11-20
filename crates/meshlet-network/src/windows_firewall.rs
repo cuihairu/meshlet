@@ -614,6 +614,7 @@ fn first_nonempty_line(output: &str) -> &str {
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_netsh_firewall_failure, FirewallRuleCommand};
+    use crate::windows_console::NoWindowCommand;
     use crate::{ApplyResult, NetworkError};
 
     /// 执行一条受控 netsh 防火墙命令：成功/幂等成功/分类失败三态。
@@ -622,6 +623,7 @@ pub mod exec {
     ) -> Result<ApplyResult, NetworkError> {
         let output = std::process::Command::new("netsh")
             .args(command.args())
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn netsh: {error}")))?;
         // netsh 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），
@@ -662,6 +664,7 @@ pub mod exec {
         };
         let output = std::process::Command::new(program)
             .args(&args)
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn {program}: {error}")))?;
         let text = format!(

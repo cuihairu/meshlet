@@ -73,6 +73,37 @@ fn decode_via_code_page(bytes: &[u8], _code_page: u32) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// 受控 console 工具 spawn 的统一创建标志（builder 链式注入）。
+///
+/// **为什么必须**：GUI 子系统进程（tray-app）spawn console 工具
+/// （route/powershell/ping/netsh/sc/reg/wireguard.exe）时，Windows 默认为
+/// 每个子进程弹一个终端窗——真机实锤 2026-11-20（cuihaitao 机）：点状态
+/// 面板 → `get_diag` → `diagnostics_sync()` 连环 spawn → 终端窗狂闪
+/// （c3634c5 只修了 tray-app 自身两处）。本 crate 的执行层 spawn 会经
+/// [`crate::SystemBackend`] 被同一 GUI 进程调用，**全部受控 spawn 统一**
+/// 经 [`NoWindowCommand::no_window`] 加 `CREATE_NO_WINDOW`。
+///
+/// **为什么无副作用**：本 crate 的 spawn 全部捕获输出（管道 stdio，无
+/// 交互语义可损失）；控制台子系统进程（agent/CLI/server）本身有控制台，
+/// 子进程不弹新窗、也不依附，行为不变。非 Windows 平台为恒等链（保持
+/// 跨平台编译语义统一）。
+pub trait NoWindowCommand {
+    /// 加 `CREATE_NO_WINDOW`（0x0800_0000）创建标志。
+    fn no_window(&mut self) -> &mut Self;
+}
+
+impl NoWindowCommand for std::process::Command {
+    fn no_window(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            self.creation_flags(CREATE_NO_WINDOW);
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

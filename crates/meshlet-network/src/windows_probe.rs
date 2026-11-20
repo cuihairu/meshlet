@@ -21,6 +21,8 @@
 //! 真机验收（真实 Windows 上的 RTT 读数走查）待 R-05 席位。
 
 #[cfg(target_os = "windows")]
+use crate::windows_console::NoWindowCommand;
+#[cfg(target_os = "windows")]
 use std::net::Ipv4Addr;
 
 /// zh-CN 回应行的时间标签（CP936 解码后的 UTF-8 文本）；en 为 `time`。
@@ -82,6 +84,7 @@ pub fn run_ping_rtt(target: Ipv4Addr) -> Option<u128> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .output()
         .ok()?;
     parse_ping_rtt_ms(&crate::windows_console::decode_output(&out.stdout))

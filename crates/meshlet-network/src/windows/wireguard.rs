@@ -1,5 +1,6 @@
 use super::backend::WindowsNetworkBackend;
 use super::parsing::parse_netsh_interface_ipv4_address;
+use crate::windows_console::NoWindowCommand;
 use crate::windows_tunnel::exec::run_wireguard_command;
 use crate::{NetworkError, PeerObserved};
 use meshlet_domain::Ipv4Cidr;
@@ -67,6 +68,7 @@ impl WindowsNetworkBackend {
     fn sc_query_state_code(&self, service: &str) -> Option<u32> {
         let output = std::process::Command::new("sc")
             .args(["query", service])
+            .no_window()
             .output()
             .ok()?;
         let text = format!(
@@ -93,6 +95,7 @@ impl WindowsNetworkBackend {
         let exe = self.find_wg_exe()?;
         let out = std::process::Command::new(&exe)
             .args(["show", tunnel_name, "dump"])
+            .no_window()
             .output()
             .ok()?;
         Some(format!(
@@ -107,6 +110,7 @@ impl WindowsNetworkBackend {
     pub(super) fn interface_address(&self) -> Option<std::net::Ipv4Addr> {
         let output = std::process::Command::new("netsh")
             .args(["interface", "ipv4", "show", "addresses", &self.interface])
+            .no_window()
             .output()
             .ok()?;
         let text = format!(
@@ -152,6 +156,7 @@ impl WindowsNetworkBackend {
             .arg("pubkey")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
+            .no_window()
             .spawn()
             .map_err(|e| NetworkError::Io(format!("spawn wg pubkey: {e}")))?;
         child
@@ -182,6 +187,7 @@ impl WindowsNetworkBackend {
         })?;
         let out = std::process::Command::new(&exe)
             .args(["show", &self.interface, "latest-handshakes"])
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn wg.exe: {error}")))?;
         if !out.status.success() {
@@ -265,6 +271,7 @@ impl WindowsNetworkBackend {
             .arg("set")
             .arg(&self.interface)
             .args(args)
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn wg.exe: {error}")))?;
         if out.status.success() {

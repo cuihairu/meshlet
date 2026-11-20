@@ -421,6 +421,7 @@ fn first_nonempty_line(output: &str) -> &str {
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_wireguard_failure, WireGuardCommand};
+    use crate::windows_console::NoWindowCommand;
     use crate::{ApplyResult, NetworkError};
     use std::path::Path;
 
@@ -448,6 +449,7 @@ pub mod exec {
     fn run_icacls(args: &[String]) -> Result<(), NetworkError> {
         let output = std::process::Command::new("icacls")
             .args(args)
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn icacls: {error}")))?;
         if output.status.success() {
@@ -492,6 +494,7 @@ pub mod exec {
         let exe = super::wireguard_exe(exe_override);
         let output = std::process::Command::new(&exe)
             .args(command.args())
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn {}: {error}", exe.display())))?;
         // wireguard.exe 重定向输出按活动代码页编码（zh-CN 为 GBK），UTF-8

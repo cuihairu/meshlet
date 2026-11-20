@@ -2,6 +2,7 @@ use super::backend::WindowsNetworkBackend;
 use super::parsing::{
     parse_ping_rtt_ms_windows, parse_wg_dump_diag_line_windows, parse_windows_interfaces_json,
 };
+use crate::windows_console::NoWindowCommand;
 use crate::{NetworkDiagnostics, NetworkError, WgPeerDiagnostic};
 use std::net::Ipv4Addr;
 
@@ -18,6 +19,7 @@ impl WindowsNetworkBackend {
     pub fn diagnostics_sync(&self) -> Result<NetworkDiagnostics, NetworkError> {
         let route_table = std::process::Command::new("route")
             .args(["print"])
+            .no_window()
             .output()
             .map(|out| {
                 String::from_utf8_lossy(&out.stdout)
@@ -33,6 +35,7 @@ impl WindowsNetworkBackend {
                 "-Command",
                 "Get-NetIPConfiguration | Where-Object { $_.IPv4Address } | ForEach-Object {                  $addr = $_.IPv4Address | Select-Object -First 1;                  $name = $_.InterfaceAlias;                  $state = $_.NetAdapter.Status;                  $mtu = (Get-NetAdapter -Name $name -ErrorAction SilentlyContinue).MtuSize;                  $prefix = if ($addr) { $addr.PrefixLength } else { '' };                  [PSCustomObject]@{ Name=$name; IP=$addr.IPAddress; Prefix=$prefix; State=$state; Mtu=$mtu } } |                  ConvertTo-Json -Compress",
             ])
+            .no_window()
             .output()
             .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
             .unwrap_or_default();
@@ -59,6 +62,7 @@ impl WindowsNetworkBackend {
         };
         let Ok(out) = std::process::Command::new(&exe)
             .args(["show", tunnel_name, "dump"])
+            .no_window()
             .output()
         else {
             return Vec::new();
@@ -76,6 +80,7 @@ impl WindowsNetworkBackend {
     pub fn ping_rtt_ms(&self, target: Ipv4Addr) -> Option<u128> {
         let out = std::process::Command::new("ping")
             .args(["-n", "1", "-w", "2000", &target.to_string()])
+            .no_window()
             .output()
             .ok()?;
         parse_ping_rtt_ms_windows(&String::from_utf8_lossy(&out.stdout))
@@ -91,6 +96,7 @@ fn now_iso_utc() -> String {
             "-Command",
             "[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')",
         ])
+        .no_window()
         .output();
     if let Ok(out) = out {
         if out.status.success() {

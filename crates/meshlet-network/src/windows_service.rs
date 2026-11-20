@@ -235,12 +235,14 @@ fn first_nonempty_line(output: &str) -> &str {
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_sc_failure, ServiceCommand};
+    use crate::windows_console::NoWindowCommand;
     use crate::{ApplyResult, NetworkError};
 
     /// 执行一条受控 `sc.exe` 命令：成功/幂等成功/分类失败三态。
     pub fn run_service_command(command: &ServiceCommand) -> Result<ApplyResult, NetworkError> {
         let output = std::process::Command::new("sc.exe")
             .args(command.args())
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn sc.exe: {error}")))?;
         // sc.exe 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），

@@ -208,12 +208,14 @@ pub fn route_prefixes_on_interface(output: &str, interface: &str) -> Vec<Ipv4Cid
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_netsh_route_failure, route_already_absent, NetshRouteCommand};
+    use crate::windows_console::NoWindowCommand;
     use crate::{ApplyResult, NetworkError};
 
     /// 执行一条受控 netsh 路由命令：成功/幂等成功/分类失败三态。
     pub fn run_route_command(command: &NetshRouteCommand) -> Result<ApplyResult, NetworkError> {
         let output = std::process::Command::new("netsh")
             .args(command.args())
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn netsh: {error}")))?;
         // netsh 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），

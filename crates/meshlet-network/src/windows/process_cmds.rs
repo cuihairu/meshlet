@@ -1,5 +1,6 @@
 use super::backend::WindowsNetworkBackend;
 use super::parsing::parse_ip_enable_router;
+use crate::windows_console::NoWindowCommand;
 use crate::NetworkError;
 
 impl WindowsNetworkBackend {
@@ -7,6 +8,7 @@ impl WindowsNetworkBackend {
         let service_name = format!("WireGuardTunnel${tunnel_name}");
         std::process::Command::new("sc")
             .args(["query", &service_name])
+            .no_window()
             .output()
             .map(|out| out.status.success())
             .unwrap_or(false)
@@ -20,6 +22,7 @@ impl WindowsNetworkBackend {
                 "/v",
                 "IPEnableRouter",
             ])
+            .no_window()
             .output()
             .ok()?;
         parse_ip_enable_router(&String::from_utf8_lossy(&output.stdout))
@@ -47,6 +50,7 @@ impl WindowsNetworkBackend {
                 "1",
                 "/f",
             ])
+            .no_window()
             .status()
             .map_err(|error| {
                 NetworkError::Io(format!(
@@ -102,6 +106,7 @@ impl WindowsNetworkBackend {
                     self.interface
                 ),
             ])
+            .no_window()
             .output()
         else {
             return false;
@@ -129,6 +134,7 @@ impl WindowsNetworkBackend {
                 "rule",
                 "name=Meshlet-ICMPv4-In",
             ])
+            .no_window()
             .output()
         else {
             return crate::windows_firewall::IcmpRuleState::Absent;
@@ -199,6 +205,7 @@ impl WindowsNetworkBackend {
                 "rule",
                 &format!("name={}", crate::windows_firewall::DIRECT_UDP_RULE_NAME),
             ])
+            .no_window()
             .output()
             .map(|out| {
                 format!(

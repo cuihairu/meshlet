@@ -1,5 +1,6 @@
 use super::parsing::{is_windows_lan_interface, parse_lan_ip_json};
 use crate::nat::NatRule;
+use crate::windows_console::NoWindowCommand;
 use crate::windows_routes::exec::run_route_command;
 use crate::windows_tunnel::exec::run_wireguard_command;
 use crate::windows_tunnel::exec::{ensure_conf_dir_acl, ensure_conf_file_acl, write_tunnel_conf};
@@ -194,6 +195,7 @@ impl WindowsNetworkBackend {
                  Select-Object IPAddress,InterfaceAlias,PrefixLength | \
                  ConvertTo-Json -Compress",
             ])
+            .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn powershell: {error}")))?;
         if !output.status.success() {

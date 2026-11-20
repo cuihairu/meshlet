@@ -1,5 +1,6 @@
 use super::backend::WindowsNetworkBackend;
 use super::parsing::mask_to_prefix;
+use crate::windows_console::NoWindowCommand;
 
 impl WindowsNetworkBackend {
     /// 受管接口的 MTU（`netsh interface ipv4 show subinterfaces`）。
@@ -9,6 +10,7 @@ impl WindowsNetworkBackend {
     pub(super) fn interface_mtu(&self) -> Option<u32> {
         let output = std::process::Command::new("netsh")
             .args(["interface", "ipv4", "show", "subinterfaces"])
+            .no_window()
             .output()
             .ok()?;
         crate::windows_tunnel::parse_netsh_subinterface_mtu(
@@ -20,6 +22,7 @@ impl WindowsNetworkBackend {
     pub(super) fn routes_on_interface(&self) -> Vec<meshlet_domain::Ipv4Cidr> {
         let output = std::process::Command::new("netsh")
             .args(["interface", "ipv4", "show", "routes"])
+            .no_window()
             .output()
             .ok();
         let Some(out) = output else { return Vec::new() };
