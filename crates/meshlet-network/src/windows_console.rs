@@ -15,10 +15,27 @@
 //! - **绝不 panic、绝不返回空文本伪装成功**：解码不可断时按 UTF-8
 //!   lossy 兜底（§10.3 失败可见）。
 
-/// 按活动代码页解码进程输出（UTF-8 优先）。
+/// 按控制台输出代码页解码进程输出（UTF-8 优先）。
+///
+/// 控制台工具（route/ping/netsh/sc）重定向输出用的是 **OEM 代码页**
+/// （`GetConsoleOutputCP`），不是 ANSI（CP_ACP）：en-US 上 OEM=437、
+/// ANSI=1252，拿 ANSI 解 OEM 字节必然出乱码。因此先探测
+/// `GetConsoleOutputCP`，取不到再回退 CP_ACP（0）。
 pub fn decode_output(bytes: &[u8]) -> String {
-    // CP_ACP = 0：控制台工具（netsh/sc.exe）按系统 ANSI 代码页输出。
-    decode_output_with(bytes, 0)
+    decode_output_with(bytes, console_output_code_page())
+}
+
+/// 控制台输出代码页：每次调用即取（kernel32 调用本身近乎免费），
+/// 失败回退 0（CP_ACP，旧行为）。
+#[cfg(target_os = "windows")]
+fn console_output_code_page() -> u32 {
+    // SAFETY：GetConsoleOutputCP 无参数无副作用。
+    unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn console_output_code_page() -> u32 {
+    0
 }
 
 /// 指定代码页的解码核心（测试注入 936/GBK 验证真机取证字节，

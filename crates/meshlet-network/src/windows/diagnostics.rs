@@ -17,12 +17,15 @@ impl WindowsNetworkBackend {
     ///
     /// 采集只读；单项失败按空/缺上报（诊断面如实展示「未取到」）。
     pub fn diagnostics_sync(&self) -> Result<NetworkDiagnostics, NetworkError> {
+        // 控制台工具重定向输出是 OEM/ANSI 代码页字节（zh-CN 为 GBK/936），
+        // 必须经 windows_console::decode_output 解码——raw from_utf8_lossy
+        // 会把中文接口名/网关描述打成 U+FFFD 乱码（真机实锤 imac）。
         let route_table = std::process::Command::new("route")
             .args(["print"])
             .no_window()
             .output()
             .map(|out| {
-                String::from_utf8_lossy(&out.stdout)
+                crate::windows_console::decode_output(&out.stdout)
                     .lines()
                     .map(str::to_string)
                     .collect()
@@ -37,7 +40,7 @@ impl WindowsNetworkBackend {
             ])
             .no_window()
             .output()
-            .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+            .map(|out| crate::windows_console::decode_output(&out.stdout))
             .unwrap_or_default();
         let interfaces = parse_windows_interfaces_json(&interfaces);
 
@@ -67,7 +70,7 @@ impl WindowsNetworkBackend {
         else {
             return Vec::new();
         };
-        let text = String::from_utf8_lossy(&out.stdout);
+        let text = crate::windows_console::decode_output(&out.stdout);
         text.lines()
             .skip(1)
             .filter_map(parse_wg_dump_diag_line_windows)
@@ -83,7 +86,9 @@ impl WindowsNetworkBackend {
             .no_window()
             .output()
             .ok()?;
-        parse_ping_rtt_ms_windows(&String::from_utf8_lossy(&out.stdout))
+        parse_ping_rtt_ms_windows(&crate::windows_console::decode_output(
+            &out.stdout,
+        ))
     }
 }
 
@@ -100,7 +105,7 @@ fn now_iso_utc() -> String {
         .output();
     if let Ok(out) = out {
         if out.status.success() {
-            let text = String::from_utf8_lossy(&out.stdout);
+            let text = crate::windows_console::decode_output(&out.stdout);
             let text = text.trim();
             if !text.is_empty() {
                 return text.to_string();

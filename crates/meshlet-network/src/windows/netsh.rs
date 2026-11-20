@@ -14,7 +14,7 @@ impl WindowsNetworkBackend {
             .output()
             .ok()?;
         crate::windows_tunnel::parse_netsh_subinterface_mtu(
-            &String::from_utf8_lossy(&output.stdout),
+            &crate::windows_console::decode_output(&output.stdout),
             &self.interface,
         )
     }
@@ -26,7 +26,7 @@ impl WindowsNetworkBackend {
             .output()
             .ok();
         let Some(out) = output else { return Vec::new() };
-        let text = String::from_utf8_lossy(&out.stdout);
+        let text = crate::windows_console::decode_output(&out.stdout);
         let mut routes = Vec::new();
         for line in text.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
