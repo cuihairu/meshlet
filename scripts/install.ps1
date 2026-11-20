@@ -155,6 +155,7 @@ try {
     Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
         -Name 'meshlet-tray-host' -ErrorAction SilentlyContinue
     schtasks /Change /TN MeshletTrayHost /DISABLE 2>$null | Out-Null
+    $global:LASTEXITCODE = 0  # legacy tray-host task may not exist; absence is not an error
     Remove-Item (Join-Path $installDir 'meshlet-tray-host.exe') -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $work 'package\meshlet-agent.exe') (Join-Path $installDir 'meshlet-agent.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-cli.exe') (Join-Path $installDir 'meshlet-cli.exe') -Force
