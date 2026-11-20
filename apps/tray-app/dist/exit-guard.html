@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Meshlet</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 18px 20px;
+      font-size: 14px;
+    }
+    .hint { color: #80868c; margin-bottom: 10px; }
+    input {
+      width: 100%;
+      padding: 8px 12px;
+      background: #16213e;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      color: #e0e0e0;
+      font-size: 14px;
+    }
+    input:focus { outline: none; border-color: #4e8fa6; }
+    .actions { display: flex; gap: 10px; margin-top: 14px; }
+    .btn {
+      padding: 8px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn-primary { background: #4e8fa6; color: #fff; }
+    .btn-primary:hover { background: #5a9fb8; }
+    .btn-secondary { background: #2a2a4a; color: #e0e0e0; }
+    .btn-secondary:hover { background: #3a3a5a; }
+    .err { color: #ef4444; font-size: 13px; margin-top: 10px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="hint" id="hint"></div>
+  <input id="pw" type="password" />
+  <div class="actions">
+    <button class="btn btn-primary" id="btnOk"></button>
+    <button class="btn btn-secondary" id="btnCancel"></button>
+  </div>
+  <div class="err" id="err"></div>
+  <script type="module">
+    // module 作用域的函数不进全局（popup.html 同款坑），事件一律 addEventListener。
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    const lang = localStorage.getItem('meshlet-lang') || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+    const t = lang === 'zh'
+      ? { hint: '退出密码保护已开启，请输入密码以退出 Meshlet', ok: '退出', cancel: '取消', wrong: '密码不对，请重试', failed: '验证失败: ' }
+      : { hint: 'Quit password is enabled. Enter the password to quit Meshlet.', ok: 'Quit', cancel: 'Cancel', wrong: 'Wrong password, try again', failed: 'Verification failed: ' };
+    document.getElementById('hint').textContent = t.hint;
+    document.getElementById('btnOk').textContent = t.ok;
+    document.getElementById('btnCancel').textContent = t.cancel;
+
+    function confirmQuit() {
+      if (!invoke) return;
+      invoke('verify_exit_guard', { password: document.getElementById('pw').value })
+        .then(() => {
+          // 匹配：Rust 侧 app.exit(0) 整体退出；走到这里通常窗口已随进程消亡。
+        })
+        .catch((e) => {
+          const err = document.getElementById('err');
+          err.textContent = String(e).includes('wrong password') ? t.wrong : t.failed + e;
+          err.style.display = 'block';
+          document.getElementById('pw').value = '';
+          document.getElementById('pw').focus();
+        });
+    }
+
+    document.getElementById('btnOk').addEventListener('click', confirmQuit);
+    document.getElementById('btnCancel').addEventListener('click', () => window.close());
+    document.getElementById('pw').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') confirmQuit();
+    });
+    document.getElementById('pw').focus();
+  </script>
+</body>
+</html>

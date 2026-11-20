@@ -7,9 +7,11 @@
 //!   幂等重写——每轮按期望主机表整文件重渲染，节点下线即块消失），
 //!   **绝不改写用户 `~/.ssh/config` 的既有内容**；
 //! - `[ssh_config_sync] manage_include`（默认 false）：开 = 检测
-//!   `~/.ssh/config` 是否已 `Include meshlet.conf`，缺失才追加一行
-//!   （追加前把原文件备份一次到 `config.meshlet.bak`，并保留原权限）；
-//!   关 = 只写 fragment，状态文件标注 `manual_required` 提示手动加 Include。
+//!   `~/.ssh/config` 是否已 `Include meshlet.conf`，缺失才**插入首行**
+//!   （OpenSSH 按首匹配取值，Include 落在 `Host *` 之后的尾部不生效——
+//!   coding-vm/imac 实机踩坑后改为首行插入；插入前把原文件备份一次到
+//!   `config.meshlet.bak`）；关 = 只写 fragment，状态文件标注
+//!   `manual_required` 提示手动加 Include。
 //! - `[ssh_config_sync] target_homes`（默认空 = 只写运行账号自己的
 //!   `$HOME`）：绝对路径数组，agent 以 root 服务运行时对每个目标 home
 //!   独立写 fragment / 管 Include，落盘文件属主钉成该 home 的属主用户。
@@ -194,19 +196,22 @@ pub fn config_includes_fragment(config: &Path) -> bool {
     })
 }
 
-/// 确保用户 config 含 `Include meshlet.conf`：已有 → `Present`；缺失 →
-/// 先备份原文件一次（`config.meshlet.bak`，存在即不覆盖），再追加一行并
-/// 保留原文件权限；config 不存在则新建（0600）。新建件与备份属主钉成
+/// 确保用户 config 含 `Include meshlet.conf`：已有 → `Present`（一字节不动）；
+/// 缺失 → 先备份原文件一次（`config.meshlet.bak`，存在即不覆盖），再把
+/// Include **插入首行**（OpenSSH 首匹配：尾部 Include 落在 `Host *` 之后
+/// 永不生效），config 不存在则新建（0600）。既有文件走同 inode 截断重写，
+/// 权限与符号链接身份都保留；写入失败尽力回滚原文。新建件与备份属主钉成
 /// 目标 home 属主（root 服务写入用户 home 的场景）。
 fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) {
     if config_includes_fragment(config) {
         return (IncludeState::Present, None);
     }
+    let existing = std::fs::read_to_string(config).ok();
     let metadata = std::fs::metadata(config).ok();
-    if let Ok(existing) = std::fs::read_to_string(config) {
+    if let Some(text) = &existing {
         let backup = config.with_file_name(INCLUDE_BACKUP_NAME);
         if !backup.exists() {
-            if let Err(e) = std::fs::write(&backup, &existing) {
+            if let Err(e) = std::fs::write(&backup, text) {
                 return (
                     IncludeState::ManualRequired,
                     Some(format!("backup user ssh config: {e}")),
@@ -218,16 +223,30 @@ fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) 
             let _ = pin_owner_to_home(&backup, home);
         }
     }
-    // 权限先于写入：既有文件保留原权限（备份后恢复）；新建文件落盘即 0600。
-    if metadata.is_none() {
-        // 先创建空文件（create true 的 append 打开也满足），再钉 0600。
-        let _ = std::fs::File::create(config);
+    // Include 隔一个空行再接原文；原文本身为空（新建/空文件）就不留空行。
+    let new_text = match existing.as_deref() {
+        Some(text) if text.is_empty() => format!("Include {FRAGMENT_NAME}\n"),
+        Some(text) => format!("Include {FRAGMENT_NAME}\n\n{text}"),
+        None => format!("Include {FRAGMENT_NAME}\n"),
+    };
+    let Some(text) = existing.as_deref() else {
+        // 新建：先落盘（此时内容还没写，先钉 0600 再写，避免裸权限窗口）。
+        if let Err(e) = std::fs::write(config, &new_text) {
+            return (
+                IncludeState::ManualRequired,
+                Some(format!("create {}: {e}", config.display())),
+            );
+        }
         let _ = set_mode(config, 0o600);
         let _ = pin_owner_to_home(config, home);
-    }
+        return (IncludeState::Managed, None);
+    };
+    // 既有文件：备份已落袋，同 inode 截断重写（保留权限与符号链接身份；
+    // 改名替换会把符号链接变成普通文件，不走临时件 rename）。写半路失败
+    // 时尽力恢复原文（备份也在，双重兜底）。
     let mut file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(config)
     {
         Ok(f) => f,
@@ -238,22 +257,13 @@ fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) 
             )
         }
     };
-    if let Some(m) = &metadata {
-        if let Err(e) = std::fs::set_permissions(config, m.permissions()) {
-            return (
-                IncludeState::ManualRequired,
-                Some(format!("preserve ssh config permissions: {e}")),
-            );
-        }
-    }
-    // 与既有内容隔一个空行，避免贴着无换行的最后一行。
-    if let Err(e) = writeln!(file, "\nInclude {FRAGMENT_NAME}") {
+    if let Err(e) = file.write_all(new_text.as_bytes()) {
+        let _ = std::fs::write(config, text);
         return (
             IncludeState::ManualRequired,
-            Some(format!("append Include line: {e}")),
+            Some(format!("prepend Include line: {e}")),
         );
     }
-    let _ = file.flush();
     (IncludeState::Managed, None)
 }
 
@@ -777,7 +787,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn include_is_appended_with_backup_once_and_permissions_preserved() {
+    fn include_is_prepended_as_first_line_with_backup_once_and_permissions_preserved() {
         use std::os::unix::fs::PermissionsExt;
         let home = tempdir("include");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
@@ -788,27 +798,27 @@ mod tests {
         let (state, err) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Managed, "err: {err:?}");
         let text = std::fs::read_to_string(&config).unwrap();
-        assert!(text.starts_with("Host github.com\n  User git\n"));
-        assert!(text.contains("Include meshlet.conf"));
-        // 原权限保留。
+        // Include 必须在首行：OpenSSH 按首匹配取值，尾部 Include 落在
+        // `Host *` 之后不生效（coding-vm/imac 实机踩坑）。
+        assert!(text.starts_with("Include meshlet.conf\n"));
+        // 原有内容原样跟在后面。
+        assert!(text.contains("Host github.com\n  User git\n"));
+        // 原权限保留（同 inode 截断重写）。
         assert_eq!(
             std::fs::metadata(&config).unwrap().permissions().mode() & 0o777,
             0o644
         );
-        // 备份一次、内容为原文。
+        // 备份一次、内容为原文（不含 Include 行）。
         let backup = home.join(".ssh").join(INCLUDE_BACKUP_NAME);
         assert_eq!(
             std::fs::read_to_string(&backup).unwrap(),
             "Host github.com\n  User git\n"
         );
-        // 已含 Include → Present，不再追加。
+        // 已含 Include → Present，一个字节都不动。
         let (state, _) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Present);
-        let text2 = std::fs::read_to_string(&config).unwrap();
-        assert_eq!(text2.matches("Include meshlet.conf").count(), 1);
-        // 备份不被第二轮覆盖。
-        std::fs::write(&config, "Host github.com\n  User git\n# changed later\n").unwrap();
-        std::fs::remove_file(&backup).unwrap();
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
+        assert_eq!(text.matches("Include meshlet.conf").count(), 1);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -820,6 +830,68 @@ mod tests {
         let (state, err) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Managed, "err: {err:?}");
         assert!(config_includes_fragment(&config));
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "Include meshlet.conf\n"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn empty_config_gets_just_the_include_line() {
+        let home = tempdir("empty");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let config = ssh_config_path(&home);
+        std::fs::write(&config, "").unwrap();
+        let (state, err) = ensure_include(&config, &home);
+        assert_eq!(state, IncludeState::Managed, "err: {err:?}");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "Include meshlet.conf\n"
+        );
+        // 备份是空原文。
+        assert_eq!(
+            std::fs::read_to_string(home.join(".ssh").join(INCLUDE_BACKUP_NAME)).unwrap(),
+            ""
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_include_is_preserved_byte_identical() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempdir("present");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let config = ssh_config_path(&home);
+        std::fs::write(
+            &config,
+            "Include meshlet.conf\n\nHost github.com\n  User git\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let before = std::fs::read_to_string(&config).unwrap();
+        let (state, err) = ensure_include(&config, &home);
+        assert_eq!(state, IncludeState::Present, "err: {err:?}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+        // Present 路径不落备份（一个字节都没写）。
+        assert!(!home.join(".ssh").join(INCLUDE_BACKUP_NAME).exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn include_is_added_without_losing_non_eol_terminated_content() {
+        // 无尾换行的原文也原样保留（首行插入，尾部一字节不动）。
+        let home = tempdir("noeol");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let config = ssh_config_path(&home);
+        std::fs::write(&config, "Host github.com\n  User git").unwrap();
+        let (state, err) = ensure_include(&config, &home);
+        assert_eq!(state, IncludeState::Managed, "err: {err:?}");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "Include meshlet.conf\n\nHost github.com\n  User git"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 

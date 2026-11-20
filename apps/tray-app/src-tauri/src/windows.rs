@@ -140,6 +140,32 @@ fn build_settings_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// 退出验证小窗（退出密码保护路径）：提示输密码，`verify_exit_guard`
+/// 匹配即整体退出；取消/关闭只关窗不退程序。置顶居中避免被设置窗压住。
+/// 窗口标题复用菜单「退出」项文案（跟随托盘语言）。
+pub(crate) fn open_exit_guard_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("exit-guard") {
+        reveal_window(&window);
+        return;
+    }
+    let title = crate::i18n::menu_texts(&crate::i18n::read_tray_lang()).quit;
+    if let Err(error) = tauri::WebviewWindowBuilder::new(
+        app,
+        "exit-guard",
+        tauri::WebviewUrl::App("exit-guard.html".into()),
+    )
+    .title(title)
+    .inner_size(380.0, 200.0)
+    .resizable(false)
+    .center()
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .build()
+    {
+        eprintln!("meshlet-tray: build exit guard window failed: {error}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +184,33 @@ mod tests {
     fn toggle_reveals_hidden_window() {
         assert!(!settings_toggle_should_hide(false, false));
         assert!(!settings_toggle_should_hide(false, true));
+    }
+
+    /// 契约：退出验证小窗重复打开走复用（同 label），不开第二扇。
+    /// MockRuntime 的 show/focus 腿不可观测，窗口复用关系用唯一性断言钉住
+    /// （与 main.rs 的 second_instance_focus 契约测试同思路）。
+    #[test]
+    fn exit_guard_window_is_reused_when_present() {
+        let app = tauri::test::mock_app();
+        tauri::WebviewWindowBuilder::new(
+            app.handle(),
+            "exit-guard",
+            tauri::WebviewUrl::App("exit-guard.html".into()),
+        )
+        .build()
+        .unwrap();
+        open_exit_guard_window(app.handle());
+        let windows = app.webview_windows();
+        assert_eq!(windows.len(), 1);
+        assert!(windows.contains_key("exit-guard"));
+    }
+
+    /// 契约（建窗分支）：exit-guard 窗不存在时补建一个（同 label）。
+    #[test]
+    fn exit_guard_window_is_built_when_missing() {
+        let app = tauri::test::mock_app();
+        assert!(app.get_webview_window("exit-guard").is_none());
+        open_exit_guard_window(app.handle());
+        assert!(app.get_webview_window("exit-guard").is_some());
     }
 }

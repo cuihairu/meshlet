@@ -247,6 +247,23 @@
         <option value="zh">中文</option>
       </select>
     </div>
+    <h2 id="lblGuardH2">Quit password</h2>
+    <div class="gen-row">
+      <label id="lblGuard">Status</label>
+      <span class="muted" id="guardStatus"></span>
+    </div>
+    <div class="field" id="guardCurrentRow" style="display:none;">
+      <label for="exitGuardCurrent" id="lblGuardCurrent">Current password</label>
+      <input id="exitGuardCurrent" type="password" autocomplete="current-password" />
+    </div>
+    <div class="field">
+      <label for="exitGuardNew" id="lblGuardNew">New password</label>
+      <input id="exitGuardNew" type="password" autocomplete="new-password" />
+    </div>
+    <div class="actions" style="margin-top:8px;">
+      <button class="btn btn-primary" id="btnGuardSet"></button>
+      <button class="btn btn-secondary" id="btnGuardClear"></button>
+    </div>
     <div class="gen-row">
       <label id="lblLogDir">Logs</label>
       <button class="btn btn-secondary" id="btnLogDir" onclick="openLogs()"></button>
@@ -283,6 +300,14 @@
         autostart: 'Start with Windows', anim: 'Animations', lang: 'Language',
         logDir: 'Open log directory', logDirFailed: 'Open failed: ',
         autostartFailed: 'Autostart change failed: ',
+        guardH2: 'Quit password', guard: 'Status',
+        guardOn: 'On — password required to quit', guardOff: 'Not set',
+        guardCurrent: 'Current password', guardNew: 'New password',
+        guardSetBtn: 'Set password', guardChangeBtn: 'Change password',
+        guardClearBtn: 'Remove password',
+        guardMinLen: 'Password must be at least 4 characters',
+        guardSetOk: 'Quit password set', guardChangeOk: 'Quit password changed',
+        guardClearOk: 'Quit password removed', guardFailed: 'Operation failed: ',
         groupLabels: { connection: 'Connection management', diagnostics: 'Diagnostics', config: 'Configuration', service: 'Service control' },
       },
       zh: {
@@ -309,6 +334,14 @@
         autostart: '开机自启', anim: '动效', lang: '语言',
         logDir: '打开日志目录', logDirFailed: '打开失败: ',
         autostartFailed: '自启设置失败: ',
+        guardH2: '退出密码', guard: '状态',
+        guardOn: '已开启（退出时需验证）', guardOff: '未设置',
+        guardCurrent: '当前密码', guardNew: '新密码',
+        guardSetBtn: '设置密码', guardChangeBtn: '修改密码',
+        guardClearBtn: '清除密码',
+        guardMinLen: '密码至少 4 位',
+        guardSetOk: '退出密码已设置', guardChangeOk: '退出密码已修改',
+        guardClearOk: '退出密码已清除', guardFailed: '操作失败: ',
         groupLabels: { connection: '连接管理', diagnostics: '诊断', config: '配置', service: '服务控制' },
       },
     };
@@ -346,6 +379,11 @@
       document.getElementById('lblAutostart').textContent = t.autostart;
       document.getElementById('lblAnim').textContent = t.anim;
       document.getElementById('lblLang').textContent = t.lang;
+      document.getElementById('lblGuardH2').textContent = t.guardH2;
+      document.getElementById('lblGuard').textContent = t.guard;
+      document.getElementById('lblGuardCurrent').textContent = t.guardCurrent;
+      document.getElementById('lblGuardNew').textContent = t.guardNew;
+      document.getElementById('btnGuardClear').textContent = t.guardClearBtn;
       document.getElementById('btnLogDir').textContent = t.logDir;
       document.getElementById('statusText').textContent = t.statusUnknown;
     }
@@ -627,10 +665,69 @@
       }
     }
 
+    // ── 退出密码（常规区；tray 侧独立文件，不进 agent.toml）────
+    let guardIsSet = false;
+    async function refreshGuardStatus() {
+      if (!invoke) return;
+      try {
+        guardIsSet = await invoke('exit_guard_status');
+      } catch (e) {
+        guardIsSet = false;
+      }
+      renderGuardStatus();
+    }
+    function renderGuardStatus() {
+      document.getElementById('guardStatus').textContent = guardIsSet ? t.guardOn : t.guardOff;
+      document.getElementById('btnGuardSet').textContent = guardIsSet ? t.guardChangeBtn : t.guardSetBtn;
+      document.getElementById('guardCurrentRow').style.display = guardIsSet ? '' : 'none';
+    }
+    async function guardSet() {
+      if (!invoke) return;
+      const cur = document.getElementById('exitGuardCurrent').value;
+      const next = document.getElementById('exitGuardNew').value;
+      if (next.length < 4) {
+        showMsg('genMsg', t.guardMinLen, true);
+        return;
+      }
+      try {
+        await invoke('set_exit_guard', { current: guardIsSet ? cur : null, new: next });
+        showMsg('genMsg', guardIsSet ? t.guardChangeOk : t.guardSetOk, false);
+        document.getElementById('exitGuardCurrent').value = '';
+        document.getElementById('exitGuardNew').value = '';
+        await refreshGuardStatus();
+      } catch (e) {
+        showMsg('genMsg', t.guardFailed + e, true);
+      }
+    }
+    async function guardClear() {
+      if (!invoke) return;
+      const cur = document.getElementById('exitGuardCurrent').value;
+      try {
+        await invoke('clear_exit_guard', { current: guardIsSet ? cur : null });
+        showMsg('genMsg', t.guardClearOk, false);
+        document.getElementById('exitGuardCurrent').value = '';
+        await refreshGuardStatus();
+      } catch (e) {
+        showMsg('genMsg', t.guardFailed + e, true);
+      }
+    }
+    document.getElementById('btnGuardSet').addEventListener('click', guardSet);
+    document.getElementById('btnGuardClear').addEventListener('click', guardClear);
+
+    // module 作用域的函数声明不进全局（popup.html 同款坑已在此修）：onclick/
+    // onchange 内联属性在全局作用域解析标识符，漏挂 window 的按钮点了没反应。
+    window.save = save;
+    window.onAutostart = onAutostart;
+    window.onAnim = onAnim;
+    window.onLang = onLang;
+    window.openLogs = openLogs;
+    window.copyCmd = copyCmd;
+
     load();
     loadPeers();
     loadDiag();
     loadCommands();
+    refreshGuardStatus();
 
     // 启动取件（双通道第二条）：新建窗口还在加载时，Rust eval 的定位 JS
     // 会落在 __gotoZone 定义之前——挂起的 zone 在脚本初始化末尾取走并应用。

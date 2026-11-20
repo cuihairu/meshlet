@@ -179,3 +179,33 @@ pub(crate) fn set_tray_lang(app: tauri::AppHandle, lang: String) -> Result<(), S
     }
     Ok(())
 }
+
+// ── 退出密码（tray 侧独立文件，不进 agent.toml）───────────────────────
+
+#[tauri::command]
+pub(crate) fn exit_guard_status() -> bool {
+    crate::exit_guard::guard_is_set()
+}
+
+/// 已设密码时 `current` 必须匹配才能改；首次设置传 None。
+#[tauri::command]
+pub(crate) fn set_exit_guard(current: Option<String>, new: String) -> Result<(), String> {
+    crate::exit_guard::set_guard(current.as_deref(), &new)
+}
+
+#[tauri::command]
+pub(crate) fn clear_exit_guard(current: Option<String>) -> Result<(), String> {
+    crate::exit_guard::clear_guard(current.as_deref())
+}
+
+/// 退出小窗的验证入口：匹配即整体退出（`app.exit` 走正常退出事件）；
+/// 不匹配返回 Err 由页面显示重试。
+#[tauri::command]
+pub(crate) fn verify_exit_guard(app: tauri::AppHandle, password: String) -> Result<(), String> {
+    if crate::exit_guard::verify_quit(&password) {
+        app.exit(0);
+        Ok(())
+    } else {
+        Err("wrong password".into())
+    }
+}

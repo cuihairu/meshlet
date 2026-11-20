@@ -2,6 +2,7 @@
 
 mod commands;
 mod config_io;
+mod exit_guard;
 mod i18n;
 mod state;
 mod tray;
@@ -29,7 +30,11 @@ fn main() {
             commands::open_log_dir,
             commands::set_tray_lang,
             commands::take_pending_goto,
-            commands::open_settings_at
+            commands::open_settings_at,
+            commands::exit_guard_status,
+            commands::set_exit_guard,
+            commands::clear_exit_guard,
+            commands::verify_exit_guard
         ])
         .setup(|app| {
             // 托盘菜单（分组重设计）：状态摘要(disabled) │ 状态面板 │
@@ -47,7 +52,16 @@ fn main() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => std::process::exit(0),
+                    // 退出密码保护（2026-11-20 用户令）：已设密码先弹验证
+                    // 小窗，匹配才退出；未设置（或记录损坏，exit_guard 按未
+                    // 设置处理）直接退，保护绝不锁死常驻进程。
+                    "quit" => {
+                        if crate::exit_guard::guard_is_set() {
+                            windows::open_exit_guard_window(app);
+                        } else {
+                            std::process::exit(0);
+                        }
+                    }
                     "show" => windows::open_settings_window(app),
                     "popup" => windows::toggle_popup_window(app),
                     "diag" | "routes" | "peers" => {

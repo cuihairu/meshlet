@@ -13,6 +13,8 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
 meshlet-commands = { workspace = true }
 meshlet-network = { workspace = true }
 
