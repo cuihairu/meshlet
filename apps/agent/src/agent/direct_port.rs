@@ -235,9 +235,13 @@ mod tests {
     }
 
     /// 探测真值：被占端口假、释放后真（probe-bind 与真实绑定语义对齐）。
+    /// 占位套接字必须同为通配绑定——Windows 允许「specific 127.0.0.1」与
+    /// 「wildcard 0.0.0.0」同端口共存（Linux 拒；CI windows-latest 实证），
+    /// 通配对通配才是三平台一致的冲突语义，也正是生产形态（wireguard.exe
+    /// 与 probe 同绑 0.0.0.0）。
     #[test]
     fn probe_bind_reports_real_bindability() {
-        let socket = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
         let port = socket.local_addr().unwrap().port();
         assert!(!probe_bind(port), "held port must read as not bindable");
         drop(socket);
