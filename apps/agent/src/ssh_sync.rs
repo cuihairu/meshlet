@@ -224,8 +224,9 @@ fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) 
         }
     }
     // Include 隔一个空行再接原文；原文本身为空（新建/空文件）就不留空行。
+    // 空串用模式匹配不用 guard（clippy::redundant_guards 在 CI 是 error）。
     let new_text = match existing.as_deref() {
-        Some(text) if text.is_empty() => format!("Include {FRAGMENT_NAME}\n"),
+        Some("") => format!("Include {FRAGMENT_NAME}\n"),
         Some(text) => format!("Include {FRAGMENT_NAME}\n\n{text}"),
         None => format!("Include {FRAGMENT_NAME}\n"),
     };
