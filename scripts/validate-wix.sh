@@ -48,7 +48,6 @@ mkdir -p "$stub/bin"
 for exe in meshlet-server meshlet-agent meshlet-cli meshlet-tray; do
     : > "$stub/bin/$exe.exe"
 done
-: > "$stub/bin/WebView2Loader.dll"
 version=$(python3 - <<'PY'
 import re
 text = open("Cargo.toml").read()
@@ -74,7 +73,7 @@ echo "msi File table:   $files"
 echo "msi Shortcut tab: $shortcuts"
 echo "msi version:      $version_msi (workspace $version)"
 
-for f in meshlet-server.exe meshlet-agent.exe meshlet-cli.exe meshlet-tray.exe WebView2Loader.dll; do
+for f in meshlet-server.exe meshlet-agent.exe meshlet-cli.exe meshlet-tray.exe; do
     case " $files " in
         *" $f "*) ;;
         *) echo "msi File table is missing $f"; exit 1 ;;

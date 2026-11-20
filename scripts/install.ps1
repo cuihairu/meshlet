@@ -13,10 +13,9 @@ zip) and $env:MESHLET_INSTALL_SHA256SUMS (the SHA256SUMS file) before running.
 Install layout (per-user under %LOCALAPPDATA%\meshlet, so no elevation is
 needed; the agent runs in the user session, not as a machine service):
   meshlet-agent.exe, meshlet-cli.exe   binaries, replaced on every run
-  meshlet-tray.exe, WebView2Loader.dll tray app (settings panel), replaced on
-                                       every run; the dll ships beside the exe
-                                       because webview2-com-sys links the
-                                       WebView2 loader dynamically
+  meshlet-tray.exe                     tray app (settings panel), replaced on
+                                       every run; msvc links the WebView2
+                                       loader statically, so no dll ships
   agent.toml                           created once, then preserved
   agent.key                            generated once, then preserved
   state\                               agent state directory
@@ -143,7 +142,7 @@ try {
     }
 
     Expand-Archive -Path $archivePath -DestinationPath (Join-Path $work 'package') -Force
-    foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray.exe', 'WebView2Loader.dll') {
+    foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray.exe') {
         if (-not (Test-Path (Join-Path $work "package\$name"))) {
             Fail "release archive is incomplete: $name missing"
         }
@@ -160,7 +159,6 @@ try {
     Copy-Item (Join-Path $work 'package\meshlet-agent.exe') (Join-Path $installDir 'meshlet-agent.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-cli.exe') (Join-Path $installDir 'meshlet-cli.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-tray.exe') (Join-Path $installDir 'meshlet-tray.exe') -Force
-    Copy-Item (Join-Path $work 'package\WebView2Loader.dll') (Join-Path $installDir 'WebView2Loader.dll') -Force
 }
 finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue

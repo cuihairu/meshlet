@@ -2,9 +2,10 @@
 Package the Windows agent, CLI and tray app binaries into the nightly zip asset.
 The Windows build only produces the agent, CLI and tray app (the server stays
 Linux-only); the zip contains meshlet-agent.exe, meshlet-cli.exe,
-meshlet-tray.exe, WebView2Loader.dll, LICENSE and BUILD_INFO. The dll ships
-beside the tray exe because webview2-com-sys links the WebView2 loader
-dynamically. The legacy meshlet-tray-host.exe was retired on 2026-11-20.
+meshlet-tray.exe, LICENSE and BUILD_INFO. No WebView2Loader.dll: msvc links
+the WebView2 loader statically (webview2-com-sys WebView2LoaderStatic); only
+windows-gnu builds need the dll beside the exe. The legacy
+meshlet-tray-host.exe was retired on 2026-11-20.
 #>
 param([Parameter(Mandatory = $true)][string]$Target)
 
@@ -13,7 +14,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $binroot = Join-Path $root "target\$Target\release"
 $dist = Join-Path $root 'dist'
 
-foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray.exe', 'WebView2Loader.dll') {
+foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray.exe') {
     if (-not (Test-Path (Join-Path $binroot $name))) {
         throw "missing built binary: $(Join-Path $binroot $name)"
     }
@@ -27,7 +28,6 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item (Join-Path $binroot 'meshlet-agent.exe') $stage
 Copy-Item (Join-Path $binroot 'meshlet-cli.exe') $stage
 Copy-Item (Join-Path $binroot 'meshlet-tray.exe') $stage
-Copy-Item (Join-Path $binroot 'WebView2Loader.dll') $stage
 Copy-Item (Join-Path $root 'LICENSE') $stage
 
 $commit = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { (git rev-parse HEAD) }

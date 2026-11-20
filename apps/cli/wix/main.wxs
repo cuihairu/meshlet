@@ -12,10 +12,11 @@
   The manifest packages the workspace delivery bins; cargo-wix only builds its
   own package's bin (meshlet-cli), so the nightly workflow pre-builds the rest
   with the same release-profile build invocation (without a target).
-  WebView2Loader.dll ships beside meshlet-tray.exe: the tray app links the
-  WebView2 loader dynamically (webview2-com-sys), so the dll must sit in the
-  install dir. The legacy meshlet-tray-host.exe was retired from the installer
-  on 2026-11-20 (replaced by the meshlet-tray settings app).
+  No WebView2Loader.dll File entry: msvc links the WebView2 loader statically
+  (webview2-com-sys uses WebView2LoaderStatic under target_env=msvc); only
+  windows-gnu builds need the dll beside the exe. The legacy
+  meshlet-tray-host.exe was retired from the installer on 2026-11-20
+  (replaced by the meshlet-tray settings app).
 -->
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'
      xmlns:util='http://schemas.microsoft.com/wix/UtilExtension'>
@@ -78,10 +79,6 @@
         <File Id='MeshletTrayAppFile' Name='meshlet-tray.exe'
               Source='$(var.CargoTargetBinDir)\meshlet-tray.exe' KeyPath='yes' />
       </Component>
-      <Component Id='MeshletWebView2Dll' Guid='682fde0d-e1bc-4d69-83b3-3266b9eda6e8'>
-        <File Id='MeshletWebView2DllFile' Name='WebView2Loader.dll'
-              Source='$(var.CargoTargetBinDir)\WebView2Loader.dll' KeyPath='yes' />
-      </Component>
     </DirectoryRef>
 
     <DirectoryRef Id='MeshletProgramsFolder'>
@@ -116,7 +113,6 @@
       <ComponentRef Id='MeshletAgentExe' />
       <ComponentRef Id='MeshletCliExe' />
       <ComponentRef Id='MeshletTrayAppExe' />
-      <ComponentRef Id='MeshletWebView2Dll' />
       <ComponentRef Id='MeshletShortcuts' />
     </Feature>
   </Product>

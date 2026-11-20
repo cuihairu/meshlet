@@ -129,7 +129,7 @@ Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/
 pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken 'TOKEN_FROM_THE_CONSOLE' -DeviceName 'home-windows'
 ```
 
-The installer verifies the zip's SHA-256 against the release `SHA256SUMS`. It installs `meshlet-agent.exe`, `meshlet-cli.exe`, `meshlet-tray.exe` and `WebView2Loader.dll` into `%LOCALAPPDATA%\meshlet` and adds that directory to the user PATH. It generates an agent key and config once, and registers per-user HKCU Run autostart entries for the hidden agent and the tray app (settings panel).
+The installer verifies the zip's SHA-256 against the release `SHA256SUMS`. It installs `meshlet-agent.exe`, `meshlet-cli.exe` and `meshlet-tray.exe` into `%LOCALAPPDATA%\meshlet` and adds that directory to the user PATH. It generates an agent key and config once, and registers per-user HKCU Run autostart entries for the hidden agent and the tray app (settings panel).
 Re-run it to upgrade — the existing `agent.toml` and key are preserved, so device credentials
 survive. Offline/staged installs use `$env:MESHLET_INSTALL_ARCHIVE` and
 `$env:MESHLET_INSTALL_SHA256SUMS`. The installer starts the background agent and tray host by default; pass `-NoStartTray` to skip the tray host's immediate start while keeping its logon autostart entry. Data-plane apply on Windows is wired (tunnel-only v1 per ADR-008) and passed the end-to-end real-machine apply walkthrough on 2026-11-13 — see below.
