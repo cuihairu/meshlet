@@ -168,6 +168,7 @@
 
   <div class="tabs">
     <button class="tab active" data-zone="conn" id="tabConn"></button>
+    <button class="tab" data-zone="direct" id="tabDirect"></button>
     <button class="tab" data-zone="diag" id="tabDiag"></button>
     <button class="tab" data-zone="cmd" id="tabCmd"></button>
     <button class="tab" data-zone="gen" id="tabGen"></button>
@@ -205,6 +206,12 @@
 
     <h2 id="peersTitle">Peers</h2>
     <div id="peers" class="muted">Loading...</div>
+  </section>
+
+  <!-- ⑤ 直连：直连对端表（get_direct_peers → `<state>/direct-peers.json`） -->
+  <section class="zone" id="zone-direct">
+    <h2 id="lblDirectTitle">Direct peers</h2>
+    <div id="directBody" class="muted">Loading...</div>
   </section>
 
   <!-- ② 诊断：路由表 / 接口清单 / wg 读数（联动 R-DIAG） -->
@@ -287,6 +294,10 @@
         saveFailed: 'Save failed: ',
         peers: 'Direct peers', noPeers: 'No peers connected',
         lastHandshake: 'Last handshake', never: 'never',
+        tabDirect: 'Direct', directTitle: 'Direct peers',
+        directColName: 'name', directColVip: 'VIP', directColEndpoint: 'endpoint',
+        directColMode: 'mode', directColRtt: 'RTT', directColHandshake: 'last handshake',
+        noDirect: 'No direct peers',
         readFailed: 'Read failed: ',
         statusUnknown: 'Unknown', statusError: 'Cannot read status',
         ipcMissing: 'Tauri IPC unavailable',
@@ -321,6 +332,10 @@
         saveFailed: '保存失败: ',
         peers: '直连节点', noPeers: '暂无直连节点',
         lastHandshake: '最近握手', never: '从未',
+        tabDirect: '直连', directTitle: '直连对端',
+        directColName: '名称', directColVip: '虚拟 IP', directColEndpoint: '端点',
+        directColMode: '模式', directColRtt: 'RTT', directColHandshake: '最近握手',
+        noDirect: '暂无直连对端',
         readFailed: '读取失败: ',
         statusUnknown: '未知', statusError: '无法读取状态',
         ipcMissing: 'Tauri IPC 不可用',
@@ -355,6 +370,7 @@
     function applyI18n() {
       document.getElementById('title').textContent = t.title;
       document.getElementById('tabConn').textContent = t.tabConn;
+      document.getElementById('tabDirect').textContent = t.tabDirect;
       document.getElementById('tabDiag').textContent = t.tabDiag;
       document.getElementById('tabCmd').textContent = t.tabCmd;
       document.getElementById('tabGen').textContent = t.tabGen;
@@ -368,6 +384,7 @@
       document.getElementById('btnSave').textContent = t.save;
       document.getElementById('btnClose').textContent = t.close;
       document.getElementById('peersTitle').textContent = t.peers;
+      document.getElementById('lblDirectTitle').textContent = t.directTitle;
       document.getElementById('lblRoutes').textContent = t.routes;
       document.getElementById('lblIfaces').textContent = t.ifaces;
       document.getElementById('lblWg').textContent = t.wg;
@@ -400,6 +417,8 @@
       if (btn) btn.classList.add('active');
       const zoneEl = document.getElementById('zone-' + zone);
       if (zoneEl) zoneEl.classList.add('active');
+      // 直连表按需刷新（agent 对账循环才重发 direct-peers.json）。
+      if (zone === 'direct') loadDirectPeers();
     }
     for (const btn of document.querySelectorAll('.tab')) {
       btn.addEventListener('click', () => activateTab(btn.dataset.zone));
@@ -526,6 +545,62 @@
             <div class="peer-detail">${t.lastHandshake}: ${p.last_handshake || t.never} · ↓${formatBytes(p.rx_bytes)} ↑${formatBytes(p.tx_bytes)}</div>
           </div>
         `).join('');
+      } catch (e) {
+        el.innerHTML = `<div style="color:#ef4444;">${t.readFailed}${e}</div>`;
+      }
+    }
+
+    // ── 直连对端区（get_direct_peers → `<state>/direct-peers.json`）───────
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function fmtEpoch(epoch) {
+      if (epoch == null || epoch <= 0) return t.never;
+      const secs = Math.max(0, Math.floor(Date.now() / 1000) - epoch);
+      if (secs < 60) return lang === 'zh' ? `${secs} 秒前` : `${secs}s ago`;
+      if (secs < 3600) { const m = Math.floor(secs / 60); return lang === 'zh' ? `${m} 分钟前` : `${m}m ago`; }
+      if (secs < 86400) { const h = Math.floor(secs / 3600); return lang === 'zh' ? `${h} 小时前` : `${h}h ago`; }
+      const d = Math.floor(secs / 86400);
+      return lang === 'zh' ? `${d} 天前` : `${d}d ago`;
+    }
+    async function loadDirectPeers() {
+      if (!invoke) return;
+      const el = document.getElementById('directBody');
+      el.textContent = '...';
+      try {
+        const peers = await invoke('get_direct_peers');
+        if (!peers || peers.length === 0) {
+          el.innerHTML = `<div class="muted">${t.noDirect}</div>`;
+          return;
+        }
+        // 字段对齐 DirectPeerView：name/virtual_ipv4/public_key/endpoint/mode/
+        // rtt_ms/rtt_source/last_handshake_at（epoch 秒）。RTT 未知显示 —。
+        el.innerHTML = `
+          <table class="diag">
+            <thead><tr>
+              <th>${t.directColName}</th><th>${t.directColVip}</th>
+              <th>${t.directColEndpoint}</th><th>${t.directColMode}</th>
+              <th>${t.directColRtt}</th><th>${t.directColHandshake}</th>
+            </tr></thead>
+            <tbody>${peers.map(p => `
+              <tr>
+                <td>${escapeHtml(p.name)}${
+                  p.device_id
+                    ? ` <span class="muted" title="${escapeHtml(p.device_id)}">${escapeHtml(p.device_id.slice(0, 8))}</span>`
+                    : ''
+                }</td>
+                <td><code>${escapeHtml(p.virtual_ipv4)}</code></td>
+                <td>${escapeHtml(p.endpoint) || '—'}</td>
+                <td>${escapeHtml(p.mode)}</td>
+                <td>${p.rtt_ms == null ? '—' : escapeHtml(p.rtt_ms) + ' ms'}${
+                  p.rtt_source ? ` <span class="muted">(${escapeHtml(p.rtt_source)})</span>` : ''
+                }</td>
+                <td>${fmtEpoch(p.last_handshake_at)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>`;
       } catch (e) {
         el.innerHTML = `<div style="color:#ef4444;">${t.readFailed}${e}</div>`;
       }
@@ -726,6 +801,7 @@
 
     load();
     loadPeers();
+    loadDirectPeers();
     loadDiag();
     loadCommands();
     refreshGuardStatus();
