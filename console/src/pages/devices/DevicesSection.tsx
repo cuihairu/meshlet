@@ -62,6 +62,10 @@ export function DevicesSection({
       render: (_, d) => (
         <span className="cell-ellipsis" title={d.name}>
           {d.name}
+          <span className="muted" title={d.id}>
+            {' '}
+            · {d.id.slice(0, 8)}
+          </span>
         </span>
       ),
     },
