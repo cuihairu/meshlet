@@ -3,6 +3,7 @@ use crate::agent::direct_port::{self, PortResolution};
 use crate::agent::plan_adapter::{enforce_hub_keepalive, plan_with_hub_endpoint};
 use crate::reconcile::{AgentState, Decision};
 
+use meshlet_config::TunnelBackend;
 use meshlet_network::DevicePlan;
 
 use crate::reconcile::{needs_apply, stale_owners};
@@ -35,7 +36,17 @@ impl super::Agent {
         // 端口每轮在此解析（Windows 上配置端口被排除段/占用挡住时探测回退，
         // 防 `WireGuardTunnel$` 0xc0000022 绑定失败；Linux 恒取配置端口，
         // 行为不变）。本地改写不影响期望哈希（与 hub_endpoint 兜底同一口径）。
-        if self.dataplane.direct_connect.enabled {
+        //
+        // nt 模型（tunnel_backend="nt"）的 adapter 恒需一个具体监听端口：
+        // wireguard-nt 的 `SetInterface.listen_port: None` 不是"让 OS 选口"
+        // 而是落默认 51820（设计文档 §2.5），多网络（多 adapter）同落必撞。
+        // 故直连关闭时 nt 模型也经同一 probe-bind 解析分配 collision-free
+        // 端口；该端口不构成直连候选——direct_report 仍以
+        // direct_connect.enabled 为闸，防火墙放行本就是 adapter 收包（含
+        // hub 中继）的前提。Linux 行为不变（nt 仅 Windows 生效）。
+        let nt_needs_port =
+            cfg!(target_os = "windows") && self.dataplane.tunnel_backend == TunnelBackend::Nt;
+        if self.dataplane.direct_connect.enabled || nt_needs_port {
             let configured = self.dataplane.direct_connect.listen_port;
             let is_windows = cfg!(target_os = "windows");
             let persisted = direct_port::load(&self.state_dir);
