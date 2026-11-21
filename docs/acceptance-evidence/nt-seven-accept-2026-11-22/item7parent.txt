@@ -1,0 +1,357 @@
+== parent 2612 2026-11-22T06:58:05.4388236+08:00 ==
+2612 is DEAD (reused/nonexistent)
+== svchost hosts in session 0 ==
+
+
+ProcessId    : 1976
+CreationDate : 2026/11/22 3:10:15
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k DcomLaunch -p
+
+ProcessId    : 1700
+CreationDate : 2026/11/22 3:10:15
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k RPCSS -p
+
+ProcessId    : 1908
+CreationDate : 2026/11/22 3:10:15
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k DcomLaunch -p -s LSM
+
+ProcessId    : 2080
+CreationDate : 2026/11/22 3:10:15
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k appmodel -p -s StateRepository
+
+ProcessId    : 2516
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -s HvHost
+
+ProcessId    : 2540
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k NetworkService -s TermService
+
+ProcessId    : 2560
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceNoNetwork -p
+
+ProcessId    : 2780
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceRedirectionGuard -p -s BthAvctpSvc
+
+ProcessId    : 2788
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceNetworkRestricted -s BTAGService
+
+ProcessId    : 2796
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s NcbService
+
+ProcessId    : 2804
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceNetworkRestricted -p -s TimeBrokerSvc
+
+ProcessId    : 2812
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalService -p -s bthserv
+
+ProcessId    : 2984
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalService -p -s nsi
+
+ProcessId    : 3008
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s Schedule
+
+ProcessId    : 1324
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -s hidserv
+
+ProcessId    : 2316
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceRedirectionGuard -p -s EventSystem
+
+ProcessId    : 2940
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k netprofm -p -s netprofm
+
+ProcessId    : 3076
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -s NgcSvc
+
+ProcessId    : 3120
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k UserProfileService -p -s ProfSvc
+
+ProcessId    : 3316
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcsRedirectionGuard -p -s SENS
+
+ProcessId    : 3412
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s UserManager
+
+ProcessId    : 3720
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k NetworkService -p
+
+ProcessId    : 3776
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -s DeviceAssociationService
+
+ProcessId    : 3768
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -s DevQueryBroker
+
+ProcessId    : 3788
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s UmRdpService
+
+ProcessId    : 3064
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceNetworkRestricted -p -s Dhcp
+
+ProcessId    : 3552
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -s CertPropSvc
+
+ProcessId    : 4108
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalServiceNetworkRestricted -p -s EventLog
+
+ProcessId    : 4116
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k NetSvcs -p -s hns
+
+ProcessId    : 4304
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceHttp -p
+
+ProcessId    : 4464
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -s SysMain
+
+ProcessId    : 4472
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k netsvcs -p -s Themes
+
+ProcessId    : 4536
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k NetworkService -p -s LanmanWorkstation
+
+ProcessId    : 4576
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s AudioEndpointBuilder
+
+ProcessId    : 4584
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalService -p -s FontCache
+
+ProcessId    : 4596
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k NetSvcs -s nvagent
+
+ProcessId    : 4764
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k SessionEnvSvc -p -s SessionEnv
+
+ProcessId    : 4836
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceNoNetworkFirewall -p
+
+ProcessId    : 4868
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalServiceNetworkRestricted -p
+
+ProcessId    : 4936
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s TextInputManagementService
+
+ProcessId    : 5100
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalServiceNetworkRestricted -p -s DusmSvc
+
+ProcessId    : 5108
+CreationDate : 2026/11/22 3:10:16
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceNetworkRestricted -p -s Wcmsvc
+
+ProcessId    : 4676
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalService -p -s PhoneSvc
+
+ProcessId    : 5272
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -s Wlansvc
+
+ProcessId    : 5308
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k netsvcs -p -s SharedAccess
+
+ProcessId    : 5316
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k netsvcs -p -s ShellHWDetection
+
+ProcessId    : 5324
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalService -p -s DispBrokerDesktopSvc
+
+ProcessId    : 5556
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k NetworkService -p
+
+ProcessId    : 5792
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k osprivacy -p -s camsvc
+
+ProcessId    : 5804
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k utcsvc -p
+
+ProcessId    : 5836
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalServiceNoNetwork -p -s DPS
+
+ProcessId    : 5884
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k NetSvcs -p -s iphlpsvc
+
+ProcessId    : 5876
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k WSAIFabricSvcGroup -p -s WSAIFabricSvc
+
+ProcessId    : 5916
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s TrkWks
+
+ProcessId    : 5924
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s Winmgmt
+
+ProcessId    : 5952
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s WpnService
+
+ProcessId    : 6044
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\SysWOW64\svchost.exe -k netsvcs -p -s XLServicePlatform
+
+ProcessId    : 6964
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s LanmanServer
+
+ProcessId    : 9232
+CreationDate : 2026/11/22 3:10:18
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k NetworkServiceNetworkRestricted -p -s PolicyAgent
+
+ProcessId    : 10040
+CreationDate : 2026/11/22 3:10:19
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalServiceNetworkRestricted -s RmSvc
+
+ProcessId    : 9576
+CreationDate : 2026/11/22 3:10:19
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceNetworkRestricted -p
+
+ProcessId    : 11036
+CreationDate : 2026/11/22 3:10:20
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s Netman
+
+ProcessId    : 11728
+CreationDate : 2026/11/22 3:10:45
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalService -p -s fdPHost
+
+ProcessId    : 11836
+CreationDate : 2026/11/22 3:10:45
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceAndNoImpersonation -p -s FDResPub
+
+ProcessId    : 6324
+CreationDate : 2026/11/22 3:12:20
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalService -p -s CDPSvc
+
+ProcessId    : 11880
+CreationDate : 2026/11/22 3:12:20
+CommandLine  : 
+
+ProcessId    : 12224
+CreationDate : 2026/11/22 3:12:20
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k InvSvcGroup -p -s InventorySvc
+
+ProcessId    : 6096
+CreationDate : 2026/11/22 3:12:20
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalSystemNetworkRestricted -p -s PcaSvc
+
+ProcessId    : 6984
+CreationDate : 2026/11/22 3:12:21
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p
+
+ProcessId    : 8896
+CreationDate : 2026/11/22 3:12:21
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s UsoSvc
+
+ProcessId    : 3392
+CreationDate : 2026/11/22 3:12:21
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k whesvc -p -s whesvc
+
+ProcessId    : 7556
+CreationDate : 2026/11/22 3:12:21
+CommandLine  : 
+
+ProcessId    : 5212
+CreationDate : 2026/11/22 3:16:43
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k netsvcs -p -s NetSetupSvc
+
+ProcessId    : 10180
+CreationDate : 2026/11/22 3:20:18
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcsRedirectionGuard -p -s lfsvc
+
+ProcessId    : 10644
+CreationDate : 2026/11/22 3:20:50
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s WdiSystemHost
+
+ProcessId    : 11492
+CreationDate : 2026/11/22 3:21:38
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalSystemNetworkRestricted -p -s DsSvc
+
+ProcessId    : 12544
+CreationDate : 2026/11/22 6:19:36
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalServiceNetworkRestricted -p -s lmhosts
+
+ProcessId    : 3496
+CreationDate : 2026/11/22 6:19:44
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s Appinfo
+
+ProcessId    : 12596
+CreationDate : 2026/11/22 6:19:44
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p
+
+ProcessId    : 28688
+CreationDate : 2026/11/22 6:21:30
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalServiceAndNoImpersonationRedirectionGuard -p -s SSDPSRV
+
+ProcessId    : 20420
+CreationDate : 2026/11/22 6:23:25
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k LocalService -p -s SstpSvc
+
+ProcessId    : 29920
+CreationDate : 2026/11/22 6:23:26
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k netsvcs
+
+ProcessId    : 24956
+CreationDate : 2026/11/22 6:26:25
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k LocalService -p -s LicenseManager
+
+ProcessId    : 32668
+CreationDate : 2026/11/22 6:49:48
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k GPSvcGroup
+
+ProcessId    : 33096
+CreationDate : 2026/11/22 6:54:45
+CommandLine  : 
+
+ProcessId    : 6428
+CreationDate : 2026/11/22 6:54:45
+CommandLine  : C:\WINDOWS\System32\svchost.exe -k netsvcs -p
+
+ProcessId    : 36752
+CreationDate : 2026/11/22 6:54:45
+CommandLine  : C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s wuauserv
+
+
+
+== MeshletAgentDeploy task XML (triggers+settings) ==
+== done ==

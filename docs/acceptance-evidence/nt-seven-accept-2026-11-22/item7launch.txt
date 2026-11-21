@@ -1,0 +1,144 @@
+== launcher hunt 2026-11-22T06:58:03.3939549+08:00 ==
+== current agent session/elevation ==
+
+
+ProcessId       : 8572
+SessionId       : 0
+ParentProcessId : 2612
+CommandLine     : "C:\Users\cui\AppData\Local\meshlet\meshlet-agent.exe" C:\Users\cui\AppData\Local\meshlet\agent.toml 
+
+
+
+== ALL scheduled tasks with boot/startup triggers (any name) ==
+TASK: CustosEngine / \
+  trigger: MSFT_TaskBootTrigger
+  action: powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\Users\cui\AppData\Local\Custos\run-custos.ps1
+TASK: CustosSunlogin / \
+  trigger: MSFT_TaskBootTrigger
+  action: powershell.exe -NoProfile -Command "& 'C:\Users\cui\Workspaces\custos\target\release\custos.exe' start 'C:\Users\cui\custos-live\sunlogin-imac.toml' --db 'C:\Users\cui\custos-live\custos.db' *>> 'C:\Users\cui\custos-live\custos.log'"
+TASK: KODE-DBG-5679-TUNNEL / \
+  trigger: MSFT_TaskBootTrigger
+  action: C:\work\liv\dbg5679-tunnel.cmd 
+TASK: KodeLivEngineKeepalive / \
+  trigger: MSFT_TaskBootTrigger
+  action: cmd /c C:\work\liv\engine-keepalive.cmd
+TASK: KodeLivSuiteRun / \
+  trigger: MSFT_TaskBootTrigger
+  action: cmd /c C:\work\liv\liv_suite_run.cmd
+TASK: ModifyLinkUpdate / \
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action: C:\Program Files\AMD\CIM\Bin64\InstallManagerApp.exe -UpdateCurrentUser
+TASK: RunPlatformExperienceHelperOnUnlock / \GoogleUserPEH\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action: "C:\Program Files\Google\Chrome\Application\PlatformExperienceHelper\platform_experience_helper.exe" 
+TASK: RecoverabilityToastTask / \Microsoft\Windows\AccountHealth\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action:  
+TASK: VerifiedPublisherCertStoreCheck / \Microsoft\Windows\AppID\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\appidcertstorecheck.exe 
+TASK: Proxy / \Microsoft\Windows\Autochk\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\rundll32.exe /d acproxy.dll,PerformAutochkOperations
+TASK: KeyPreGenTask / \Microsoft\Windows\CertificateServicesClient\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action:  
+TASK: SystemTask / \Microsoft\Windows\CertificateServicesClient\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: UserTask-Roam / \Microsoft\Windows\CertificateServicesClient\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action:  
+TASK: License Validation / \Microsoft\Windows\Clip\
+  trigger: MSFT_TaskBootTrigger
+  action: %SystemRoot%\system32\ClipUp.exe -p -s -o
+TASK: Data Integrity Check And Scan / \Microsoft\Windows\Data Integrity Scan\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: Driver Recovery on Reboot / \Microsoft\Windows\Device Setup\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: RecommendedTroubleshootingScanner / \Microsoft\Windows\Diagnosis\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: DXGIAdapterCache / \Microsoft\Windows\DirectX\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\dxgiadaptercache.exe 
+TASK: ExploitGuard MDM policy Refresh / \Microsoft\Windows\ExploitGuard\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: Monitoring / \Microsoft\Windows\Hotpatch\
+  trigger: MSFT_TaskBootTrigger
+  action: %systemroot%\system32\cmd.exe /d /c %systemroot%\system32\hpatchmonTask.cmd
+TASK: SmartRetry / \Microsoft\Windows\InstallService\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: RemediateHardwareChange / \Microsoft\Windows\Management\Autopilot\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: MdmDiagnosticsCleanup / \Microsoft\Windows\Management\Provisioning\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\MdmDiagnosticsTool.exe /clean
+TASK: Retry / \Microsoft\Windows\Management\Provisioning\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\ProvTool.exe /turn 5 /source ProvRetryTask
+TASK: RunOnReboot / \Microsoft\Windows\Management\Provisioning\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\ProvTool.exe /turn 5 /source ContinueSessionTask
+TASK: NcsiIdentifyUserProxies / \Microsoft\Windows\Network Connectivity Status Indicator\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action:  
+TASK: Secure-Boot-Update / \Microsoft\Windows\PI\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: PITRTask / \Microsoft\Windows\Setup\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: SpaceAgentTask / \Microsoft\Windows\SpacePort\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\SpaceAgent.exe 
+TASK: SpaceManagerTask / \Microsoft\Windows\SpacePort\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\spaceman.exe /Work
+TASK: QueueReporting / \Microsoft\Windows\Windows Error Reporting\
+  trigger: MSFT_TaskBootTrigger
+  action: %windir%\system32\wermgr.exe -upload
+TASK: InitialConfiguration / \Microsoft\Windows\WindowsAI\Recall\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: PolicyConfiguration / \Microsoft\Windows\WindowsAI\Recall\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action:  
+TASK: InitialConfiguration / \Microsoft\Windows\WindowsAI\Settings\
+  trigger: MSFT_TaskBootTrigger
+  action:  
+TASK: Calibration Loader / \Microsoft\Windows\WindowsColorSystem\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action:  
+TASK: Scheduled Start / \Microsoft\Windows\WindowsUpdate\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action: %systemroot%\System32\sc.exe start wuauserv
+TASK: Recovery-Check / \Microsoft\Windows\Workplace Join\
+  trigger: MSFT_TaskSessionStateChangeTrigger
+  action: %SystemRoot%\System32\dsregcmd.exe /checkrecovery
+== services whose binary path mentions meshlet/wgnt/wireguard ==
+
+
+Name      : WireGuardManager
+State     : Running
+StartMode : Auto
+PathName  : "C:\Program Files\WireGuard\wireguard.exe" /managerservice
+
+
+
+== ALL meshlet-named services ==
+
+Name              Status StartType
+----              ------ ---------
+WireGuardManager Running Automatic
+
+
+== done ==

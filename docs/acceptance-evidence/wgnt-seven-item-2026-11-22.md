@@ -10,11 +10,12 @@ imac + 整轮重跑。结论：
   `WireGuard` 通过），fail-closed、teardown 零残留、restore 全量重建均过。
 - **item 7（reboot recovery）部分通过**——第一次 FAIL 归因为**测试床污染**
   （step12 实验残留的 probe 隧道服务开机自启抢 51820，非产品缺陷），清理后
-  干净重跑：agent 启动后隧道从账本全量重建、无恢复循环。但**开机自启动
-  机制的归因未收口**（计划任务无 boot trigger、LastRunTime 未变，agent 却在
-  开机后 36s 起来了——谁拉起的未定位），且收尾时 imac 失联（LAN L2 不可达），
-  归因脚本已备未跑。**boot 面语义按 ADR-008 预设记录为部署缺口：nt 模型
-  无服务自启面，开机恢复依赖 boot trigger 或自动登录，未验证。**
+  干净重跑：agent 启动后隧道从账本全量重建、无恢复循环。**开机自启归因已
+  收口**（imac 回归后补跑归因脚本+取证，见 item 7 节）：agent 实由**外部
+  session-0 拉起器**所启（非 Run key、非计划任务、非自动登录），nt 模型本身
+  **无服务自启面**（无 meshlet 服务、任务仅 LogonTrigger 无 boot trigger）。
+  **boot 面语义按 ADR-008 预设坐实为部署缺口：开机恢复依赖外部拉起器/登录，
+  nt 模型不提供自启——未验证，禁宣称开机自愈。**
 - 相邻发现（按任务书指令**只记录不修**）：nt 下 direct 快路径调用
   `wg set wg-meshlet`（服务模型名）恒失败 → direct P2P 在 nt 模型下
   永远建立不起来（回落 hub_relay，功能不瘫但直连面失效）；item 4 诊断性
@@ -104,7 +105,7 @@ dll 复原 → 新 PID 37128，adapter Up、51820、hub ping 0% 丢、
 重启任务 → agent PID 2344，隧道从账本全量重建（adapter Up、51820、
 hub ping 0% 丢、`applied.json` 03:08:17）。
 
-## item 7 reboot recovery——部分通过（污染事故 + 干净重跑 + 归因未收口）
+## item 7 reboot recovery——部分通过（污染事故 + 干净重跑 + 归因已收口：外部 session-0 拉起器）
 
 ### 第一次（01:42 重启）：FAIL，归因测试床污染而非产品缺陷
 
@@ -130,7 +131,7 @@ hub ping 0% 丢、`applied.json` 03:08:17）。
   对照证据 imac↔hub 全健康——详见 `item7-overlay-note.txt`（step12 已记录
   的顽疾，本轮只取证明 nt 无辜）。
 
-### 干净重跑（03:09:59 重启）：数据面恢复 PASS；自启归因 OPEN
+### 干净重跑（03:09:59 重启）：数据面恢复 PASS；自启归因已收口
 
 清完污染后二次重启（证据 `item7r-preboot.txt` 起机前基线、
 `item7r-early.txt` 03:15:31 核验）：
@@ -141,24 +142,46 @@ hub ping 0% 丢、`applied.json` 03:08:17）。
   Up（ifIndex 2）、hub handshake 38s、keepalive 25s、无恢复循环
   （仅 direct-demote 的良性 WARN，见相邻发现①）——**agent 进程起来后
   隧道从账本全量重建，这条语义成立**。
-- **归因未收口**：计划任务 `MeshletAgentDeploy` LastRunTime 仍为
-  03:06:32（重启前）、LastTaskResult 1——**任务没有在开机时跑过**，
-  但 agent 在开机后 36s（03:10:35）起来了。谁拉起的未定位（无 boot
-  trigger、任务未跑、Run key/启动目录/事件日志未及核查）。归因脚本
-  `item7startup.ps1`（枚举 meshlet 任务+trigger、TaskScheduler Operational
-  100/102/107/110/129/200/201、Run key、启动目录）已备好，**执行前 imac
-  失联**（见下）。
-- **imac 失联**：03:15:31 最后一次成功 SSH 取证后，主机从 LAN 消失
-  （192.168.5.117 ARP INCOMPLETE / No route to host，本机网关与外网正常，
-  2026-11-22 ~04:45 多次重试未回）。归因脚本待主机回归后补跑。
+- **开机自启归因已收口（imac 回归后补跑归因脚本，证据 `item7r-startup.txt`
+  06:38 + 取证 `item7elev.txt`/`item7timeline.txt`/`item7proc.txt`/
+  `item7launch.txt`/`item7parent.txt` 06:44-06:50）**：
+  - 本机自 03:10:16（6005 boot 事件）起**未再重启**（LastBootUpTime
+    03:09:59，此后无 6005/6006）；当前 agent PID 8572（SessionId **0**、
+    父 PID 2612 已逝）创建 06:19:38——是 03:10:35 那次（PID 8564，开机后
+    36s 起）的**同 boot 内进程重启**，非新 boot。
+  - **三候选逐一排除**：①计划任务——`MeshletAgentDeploy` 仅
+    `MSFT_TaskLogonTrigger`、**无 boot trigger**；LastRunTime 03:06:32
+    （重启前）未因 03:10 起而更新；06:19:44 任务运行（4624 type-4 batch
+    logon `cui`、result=1）其 spawn 撞单实例锁退出（日志 22:19:44Z
+    「agent starting」无 lock-held 行）——**非 06:19:38 agent 的拉起者**。
+    ②Run key——HKCU `meshlet-agent` 存在但只在**交互登录**触发；03:10/
+    06:19 均无 type-2 交互登录（4624 全 type-3/4/5/7/11）；且 agent 在
+    session 0 非交互会话。③自动登录——`AutoAdminLogon` 空。
+  - **nt 模型无服务自启**：无 meshlet 服务（仅 `WireGuardManager`=
+    wireguard.exe 管理器；`WireGuardTunnel$wg-meshlet`→1060）；全量枚举无
+    meshlet 名 boot-trigger 计划任务。
+  - **结论**：agent 由**外部 session-0 拉起器**所启（SessionId 0 + 父
+    PID 2612=session-0 宿主、06:50 已逝）；**身份未定位**（进程创建审计
+    4688 未开、父进程已逝不可回溯）。候选（未证）：用户自有工具
+    （`CustosEngine`/`CustosSunlogin` 有 boot trigger）或测试床脚本。
+    **按「记录不修」入账，不扩面。**
+  - 该 agent **功能/提权成立**：持 `WireGuard` adapter（ifIndex 2 Up）、
+    hub peer 应用（`wg show` 读回 vLkJ…/106.14.216.177:51820）、周期
+    `applied the desired device plan`（reason=KernelDrift，22:37Z 起连续）、
+    51820 由 agent 进程内持有——外部拉起器授予了足够权限。
 
 ### 判定
 
 - **「agent 起来 → 隧道从账本重建」：PASS**（两次重启均证）。
-- **「无人登录的开机自恢复」：未验证 + 部署缺口**——nt 模型无服务自启面
-  （ADR-008 预设），boot 恢复需要 boot trigger 或自动登录；当前载体只有
-  LogonTrigger，且本轮 36s 自启的机制不明。**在归因收口 + boot trigger
-  落位前，不得宣称 nt 模型开机自愈。**
+- **「无人登录的开机自恢复」：部署缺口坐实、机制为外部拉起器（非
+  产品能力）**——归因收口后确认：nt 模型**确实无服务自启面**（无 meshlet
+  服务、任务无 boot trigger、无自动登录），本轮开机后 agent 之所以起来，
+  是**外部 session-0 拉起器**所致（身份未定位，见上）；**不是产品自身的
+  开机自愈能力**。故 ADR-008 预判成立：**nt 上线必须补 boot trigger
+  （或等效的 SYSTEM 级自启载体）才算满足 reboot recovery**；当前载体仅
+  LogonTrigger + 一个不明外部拉起器，**不得宣称 nt 模型开机自愈**。
+  「agent 起来 → 隧道从账本重建」这条数据面语义已两次实证 PASS，缺口
+  纯在「谁来起 agent」的部署面。
 - 第一次 FAIL 不计入产品缺陷账（测试床污染），但两条教训入账：清理声明
   必须显式枚举 `WireGuardTunnel$*` 服务；Automatic 服务的实验残留会在
   重启类验收里引爆。
@@ -205,9 +228,10 @@ hub ping 0% 丢、`applied.json` 03:08:17）。
 | 4 | partial failure | **PASS**（诊断性缺口记录） | `item4a-failclosed.txt`/`item4b-verify.txt` |
 | 5 | uninstall | **PASS** | `item56-teardown.txt`（零残留） |
 | 6 | route cleanup | **PASS** | 同上（Active+Persistent 双查空） |
-| 7 | reboot recovery | **部分**：账本重建 PASS；boot 自启未验证（归因 OPEN + imac 失联） | `item7r-early.txt`、污染链 `item7-probe*.txt`/`item7-selfheal.txt` |
+| 7 | reboot recovery | **部分**：账本重建 PASS；boot 自启非 nt 模型性质（外部 session-0 拉起器，部署缺口已证） | `item7r-early.txt`、`item7r-startup.txt`、污染链 `item7-probe*.txt`/`item7-selfheal.txt` |
 
 对 WG-NT-SWITCH 的含义：七项重跑完成，**1-6 PASS、7 部分**；未勾条件
 「回滚与灰度走查 + 真机 2-peer」仍在；**现网三台仍 wireguard.exe 模型、
-禁写「已切换」不变**；新增待办：direct 快路径 nt 别名缺陷、item 7 自启
-归因（imac 回归后跑 `item7startup.ps1`）、boot trigger 部署面。
+禁写「已切换」不变**；新增待办：direct 快路径 nt 别名缺陷（已修 dce5e92，
+真机行为待回归补验）、item 7 自启归因（已收口：外部 session-0 拉起器，
+身份未定位）、boot trigger 部署面（开机自愈需部署侧落位）。

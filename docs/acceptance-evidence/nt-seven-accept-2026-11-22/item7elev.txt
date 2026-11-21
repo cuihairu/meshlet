@@ -1,0 +1,72 @@
+== item7 elevation probe 2026-11-22T06:57:59.0105164+08:00 ==
+== log dir ==
+
+Name                         LastWriteTime      Length
+----                         -------------      ------
+meshlet-agent.log.2026-11-21 2026/11/22 6:46:07 329572
+
+
+== newest log tail 40 ==
+== log file: C:\Users\cui\AppData\Local\meshlet\state\logs\meshlet-agent.log.2026-11-21 ==
+
+2026-11-21T22:50:32.006371Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+
+2026-11-21T22:50:32.022641Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+
+2026-11-21T22:50:32.023515Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= from=direct_pending to=hub_relay reason=pending attempts exhausted after 3 rounds (probe Unknown)
+2026-11-21T22:50:32.024143Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= from=hub_relay to=direct_pending reason=promote attempt via candidate table (probe Unhealthy)
+2026-11-21T22:50:32.024793Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=direct_pending to=hub_relay reason=pending attempts exhausted after 3 rounds (probe Unknown)
+2026-11-21T22:51:03.459713Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:51:06.066839Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:51:45.994771Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:51:48.608540Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:52:33.459045Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:52:36.073737Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:52:44.977309Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+
+2026-11-21T22:52:44.978600Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= from=direct_pending to=hub_relay reason=pending attempts exhausted after 3 rounds (probe Unknown)
+2026-11-21T22:53:16.429620Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:53:19.021231Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:53:27.507148Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+
+2026-11-21T22:53:27.508349Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= from=hub_relay to=direct_pending reason=promote attempt via candidate table (probe Unhealthy)
+2026-11-21T22:53:58.959276Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:54:01.526285Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:54:47.906557Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:54:50.549387Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:55:31.887930Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:55:34.487236Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:55:42.978546Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+
+2026-11-21T22:55:42.979736Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= from=direct_pending to=hub_relay reason=pending attempts exhausted after 3 rounds (probe Unknown)
+2026-11-21T22:56:14.430153Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:56:17.018534Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:56:27.487292Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+
+2026-11-21T22:56:27.488506Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= from=hub_relay to=direct_pending reason=promote attempt via candidate table (probe Unhealthy)
+2026-11-21T22:56:58.936375Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:57:01.523808Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T22:57:41.458256Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T22:57:44.032185Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+== agent process ==
+
+
+ProcessId    : 8572
+CreationDate : 2026/11/22 6:19:38
+CommandLine  : "C:\Users\cui\AppData\Local\meshlet\meshlet-agent.exe" C:\Users\cui\AppData\Local\meshlet\agent.toml 
+
+
+
+== tunnel adapter ==
+
+Name      Status InterfaceDescription   InterfaceIndex
+----      ------ --------------------   --------------
+WireGuard Up     wg-mlt-wg-mdc44 Tunnel              2
+
+
+== wg show (best effort) ==
+SL6Nx13UeamrYMyIiYMjTtskZF1l+9TVYvWBA2/w0VI=	QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=	51820	off
+vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=	(none)	106.14.216.177:51820	10.240.0.0/16	1795301861	2648	7600	25
+== boot time ==
+2026-11-22T03:09:59.5000000+08:00
+== done ==

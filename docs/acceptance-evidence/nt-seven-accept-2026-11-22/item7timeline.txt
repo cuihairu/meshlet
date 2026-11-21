@@ -1,0 +1,110 @@
+== restart timeline 2026-11-22T06:58:00.6712201+08:00 ==
+== file: meshlet-agent.log.2026-11-21 ==
+2026-11-21T11:17:59.770088Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T11:17:59.770427Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T14:52:01.410445Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T14:52:46.382571Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T14:52:46.382825Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T15:04:35.677947Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T15:04:35.678207Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:16:12.667425Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:16:12.667731Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:24:05.390180Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:24:05.390514Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:33:37.116861Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:33:37.117136Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:38:13.793191Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:38:13.793518Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:38:20.407978Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:38:20.408252Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:38:22.986084Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:38:22.986362Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:39:00.573032Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:39:03.131095Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:39:03.131377Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:39:40.895105Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:39:40.895511Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:40:08.338770Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:40:08.339037Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:45:25.779947Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:45:25.888503Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:47:33.704534Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T19:01:05.350455Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T19:01:05.350719Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T19:06:32.631813Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T19:10:35.615096Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T19:10:35.615637Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T22:19:38.283304Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T22:19:38.284066Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T22:19:44.710301Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T22:22:23.787030Z  INFO meshlet_agent: agent starting version="0.1.0"
+== state dir artifacts ==
+
+Name                      LastWriteTime       Length 
+----                      -------------       ------ 
+logs                      2026/11/21 19:17:59        
+tray                      2026/11/4 0:54:42          
+agent-decisions.jsonl     2026/11/22 6:57:52  3374661
+agent.lock                2026/11/13 11:03:49 0      
+applied.json              2026/11/22 6:57:44  2255   
+device_token              2026/11/4 0:05:05   64     
+direct-peers.json         2026/11/22 6:57:52  689    
+direct-port.json          2026/11/22 2:15:51  21     
+direct-switch-events.json 2026/11/22 6:56:27  1606654
+direct.json               2026/11/22 6:56:27  91     
+ssh-sync.json             2026/11/22 6:57:44  1659   
+tasks.json                2026/11/13 14:13:23 9165   
+
+
+== autologon ==
+
+
+AutoAdminLogon    : 
+DefaultUserName   : 
+DefaultDomainName : 
+
+
+
+== last logon events (4624 types) ==
+11/22/2026 06:57:58 type=3
+11/22/2026 06:57:58 type=3
+11/22/2026 06:57:58 type=5
+11/22/2026 06:54:45 type=5
+11/22/2026 06:54:45 type=5
+11/22/2026 06:54:45 type=5
+11/22/2026 06:50:25 type=3
+11/22/2026 06:50:25 type=3
+11/22/2026 06:50:25 type=5
+11/22/2026 06:50:25 type=3
+11/22/2026 06:50:25 type=3
+11/22/2026 06:50:25 type=5
+11/22/2026 06:49:48 type=5
+11/22/2026 06:49:44 type=5
+11/22/2026 06:49:04 type=5
+11/22/2026 06:48:55 type=3
+11/22/2026 06:48:55 type=3
+11/22/2026 06:48:55 type=5
+11/22/2026 06:48:55 type=3
+11/22/2026 06:48:55 type=3
+11/22/2026 06:48:55 type=5
+11/22/2026 06:47:26 type=3
+11/22/2026 06:47:26 type=3
+11/22/2026 06:47:25 type=5
+11/22/2026 06:47:25 type=3
+11/22/2026 06:47:25 type=3
+11/22/2026 06:47:25 type=5
+11/22/2026 06:46:23 type=3
+11/22/2026 06:46:23 type=3
+11/22/2026 06:46:23 type=5
+== system boot/shutdown 6005/6006/6008/1074 ==
+
+TimeCreated          Id ProviderName
+-----------          -- ------------
+2026/11/22 3:10:16 6005 EventLog    
+2026/11/22 3:09:27 6006 EventLog    
+2026/11/22 3:09:04 1074 User32      
+2026/11/22 1:45:09 6005 EventLog    
+2026/11/22 1:44:14 6006 EventLog    
+
+
+== done ==
