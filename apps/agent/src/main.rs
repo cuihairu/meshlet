@@ -29,12 +29,6 @@ fn main() -> std::process::ExitCode {
             _ => {}
         }
     }
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
     let config = match load_config() {
         Ok(c) => c,
         Err(e) => {
@@ -42,6 +36,33 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    // 日志双写（config 加载后，用真实 state_dir）：stdout（前台调试）+
+    // `<state_dir>/logs/` 每日滚动文件——schtasks 直启 exe 时 stdout 无人
+    // 接收，文件才是唯一持久面（NIGHTLY 反馈 2026-11-21：打开日志目录
+    // 看不到任何文件）。初始化失败不阻断启动，退回纯 stdout。
+    let log_dir = std::path::PathBuf::from(&config.state_dir).join("logs");
+    if std::fs::create_dir_all(&log_dir).is_ok() {
+        let file_appender =
+            tracing_appender::rolling::daily(&log_dir, "meshlet-agent.log");
+        // Writer 由全局 subscriber 持有；guard forget 到进程退出。
+        let (log_writer, log_guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .with_writer(log_writer)
+            .with_ansi(false)
+            .init();
+        std::mem::forget(log_guard);
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .init();
+    }
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "agent starting");
     tracing::info!(
         server_url = %config.server_url,
