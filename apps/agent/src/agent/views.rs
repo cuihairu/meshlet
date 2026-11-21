@@ -19,6 +19,7 @@ pub(super) fn direct_peer_views(
             let link = by_key.get(c.public_key.as_str());
             DirectPeerView {
                 name: c.name.clone(),
+                device_id: c.device_id.to_string(),
                 virtual_ipv4: c.virtual_ipv4,
                 public_key: c.public_key.clone(),
                 mode: link

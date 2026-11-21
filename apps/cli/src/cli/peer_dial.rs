@@ -115,6 +115,7 @@ mod tests {
     fn resolve_dial_target_matches_name_ip_and_key_prefix() {
         let views = vec![DirectPeerView {
             name: "peer-b".into(),
+            device_id: "d-b".into(),
             virtual_ipv4: "10.240.0.3".parse().unwrap(),
             public_key: "AbCdEfGh1234==".into(),
             mode: "hub_relay".into(),
@@ -144,6 +145,7 @@ mod tests {
     fn format_dial_targets_lists_every_candidate() {
         let views = vec![DirectPeerView {
             name: "peer-b".into(),
+            device_id: "d-b".into(),
             virtual_ipv4: "10.240.0.3".parse().unwrap(),
             public_key: "k==".into(),
             mode: "hub_relay".into(),

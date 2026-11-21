@@ -62,6 +62,10 @@ pub struct DirectDialResult {
 pub struct DirectPeerView {
     /// 对端设备名（旧服务端缺省为空）。
     pub name: String,
+    /// 对端设备 id（托盘直连表露出零散短 ID 用；zerotier 式截断展示）。
+    /// 旧文件缺省为空——新读者按空处理，不判异常。
+    #[serde(default)]
+    pub device_id: String,
     /// 对端 overlay 地址。
     pub virtual_ipv4: std::net::Ipv4Addr,
     /// 对端 wg 公钥。
@@ -360,6 +364,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("meshlet-direct-peers-{}", std::process::id()));
         let views = vec![DirectPeerView {
             name: "peer-b".into(),
+            device_id: "d-b".into(),
             virtual_ipv4: "10.240.0.3".parse().unwrap(),
             public_key: "abc==".into(),
             mode: "hub_relay".into(),
