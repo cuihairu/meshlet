@@ -112,6 +112,24 @@ roam18 归因指向**不需要**动 SEL-002（评分/迟滞闸）。真正的量
 - **边界**：该调整改变状态机行为参数，属修复迭代候选，须另批
   带数据验收执行；本批只落论证，不动代码、不动判定口径。
 
+### 落地补记（2026-11-21 追记）
+
+上文 §5 论证已由整定批落地（任务单 meshlet-path-switch-tuning，2026-11-18）：
+
+- 丢包尖峰阈值 50%→20% 并 config 可调：`945da62`（`LOSS_SPIKE_THRESHOLD=0.2`
+  + `ProbeConfig::loss_spike`）；切换宽限+年轻窗豁免：`de86830`
+  （`switch_cooldown_secs` / `degrade_min_samples`）；目标预检+一次性回滚：
+  `2a7592a`。本文 §5/§6 所引 `0.5` 阈值与行号为落地前快照，现值以代码为准。
+- 钉子四件在位（49% 不 bypass / 宽限禁再切判劣化 / 全 Lost 候选不切 /
+  回滚一次性过宽限）；门禁 2026-11-21 复验：network 213 / agent lib 196 /
+  config 全绿，fmt/windows-gnu clippy -D warnings 净（落地日 11-18 台账
+  见 todo「路径切换稳定性整定批」条目）。
+- 收窄后 roam18 重算（预期下界 17/窗、#11 型改道消失）与双窗对比口径
+  均落 todo 同条目；真机窗满判定见
+  `docs/acceptance-evidence/tuning-window-final-2026-11-20.md`
+  （flip -46.5%、环 -56%、roam 双口径分裂待拍板、rollback 0 零触发——
+  预期 4 行无一达标无保留，beats-inf 口径与 imac 死面逃逸治理待用户决断）。
+
 ## 6. 代码锚点（file:line）
 
 | 锚点 | 位置 |
