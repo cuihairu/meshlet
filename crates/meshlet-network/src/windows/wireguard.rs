@@ -2,6 +2,7 @@ use super::backend::WindowsNetworkBackend;
 use super::parsing::parse_netsh_interface_ipv4_address;
 use crate::windows_console::NoWindowCommand;
 use crate::windows_tunnel::exec::run_wireguard_command;
+use crate::windows_wireguard_nt::{nt_adapter_handle, nt_adapter_name};
 use crate::{NetworkError, PeerObserved};
 use meshlet_domain::Ipv4Cidr;
 use std::path::PathBuf;
@@ -143,36 +144,16 @@ impl WindowsNetworkBackend {
         None
     }
 
-    /// 私钥 → 公钥（`wg pubkey`，密钥走 stdin、不进 argv，与 Linux 后端同法；
-    /// 服务端据此填充下发给设备的 hub peer 公钥，ADR-010）。
+    /// 私钥 → 公钥（纯 Curve25519，x25519-dalek RFC 7748 clamping，与
+    /// `wg pubkey` 同构——keys.rs 的语义锚定）。服务端据此填充下发给设备的
+    /// hub peer 公钥，ADR-010。
+    ///
+    /// 不再依赖 `wg.exe`：nt 模型（wireguard-nt 内嵌绑定）无需安装
+    /// WireGuard for Windows，`wg.exe` 可能不在——账本公钥指纹推导必须
+    /// 在两模型下都成立。
     pub fn public_key_from_private(&self, private_key: &str) -> Result<String, NetworkError> {
-        let Some(exe) = self.find_wg_exe() else {
-            return Err(NetworkError::Unsupported(
-                "wg.exe not found; cannot derive public key".to_string(),
-            ));
-        };
-        use std::io::Write;
-        let mut child = std::process::Command::new(&exe)
-            .arg("pubkey")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .no_window()
-            .spawn()
-            .map_err(|e| NetworkError::Io(format!("spawn wg pubkey: {e}")))?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| NetworkError::Io("wg pubkey stdin unavailable".into()))?
-            .write_all(format!("{private_key}\n").as_bytes())
-            .map_err(|e| NetworkError::Io(format!("write wg pubkey stdin: {e}")))?;
-        let out = child
-            .wait_with_output()
-            .map_err(|e| NetworkError::Io(format!("wg pubkey wait: {e}")))?;
-        let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if key.is_empty() {
-            return Err(NetworkError::Io("wg pubkey returned an empty key".into()));
-        }
-        Ok(key)
+        crate::keys::public_from_private(private_key)
+            .map_err(NetworkError::Io)
     }
 
     /// P2P 直连执行层（§12）：`wg.exe show <if> latest-handshakes` →
@@ -180,6 +161,12 @@ impl WindowsNetworkBackend {
     pub fn handshake_ages_sync(
         &self,
     ) -> Result<std::collections::BTreeMap<String, u64>, NetworkError> {
+        // nt 模型：握手年龄来自驱动 get_config 的 last_handshake（无需
+        // wg.exe；服务模型走 `wg show <if> latest-handshakes` 同语义）。
+        if let Some(nt) = &self.nt {
+            let adapter_name = nt_adapter_name(&nt_adapter_handle(&self.interface))?;
+            return nt.handshake_ages(&adapter_name);
+        }
         let exe = self.find_wg_exe().ok_or_else(|| {
             NetworkError::Unsupported(
                 "wg.exe not found. Install WireGuard for Windows.".to_string(),

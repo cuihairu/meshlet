@@ -7,21 +7,33 @@ use crate::windows_tunnel::exec::{ensure_conf_dir_acl, ensure_conf_file_acl, wri
 use crate::windows_tunnel::render_wireguard_conf;
 use crate::windows_tunnel::wireguard_exe;
 use crate::windows_tunnel::WireGuardCommand;
+use crate::windows_wireguard_nt::{
+    nt_adapter_handle, nt_adapter_name, NtRuntime, NT_INTERFACE_MTU,
+};
 use crate::{
     ApplyResult, ConfigRevisionRef, DevicePlan, NetworkBackend, NetworkError, NetworkSnapshot,
     RouteConfig, TunnelConfig,
 };
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-/// Windows 网络后端：WireGuardNT 隧道 + netsh 路由。
+use std::sync::Arc;
+/// Windows 网络后端：WireGuardNT 隧道（服务模型或 wireguard-nt 模型）+
+/// netsh 路由。
 #[derive(Clone)]
 pub struct WindowsNetworkBackend {
-    /// 受管 WireGuard 接口名（与 WireGuardNT 隧道服务名对应）。
+    /// 受管 WireGuard 接口名（服务模型的隧道服务名；nt 模型的 adapter
+    /// handle 派生源）。
     pub(super) interface: String,
     /// `wireguard.exe` 显式覆盖路径（`None` = 走环境变量/PATH 解析）。
     pub(super) wireguard_exe_override: Option<PathBuf>,
     pub(super) hub_endpoint: Option<String>,
+    /// wireguard-nt 运行时（`tunnel_backend = "nt"` 时 Some；`None` =
+    /// 服务模型）。Arc 共享：backend 克隆进 [crate::direct_rtt] 等后台
+    /// 线程时，adapter 句柄由同一运行时持久持有。
+    pub(super) nt: Option<Arc<NtRuntime>>,
 }
 
 impl WindowsNetworkBackend {
@@ -30,11 +42,19 @@ impl WindowsNetworkBackend {
             interface: "meshlet".to_string(),
             wireguard_exe_override: None,
             hub_endpoint: None,
+            nt: None,
         }
     }
 
     pub fn with_interface(mut self, interface: impl Into<String>) -> Self {
         self.interface = interface.into();
+        self
+    }
+
+    /// 装配 wireguard-nt 运行时（`tunnel_backend = "nt"`）：adapter 句柄由
+    /// 运行时持久持有，本后端所有数据面操作改走 nt 模型（[Self::nt]）。
+    pub fn with_nt_runtime(mut self, runtime: NtRuntime) -> Self {
+        self.nt = Some(Arc::new(runtime));
         self
     }
 
@@ -86,6 +106,9 @@ impl WindowsNetworkBackend {
     }
 
     pub fn inspect_sync(&self) -> Result<NetworkSnapshot, NetworkError> {
+        if let Some(nt) = &self.nt {
+            return self.nt_inspect_sync(nt);
+        }
         let _exe = self.find_wireguard_exe().ok_or_else(|| {
             NetworkError::Unsupported(
                 "WireGuard for Windows is not installed.                  Install from https://www.wireguard.com/install/                  or set MESHLET_WIREGUARD_EXE to the wireguard.exe path."
@@ -143,6 +166,92 @@ impl WindowsNetworkBackend {
             tunnel_address,
             tunnel_listen_port,
         })
+    }
+
+    /// nt 模型的 inspect：事实来源是运行时已持 adapter 的 `get_config`
+    /// 回读（[NtRuntime::inspect]），地址读 `Get-NetIPAddress`（locale
+    /// 无关，同 [Self::lan_addresses_sync]）。adapter 未持（进程重启后
+    /// 随句柄消亡）→ 空快照 `tunnel_exists=false`，reconcile 据此重放。
+    fn nt_inspect_sync(&self, nt: &NtRuntime) -> Result<NetworkSnapshot, NetworkError> {
+        let adapter_name = nt_adapter_name(&nt_adapter_handle(&self.interface))?;
+        let forwarding_enabled = self.forwarding_enabled();
+        let readback = nt.inspect(&adapter_name);
+        let tunnel_exists = readback.is_some();
+        let (peers, installed_routes, local_public_key, tunnel_listen_port, tunnel_mtu, tunnel_address) =
+            match readback {
+                None => (Vec::new(), Vec::new(), None, None, None, None),
+                Some(snapshot) => {
+                    let peers = snapshot
+                        .peers
+                        .iter()
+                        .map(|peer| crate::PeerObserved {
+                            public_key: BASE64.encode(peer.public_key),
+                            allowed_ips: peer.allowed_ips.clone(),
+                        })
+                        .collect();
+                    // installed_routes = 驱动 set_default_route 装配的
+                    // allowed_ips（peers 的并集），与计划 routes 的对账口径
+                    // 同一集合。
+                    let mut installed_routes: Vec<meshlet_domain::Ipv4Cidr> = snapshot
+                        .peers
+                        .iter()
+                        .flat_map(|peer| peer.allowed_ips.iter().copied())
+                        .collect();
+                    installed_routes.sort();
+                    installed_routes.dedup();
+                    let local_public_key = Some(BASE64.encode(snapshot.public_key));
+                    let tunnel_listen_port = Some(snapshot.listen_port);
+                    // crate 的 set_default_route 把 NlMtu 硬编码 1420
+                    // （[NT_INTERFACE_MTU]）：adapter 在则 MTU 必是它。
+                    let tunnel_mtu = Some(NT_INTERFACE_MTU);
+                    let tunnel_address = self.nt_adapter_address(&adapter_name);
+                    (
+                        peers,
+                        installed_routes,
+                        local_public_key,
+                        tunnel_listen_port,
+                        tunnel_mtu,
+                        tunnel_address,
+                    )
+                }
+            };
+        Ok(NetworkSnapshot {
+            tunnel_exists,
+            forwarding_enabled,
+            peers,
+            installed_routes,
+            nat_rules: Vec::new(),
+            tunnel_mtu,
+            local_public_key,
+            tunnel_address,
+            tunnel_listen_port,
+        })
+    }
+
+    /// nt adapter 的地址读数：`Get-NetIPAddress` 里 InterfaceAlias 精确等于
+    /// adapter 名（`wg-mlt-<handle>`）的条目。读不到 → `None`（证据缺失
+    /// 不判，同 [Self::lan_addresses_sync] 的口径）。
+    fn nt_adapter_address(&self, adapter_name: &str) -> Option<Ipv4Addr> {
+        self.lan_ip_entries()
+            .ok()?
+            .into_iter()
+            .find(|(alias, _, _)| alias.eq_ignore_ascii_case(adapter_name))
+            .map(|(_, addr, _)| addr)
+    }
+
+    /// nt 模型的应用入口：[TunnelConfig] → adapter 计划（handle 从接口名
+    /// 派生，[crate::windows_wireguard_nt::nt_adapter_handle]）→ 运行时装配。
+    /// 返回驱动回读的生效 listen 端口（防火墙联动用）。计划层守门拒绝
+    /// （listen_port 缺失 / MTU 非 1420 / peer endpoint 缺失等）原样 fail
+    /// closed 透传——nt 不能像服务模型那样让驱动「自选端口」。
+    fn nt_apply_tunnel_config(
+        &self,
+        nt: &NtRuntime,
+        tunnel: &TunnelConfig,
+    ) -> Result<u16, NetworkError> {
+        let handle = nt_adapter_handle(&self.interface);
+        let plan = crate::windows_wireguard_nt::nt_interface_plan(tunnel, &handle)?;
+        nt.apply(&plan)
     }
 
     /// 本机 RFC1918 局域网地址（§12 P2P 候选端点上报）。Windows 读数走
@@ -249,9 +358,8 @@ impl WindowsNetworkBackend {
         // ip_forward=1）。先于任何隧道变更执行——失败即 fail closed，
         // 绝不改动隧道后留下半应用状态。
         self.ensure_ip_forwarding_sync()?;
-        let exe = self.find_wireguard_exe().ok_or_else(|| {
-            NetworkError::Unsupported("WireGuard for Windows is not installed".to_string())
-        })?;
+        // 共享隧道配置：服务模型渲染 conf，nt 模型直接走 adapter 装配——
+        // 两模型同一计划、同一 hub_endpoint 兜底、同一私钥语义。
         let tunnel_config = TunnelConfig {
             name: self.interface.clone(),
             address: plan.tunnel.address,
@@ -272,6 +380,17 @@ impl WindowsNetworkBackend {
             mtu: plan.tunnel.mtu,
             private_key,
         };
+        // nt 模型（tunnel_backend="nt"）：无 wireguard.exe——dll 内嵌绑定。
+        // 防火墙联动用 adapter 回读的生效端口（模块纪律：回读为准，不用请求值）。
+        if let Some(nt) = &self.nt {
+            let listen_port = self.nt_apply_tunnel_config(nt, &tunnel_config)?;
+            self.ensure_mesh_reachability_sync(tunnel_config.address)?;
+            self.ensure_direct_udp_firewall_sync(listen_port)?;
+            return Ok(());
+        }
+        let exe = self.find_wireguard_exe().ok_or_else(|| {
+            NetworkError::Unsupported("WireGuard for Windows is not installed".to_string())
+        })?;
         let conf = render_wireguard_conf(&tunnel_config);
         // WIN-PORT-1 缺陷②：conf 落 ProgramData（受限令牌隧道服务读不到
         // 用户会话 temp）。目录先收紧 ACL 再写文件——新文件自创建起继承
@@ -314,6 +433,10 @@ impl NetworkBackend for WindowsNetworkBackend {
     }
 
     async fn apply_tunnel(&self, config: TunnelConfig) -> Result<ApplyResult, NetworkError> {
+        if let Some(nt) = &self.nt {
+            self.nt_apply_tunnel_config(nt, &config)?;
+            return Ok(ApplyResult::ok());
+        }
         let exe = self.find_wireguard_exe().ok_or_else(|| {
             NetworkError::Unsupported("WireGuard for Windows is not installed".to_string())
         })?;
@@ -334,6 +457,16 @@ impl NetworkBackend for WindowsNetworkBackend {
         &mut self,
         routes: Vec<RouteConfig>,
     ) -> Result<ApplyResult, NetworkError> {
+        // nt 模型的路由由 adapter set_default_route（peer allowed_ips）装配，
+        // 不经 netsh——独立调用本方法会与驱动路由重复/错位，明确拒绝而非
+        // 假装成功（生产路径走 apply_device_plan_sync，不经过这里）。
+        if self.nt.is_some() {
+            return Err(NetworkError::Unsupported(
+                "route apply via netsh is not used with the wireguard-nt backend; \
+                 routes are applied by the adapter allowed_ips"
+                    .to_string(),
+            ));
+        }
         let mut errors = Vec::new();
         for route in routes {
             let netsh_cmd = crate::windows_routes::NetshRouteCommand::Add {
@@ -372,6 +505,13 @@ impl NetworkBackend for WindowsNetworkBackend {
     }
 
     async fn rollback(&self, _revision: ConfigRevisionRef) -> Result<ApplyResult, NetworkError> {
+        // nt 模型：adapter 随句柄消亡——从运行时取出并 Drop 即回滚；未持
+        // （已回滚/从未应用）按幂等成功处理。
+        if let Some(nt) = &self.nt {
+            let adapter_name = nt_adapter_name(&nt_adapter_handle(&self.interface))?;
+            nt.remove(&adapter_name);
+            return Ok(ApplyResult::ok());
+        }
         let command = WireGuardCommand::UninstallService {
             name: self.interface.clone(),
         };
