@@ -241,8 +241,12 @@ pub struct DataplaneConfig {
     pub interface: String,
     /// 本设备 WireGuard 私钥文件（本地注入，服务端永不携带——ADR-010）。
     pub private_key_file: Option<String>,
-    /// hub 的可达 endpoint（`host:port`）兜底：server 未通过 `[dataplane]
+    /// hub 的可达 endpoint 兜底（`host:port`）：server 未通过 `[dataplane]
     /// advertise_ip` + `listen_port` 通告时使用。
+    ///
+    /// 支持逗号分隔多端点（failover 批）：`hub_endpoint = "a:51820,b:51820"`
+    /// ——agent 按序使用、现役端点握手超时则轮换到下一个（见
+    /// [`DataplaneConfig::hub_endpoints`]）。单端点写法语义不变（向后兼容）。
     pub hub_endpoint: Option<String>,
     /// 轮询间隔（秒）：到期向 server 拉取期望配置，有变更才重放（§10.1）。
     pub poll_interval_secs: u64,
@@ -400,6 +404,29 @@ impl Default for DataplaneConfig {
             probe: ProbeConfig::default(),
             backoff: BackoffConfig::default(),
         }
+    }
+}
+
+impl DataplaneConfig {
+    /// hub 多端点列表（`hub_endpoint` 逗号分隔）：逐项 trim、去空段、去重。
+    ///
+    /// - 缺失 / 空串 → 空表（沿用原「不兜底」语义，plan 原样返回）；
+    /// - 单端点 → 单元素表（failover 决策退化为恒选该项，与旧行为一致）；
+    /// - 多端点 → 按序候选（failover 批：现役握手超时轮换下一个）。
+    ///
+    /// 只做语法切分，不校验端点形状——旧配置允许任意 `host:port`（含
+    /// 域名），failover 仅在 `len() > 1` 时激活，单/空端点行为零变化。
+    pub fn hub_endpoints(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if let Some(value) = &self.hub_endpoint {
+            for part in value.split(',') {
+                let part = part.trim();
+                if !part.is_empty() && !out.iter().any(|e| e == part) {
+                    out.push(part.to_string());
+                }
+            }
+        }
+        out
     }
 }
 

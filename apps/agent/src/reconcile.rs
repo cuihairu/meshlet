@@ -107,6 +107,8 @@ pub enum Reason {
     NoLocalLedger,
     /// 内核实际对象与账本不符：隧道/路由/NAT 漂移或丢失（TODO #32）。
     KernelDrift,
+    /// hub 多端点 failover：现役端点死亡，轮换到下一个候选（重放隧道）。
+    HubEndpointRotated,
 }
 
 impl Reason {
@@ -116,6 +118,7 @@ impl Reason {
             Reason::DesiredConfigChanged => "desired_config_changed",
             Reason::NoLocalLedger => "no_local_ledger",
             Reason::KernelDrift => "kernel_drift",
+            Reason::HubEndpointRotated => "hub_endpoint_rotated",
         }
     }
 }

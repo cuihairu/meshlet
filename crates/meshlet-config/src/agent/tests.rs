@@ -86,6 +86,47 @@ poll_interval_secs = 10
 }
 
 #[test]
+fn dataplane_hub_endpoints_splits_comma_and_dedups() {
+    // 缺失 / 空 → 空表（沿用「不兜底」语义）。
+    assert_eq!(
+        AgentConfig::default().dataplane.hub_endpoints(),
+        Vec::<String>::new()
+    );
+    let d = AgentConfig::from_toml("[dataplane]\nenabled = true").unwrap();
+    assert_eq!(d.dataplane.hub_endpoints(), Vec::<String>::new());
+
+    // 单端点（旧写法）：单元素表，failover 决策退化为恒选该项。
+    let d = AgentConfig::from_toml(
+        "[dataplane]\nenabled = true\nhub_endpoint = \"vps.example.com:51820\"",
+    )
+    .unwrap();
+    assert_eq!(
+        d.dataplane.hub_endpoints(),
+        vec!["vps.example.com:51820".to_string()]
+    );
+
+    // 多端点（failover 批）：逗号分隔、逐项 trim、去空段、去重、保序。
+    let d = AgentConfig::from_toml(
+        "[dataplane]\nenabled = true\nhub_endpoint = \" a:51820 , b:51821 , a:51820 , , c:51822 \"",
+    )
+    .unwrap();
+    assert_eq!(
+        d.dataplane.hub_endpoints(),
+        vec![
+            "a:51820".to_string(),
+            "b:51821".to_string(),
+            "c:51822".to_string()
+        ]
+    );
+
+    // 原字段仍是原样单串（契约兼容，读方不因多端点而变）。
+    let d =
+        AgentConfig::from_toml("[dataplane]\nenabled = true\nhub_endpoint = \"a:51820,b:51821\"")
+            .unwrap();
+    assert_eq!(d.dataplane.hub_endpoint.as_deref(), Some("a:51820,b:51821"));
+}
+
+#[test]
 fn agent_dataplane_tunnel_backend_defaults_service_and_parses() {
     // 缺省 = service（行为不变）；Windows 数据面后端选择。
     assert_eq!(

@@ -1,5 +1,6 @@
 //! reconcile
 use crate::agent::direct_port::{self, PortResolution};
+use crate::agent::hub_failover::{self, HUB_HANDSHAKE_STALE_SECS};
 use crate::agent::plan_adapter::{enforce_hub_keepalive, plan_with_hub_endpoint};
 use crate::reconcile::{AgentState, Decision};
 
@@ -25,7 +26,11 @@ impl super::Agent {
         // 内核里非 hub 的 peer 若非自有直连，必须按漂移清掉（外来 peer 注入
         // 的真机验收）。keep set 传给内核对账：直连对端被保留，不被重放冲掉。
         let direct_keys = self.direct.keep_keys();
-        let mut local_plan = plan_with_hub_endpoint(plan, self.dataplane.hub_endpoint.as_deref());
+        // hub 端点兜底 + 多端点 failover（`hub_endpoint = "a:51820,b:51820"`）：
+        // 单/零端点行为与旧版逐字节一致（不查握手、不落账本、不强制重放）；
+        // 多端点时按现役握手年龄轮换候选（现役死亡 → 下一个），轮换强制重放。
+        let (hub_endpoint, hub_rotated) = self.select_hub_endpoint(plan);
+        let mut local_plan = plan_with_hub_endpoint(plan, hub_endpoint.as_deref());
         local_plan.tunnel.name = self.dataplane.interface.clone();
         // SEL-003 hub 兜底：hub peer 的 keepalive 永不掉——计划里低于常量
         // （或旧版计划缺省 `None`）都强制抬到 [meshlet_network::HUB_KEEPALIVE_SECS]。
@@ -119,6 +124,14 @@ impl super::Agent {
                 reason: crate::reconcile::Reason::KernelDrift,
             };
         }
+        // hub 端点轮换：本地兜底不参与期望哈希（与 hub_endpoint 兜底同口径），
+        // 账本漂移判定看不到新端点——轮换必须显式强制一次重放把新端点下到内核。
+        if !decision.needs_apply && hub_rotated {
+            decision = Decision {
+                needs_apply: true,
+                reason: crate::reconcile::Reason::HubEndpointRotated,
+            };
+        }
         if !decision.needs_apply {
             return Ok(decision);
         }
@@ -195,6 +208,61 @@ impl super::Agent {
             "applied the desired device plan"
         );
         Ok(decision)
+    }
+
+    /// hub 端点兜底选择（含多端点 failover，UI 批 B3）。
+    ///
+    /// 返回 `(选中端点, 是否发生轮换)`。单/零端点：不查握手、不落账本，
+    /// 直接取配置值（与旧版 `plan_with_hub_endpoint(plan, hub_endpoint)` 行为
+    /// 逐字节一致）；多端点：读 hub 握手年龄、按 [`hub_failover::decide`]
+    /// 轮换，轮换/首选定落账本（`{state_dir}/hub-endpoint.json`）。
+    fn select_hub_endpoint(&mut self, plan: &DevicePlan) -> (Option<String>, bool) {
+        let endpoints = self.dataplane.hub_endpoints();
+        if endpoints.is_empty() {
+            return (None, false);
+        }
+        if endpoints.len() == 1 {
+            return (Some(endpoints[0].clone()), false);
+        }
+        // 多端点才查健康（单端点零额外开销——旧行为零变化）。hub peer 恒为
+        // 计划 tunnel.peers[0]（服务端计划单 hub peer 构造）。
+        let hub_public_key = plan.tunnel.peers.first().map(|p| p.public_key.clone());
+        let hub_age = match hub_public_key {
+            Some(key) => self
+                .backend
+                .handshake_ages_sync()
+                .ok()
+                .and_then(|ages| ages.get(&key).copied()),
+            None => None,
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // 轮换后等首个握手的宽限：两个轮询周期（下限 60s）——fresh start
+        // 与首次 apply 后的握手留足余量，绝不误轮换。
+        let grace_ms = (2 * self.dataplane.poll_interval_secs * 1000).max(60_000);
+        let current = hub_failover::load(&self.state_dir);
+        let decision = hub_failover::decide(
+            &endpoints,
+            current.as_ref(),
+            hub_age,
+            now_ms,
+            HUB_HANDSHAKE_STALE_SECS,
+            grace_ms,
+        );
+        if decision.save {
+            if let Err(error) = hub_failover::save(&self.state_dir, &decision.ledger) {
+                tracing::warn!(error = %error, "hub-endpoint ledger not saved");
+            }
+            tracing::info!(
+                index = decision.index,
+                endpoint = %decision.endpoint,
+                rotated = decision.rotate,
+                "hub endpoint selected"
+            );
+        }
+        (Some(decision.endpoint), decision.rotate)
     }
 
     pub(super) fn fail_transition(

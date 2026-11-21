@@ -12,6 +12,7 @@ pub(super) mod endpoint;
 mod evidence;
 pub(super) mod handshake;
 mod heartbeat;
+mod hub_failover;
 pub(super) mod paths;
 pub(super) mod plan_adapter;
 mod publish;
