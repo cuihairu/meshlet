@@ -26,8 +26,9 @@
 //! （官方 WireGuard for Windows 安装不含 dll，tunnel 静态链在 exe 内），
 //! 候选搜索序见 [nt_dll_candidates]；binding crate 0.5.0 × 官方
 //! wireguard-nt 1.1 amd64 dll 真机可行（PoC 实证，driver version
-//! 65537）。**本模块尚未接进 [crate::windows] 后端分派**——生产三台
-//! 仍跑 wireguard.exe 服务模型，切换等 backend 接线批收尾+用户点头。
+//! 65537）。backend 接线批已把本模块接进 [crate::windows] 后端分派
+//! （`tunnel_backend = "nt"` 时经 [NtRuntime] 装配，默认仍 service 模型）
+//! ——生产三台仍跑 wireguard.exe 服务模型，切换等 PoC 验收+用户点头。
 //!
 //! 纪律（承 [windows_tunnel] / ADR-010）：
 //!
@@ -99,6 +100,14 @@ pub enum NtPlanError {
     PeerEndpointInvalid { index: usize, raw: String },
     #[error("peer {index}: keepalive {value} exceeds u16 range of SetPeer.keep_alive")]
     PeerKeepAliveTooLarge { index: usize, value: u32 },
+}
+
+impl From<NtPlanError> for crate::NetworkError {
+    /// 计划层守门拒绝 → 应用拒绝（语义不变：计划不合法就是拒绝，绝不静默
+    /// 修正）。backend 分派用 `?` 直接收编。
+    fn from(error: NtPlanError) -> Self {
+        crate::NetworkError::ApplyRejected(error.to_string())
+    }
 }
 
 /// 单 peer 的 wireguard-nt 计划（[PeerConfig] 的执行形态前置转换）。
@@ -198,6 +207,45 @@ pub fn nt_adapter_name(handle: &str) -> Result<String, NtPlanError> {
         });
     }
     Ok(name)
+}
+
+/// FNV-1a 32 位（确定性、无依赖）：adapter handle 派生用短哈希。
+fn fnv1a32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &byte in bytes {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// 生产接口名 → adapter handle（≤8 字符，见 [nt_adapter_name]）。
+///
+/// 网络接口名（`[dataplane] interface`，如 `meshlet-overlay` 14 字符）常超
+/// 过 adapter handle 上界（`wg-mlt-` 前缀后只剩 8 字符），不能直接当
+/// handle——必须确定性压缩：跨进程/重启稳定（否则 restart 找不到原
+/// adapter 而重复 create），且不同接口名不塌缩到同一 handle。
+///
+/// 规则：白名单字符 `[A-Za-z0-9_-]` 保留、其余替换为 `-`；长度 ≤8 原样
+/// 用；超长取前 4 字符 + 全名 FNV-1a 低 16 位 4 位十六进制（8 字符）。
+/// 结果可能为空（空接口名）——由 [nt_adapter_name] fail closed。
+pub fn nt_adapter_handle(interface: &str) -> String {
+    let sanitized: String = interface
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if sanitized.len() <= 8 {
+        return sanitized;
+    }
+    let prefix: String = sanitized.chars().take(4).collect();
+    let hash = fnv1a32(interface.as_bytes()) & 0xffff;
+    format!("{prefix}{hash:04x}")
 }
 
 /// listen 端口守门：`None` 拒绝。
@@ -391,6 +439,41 @@ pub fn nt_apply_spec(plan: &NtInterfacePlan) -> Result<NtApplySpec, crate::Netwo
 }
 
 // ---------------------------------------------------------------------------
+// 只读快照层（跨平台纯结构；cfg(windows) 执行层从 get_config 回读构造）。
+// ---------------------------------------------------------------------------
+
+/// 单 peer 的快照读数（[WireguardInterface] 回读的只读视图）。
+///
+/// 公钥仍持字节形态——base64 编解码是诊断面的事（backend 接线处转
+/// [crate::PeerObserved]），与规格层「密钥字节只存在于执行瞬间」同一
+/// 边界纪律。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtPeerSnapshot {
+    /// peer 公钥（32 字节，回读原样）。
+    pub public_key: [u8; 32],
+    /// AllowedIPs（回读 canonical；V6 项在构造处丢弃——本层从未设 V6，
+    /// 出现即异常，丢段自愈）。
+    pub allowed_ips: Vec<Ipv4Cidr>,
+}
+
+/// 单 adapter 的只读快照（inspect / 漂移对账输入，[NtRuntime::snapshot]）。
+///
+/// **无 MTU/接口地址字段**——wireguard-nt `get_config` 只回读
+/// listen_port/private_key/public_key/peers（registry 源码实证），MTU
+/// 与地址读数不在 [WireguardInterface] 上。对账处这两维按「证据缺失
+/// 不判」处理（[crate::device_plan_matches] ④/⑥ 只在读数存在时判），
+/// 不制造重放死循环。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtAdapterSnapshot {
+    /// 回读的生效 listen 端口（生效值以回读为准，不用请求值）。
+    pub listen_port: u16,
+    /// 回读的本机公钥（对账「本机私钥被换」指纹用）。
+    pub public_key: [u8; 32],
+    /// peer 读数。
+    pub peers: Vec<NtPeerSnapshot>,
+}
+
+// ---------------------------------------------------------------------------
 // dll 搜索序（跨平台纯函数 + cfg(windows) 落地解析）。
 // ---------------------------------------------------------------------------
 
@@ -426,9 +509,14 @@ mod exec {
     //! 完成，本模块只剩装配与错误映射；宿主 CI 经 windows-gnu 交叉
     //! clippy/check 编译验证（不跑测试）。
 
-    use super::{nt_apply_spec, nt_dll_candidates, NtApplySpec, NT_DLL_ENV};
+    use super::{
+        nt_apply_spec, nt_dll_candidates, NtAdapterSnapshot, NtApplySpec, NtPeerSnapshot,
+        NT_DLL_ENV, BASE64,
+    };
     use crate::NetworkError;
-    use std::collections::HashMap;
+    use base64::Engine;
+    use meshlet_domain::Ipv4Cidr;
+    use std::collections::{BTreeMap, HashMap};
     use std::path::PathBuf;
     use std::sync::Mutex;
 
@@ -515,8 +603,9 @@ mod exec {
     /// adapter——句柄不放住，apply 完 adapter 就没了；PoC 退出零残留正
     /// 是这个语义）。
     ///
-    /// 尚未接进 [crate::windows] 后端分派；backend 接线批引入 agent 持有
-    /// 与 config 开关。
+    /// 经 [crate::windows] 后端的 `nt` 分派装配（`tunnel_backend = "nt"`
+    /// 时 [crate::windows::WindowsNetworkBackend] 持有本运行时；默认
+    /// service 模型不进本路径）。
     pub struct NtRuntime {
         wireguard: wireguard_nt::Wireguard,
         dll_path: PathBuf,
@@ -622,6 +711,59 @@ mod exec {
             names.sort();
             names
         }
+
+        /// 已持 adapter 的 `get_config` 回读快照（nt 后端 inspect 输入）。
+        /// adapter 未持 → `None`（进程重启后 adapter 随句柄消亡，
+        /// `tunnel_exists=false` 让 reconcile 重放）。
+        pub fn inspect(&self, adapter_name: &str) -> Option<NtAdapterSnapshot> {
+            let adapters = self.adapters.lock().unwrap_or_else(|p| p.into_inner());
+            let config = adapters.get(adapter_name)?.get_config();
+            Some(NtAdapterSnapshot {
+                listen_port: config.listen_port,
+                public_key: config.public_key,
+                peers: config
+                    .peers
+                    .iter()
+                    .map(|peer| NtPeerSnapshot {
+                        public_key: peer.public_key,
+                        allowed_ips: peer.allowed_ips.iter().filter_map(ipnet_v4_to_cidr).collect(),
+                    })
+                    .collect(),
+            })
+        }
+
+        /// 已持 adapter 的 peer 握手年龄（公钥 → 距今秒，P2P 直连判定输入）。
+        /// 与 `wg show <if> latest-handshakes` 同一语义（[crate] 的解析器
+        /// 口径：从未握手 / 时钟回拨的行丢弃——证据缺失不臆造）。
+        /// adapter 未持 → 错误（直连判定按无数据走，不假装）。
+        pub fn handshake_ages(&self, adapter_name: &str) -> Result<BTreeMap<String, u64>, NetworkError> {
+            let adapters = self.adapters.lock().unwrap_or_else(|p| p.into_inner());
+            let adapter = adapters.get(adapter_name).ok_or_else(|| {
+                NetworkError::Io(format!("no held wireguard-nt adapter {adapter_name}"))
+            })?;
+            let config = adapter.get_config();
+            let now = std::time::SystemTime::now();
+            Ok(config
+                .peers
+                .iter()
+                .filter_map(|peer| {
+                    let last = peer.last_handshake?;
+                    let age = now.duration_since(last).ok()?.as_secs();
+                    Some((BASE64.encode(peer.public_key), age))
+                })
+                .collect())
+        }
+    }
+
+    /// `ipnet::IpNet` → canonical [Ipv4Cidr]（meshlet 当前 IPv4-only：V6
+    /// 路由在 nt 路径不出现，直接过滤）。
+    fn ipnet_v4_to_cidr(net: &ipnet::IpNet) -> Option<Ipv4Cidr> {
+        match net {
+            ipnet::IpNet::V4(v4) => {
+                Ipv4Cidr::from_host_address(v4.network(), v4.prefix_len()).ok()
+            }
+            ipnet::IpNet::V6(_) => None,
+        }
     }
 }
 
@@ -682,6 +824,36 @@ mod tests {
             nt_adapter_name("net/a"),
             Err(NtPlanError::AdapterNameInvalidChar { pos: 3 })
         ));
+    }
+
+    #[test]
+    fn adapter_handle_passes_short_names_through() {
+        // ≤8 字符原样保留（无哈希扰动，诊断友好）。
+        assert_eq!(nt_adapter_handle("meshlet"), "meshlet");
+        assert_eq!(nt_adapter_handle("meshlet2"), "meshlet2");
+        // 非白名单字符替换为 `-`。
+        assert_eq!(nt_adapter_handle("mesh.let"), "mesh-let");
+        // 空接口名 → 空 handle（由 nt_adapter_name fail closed）。
+        assert_eq!(nt_adapter_handle(""), "");
+    }
+
+    #[test]
+    fn adapter_handle_compresses_long_names_deterministically() {
+        // 生产接口名 14 字符 > 8：压缩为 4 前缀 + 4 十六进制哈希 = 8。
+        let handle = nt_adapter_handle("meshlet-overlay");
+        assert_eq!(handle.len(), 8, "long interface must compress to 8 chars: {handle}");
+        assert!(handle.starts_with("mesh"), "prefix preserves the leading chars: {handle}");
+        assert!(
+            handle.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "handle chars must stay in the whitelist: {handle}"
+        );
+        // 确定性：同输入恒同输出（重启后稳定，restart 不重复 create）。
+        assert_eq!(nt_adapter_handle("meshlet-overlay"), handle);
+        // 全名参与哈希：仅尾缀不同的长名不塌缩。
+        assert_ne!(nt_adapter_handle("meshlet-overlay-1"), nt_adapter_handle("meshlet-overlay-2"));
+        // 压缩后的 adapter 名（wg-mlt- + handle）恰好 ≤15。
+        let name = nt_adapter_name(&handle).unwrap();
+        assert_eq!(name.len(), 15, "compressed adapter name sits at the 15-char limit: {name}");
     }
 
     #[test]
