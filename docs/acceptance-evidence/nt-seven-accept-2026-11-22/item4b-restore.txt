@@ -1,0 +1,11 @@
+== item4b: restore dll and recover 2026-11-22T01:40:02.6327770+08:00 ==
+== dll restored ==
+
+Name           Length
+----           ------
+wireguard.dll 1352800
+
+
+== task state ==
+Running
+== item4b done ==

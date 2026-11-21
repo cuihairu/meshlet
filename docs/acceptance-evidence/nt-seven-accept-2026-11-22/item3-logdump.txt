@@ -1,0 +1,22 @@
+== recent ERROR lines ==
+2026-11-21T17:24:05.632010Z ERROR wireguard_nt::log: wireguard: Failed to find matching adapter name: 找不到元素�?(Code 0x00000490)
+2026-11-21T17:24:05.674154Z ERROR wireguard_nt::log: wireguard: Failed to remove orphaned adapter "wg-meshlet": 设备实例不在硬件树中�?(Code 0xE000020B)
+2026-11-21T17:33:37.193817Z ERROR wireguard_nt::log: wireguard: Failed to find matching adapter name: 找不到元素�?(Code 0x00000490)
+== recent 'apply rejected' lines ==
+2026-11-21T17:33:28.951903Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:33:28.972416Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:34:02.699250Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:34:02.720024Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:34:02.740448Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:35:27.993253Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:36:27.990174Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:36:28.011430Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+== recent 'applied the desired' lines ==
+2026-11-21T17:32:11.392768Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T17:33:12.840817Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T17:33:45.857706Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T17:34:12.539626Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T17:35:11.843633Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-21T17:36:07.913381Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+== recent 'could not restore' lines ==
+== logdump done ==

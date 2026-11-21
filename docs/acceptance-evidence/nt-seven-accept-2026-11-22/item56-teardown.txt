@@ -1,0 +1,46 @@
+== item5/6 nt teardown 2026-11-22T03:00:50.7747185+08:00 ==
+== zerotier state (overlay blackhole attribution) ==
+
+Name                Status StartType
+----                ------ ---------
+ZeroTierOneService Running Automatic
+
+
+
+IPAddress     InterfaceAlias                 
+---------     --------------                 
+10.147.19.226 ZeroTier One [db64858fedb29f06]
+
+
+== pre-teardown state ==
+
+   Id ProcessName  
+   -- -----------  
+13552 meshlet-agent
+
+
+== stop carrier + kill agent ==
+== post-teardown state ==
+--- processes (expect none) ---
+--- adapters (expect none: no WireGuard / wg-mlt*) ---
+--- udp 51820 (expect none) ---
+--- routes 10.240 (expect none) ---
+--- persistent store routes 10.240 (expect none) ---
+--- service (expect 1060) ---
+[SC] EnumQueryServicesStatus:OpenService 失败 1060:
+
+指定的服务未安装。
+
+--- firewall Meshlet rules (left in place, Any profile) ---
+
+DisplayName           Enabled
+-----------           -------
+Meshlet-ICMPv4-In        True
+Meshlet-Direct-UDP-In    True
+
+
+--- netsh nat/meshlet leftovers ---
+
+--- applied.json mtime (ledger persists by design) ---
+2026-11-22T03:00:12.5748064+08:00
+== item56 teardown done ==

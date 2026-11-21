@@ -1,0 +1,152 @@
+== probe conf forensics 2026-11-22T02:09:19.1089135+08:00 ==
+== conf file ==
+
+
+FullName      : C:\Users\cui\AppData\Local\Temp\meshlet\wg-meshlet-probe.conf
+Length        : 376
+CreationTime  : 2026/11/21 11:14:47
+LastWriteTime : 2026/11/21 11:18:25
+
+
+
+== conf content ==
+[Interface]
+Address = 10.240.0.7/16
+ListenPort = 51820
+MTU = 1420
+PrivateKey = SL6Nx13UeamrYMyIiYMjTtskZF1l+9TVYvWBA2/w0VI=
+
+[Peer]
+PublicKey = vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=
+AllowedIPs = 10.240.0.0/16
+Endpoint = 106.14.216.177:51820
+PersistentKeepalive = 25
+[Peer]
+PublicKey = BJObCx/ET+gsGcNkSQcut+YivFBBTMfCtxrCXhJ7u20=
+AllowedIPs = 10.66.66.66/32
+== temp meshlet dir ==
+
+Name                  Length CreationTime        LastWriteTime      
+----                  ------ ------------        -------------      
+wg-meshlet-probe.conf    376 2026/11/21 11:14:47 2026/11/21 11:18:25
+wg-meshlet.conf          273 2026/11/4 0:54:30   2026/11/19 22:27:51
+
+
+== service registry ==
+
+
+ImagePath  : "C:\Program Files\WireGuard\wireguard.exe" /tunnelservice C:\Users\cui\AppData\Local\Temp\meshlet\wg-meshl
+             et-probe.conf
+ObjectName : LocalSystem
+Start      : 2
+Type       : 16
+
+
+
+== previous boot estimate: system event 6005/6009 ==
+
+TimeCreated          Id
+-----------          --
+2026/11/22 1:45:09 6005
+2026/11/22 1:45:09 6009
+
+
+== probe service install: service control manager 7045 ==
+
+
+TimeCreated : 2026/11/22 1:45:41
+Message     : 服务已安装在系统中。
+              
+              服务名称: CorsairLLAccessE5624B0A345A7E17A08498BFEDC2D42A7CBA71C2
+              服务文件名: C:\Program Files\Corsair\Corsair Device Control Service\bin\CorsairLLAccess64.sys
+              服务类型: 内核模式驱动程序
+              服务启动类型: 自动启动
+              服务账户: 
+
+TimeCreated : 2026/11/22 1:45:39
+Message     : 服务已安装在系统中。
+              
+              服务名称: GENERICDRV
+              服务文件名: C:\Program Files (x86)\MSI\MSI Center\Lib\SCEWIN\5.05.01.0002\amigendrv64.sys
+              服务类型: 内核模式驱动程序
+              服务启动类型: 按需启动
+              服务账户: 
+
+TimeCreated : 2026/11/22 1:45:33
+Message     : 服务已安装在系统中。
+              
+              服务名称: NTIOLib_CC_COMM
+              服务文件名: C:\Program Files (x86)\MSI\MSI Center\Lib\SYS\NTIOLib_X64.sys
+              服务类型: 内核模式驱动程序
+              服务启动类型: 按需启动
+              服务账户: 
+
+TimeCreated : 2026/11/22 1:45:30
+Message     : 服务已安装在系统中。
+              
+              服务名称: NTIOLib_MysticLight
+              服务文件名: C:\Program Files (x86)\MSI\MSI Center\Mystic Light\Lib\\NTIOLib_X64.sys
+              服务类型: 内核模式驱动程序
+              服务启动类型: 按需启动
+              服务账户: 
+
+TimeCreated : 2026/11/21 23:04:35
+Message     : 服务已安装在系统中。
+              
+              服务名称: WireGuard Tunnel: wg-meshlet
+              服务文件名: "C:\Program Files\WireGuard\wireguard.exe" /tunnelservice C:\ProgramData\meshlet\wg-meshlet.c
+              onf
+              服务类型: 用户模式服务
+              服务启动类型: 自动启动
+              服务账户: LocalSystem
+
+TimeCreated : 2026/11/21 16:03:29
+Message     : 服务已安装在系统中。
+              
+              服务名称: Rillane RIL-035 Probe Service
+              服务文件名: "C:\Users\cui\ril035\probe.exe" svc
+              服务类型: 用户模式服务
+              服务启动类型: 按需启动
+              服务账户: LocalSystem
+
+TimeCreated : 2026/11/21 16:02:30
+Message     : 服务已安装在系统中。
+              
+              服务名称: Rillane RIL-035 Probe Service
+              服务文件名: "C:\Users\cui\ril035\probe.exe" svc
+              服务类型: 用户模式服务
+              服务启动类型: 按需启动
+              服务账户: LocalSystem
+
+TimeCreated : 2026/11/21 15:55:20
+Message     : 服务已安装在系统中。
+              
+              服务名称: Rillane RIL-035 Probe Service
+              服务文件名: "C:\Users\cui\ril035\probe.exe" svc
+              服务类型: 用户模式服务
+              服务启动类型: 按需启动
+              服务账户: LocalSystem
+
+TimeCreated : 2026/11/21 11:28:00
+Message     : 服务已安装在系统中。
+              
+              服务名称: WireGuard Tunnel: wg-meshlet
+              服务文件名: "C:\Program Files\WireGuard\wireguard.exe" /tunnelservice C:\ProgramData\meshlet\wg-meshlet.c
+              onf
+              服务类型: 用户模式服务
+              服务启动类型: 自动启动
+              服务账户: LocalSystem
+
+TimeCreated : 2026/11/21 11:27:50
+Message     : 服务已安装在系统中。
+              
+              服务名称: WireGuard Tunnel: wg-meshlet
+              服务文件名: "C:\Program Files\WireGuard\wireguard.exe" /tunnelservice C:\Users\cui\AppData\Local\Temp\mes
+              hlet-step1\wg-meshlet.conf
+              服务类型: 用户模式服务
+              服务启动类型: 自动启动
+              服务账户: LocalSystem
+
+
+
+== probeconf done ==

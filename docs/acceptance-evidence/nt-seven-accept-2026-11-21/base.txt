@@ -1,0 +1,175 @@
+-- baseline 2026-11-21T22:51:30.1252504+08:00 --
+-- processes --
+
+
+Id          : 91392
+ProcessName : meshlet-agent
+Path        : C:\Users\cui\AppData\Local\meshlet\meshlet-agent.exe
+
+Id          : 9584
+ProcessName : meshlet-tray
+Path        : C:\Users\cui\AppData\Local\meshlet\tray\meshlet-tray.exe
+
+Id          : 24368
+ProcessName : wireguard
+Path        : C:\Program Files\WireGuard\wireguard.exe
+
+
+
+-- adapters wg* --
+
+Name       Status    MtuSize ifIndex InterfaceDescription
+----       ------    ------- ------- --------------------
+wg-meshlet Up     2147483552      65 WireGuard Tunnel    
+
+
+-- udp 51820 owner --
+
+  UDP    0.0.0.0:51820          *:*                                    24368
+  UDP    [::]:51820             *:*                                    24368
+
+
+-- routes 10.240 --
+
+DestinationPrefix NextHop InterfaceIndex RouteMetric
+----------------- ------- -------------- -----------
+10.240.255.255/32 0.0.0.0             65         256
+10.240.0.7/32     0.0.0.0             65         256
+10.240.0.0/16     0.0.0.0             65           0
+
+
+-- firewall --
+
+DisplayName           Enabled Direction Action
+-----------           ------- --------- ------
+Meshlet-ICMPv4-In        True   Inbound  Allow
+Meshlet-Direct-UDP-In    True   Inbound  Allow
+
+
+-- applied.json --
+{
+  "desired_config_hash": "07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814",
+  "tunnel_address": "10.240.0.7",
+  "routes": [],
+  "nat_rules": [],
+  "nat_owners": [],
+  "applied_at": "2026-11-19T14:27:53Z",
+  "local_public_key": "QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=",
+  "last_good_plan": {
+    "desired_revision": 33,
+    "hub_port": 51820,
+    "tunnel": {
+      "name": "wg-meshlet",
+      "address": "10.240.0.7",
+      "address_prefix": 16,
+      "listen_port": 51820,
+      "peers": [
+        {
+          "public_key": "vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=",
+          "allowed_ips": [
+            "10.240.0.0/16"
+          ],
+          "endpoint": "106.14.216.177:51820",
+          "persistent_keepalive_secs": 25
+        }
+      ],
+      "mtu": null,
+      "private_key": null
+    },
+    "routes": [],
+    "nat_rules": [],
+    "hub_address": "10.240.0.1",
+    "publish": null,
+    "ssh_config": {
+      "hosts": [
+        {
+          "name": "coding-vm",
+          "alias": "m-cvm",
+          "address": "10.240.0.4",
+          "user": "cui",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "cuihaitao",
+          "alias": "m-cuihaitao",
+          "address": "10.240.0.8",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "home-pve",
+          "alias": "m-home-pve",
+          "address": "10.240.0.9",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "imac",
+          "alias": "m-imac",
+          "address": "10.240.0.7",
+          "user": "cui",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "openclaw-win",
+          "alias": "m-openclaw",
+          "address": "10.240.0.3",
+          "user": "Administrator",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "vps-ns-agent",
+          "alias": "m-vps-ns",
+          "address": "10.240.0.2",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "windows-desktop",
+          "alias": "m-wd",
+          "address": "10.240.0.5",
+          "alias_source": "hub-config"
+        }
+      ]
+    },
+    "desired_config_hash": "07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814"
+  }
+}
+-- direct-port.json --
+{"listen_port":51820}
+-- agent.toml --
+server_url = "http://106.14.216.177:8080"
+state_dir = "C:\\Users\\cui\\AppData\\Local\\meshlet\\state"
+bootstrap_token = "65d91770b9964a4a6bb192f73feee73f5e885d645547bd4ebdb8f832a65fb908"
+device_name = "imac"
+
+[dataplane]
+enabled = true
+interface = "wg-meshlet"
+private_key_file = "C:\\Users\\cui\\AppData\\Local\\meshlet\\agent.key"
+hub_endpoint = "106.14.216.177:51820"
+poll_interval_secs = 30
+
+[ssh_config_sync]
+enabled = true
+manage_include = true
+
+-- service status --
+
+SERVICE_NAME: WireGuardTunnel$wg-meshlet 
+        TYPE               : 10  WIN32_OWN_PROCESS  
+        STATE              : 4  RUNNING 
+                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+-- ping hub --
+
+?? Ping 10.240.0.1 ?? 32 ?????:
+?? 10.240.0.1 ???: ??=32 ??=4ms TTL=64
+?? 10.240.0.1 ???: ??=32 ??=6ms TTL=64
+?? 10.240.0.1 ???: ??=32 ??=6ms TTL=64
+
+10.240.0.1 ? Ping ????:
+    ???: ??? = 3???? = 3??? = 0 (0% ??)?
+?????????(??????):
+    ?? = 4ms??? = 6ms??? = 5ms
+-- baseline done --

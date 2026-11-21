@@ -1,0 +1,70 @@
+== VSTATE 2026-11-22T02:16:46.0175809+08:00 ==
+--- processes ---
+
+   Id ProcessName  
+   -- -----------  
+13552 meshlet-agent
+ 5532 wireguard    
+12348 wireguard    
+
+
+--- udp 51820 owner ---
+
+LocalAddress LocalPort OwningProcess
+------------ --------- -------------
+::               51820         13552
+0.0.0.0          51820         13552
+
+
+--- service ---
+
+[SC] EnumQueryServicesStatus:OpenService 失败 1060:
+--- adapters wg ---
+
+
+
+Name      Status ifIndex InterfaceDescription  
+----      ------ ------- --------------------  
+WireGuard Up          20 wg-mlt-wg-mdc44 Tunnel
+
+
+--- ip 10.240 ---
+
+IPAddress  PrefixLength InterfaceAlias
+---------  ------------ --------------
+10.240.0.7           16 WireGuard     
+
+
+--- routes 10.240 ---
+
+DestinationPrefix NextHop InterfaceIndex RouteMetric
+----------------- ------- -------------- -----------
+10.240.255.255/32 0.0.0.0             20         256
+10.240.0.7/32     0.0.0.0             20         256
+10.240.0.0/16     0.0.0.0             20           5
+
+
+--- wg show (service iface) ---
+--- wg show WireGuard (nt iface) ---
+interface: WireGuard
+  public key: QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=
+  private key: (hidden)
+  listening port: 51820
+
+peer: vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=
+  endpoint: 106.14.216.177:51820
+  allowed ips: 10.240.0.0/16
+--- hub ping ---
+
+来自 10.240.0.1 的回复: 字节=32 时间=6ms TTL=64
+来自 10.240.0.1 的回复: 字节=32 时间=6ms TTL=64
+来自 10.240.0.1 的回复: 字节=32 时间=6ms TTL=64
+    数据包: 已发送 = 3，已接收 = 3，丢失 = 0 (0% 丢失)，
+--- applied.json mtime + summary ---
+2026-11-22T02:16:29.3702169+08:00
+"applied_at": "2026-11-21T18:16:29Z",
+"local_public_key": "QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=",
+"desired_revision": 33,
+"listen_port": 51820,
+--- direct-port.json ---
+{"listen_port":51820}

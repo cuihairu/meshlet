@@ -1,0 +1,13 @@
+== deployed artifact provenance 2026-11-22 ==
+== BUILD_INFO (as deployed) ==
+repository=cuihairu/meshlet
+commit=8c1bb93f03f964304c41fa602d256852681546dd
+built_at=2026-11-21T17:12:13Z
+target=x86_64-pc-windows-gnu
+source_dirty=true
+
+== sha256 (local build artifact == deployed copy) ==
+ab0c910df24a116bd3f4a136ee00a43af42e6af312a6d56dc12d1c98ff9f2a6d  /tmp/meshlet-accept-2026-11-22/meshlet-agent.exe
+b1b85e072c45d81358be29d94c599dc76652f912be8c0f0a41e2d5d89a6461d3  /tmp/meshlet-accept-2026-11-22/wireguard.dll
+== note: source_dirty=true is benign (todo.md + evidence dirs uncommitted at build time); code is at commit 8c1bb93 ==
+== deployed paths: C:\Users\cui\AppData\Local\meshlet\meshlet-agent.exe + wireguard.dll + BUILD_INFO ==

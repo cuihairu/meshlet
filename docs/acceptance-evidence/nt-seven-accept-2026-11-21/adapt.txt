@@ -1,0 +1,43 @@
+== adapters all 2026-11-21T23:02:27.5690058+08:00 ==
+
+Name                            Status          MtuSize ifIndex InterfaceDescription                       
+----                            ------          ------- ------- --------------------                       
+WLAN                            Disconnected       1500      20 Broadcom 802.11ac Network Adapter          
+vEthernet (FSE HostVnic)        Up                 1500      55 Hyper-V Virtual Ethernet Container Adapter 
+??? 2                           Disconnected       1500      19 Marvell AQtion 10Gbit Network Adapter      
+ZeroTier One [db64858fedb29f06] Up                 2800      18 ZeroTier Virtual Port                      
+???                             Up                 1500      13 Realtek PCIe 2.5GbE Family Controller      
+WLAN 2                          Disconnected       1500      12 Intel(R) Wi-Fi 6 AX201 160MHz              
+?????? 2                        Disconnected       1500       8 Bluetooth Device (Personal Area Network) #2
+WireGuard                       Up           2147483552      42 wg-mlt-wg-mdc44 Tunnel                     
+
+
+-- netipaddress 10.240 --
+
+IPAddress  InterfaceAlias PrefixLength
+---------  -------------- ------------
+10.240.0.7 WireGuard                16
+
+
+-- routes 10.240 --
+
+DestinationPrefix InterfaceIndex RouteMetric
+----------------- -------------- -----------
+10.240.255.255/32             42         256
+10.240.0.7/32                 42         256
+10.240.0.0/16                 42           5
+
+
+-- wg show --
+interface: WireGuard
+  public key: QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=
+  private key: (hidden)
+  listening port: 51820
+
+peer: vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=
+  endpoint: 106.14.216.177:51820
+  allowed ips: 10.240.0.0/16
+  latest handshake: 2 seconds ago
+  transfer: 92 B received, 180 B sent
+  persistent keepalive: every 25 seconds
+== done ==

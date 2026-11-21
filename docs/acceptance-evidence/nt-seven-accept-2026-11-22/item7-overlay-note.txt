@@ -1,0 +1,28 @@
+== overlay SSH (m-imac) post-reboot: times out ==
+== attribution: local workstation (10.240.0.4) stale direct endpoint ==
+2026-11-22T02:2x evidence:
+
+sudo wg show wg-mlt (local box):
+  peer: QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=   <- imac
+    endpoint: 10.147.19.17:51820                        <- ZeroTier address, dead
+    allowed ips: 10.240.0.7/32
+    transfer: 0 B received, 296 B sent                   <- never handshaked
+  peer: vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=   <- hub
+    endpoint: 106.14.216.177:51820
+    allowed ips: 10.240.0.0/16
+
+=> local box routes 10.240.0.7/32 into the stale ZT direct peer (blackhole),
+   never falls back to the hub relay; both directions lost:
+   ping 10.240.0.7 from local = 100% loss; imac ping 10.240.0.4 = PingSucceeded False.
+
+== control evidence: imac side is healthy ==
+- imac hub ping (10.240.0.1) = 0% loss, 6ms
+- hub wg0 dump: QmAF handshake 40s, allowed ips 10.240.0.7/32
+- hub tcpdump wg0: imac(10.240.0.7) <-> openclaw(10.240.0.3) ICMP request+reply OK
+- hub tcpdump wg0: imac(10.240.0.7) -> 10.240.0.4 request arrives, no reply
+  (reply would leave local box via the blackholed QmAF peer)
+
+=> pre-existing known issue "QmAF dead endpoint (10.147.19.17, anonymous ZT member)",
+   already recorded in docs/acceptance-evidence/wgnt-step12-2026-11-21.md
+   ("整定批已记录的 QmAF 死端点顽疾，非本实验造成").
+   Not caused by the nt switch; direct SSH to imac unaffected.

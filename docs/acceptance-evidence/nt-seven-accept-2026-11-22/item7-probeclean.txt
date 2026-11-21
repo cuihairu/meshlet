@@ -1,0 +1,41 @@
+== probeclean 2026-11-22T02:15:46.9753706+08:00 ==
+== stop probe service ==
+
+SERVICE_NAME: WireGuardTunnel$wg-meshlet-probe 
+        TYPE               : 10  WIN32_OWN_PROCESS  
+        STATE              : 3  STOP_PENDING 
+                                (NOT_STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+== delete probe service ==
+[SC] DeleteService 成功
+== verify service ==
+[SC] EnumQueryServicesStatus:OpenService 失败 1060:
+
+指定的服务未安装。
+
+== kill orphan probe tunnelservice ==
+== remove conf ==
+conf exists: False
+== 51820 after ==
+
+LocalAddress LocalPort OwningProcess
+------------ --------- -------------
+::               51820         13552
+0.0.0.0          51820         13552
+
+
+== wireguard procs after ==
+
+
+ProcessId   : 5532
+CommandLine : "C:\Program Files\WireGuard\wireguard.exe" /managerservice
+
+ProcessId   : 12348
+CommandLine : "C:\Program Files\WireGuard\wireguard.exe" /ui 1052 1048 1060 1068
+
+
+
+== probeclean done ==

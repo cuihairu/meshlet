@@ -1,0 +1,125 @@
+== timestamp ==
+2026-11-22T01:26:26.2552073+08:00
+== processes ==
+
+   Id ProcessName   Path                                                
+   -- -----------   ----                                                
+96252 meshlet-agent C:\Users\cui\AppData\Local\meshlet\meshlet-agent.exe
+
+
+== udp 51820 owner ==
+
+LocalAddress LocalPort OwningProcess
+------------ --------- -------------
+::               51820         96252
+0.0.0.0          51820         96252
+
+
+== service ==
+[SC] EnumQueryServicesStatus:OpenService 失败 1060:
+
+指定的服务未安装。
+
+== adapters (full) ==
+
+Name                            Status          MtuSize ifIndex InterfaceDescription                       
+----                            ------          ------- ------- --------------------                       
+WLAN                            Disconnected       1500      20 Broadcom 802.11ac Network Adapter          
+vEthernet (FSE HostVnic)        Up                 1500      55 Hyper-V Virtual Ethernet Container Adapter 
+以太网 2                        Disconnected       1500      19 Marvell AQtion 10Gbit Network Adapter      
+ZeroTier One [db64858fedb29f06] Up                 2800      18 ZeroTier Virtual Port                      
+以太网                          Up                 1500      13 Realtek PCIe 2.5GbE Family Controller      
+WLAN 2                          Disconnected       1500      12 Intel(R) Wi-Fi 6 AX201 160MHz              
+蓝牙网络连接 2                  Disconnected       1500       8 Bluetooth Device (Personal Area Network) #2
+WireGuard                       Up           2147483552      42 wg-mlt-wg-mdc44 Tunnel                     
+
+
+== ip on nt adapter ==
+
+IPAddress  PrefixLength InterfaceAlias
+---------  ------------ --------------
+10.240.0.7           16 WireGuard     
+
+
+== routes 10.240 ==
+
+DestinationPrefix NextHop InterfaceIndex RouteMetric
+----------------- ------- -------------- -----------
+10.240.255.255/32 0.0.0.0             42         256
+10.240.0.7/32     0.0.0.0             42         256
+10.240.0.0/16     0.0.0.0             42           5
+
+
+== wg show WireGuard ==
+interface: WireGuard
+  public key: QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=
+  private key: (hidden)
+  listening port: 51820
+
+peer: vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=
+  endpoint: 106.14.216.177:51820
+  allowed ips: 10.240.0.0/16
+  latest handshake: 1 second ago
+  transfer: 3.75 KiB received, 5.41 KiB sent
+  persistent keepalive: every 25 seconds
+== hub ping ==
+
+正在 Ping 10.240.0.1 具有 32 字节的数据:
+来自 10.240.0.1 的回复: 字节=32 时间=6ms TTL=64
+来自 10.240.0.1 的回复: 字节=32 时间=6ms TTL=64
+来自 10.240.0.1 的回复: 字节=32 时间=6ms TTL=64
+
+10.240.0.1 的 Ping 统计信息:
+    数据包: 已发送 = 3，已接收 = 3，丢失 = 0 (0% 丢失)，
+往返行程的估计时间(以毫秒为单位):
+    最短 = 6ms，最长 = 6ms，平均 = 6ms
+== applied.json ==
+{
+  "desired_config_hash": "07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814",
+  "tunnel_address": "10.240.0.7",
+  "routes": [],
+== applied_at and revision ==
+
+
+applied_at          : 
+desired_config_hash : 
+tunnel_address      : 
+
+
+
+"desired_revision": 33,
+"hub_port": 51820,
+"listen_port": 51820,
+== applied.json mtime ==
+2026-11-22T01:26:33.5163484+08:00
+== direct-port.json ==
+{"listen_port":51820}
+== firewall Meshlet rules ==
+
+DisplayName           Enabled Direction Action Profile
+-----------           ------- --------- ------ -------
+Meshlet-ICMPv4-In        True   Inbound  Allow     Any
+Meshlet-Direct-UDP-In    True   Inbound  Allow     Any
+
+
+== connection profile (WireGuard alias) ==
+
+Name         InterfaceAlias NetworkCategory
+----         -------------- ---------------
+WireGuard 10 WireGuard              Private
+
+
+== probe: Set-NetConnectionProfile by resolved alias ==
+Private
+== log counts after switch ==
+recent_count=39
+recent_error_count=8
+recent_restore_count=0
+recent_rejected_count=6
+recent_applied_count=4
+== sample applied/reject lines ==
+2026-11-21T17:25:53.466258Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:25:53.490058Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:25:53.510121Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:26:33.518006Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+== item1tail done ==

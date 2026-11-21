@@ -1,0 +1,86 @@
+== nt switch-in 2026-11-21T22:52:43.1057633+08:00 ==
+backup created: agent.toml.pre-nt.bak
+config switched:
+tunnel_backend = "nt"
+stopping agent...
+??: ???? "MeshletAgentDeploy" ????????
+agent after stop: dead
+starting agent...
+??: ???? "MeshletAgentDeploy"?
+== verification ==
+-- processes --
+
+
+Id          : 97980
+ProcessName : meshlet-agent
+Path        : C:\Users\cui\AppData\Local\meshlet\meshlet-agent.exe
+
+
+
+-- adapters wg* --
+-- udp 51820 owner --
+
+  UDP    0.0.0.0:51820          *:*                                    97980
+  UDP    [::]:51820             *:*                                    97980
+
+
+-- service query --
+[SC] EnumQueryServicesStatus:OpenService ?? 1060:
+
+?????????
+
+-- ping hub --
+
+?? Ping 10.240.0.1 ?? 32 ?????:
+?? 10.240.0.1 ???: ??=32 ??=5ms TTL=64
+?? 10.240.0.1 ???: ??=32 ??=6ms TTL=64
+?? 10.240.0.1 ???: ??=32 ??=6ms TTL=64
+?? 10.240.0.1 ???: ??=32 ??=5ms TTL=64
+
+10.240.0.1 ? Ping ????:
+    ???: ??? = 4???? = 4??? = 0 (0% ??)?
+?????????(??????):
+    ?? = 5ms??? = 6ms??? = 5ms
+-- wg show readback --
+wg.exe : Unable to access interface: No such file or directory
+???? C:\Users\cui\phaseC_switch.ps1:36 ??: 1
++ & 'C:\Program Files\WireGuard\wg.exe' show wg-mlt-wg-mdc44 2>&1 | Out ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Unable to acces...le or directory:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+-- routes 10.240 --
+
+DestinationPrefix InterfaceIndex RouteMetric
+----------------- -------------- -----------
+10.240.255.255/32             42         256
+10.240.0.7/32                 42         256
+10.240.0.0/16                 42           5
+
+
+-- log lines (new instance, nt marker) --
+2026-11-21T11:17:59.770088Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T11:17:59.770146Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+2026-11-21T12:12:11.502600Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=p2p_direct to=hub_relay reason=handshake stale beyond health window (probe Unhealthy)
+2026-11-21T14:01:14.528600Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=p2p_direct to=hub_relay reason=handshake stale beyond health window (probe Unhealthy)
+2026-11-21T14:11:05.517475Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=p2p_direct to=hub_relay reason=handshake stale beyond health window (probe Unhealthy)
+2026-11-21T14:18:34.301280Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=p2p_direct to=hub_relay reason=handshake stale beyond health window (probe Unhealthy)
+2026-11-21T14:40:17.240363Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=p2p_direct to=hub_relay reason=handshake stale beyond health window (probe Unhealthy)
+2026-11-21T14:52:01.410445Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T14:52:01.410454Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+2026-11-21T14:52:46.382571Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T14:52:46.382602Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+2026-11-21T14:52:46.384821Z  INFO meshlet_agent::agent: data plane backend: wireguard-nt interface=wg-meshlet
+2026-11-21T14:52:46.428162Z  INFO meshlet_agent::agent::reconcile: direct listen port resolved port=52900 configured=51820
+2026-11-21T14:52:52.912833Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? restore_error=apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????
+2026-11-21T14:52:52.935618Z  WARN meshlet_agent::agent: agent tick failed error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????; restore failed: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? retry_in_secs=1
+2026-11-21T14:52:54.541959Z  INFO meshlet_agent::agent::reconcile: direct listen port resolved port=51820 configured=51820
+2026-11-21T14:52:59.769949Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? restore_error=apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????
+2026-11-21T14:52:59.790784Z  WARN meshlet_agent::agent: agent tick failed error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????; restore failed: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? retry_in_secs=2
+2026-11-21T14:53:08.614063Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? restore_error=apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????
+2026-11-21T14:53:08.638306Z  WARN meshlet_agent::agent: agent tick failed error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????; restore failed: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? retry_in_secs=4
+2026-11-21T14:53:19.416940Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? restore_error=apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????
+2026-11-21T14:53:19.441724Z  WARN meshlet_agent::agent: agent tick failed error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????; restore failed: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? retry_in_secs=8
+2026-11-21T14:53:34.233512Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? restore_error=apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????
+2026-11-21T14:53:34.256552Z  WARN meshlet_agent::agent: agent tick failed error=apply the desired plan: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ?????????; restore failed: apply rejected: netsh network category set private for rule `wg-meshlet` failed (exit 1): Set-NetConnectionProfile : ??????InterfaceAlias??????wg-meshlet?? MSFT_NetConnectionProfile ????????? retry_in_secs=16
+== switch done ==

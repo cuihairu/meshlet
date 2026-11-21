@@ -1,0 +1,146 @@
+== item7 forensics 2026-11-22T03:15:31.8367897+08:00 ==
+== last boot ==
+
+
+LastBootUpTime : 2026/11/22 3:09:59
+
+
+
+== task info ==
+
+
+LastRunTime        : 2026/11/22 3:06:32
+LastTaskResult     : 1
+NextRunTime        : 
+NumberOfMissedRuns : 0
+
+
+
+== task triggers ==
+
+
+Enabled            : True
+EndBoundary        : 
+ExecutionTimeLimit : 
+Id                 : 
+Repetition         : MSFT_TaskRepetitionPattern
+StartBoundary      : 
+Delay              : 
+UserId             : 
+PSComputerName     : 
+
+
+
+== services ==
+
+Name              Status StartType
+----              ------ ---------
+WireGuardManager Running Automatic
+
+
+== processes cmdline ==
+
+
+ProcessId    : 5540
+Name         : wireguard.exe
+CreationDate : 2026/11/22 3:10:17
+CommandLine  : "C:\Program Files\WireGuard\wireguard.exe" /managerservice
+
+ProcessId    : 8564
+Name         : meshlet-agent.exe
+CreationDate : 2026/11/22 3:10:35
+CommandLine  : "C:\Users\cui\AppData\Local\meshlet\meshlet-agent.exe" C:\Users\cui\AppData\Local\meshlet\agent.toml 
+
+
+
+== udp listeners 51820/52900 ==
+
+LocalAddress LocalPort OwningProcess
+------------ --------- -------------
+::               51820          8564
+0.0.0.0          51820          8564
+
+
+== adapters ==
+
+Name      Status ifIndex InterfaceDescription   MacAddress
+----      ------ ------- --------------------   ----------
+WireGuard Up           2 wg-mlt-wg-mdc44 Tunnel           
+
+
+== wg configs on disk ==
+== wg show all ==
+interface: WireGuard
+  public key: QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=
+  private key: (hidden)
+  listening port: 51820
+
+peer: vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=
+  endpoint: 106.14.216.177:51820
+  allowed ips: 10.240.0.0/16
+  latest handshake: 38 seconds ago
+  transfer: 3.15 KiB received, 4.31 KiB sent
+  persistent keepalive: every 25 seconds
+== wg show wg-meshlet-probe ==
+== agent log post-reboot ==
+Unable to access interface: No such file or directory
+logfile: C:\Users\cui\AppData\Local\meshlet\state\logs\meshlet-agent.log.2026-11-21
+total lines: 1473
+2026-11-21T17:45:25.779947Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:45:25.780072Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+2026-11-21T17:45:25.888503Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-21T17:45:26.023340Z  INFO meshlet_agent::bootstrap: using the saved agent token path=C:\Users\cui\AppData\Local\meshlet\state\device_token
+2026-11-21T17:45:26.787561Z  INFO meshlet_agent::agent: data plane backend: wireguard-nt interface=wg-meshlet
+2026-11-21T17:45:28.940801Z  INFO meshlet_agent::agent::reconcile: direct listen port resolved port=52900 configured=51820
+2026-11-21T17:45:29.010388Z ERROR wireguard_nt::log: wireguard: Failed to find matching adapter name: 找不到元素�?(Code 0x00000490)
+2026-11-21T17:45:29.069451Z  INFO wireguard_nt::log: wireguard: Removed orphaned adapter "WireGuard"
+2026-11-21T17:45:29.311404Z  INFO wireguard_nt::log: wireguard: Using existing driver 1.1
+2026-11-21T17:45:29.320872Z  INFO wireguard_nt::log: wireguard: Creating adapter
+2026-11-21T17:45:29.419917Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:45:49.112868Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:45:49.113064Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:45:49.532376Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=1
+2026-11-21T17:45:49.532395Z  INFO meshlet_agent::agent: network change observed: retrying immediately
+2026-11-21T17:45:53.386350Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:46:00.769279Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:46:00.769387Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:46:00.791373Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=2
+2026-11-21T17:46:06.053195Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:46:15.150113Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:46:15.150212Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:46:15.171936Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=4
+2026-11-21T17:46:24.020520Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:46:32.028165Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:46:32.028271Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:46:32.053291Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=8
+2026-11-21T17:46:45.677402Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:46:54.316774Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:46:54.316870Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:46:54.342999Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=16
+2026-11-21T17:47:02.472395Z  INFO meshlet_agent::agent: network change observed: retrying immediately
+2026-11-21T17:47:07.450338Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:47:18.252004Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:47:18.252132Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:47:18.273724Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=30
+2026-11-21T17:47:33.704534Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-21T17:47:33.704546Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+2026-11-21T17:47:52.871950Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:48:00.731892Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:48:00.731993Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:48:00.751665Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=30
+2026-11-21T17:48:34.620505Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:48:42.113018Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:48:42.113115Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:48:42.132124Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=30
+2026-11-21T17:49:16.179382Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:49:23.744610Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-21T17:49:23.744728Z ERROR meshlet_agent::agent::reconcile: could not restore the last successful device plan error=applied plan did not match kernel readback restore_error=backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32)
+2026-11-21T17:49:23.765861Z  WARN meshlet_agent::agent: agent tick failed error=applied plan did not match kernel readback; restore failed: backend io failure: adapter set_config: 另一个程序正在使用此文件，进程无法访问�?(os error 32) retry_in_secs=30
+== last 6 lines ==
+
+2026-11-21T19:15:15.306869Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+
+2026-11-21T19:15:15.307687Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= from=direct_pending to=hub_relay reason=pending attempts exhausted after 3 rounds (probe Unknown)
+2026-11-21T19:15:15.308468Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=direct_pending to=hub_relay reason=pending attempts exhausted after 3 rounds (probe Unknown)
+
+== forensics done ==

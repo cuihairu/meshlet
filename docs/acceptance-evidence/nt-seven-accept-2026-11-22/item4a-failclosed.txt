@@ -1,0 +1,23 @@
+== item4a: fail-closed on missing dll 2026-11-22T01:38:08.1341424+08:00 ==
+== dll removed ==
+
+Name                Length
+----                ------
+wireguard.dll.hold 1352800
+
+
+== agent process ==
+== applied.json mtime (should NOT have updated) ==
+2026-11-22T01:38:06.3028885+08:00
+== adapter present? (should be absent) ==
+== udp 51820 owner (should be none) ==
+== recent agent errors ==
+2026-11-21T17:36:28.011430Z  WARN meshlet_agent::agent::direct: direct demote failed; hub relay already covers this peer public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:36:28.012381Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= from=direct_pending to=hub_relay reason=pending attempts exhausted after 3 rounds (probe Unknown)
+2026-11-21T17:37:26.482377Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:37:26.503394Z  WARN meshlet_agent::agent::direct: direct promote failed; keeping hub relay public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= error=apply rejected: wg set wg-meshlet: Unable to modify interface: No such file or directory
+2026-11-21T17:37:26.504395Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= from=hub_relay to=direct_pending reason=promote attempt via candidate table (probe Unhealthy)
+2026-11-21T17:38:13.793229Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+2026-11-21T17:38:20.408015Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+2026-11-21T17:38:22.986123Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+== item4a done ==

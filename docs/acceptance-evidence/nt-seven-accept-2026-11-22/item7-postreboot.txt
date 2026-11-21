@@ -1,0 +1,94 @@
+== VSTATE 2026-11-22T01:45:49.3821356+08:00 ==
+--- processes ---
+
+   Id ProcessName  
+   -- -----------  
+13552 meshlet-agent
+ 5532 wireguard    
+ 6164 wireguard    
+12348 wireguard    
+
+
+--- udp 51820 owner ---
+
+LocalAddress LocalPort OwningProcess
+------------ --------- -------------
+::               51820          6164
+0.0.0.0          51820          6164
+
+
+--- service ---
+
+[SC] EnumQueryServicesStatus:OpenService 失败 1060:
+--- adapters wg ---
+
+
+
+Name             Status ifIndex InterfaceDescription  
+----             ------ ------- --------------------  
+wg-meshlet-probe Up           2 WireGuard Tunnel      
+WireGuard        Up          20 wg-mlt-wg-mdc44 Tunnel
+
+
+--- ip 10.240 ---
+
+IPAddress  PrefixLength InterfaceAlias  
+---------  ------------ --------------  
+10.240.0.7           16 wg-meshlet-probe
+
+
+--- routes 10.240 ---
+
+DestinationPrefix NextHop InterfaceIndex RouteMetric
+----------------- ------- -------------- -----------
+10.240.255.255/32 0.0.0.0             20         256
+10.240.255.255/32 0.0.0.0              2         256
+10.240.0.7/32     0.0.0.0              2         256
+10.240.0.0/16     0.0.0.0             20           5
+10.240.0.0/16     0.0.0.0              2           0
+
+
+--- wg show (service iface) ---
+--- wg show WireGuard (nt iface) ---
+interface: WireGuard
+  public key: QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=
+  private key: (hidden)
+  listening port: 52900
+
+peer: vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=
+  endpoint: 106.14.216.177:51820
+  allowed ips: 10.240.0.0/16
+--- hub ping ---
+
+来自 10.240.0.1 的回复: 字节=32 时间=5ms TTL=64
+来自 10.240.0.1 的回复: 字节=32 时间=4ms TTL=64
+    数据包: 已发送 = 3，已接收 = 2，丢失 = 1 (33% 丢失)，
+--- applied.json mtime + summary ---
+2026-11-22T01:43:32.5188706+08:00
+"applied_at": "2026-11-21T17:43:32Z",
+"local_public_key": "QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=",
+"desired_revision": 33,
+"listen_port": 51820,
+--- direct-port.json ---
+{"listen_port":52900}
+--- firewall Meshlet ---
+
+
+
+DisplayName           Enabled Direction Action Profile
+-----------           ------- --------- ------ -------
+Meshlet-ICMPv4-In        True   Inbound  Allow     Any
+Meshlet-Direct-UDP-In    True   Inbound  Allow     Any
+
+
+--- connection profile ---
+
+Name             InterfaceAlias   NetworkCategory
+----             --------------   ---------------
+WireGuard 13     WireGuard                Private
+wg-meshlet-probe wg-meshlet-probe          Public
+
+
+--- log counts (recent) ---
+recent_count=179 ERROR=37 could_not_restore=1 apply_rejected=30 applied=22
+--- VSTATE done ---
