@@ -142,11 +142,12 @@ impl Agent {
         let backend = SystemBackend::new().with_interface(config.dataplane.interface.clone());
         #[cfg(target_os = "windows")]
         let backend = if config.dataplane.tunnel_backend == TunnelBackend::Nt {
-            let runtime = meshlet_network::windows_wireguard_nt::NtRuntime::load().map_err(|e| {
-                format!(
+            let runtime =
+                meshlet_network::windows_wireguard_nt::NtRuntime::load().map_err(|e| {
+                    format!(
                     "tunnel_backend=nt requested but the wireguard-nt runtime is unavailable: {e}"
                 )
-            })?;
+                })?;
             tracing::info!(
                 interface = %config.dataplane.interface,
                 "data plane backend: wireguard-nt"

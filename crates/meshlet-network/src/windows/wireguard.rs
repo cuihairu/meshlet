@@ -152,8 +152,7 @@ impl WindowsNetworkBackend {
     /// WireGuard for Windows，`wg.exe` 可能不在——账本公钥指纹推导必须
     /// 在两模型下都成立。
     pub fn public_key_from_private(&self, private_key: &str) -> Result<String, NetworkError> {
-        crate::keys::public_from_private(private_key)
-            .map_err(NetworkError::Io)
+        crate::keys::public_from_private(private_key).map_err(NetworkError::Io)
     }
 
     /// P2P 直连执行层（§12）：`wg.exe show <if> latest-handshakes` →

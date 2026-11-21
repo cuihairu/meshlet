@@ -42,8 +42,7 @@ fn main() -> std::process::ExitCode {
     // 看不到任何文件）。初始化失败不阻断启动，退回纯 stdout。
     let log_dir = std::path::PathBuf::from(&config.state_dir).join("logs");
     if std::fs::create_dir_all(&log_dir).is_ok() {
-        let file_appender =
-            tracing_appender::rolling::daily(&log_dir, "meshlet-agent.log");
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "meshlet-agent.log");
         // Writer 由全局 subscriber 持有；guard forget 到进程退出。
         let (log_writer, log_guard) = tracing_appender::non_blocking(file_appender);
         tracing_subscriber::fmt()

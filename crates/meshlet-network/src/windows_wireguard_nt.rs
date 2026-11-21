@@ -510,8 +510,8 @@ mod exec {
     //! clippy/check 编译验证（不跑测试）。
 
     use super::{
-        nt_apply_spec, nt_dll_candidates, NtAdapterSnapshot, NtApplySpec, NtPeerSnapshot,
-        NT_DLL_ENV, BASE64,
+        nt_apply_spec, nt_dll_candidates, NtAdapterSnapshot, NtApplySpec, NtPeerSnapshot, BASE64,
+        NT_DLL_ENV,
     };
     use crate::NetworkError;
     use base64::Engine;
@@ -726,7 +726,11 @@ mod exec {
                     .iter()
                     .map(|peer| NtPeerSnapshot {
                         public_key: peer.public_key,
-                        allowed_ips: peer.allowed_ips.iter().filter_map(ipnet_v4_to_cidr).collect(),
+                        allowed_ips: peer
+                            .allowed_ips
+                            .iter()
+                            .filter_map(ipnet_v4_to_cidr)
+                            .collect(),
                     })
                     .collect(),
             })
@@ -736,7 +740,10 @@ mod exec {
         /// 与 `wg show <if> latest-handshakes` 同一语义（[crate] 的解析器
         /// 口径：从未握手 / 时钟回拨的行丢弃——证据缺失不臆造）。
         /// adapter 未持 → 错误（直连判定按无数据走，不假装）。
-        pub fn handshake_ages(&self, adapter_name: &str) -> Result<BTreeMap<String, u64>, NetworkError> {
+        pub fn handshake_ages(
+            &self,
+            adapter_name: &str,
+        ) -> Result<BTreeMap<String, u64>, NetworkError> {
             let adapters = self.adapters.lock().unwrap_or_else(|p| p.into_inner());
             let adapter = adapters.get(adapter_name).ok_or_else(|| {
                 NetworkError::Io(format!("no held wireguard-nt adapter {adapter_name}"))
@@ -759,9 +766,7 @@ mod exec {
     /// 路由在 nt 路径不出现，直接过滤）。
     fn ipnet_v4_to_cidr(net: &ipnet::IpNet) -> Option<Ipv4Cidr> {
         match net {
-            ipnet::IpNet::V4(v4) => {
-                Ipv4Cidr::from_host_address(v4.network(), v4.prefix_len()).ok()
-            }
+            ipnet::IpNet::V4(v4) => Ipv4Cidr::from_host_address(v4.network(), v4.prefix_len()).ok(),
             ipnet::IpNet::V6(_) => None,
         }
     }
@@ -841,19 +846,35 @@ mod tests {
     fn adapter_handle_compresses_long_names_deterministically() {
         // 生产接口名 14 字符 > 8：压缩为 4 前缀 + 4 十六进制哈希 = 8。
         let handle = nt_adapter_handle("meshlet-overlay");
-        assert_eq!(handle.len(), 8, "long interface must compress to 8 chars: {handle}");
-        assert!(handle.starts_with("mesh"), "prefix preserves the leading chars: {handle}");
+        assert_eq!(
+            handle.len(),
+            8,
+            "long interface must compress to 8 chars: {handle}"
+        );
         assert!(
-            handle.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            handle.starts_with("mesh"),
+            "prefix preserves the leading chars: {handle}"
+        );
+        assert!(
+            handle
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
             "handle chars must stay in the whitelist: {handle}"
         );
         // 确定性：同输入恒同输出（重启后稳定，restart 不重复 create）。
         assert_eq!(nt_adapter_handle("meshlet-overlay"), handle);
         // 全名参与哈希：仅尾缀不同的长名不塌缩。
-        assert_ne!(nt_adapter_handle("meshlet-overlay-1"), nt_adapter_handle("meshlet-overlay-2"));
+        assert_ne!(
+            nt_adapter_handle("meshlet-overlay-1"),
+            nt_adapter_handle("meshlet-overlay-2")
+        );
         // 压缩后的 adapter 名（wg-mlt- + handle）恰好 ≤15。
         let name = nt_adapter_name(&handle).unwrap();
-        assert_eq!(name.len(), 15, "compressed adapter name sits at the 15-char limit: {name}");
+        assert_eq!(
+            name.len(),
+            15,
+            "compressed adapter name sits at the 15-char limit: {name}"
+        );
     }
 
     #[test]
