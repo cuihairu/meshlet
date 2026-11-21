@@ -165,16 +165,21 @@ hub ping 0% 丢、`applied.json` 03:08:17）。
 
 ## 相邻发现（按任务书：记录不修，勿扩面）
 
-1. **nt 下 direct 快路径恒失败（新 nt 缺陷）**：direct promote/demote 走
-   `wg set wg-meshlet`（服务模型接口名），nt 下接口是 `WireGuard` →
-   每次报 `apply rejected: wg set wg-meshlet: Unable to modify interface:
-   No such file or directory`，peer 翻面回落 hub_relay（`probe Unknown`/
-   `pending attempts exhausted`）。**后果：nt 模型 direct P2P 永远建立
-   不起来**（hub relay 兜底、连通性不瘫）；且 direct 模块反复翻面引发
-   reconcile 周期性 KernelDrift 重放（`applied=4/13/19` 观测）。证据：
-   `item1-verify.txt` L121-123、`item4a-failclosed.txt` L15-19、
-   `item7r-early.txt` 尾部。待修面与 8c1bb93 同源：direct 模块的 wg 工具
-   调用面也要过 nt 别名解析。
+1. **nt 下 direct 快路径恒失败（新 nt 缺陷）——已修复（本批）**：direct
+   promote/demote 走 `wg set wg-meshlet`（服务模型接口名），nt 下接口是
+   `WireGuard` → 每次报 `apply rejected: wg set wg-meshlet: Unable to
+   modify interface: No such file or directory`，peer 翻面回落 hub_relay
+   （`probe Unknown`/`pending attempts exhausted`）。**后果：nt 模型
+   direct P2P 永远建立不起来**（hub relay 兜底、连通性不瘫）；且 direct
+   模块反复翻面引发 reconcile 周期性 KernelDrift 重放（`applied=4/13/19`
+   观测）。证据：`item1-verify.txt` L121-123、`item4a-failclosed.txt`
+   L15-19、`item7r-early.txt` 尾部。修复：`wireguard.rs::run_wg_set` 改吃
+   `effective_interface_alias()`（nt → OS 别名 `WireGuard`；service →
+   `self.interface` 不变），与 8c1bb93 同源模式；nt adapter 本身支持运行期
+   `wg set`（本模块 `set_direct_peer_sync` 文档已载），只错在寻址名。
+   **验证面**：门禁全绿（fmt/clippy -D warnings/workspace test/windows-gnu
+   check）；`wg set WireGuard` 在 nt adapter 上的真机行为待 imac 回归后
+   补验（本轮 imac 失联，无法真机）。
 2. **item 4 诊断性缺口——已修复（本批）**：缺 wireguard.dll 时 agent
    `Agent::new` 失败只 `eprintln` 到 stderr；本进程经 MeshletAgentDeploy
    （S4U/无 console 会话）运行，stderr 无人接 → 启动期失败原因在日志

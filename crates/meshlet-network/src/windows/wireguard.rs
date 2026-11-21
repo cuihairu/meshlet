@@ -247,7 +247,17 @@ impl WindowsNetworkBackend {
 
     /// `wg.exe set <if> <args>`：运行期变更受管适配器（成功静默；失败携带
     /// wg.exe stderr 文本——权限不足/适配器不存在都在其中可读）。
+    ///
+    /// 接口名必须过 [Self::effective_interface_alias]：service 模型 =
+    /// `self.interface`；nt 模型 = OS 别名（`WireGuard`）。**不能直接用
+    /// `self.interface`**——nt 模型下它是 config 值 `wg-meshlet`，而
+    /// `wg.exe set` 按 OS 别名寻址，`wg-meshlet` 不存在 → 每次
+    /// `wg set wg-meshlet: Unable to modify interface: No such file or
+    /// directory`，direct 快路径在 nt 模型下永远建立不起来（wgnt-seven-item
+    /// 2026-11-22 相邻发现①；nt adapter 本身支持运行期 `wg set`，见
+    /// 本模块 `set_direct_peer_sync` 文档）。
     fn run_wg_set(&self, args: &[&str]) -> Result<(), NetworkError> {
+        let interface = self.effective_interface_alias()?;
         let exe = self.find_wg_exe().ok_or_else(|| {
             NetworkError::Unsupported(
                 "wg.exe not found. Install WireGuard for Windows.".to_string(),
@@ -255,7 +265,7 @@ impl WindowsNetworkBackend {
         })?;
         let out = std::process::Command::new(&exe)
             .arg("set")
-            .arg(&self.interface)
+            .arg(&interface)
             .args(args)
             .no_window()
             .output()
@@ -265,7 +275,7 @@ impl WindowsNetworkBackend {
         }
         Err(NetworkError::ApplyRejected(format!(
             "wg set {}: {}",
-            self.interface,
+            interface,
             crate::windows_console::decode_output(&out.stderr)
         )))
     }
