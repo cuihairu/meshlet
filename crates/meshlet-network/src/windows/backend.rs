@@ -177,44 +177,50 @@ impl WindowsNetworkBackend {
         let forwarding_enabled = self.forwarding_enabled();
         let readback = nt.inspect(&adapter_name);
         let tunnel_exists = readback.is_some();
-        let (peers, installed_routes, local_public_key, tunnel_listen_port, tunnel_mtu, tunnel_address) =
-            match readback {
-                None => (Vec::new(), Vec::new(), None, None, None, None),
-                Some(snapshot) => {
-                    let peers = snapshot
-                        .peers
-                        .iter()
-                        .map(|peer| crate::PeerObserved {
-                            public_key: BASE64.encode(peer.public_key),
-                            allowed_ips: peer.allowed_ips.clone(),
-                        })
-                        .collect();
-                    // installed_routes = 驱动 set_default_route 装配的
-                    // allowed_ips（peers 的并集），与计划 routes 的对账口径
-                    // 同一集合。
-                    let mut installed_routes: Vec<meshlet_domain::Ipv4Cidr> = snapshot
-                        .peers
-                        .iter()
-                        .flat_map(|peer| peer.allowed_ips.iter().copied())
-                        .collect();
-                    installed_routes.sort();
-                    installed_routes.dedup();
-                    let local_public_key = Some(BASE64.encode(snapshot.public_key));
-                    let tunnel_listen_port = Some(snapshot.listen_port);
-                    // crate 的 set_default_route 把 NlMtu 硬编码 1420
-                    // （[NT_INTERFACE_MTU]）：adapter 在则 MTU 必是它。
-                    let tunnel_mtu = Some(NT_INTERFACE_MTU);
-                    let tunnel_address = self.nt_adapter_address(&adapter_name);
-                    (
-                        peers,
-                        installed_routes,
-                        local_public_key,
-                        tunnel_listen_port,
-                        tunnel_mtu,
-                        tunnel_address,
-                    )
-                }
-            };
+        let (
+            peers,
+            installed_routes,
+            local_public_key,
+            tunnel_listen_port,
+            tunnel_mtu,
+            tunnel_address,
+        ) = match readback {
+            None => (Vec::new(), Vec::new(), None, None, None, None),
+            Some(snapshot) => {
+                let peers = snapshot
+                    .peers
+                    .iter()
+                    .map(|peer| crate::PeerObserved {
+                        public_key: BASE64.encode(peer.public_key),
+                        allowed_ips: peer.allowed_ips.clone(),
+                    })
+                    .collect();
+                // installed_routes = 驱动 set_default_route 装配的
+                // allowed_ips（peers 的并集），与计划 routes 的对账口径
+                // 同一集合。
+                let mut installed_routes: Vec<meshlet_domain::Ipv4Cidr> = snapshot
+                    .peers
+                    .iter()
+                    .flat_map(|peer| peer.allowed_ips.iter().copied())
+                    .collect();
+                installed_routes.sort();
+                installed_routes.dedup();
+                let local_public_key = Some(BASE64.encode(snapshot.public_key));
+                let tunnel_listen_port = Some(snapshot.listen_port);
+                // crate 的 set_default_route 把 NlMtu 硬编码 1420
+                // （[NT_INTERFACE_MTU]）：adapter 在则 MTU 必是它。
+                let tunnel_mtu = Some(NT_INTERFACE_MTU);
+                let tunnel_address = self.nt_adapter_address(&adapter_name);
+                (
+                    peers,
+                    installed_routes,
+                    local_public_key,
+                    tunnel_listen_port,
+                    tunnel_mtu,
+                    tunnel_address,
+                )
+            }
+        };
         Ok(NetworkSnapshot {
             tunnel_exists,
             forwarding_enabled,
@@ -252,6 +258,30 @@ impl WindowsNetworkBackend {
         let handle = nt_adapter_handle(&self.interface);
         let plan = crate::windows_wireguard_nt::nt_interface_plan(tunnel, &handle)?;
         nt.apply(&plan)
+    }
+
+    /// nt 模型接管数据面前的灰度/回滚面清理：卸掉同接口的旧
+    /// `WireGuardTunnel$<interface>` 服务（服务模型遗留）。双数据面（服务 +
+    /// nt adapter）同址同路由必冲突，绝不并存——卸载即停即删，无断流之外的
+    /// 残留。幂等：无服务（含从未装过）跳过；wireguard.exe 缺失但服务在
+    /// （无法卸载）→ 显式报错 fail closed，绝不带病切换。
+    pub(super) fn uninstall_stale_service_tunnel_sync(&self) -> Result<(), NetworkError> {
+        if !self.tunnel_service_exists(&self.interface) {
+            return Ok(());
+        }
+        let Some(exe) = self.find_wireguard_exe() else {
+            return Err(NetworkError::ApplyRejected(format!(
+                "stale tunnel service WireGuardTunnel${} must be uninstalled to switch to the \
+                 nt model, but wireguard.exe is not available",
+                self.interface
+            )));
+        };
+        let command = WireGuardCommand::UninstallService {
+            name: self.interface.clone(),
+        };
+        run_wireguard_command(&command, Some(&exe))?;
+        // 日志由 agent 层记录（本 crate 不依赖 tracing，保持数据面层静默）。
+        Ok(())
     }
 
     /// 本机 RFC1918 局域网地址（§12 P2P 候选端点上报）。Windows 读数走
@@ -383,6 +413,8 @@ impl WindowsNetworkBackend {
         // nt 模型（tunnel_backend="nt"）：无 wireguard.exe——dll 内嵌绑定。
         // 防火墙联动用 adapter 回读的生效端口（模块纪律：回读为准，不用请求值）。
         if let Some(nt) = &self.nt {
+            // 接管前卸掉服务模型遗留隧道（双数据面绝不并存，见方法注释）。
+            self.uninstall_stale_service_tunnel_sync()?;
             let listen_port = self.nt_apply_tunnel_config(nt, &tunnel_config)?;
             self.ensure_mesh_reachability_sync(tunnel_config.address)?;
             self.ensure_direct_udp_firewall_sync(listen_port)?;
@@ -434,6 +466,7 @@ impl NetworkBackend for WindowsNetworkBackend {
 
     async fn apply_tunnel(&self, config: TunnelConfig) -> Result<ApplyResult, NetworkError> {
         if let Some(nt) = &self.nt {
+            self.uninstall_stale_service_tunnel_sync()?;
             self.nt_apply_tunnel_config(nt, &config)?;
             return Ok(ApplyResult::ok());
         }
