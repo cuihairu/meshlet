@@ -13,6 +13,9 @@ struct RawDataplaneConfig {
     private_key_file: Option<String>,
     hub_endpoint: Option<String>,
     poll_interval_secs: Option<u64>,
+    /// Windows 数据面后端选择（WG-NT-SWITCH 接线批）：`"service"`（默认）|
+    /// `"nt"`。其他平台忽略。
+    tunnel_backend: Option<String>,
     direct_connect: Option<RawDirectConnectConfig>,
     probe: Option<RawProbeConfig>,
     backoff: Option<RawBackoffConfig>,
@@ -207,11 +210,33 @@ impl TrayConfig {
     };
 }
 
+/// Windows 数据面后端（WG-NT-SWITCH 接线批，任务书 meshlet-wireguard-nt-switch）。
+///
+/// - [`Service`](TunnelBackend::Service)（默认）：`wireguard.exe` 隧道服务模型
+///   （`installtunnelservice` 受管服务 + netsh 路由）——现网三台的现行路径。
+/// - [`Nt`](TunnelBackend::Nt)：wireguard-nt 0.5.0 嵌入式 adapter 绑定
+///   （一网络一 adapter、单 agent 进程承载，根治服务模型 §1.2 同名互踩 /
+///   §2.5 端口撞绑）。
+///
+/// 仅 Windows 生效；其他平台（kernel 后端）忽略此值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TunnelBackend {
+    /// `wireguard.exe` 隧道服务模型（现行路径）。
+    #[default]
+    Service,
+    /// wireguard-nt 嵌入式 adapter 绑定。
+    Nt,
+}
+
 /// Agent 数据面配置（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）：
 /// **默认全关**——关闭时 agent 只打印状态、不碰内核。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataplaneConfig {
     pub enabled: bool,
+    /// Windows 数据面后端选择（见 [`TunnelBackend`]）。默认
+    /// [`Service`](TunnelBackend::Service)（行为不变）；`nt` 仅在 Windows
+    /// 且接线批完成并验收后有意义。
+    pub tunnel_backend: TunnelBackend,
     /// 受管 WireGuard 接口名。
     pub interface: String,
     /// 本设备 WireGuard 私钥文件（本地注入，服务端永不携带——ADR-010）。
@@ -366,6 +391,7 @@ impl Default for DataplaneConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            tunnel_backend: TunnelBackend::default(),
             interface: "wg0".into(),
             private_key_file: None,
             hub_endpoint: None,
@@ -443,6 +469,16 @@ impl AgentConfig {
                 "dataplane.poll_interval_secs must be at least 1".into(),
             ));
         }
+        let tunnel_backend = match dataplane.tunnel_backend.as_deref() {
+            None => default.dataplane.tunnel_backend,
+            Some("service") => TunnelBackend::Service,
+            Some("nt") => TunnelBackend::Nt,
+            Some(other) => {
+                return Err(ConfigError::InvalidDataPlane(format!(
+                    "dataplane.tunnel_backend must be \"service\" or \"nt\", got \"{other}\""
+                )));
+            }
+        };
         let raw_dc = dataplane.direct_connect.unwrap_or_default();
         let direct_connect = DirectConnectConfig {
             enabled: raw_dc
@@ -587,6 +623,7 @@ impl AgentConfig {
             upgrade,
             dataplane: DataplaneConfig {
                 enabled: dataplane.enabled.unwrap_or(default.dataplane.enabled),
+                tunnel_backend,
                 interface: dp_interface,
                 private_key_file: dataplane.private_key_file,
                 hub_endpoint: dataplane

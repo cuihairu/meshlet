@@ -15,7 +15,7 @@ mod server;
 
 pub use agent::{
     AgentConfig, DataplaneConfig, DirectConnectConfig, McpConfig, ProbeConfig, SshConfigSyncConfig,
-    TrayConfig, UpgradeConfig,
+    TrayConfig, TunnelBackend, UpgradeConfig,
 };
 pub use server::{
     BackupConfig, DataPlaneConfig, ServerConfig, SshDistributeConfig, SshHostOverride,

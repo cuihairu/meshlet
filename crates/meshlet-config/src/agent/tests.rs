@@ -86,6 +86,29 @@ poll_interval_secs = 10
 }
 
 #[test]
+fn agent_dataplane_tunnel_backend_defaults_service_and_parses() {
+    // 缺省 = service（行为不变）；Windows 数据面后端选择。
+    assert_eq!(
+        AgentConfig::default().dataplane.tunnel_backend,
+        TunnelBackend::Service
+    );
+    assert_eq!(
+        AgentConfig::from_toml("").unwrap().dataplane.tunnel_backend,
+        TunnelBackend::Service
+    );
+
+    let c = AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"nt\"").unwrap();
+    assert_eq!(c.dataplane.tunnel_backend, TunnelBackend::Nt);
+
+    let c = AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"service\"").unwrap();
+    assert_eq!(c.dataplane.tunnel_backend, TunnelBackend::Service);
+
+    // 未知值 fail closed（绝不为拼写错误静默回退 service）。
+    let err = AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"wireguard\"").unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+}
+
+#[test]
 fn agent_dataplane_rejects_empty_interface_and_zero_poll() {
     let err = AgentConfig::from_toml(
         r#"
