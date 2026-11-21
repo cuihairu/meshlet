@@ -86,9 +86,7 @@ impl WindowsNetworkBackend {
             .no_window()
             .output()
             .ok()?;
-        parse_ping_rtt_ms_windows(&crate::windows_console::decode_output(
-            &out.stdout,
-        ))
+        parse_ping_rtt_ms_windows(&crate::windows_console::decode_output(&out.stdout))
     }
 }
 

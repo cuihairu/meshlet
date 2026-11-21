@@ -8,17 +8,26 @@
 //! Windows 服务降为一个 Rust 对象，根治服务单例互踩（分析文档 §1.2：
 //! 后装服务的 conf 顶掉先装服务的 peer 表 + 51820 撞绑 0xc0000022）。
 //!
-//! 本模块现在只含**计划层**：[TunnelConfig] → [NtInterfacePlan] 的纯
-//! 转换与命名/端口守门，任意平台编译并单测（同 [windows_tunnel] 纪律）。
-//! `#[cfg(windows)]` 执行层（load wireguard.dll → `Adapter::create` →
-//! `set_config` → 地址/路由/MTU 的 Windows 侧装配）**本批不写**——等
-//! spike Step 3 双 adapter 真机 PoC 通过、ADR-008 复审落档后再接，避免
-//! 在驱动可用性未验证时把执行面假绿进 CI。`wireguard-nt = "0.5.0"`
-//! 依赖已 target-gated 进 `Cargo.toml`
-//! （`[target.'cfg(windows)'.dependencies]`）并锁定进 `Cargo.lock`；
-//! API 真值已从 registry 源码核实：配置类型名是 `SetInterface`/`SetPeer`
-//! （非 Configuration/Peer），`Adapter::create(&wireguard, pool, name,
-//! guid)`，加载入口 `unsafe { wireguard_nt::load_from_path("…/wireguard.dll") }`。
+//! 分层（同 [windows_tunnel] 纪律）：
+//!
+//! - **计划层**（任意平台编译+单测）：[TunnelConfig] → [NtInterfacePlan]
+//!   的纯转换与命名/端口守门（[nt_interface_plan]）。
+//! - **执行规格层**（任意平台编译+单测）：[NtInterfacePlan] →
+//!   [NtApplySpec]——密钥 base64 解码为 32 字节、MTU 守门、
+//!   `private_key: None` 原样透传（[nt_apply_spec]）。
+//! - **`#[cfg(windows)]` 执行层**：dll 装载（[nt_dll_path]）与
+//!   [NtRuntime]——open-or-create adapter、`set_config` → `up` →
+//!   地址+路由装配 → `get_config` 回读（真机 PoC 验证过的序列，
+//!   wgnt-step12-2026-11-21 8/8 PASS）。宿主 CI 不跑 Windows 测试，
+//!   本层经 windows-gnu 交叉 clippy/check 编译验证，字段映射保持
+//!   机械直译（全部语义判定在规格层完成）。
+//!
+//! 前提（ADR-008 复审落档）：wireguard.dll **必须随 meshlet 分发**
+//! （官方 WireGuard for Windows 安装不含 dll，tunnel 静态链在 exe 内），
+//! 候选搜索序见 [nt_dll_candidates]；binding crate 0.5.0 × 官方
+//! wireguard-nt 1.1 amd64 dll 真机可行（PoC 实证，driver version
+//! 65537）。**本模块尚未接进 [crate::windows] 后端分派**——生产三台
+//! 仍跑 wireguard.exe 服务模型，切换等 backend 接线批收尾+用户点头。
 //!
 //! 纪律（承 [windows_tunnel] / ADR-010）：
 //!
@@ -41,15 +50,23 @@
 //!   [TunnelConfig::private_key]（`None` = 保留现有密钥，幂等重应用，
 //!   与 Linux 侧 `apply_tunnel_sync` 的 `None` 契约同构）；手工
 //!   [std::fmt::Debug] 实现对私钥字段脱敏——计划对象可安全进日志。
-//!   `SetInterface.private_key: None` 在 wireguard-nt 驱动侧的语义
-//!   （保留 vs 清空）Step 3 PoC 时从真机行为核实，执行层落地前必须有
-//!   锚定测试。
-//! - **MTU**：wireguard-nt 的 `SetInterface` 不含 MTU 字段（隧道语义
-//!   全在驱动内，适配器 MTU 是 Windows 网络栈属性）；计划层保留
-//!   [NtInterfacePlan::mtu] 记录 [TunnelConfig::mtu] 意图，执行层经
-//!   Windows IP Helper API 装配（后批）。
+//!   `SetInterface.private_key: None` 的驱动语义已从 crate 源码锚定：
+//!   `set_config` 按**位 flag** 组装（`None` → `HAS_PRIVATE_KEY` 位
+//!   不设 → 驱动保留现有私钥，不清空）——规格层
+//!   [nt_apply_spec] 以 `None → None` 透传测试锚定该契约；**真机
+//!   行为锚定 PoC 仍是 backend 接线批的前置**（todo 禁区条款），
+//!   在那之前 `NtRuntime` 不进生产分派。
+//! - **MTU**：wireguard-nt 的 `SetInterface` 不含 MTU 字段；crate 的
+//!   `set_default_route` 把适配器 `NlMtu` **硬编码 1420**（源码
+//!   实证）。规格层据此守门：计划 MTU 非 `None` 且 ≠1420 一律拒
+//!   （[NT_INTERFACE_MTU]）——绝不静默套用 1420 假装满足计划。meshlet
+//!   缺省计划 MTU 恰为 1420（[crate::DEFAULT_TUNNEL_MTU]）；非 1420
+//!   计划（如 PPPoE 1412）在本路径被明确拒绝而非错配。按计划值装配
+//!   MTU 需自行调 `SetIpInterfaceEntry`，是后续批次的活，不在本层。
 
 use crate::TunnelConfig;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use meshlet_domain::Ipv4Cidr;
 use std::fmt;
 use std::net::SocketAddr;
@@ -252,6 +269,365 @@ pub fn nt_interface_plan(
     })
 }
 
+// ---------------------------------------------------------------------------
+// 执行规格层：NtInterfacePlan → NtApplySpec（任意平台编译+单测）。
+// ---------------------------------------------------------------------------
+
+/// wireguard-nt crate 的 `set_default_route` 对适配器 `NlMtu` 的硬编码值
+/// （源码实证）。计划 MTU 与它不一致时执行规格层拒绝，见 [nt_apply_spec]。
+pub const NT_INTERFACE_MTU: u32 = 1420;
+
+/// WireGuard 密钥字节数（Curve25519）：base64 解码后必须是这个长度。
+const KEY_LEN: usize = 32;
+
+/// base64 密钥 → 32 字节。计划层公钥/私钥都持 base64 字符串（与 `wg`
+/// 工具同构），驱动 API 收 `[u8; 32]`——解码失败/长度不对一律拒，
+/// 绝不静默截断或补零。
+fn nt_decode_key(raw: &str, what: &str) -> Result<[u8; KEY_LEN], crate::NetworkError> {
+    let decoded = BASE64.decode(raw.trim()).map_err(|e| {
+        crate::NetworkError::ApplyRejected(format!("{what}: base64 decode failed: {e}"))
+    })?;
+    decoded.try_into().map_err(|v: Vec<u8>| {
+        crate::NetworkError::ApplyRejected(format!(
+            "{what}: decoded to {} bytes, expected {KEY_LEN}",
+            v.len()
+        ))
+    })
+}
+
+/// 单 peer 的执行规格：与 wireguard-nt `SetPeer` 字段一一对应的中性形态
+/// （公钥已解码为字节；preshared_key 未用恒 None）。
+#[derive(Clone, PartialEq, Eq)]
+pub struct NtApplyPeerSpec {
+    /// peer 公钥（32 字节，base64 已解码）。
+    pub public_key: [u8; KEY_LEN],
+    /// peer UDP 端点（计划层已守门必填）。
+    pub endpoint: SocketAddr,
+    /// AllowedIPs（canonical `Ipv4Cidr`，驱动路由目标直接来源）。
+    pub allowed_ips: Vec<Ipv4Cidr>,
+    /// 持久 keepalive 秒数；`None` = 不发。
+    pub keep_alive: Option<u16>,
+}
+
+impl fmt::Debug for NtApplyPeerSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // 公钥可日志（身份字段），无密钥材料需脱敏——与 NtPeerPlan 同口径。
+        f.debug_struct("NtApplyPeerSpec")
+            .field("public_key", &BASE64.encode(self.public_key))
+            .field("endpoint", &self.endpoint)
+            .field("allowed_ips", &self.allowed_ips)
+            .field("keep_alive", &self.keep_alive)
+            .finish()
+    }
+}
+
+/// 单 adapter 的执行规格：与 wireguard-nt `SetInterface` 字段一一对应的
+/// 中性形态。**全部语义判定（密钥解码、MTU 守门、None 透传）在本层
+/// 完成并被宿主 CI 单测锚定**；cfg(windows) 的 `SetInterface` 装配只剩
+/// 机械直译。
+#[derive(Clone, PartialEq, Eq)]
+pub struct NtApplySpec {
+    /// 显式 listen 端口（计划层已守门非 `None`）。
+    pub listen_port: u16,
+    /// 私钥（32 字节）。`None` = **原样透传**给驱动的按位 flag 语义——
+    /// `HAS_PRIVATE_KEY` 位不设，驱动保留现有私钥（幂等重应用契约，
+    /// 见模块文档私钥边界）。
+    pub private_key: Option<[u8; KEY_LEN]>,
+    /// peer 规格。
+    pub peers: Vec<NtApplyPeerSpec>,
+}
+
+impl fmt::Debug for NtApplySpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NtApplySpec")
+            .field("listen_port", &self.listen_port)
+            .field(
+                "private_key",
+                &self.private_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("peers", &self.peers)
+            .finish()
+    }
+}
+
+/// 计划 → 执行规格（纯函数，任意平台）：
+///
+/// - 公钥/私钥 base64 解码，失败即拒（[nt_decode_key]）；
+/// - `private_key: None` 原样透传（锚定驱动的按位保留语义）；
+/// - **MTU 守门**：计划 `mtu` 非 `None` 且 ≠ [NT_INTERFACE_MTU] 拒——
+///   crate 的地址/路由装配把 NlMtu 硬编码 1420，静默接受非 1420 计划
+///   就是错配（见模块文档 MTU 条）。
+pub fn nt_apply_spec(plan: &NtInterfacePlan) -> Result<NtApplySpec, crate::NetworkError> {
+    if let Some(mtu) = plan.mtu {
+        if mtu != NT_INTERFACE_MTU {
+            return Err(crate::NetworkError::ApplyRejected(format!(
+                "plan mtu {mtu} != wireguard-nt pinned interface mtu {NT_INTERFACE_MTU}: \
+                 the nt path cannot honor a custom mtu yet"
+            )));
+        }
+    }
+    let private_key = match plan.private_key.as_deref() {
+        None => None,
+        Some(raw) => Some(nt_decode_key(raw, "tunnel private_key")?),
+    };
+    let peers = plan
+        .peers
+        .iter()
+        .enumerate()
+        .map(|(index, peer)| {
+            Ok(NtApplyPeerSpec {
+                public_key: nt_decode_key(&peer.public_key, &format!("peer {index} public_key"))?,
+                endpoint: peer.endpoint,
+                allowed_ips: peer.allowed_ips.clone(),
+                keep_alive: peer.keep_alive,
+            })
+        })
+        .collect::<Result<Vec<_>, crate::NetworkError>>()?;
+    Ok(NtApplySpec {
+        listen_port: plan.listen_port,
+        private_key,
+        peers,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// dll 搜索序（跨平台纯函数 + cfg(windows) 落地解析）。
+// ---------------------------------------------------------------------------
+
+/// dll 搜索的环境变量覆写（排障/真机 PoC 同款入口）。
+pub const NT_DLL_ENV: &str = "MESHLET_WIREGUARD_NT_DLL";
+
+/// `C:\ProgramData\meshlet\wireguard.dll`——deploy staging 布局的固定位置。
+const NT_DLL_PROGRAMDATA: &str = r"C:\ProgramData\meshlet\wireguard.dll";
+
+/// dll 候选搜索序（纯函数）：环境变量覆写 → exe 同目录（MSI/zip 与
+/// agent 二进制并排布局）→ ProgramData staging 位。
+///
+/// 候选只排**序**不查存在性——真机解析（[nt_dll_path]）取第一个存在的
+/// 候选；全不存在时报出完整候选列表（排障不需要再翻源码）。
+pub fn nt_dll_candidates(
+    env_value: Option<&str>,
+    exe_dir: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(env) = env_value.map(str::trim).filter(|s| !s.is_empty()) {
+        candidates.push(std::path::PathBuf::from(env));
+    }
+    if let Some(dir) = exe_dir {
+        candidates.push(dir.join("wireguard.dll"));
+    }
+    candidates.push(std::path::PathBuf::from(NT_DLL_PROGRAMDATA));
+    candidates
+}
+
+#[cfg(windows)]
+mod exec {
+    //! cfg(windows) 执行层：dll 装载与 [NtRuntime]。语义判定全部在上层
+    //! 完成，本模块只剩装配与错误映射；宿主 CI 经 windows-gnu 交叉
+    //! clippy/check 编译验证（不跑测试）。
+
+    use super::{nt_apply_spec, nt_dll_candidates, NtApplySpec, NT_DLL_ENV};
+    use crate::NetworkError;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// adapter pool 名（wireguard-nt 官方示例/PoC 同款）。
+    const NT_ADAPTER_POOL: &str = "WireGuard";
+
+    /// 真机解析 dll 路径：候选序见 [super::nt_dll_candidates]，取第一个
+    /// 存在的文件；全不存在时 `None`（调用方报候选列表）。
+    pub fn nt_dll_path() -> Option<PathBuf> {
+        let env_value = std::env::var_os(NT_DLL_ENV).map(|v| v.to_string_lossy().into_owned());
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        nt_dll_candidates(env_value.as_deref(), exe_dir.as_deref())
+            .into_iter()
+            .find(|p| p.is_file())
+    }
+
+    /// wireguard-nt crate 错误 → [NetworkError]：权限类错误
+    /// （`PermissionDenied`，典型=未提权装驱动）映射 InsufficientPrivileges，
+    /// 其余 Io——agent 侧能直接读出「该提权还是该修环境」。
+    fn nt_map_err(op: &str, err: wireguard_nt::Error) -> NetworkError {
+        let denied = match &err {
+            wireguard_nt::Error::Driver(e) | wireguard_nt::Error::Windows(_, e) => {
+                e.kind() == std::io::ErrorKind::PermissionDenied
+            }
+            _ => false,
+        };
+        if denied {
+            NetworkError::InsufficientPrivileges(format!("{op}: {err}"))
+        } else {
+            NetworkError::Io(format!("{op}: {err}"))
+        }
+    }
+
+    /// 执行规格 → crate `SetInterface`（机械直译，无语义判定）。
+    ///
+    /// `allowed_ips` 从 canonical [meshlet_domain::Ipv4Cidr]（主机位恒零，
+    /// 反序列化即拒非规范值）构造 `Ipv4Net`——`Ipv4Net::new` 只可能因
+    /// prefix > 32 失败，domain 类型已排除，`expect` 不可达。
+    fn nt_set_interface(spec: &NtApplySpec) -> wireguard_nt::SetInterface {
+        wireguard_nt::SetInterface {
+            listen_port: Some(spec.listen_port),
+            public_key: None,
+            private_key: spec.private_key,
+            peers: spec
+                .peers
+                .iter()
+                .map(|peer| wireguard_nt::SetPeer {
+                    public_key: Some(peer.public_key),
+                    preshared_key: None,
+                    keep_alive: peer.keep_alive,
+                    endpoint: peer.endpoint,
+                    allowed_ips: peer
+                        .allowed_ips
+                        .iter()
+                        .map(|cidr| {
+                            ipnet::IpNet::V4(
+                                ipnet::Ipv4Net::new(cidr.network(), cidr.prefix_len())
+                                    .expect("canonical Ipv4Cidr prefix <= 32"),
+                            )
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// open-or-create：先 `Adapter::open`（已存在 adapter 幂等打开），
+    /// 失败再 `Adapter::create`（pool 内随机 GUID）。
+    fn nt_open_or_create(
+        wireguard: &wireguard_nt::Wireguard,
+        adapter_name: &str,
+    ) -> Result<wireguard_nt::Adapter, NetworkError> {
+        wireguard_nt::Adapter::open(wireguard, adapter_name)
+            .or_else(|_| {
+                wireguard_nt::Adapter::create(wireguard, NT_ADAPTER_POOL, adapter_name, None)
+            })
+            .map_err(|e| nt_map_err(&format!("open or create adapter {adapter_name}"), e))
+    }
+
+    /// wireguard-nt 运行时：agent 进程生命周期内**持久持有**已建 adapter
+    /// 的句柄（crate `Adapter` 的 `Drop` → `WireGuardCloseAdapter` 会移除
+    /// adapter——句柄不放住，apply 完 adapter 就没了；PoC 退出零残留正
+    /// 是这个语义）。
+    ///
+    /// 尚未接进 [crate::windows] 后端分派；backend 接线批引入 agent 持有
+    /// 与 config 开关。
+    pub struct NtRuntime {
+        wireguard: wireguard_nt::Wireguard,
+        dll_path: PathBuf,
+        /// adapter 名 → 持久句柄。apply 复用已持句柄（`Adapter` 非 Clone，
+        /// 重开第二个句柄再 Drop 反而制造生灭抖动）。
+        adapters: Mutex<HashMap<String, wireguard_nt::Adapter>>,
+    }
+
+    impl NtRuntime {
+        /// 装载 wireguard.dll 并建立运行时。dll 候选序见
+        /// [super::nt_dll_candidates]；全候选不存在时报 Io 并携带完整
+        /// 候选列表。
+        pub fn load() -> Result<Self, NetworkError> {
+            let dll_path = nt_dll_path().ok_or_else(|| {
+                let env_value = std::env::var_os(NT_DLL_ENV)
+                    .map(|v| v.to_string_lossy().into_owned());
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+                let searched = nt_dll_candidates(env_value.as_deref(), exe_dir.as_deref())
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                NetworkError::Io(format!(
+                    "wireguard.dll not found (ship it beside the agent exe or set {NT_DLL_ENV}); searched: {searched}"
+                ))
+            })?;
+            // SAFETY: 路径来自固定候选序/受控环境变量（模块文档分发纪律），
+            // 与 PoC 同一装载方式。
+            let wireguard = unsafe { wireguard_nt::load_from_path(&dll_path) }
+                .map_err(|e| NetworkError::Io(format!("load wireguard.dll: {e}")))?;
+            Ok(Self {
+                wireguard,
+                dll_path,
+                adapters: Mutex::new(HashMap::new()),
+            })
+        }
+
+        /// 实际装载的 dll 路径（诊断用）。
+        pub fn dll_path(&self) -> &std::path::Path {
+            &self.dll_path
+        }
+
+        /// 应用计划：open-or-create → `set_config`（全量替换 peer 表，
+        /// crate 恒含 `REPLACE_PEERS`）→ `up`（socket 在 up 态创建，PoC
+        /// 实证不 up 则无握手）→ 地址+allowed_ips 路由一次装配 →
+        /// `get_config` 回读。
+        ///
+        /// 返回**回读**的 listen 端口（计划层纪律：生效值以回读为准，
+        /// 不用请求值）。装配序列与 PoC wg-nt-poc 逐字一致（真机 8/8
+        /// PASS 的序列）。
+        pub fn apply(&self, plan: &super::NtInterfacePlan) -> Result<u16, NetworkError> {
+            let spec = nt_apply_spec(plan)?;
+            let set_interface = nt_set_interface(&spec);
+            let addr_net = ipnet::Ipv4Net::new(plan.address, plan.address_prefix)
+                .map_err(|_| NetworkError::ApplyRejected("interface address prefix > 32".into()))?;
+            let mut adapters = self.adapters.lock().unwrap_or_else(|p| p.into_inner());
+            let adapter = match adapters.get_mut(&plan.adapter_name) {
+                Some(held) => held,
+                None => {
+                    let created = nt_open_or_create(&self.wireguard, &plan.adapter_name)?;
+                    adapters.insert(plan.adapter_name.clone(), created);
+                    adapters
+                        .get_mut(&plan.adapter_name)
+                        .expect("adapter inserted above")
+                }
+            };
+            adapter
+                .set_config(&set_interface)
+                .map_err(|e| nt_map_err("adapter set_config", e))?;
+            adapter.up().map_err(|e| nt_map_err("adapter up", e))?;
+            // 地址赋值带主机位（接口地址 10.x.y.z 本身），路由目标来自
+            // canonical allowed_ips（主机位恒零）——两条约束都由上游类型
+            // 保证，此处无需 trunc（PoC 的 trunc 教训是主机位进
+            // CreateIpForwardEntry2 报 87，canonical CIDR 不可能触发）。
+            adapter
+                .set_default_route(&[ipnet::IpNet::V4(addr_net)], &set_interface)
+                .map_err(|e| nt_map_err("assign address and routes", e))?;
+            let readback = adapter.get_config();
+            Ok(readback.listen_port)
+        }
+
+        /// 移除 adapter：从句柄表取出并 Drop（→ `WireGuardCloseAdapter`，
+        /// adapter 随句柄消亡）。不存在返回 `false`。
+        pub fn remove(&self, adapter_name: &str) -> bool {
+            self.adapters
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(adapter_name)
+                .is_some()
+        }
+
+        /// 当前持有句柄的 adapter 名（诊断用，排序稳定输出）。
+        pub fn adapter_names(&self) -> Vec<String> {
+            let mut names = self
+                .adapters
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use exec::{nt_dll_path, NtRuntime};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,5 +778,154 @@ mod tests {
         t.peers[0].persistent_keepalive_secs = Some(u16::MAX as u32);
         let plan = nt_interface_plan(&t, "net-a").unwrap();
         assert_eq!(plan.peers[0].keep_alive, Some(u16::MAX));
+    }
+
+    // ----- 执行规格层 -----
+
+    fn valid_key_bytes(seed: u8) -> String {
+        BASE64.encode([seed; 32])
+    }
+
+    /// 规格层夹具：计划层默认 `mtu: Some(1380)`，规格层守门要求 1420
+    /// ——统一钉到 [NT_INTERFACE_MTU]，个别测试再覆写。
+    fn spec_tunnel() -> TunnelConfig {
+        let mut t = tunnel();
+        t.mtu = Some(NT_INTERFACE_MTU);
+        t
+    }
+
+    #[test]
+    fn apply_spec_decodes_keys_and_maps_peers() {
+        let mut t = spec_tunnel();
+        t.private_key = Some(valid_key_bytes(1));
+        t.peers[0].public_key = valid_key_bytes(2);
+        let plan = nt_interface_plan(&t, "net-a").unwrap();
+        let spec = nt_apply_spec(&plan).unwrap();
+        assert_eq!(spec.listen_port, 51821);
+        assert_eq!(spec.private_key, Some([1u8; 32]));
+        assert_eq!(spec.peers.len(), 1);
+        assert_eq!(spec.peers[0].public_key, [2u8; 32]);
+        assert_eq!(spec.peers[0].keep_alive, Some(25));
+        assert_eq!(
+            spec.peers[0].endpoint,
+            "100.64.0.2:51820".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn apply_spec_passes_private_key_none_through_untouched() {
+        // 锚定：None → None 原样透传。wireguard-nt `set_config` 按位
+        // flag 组装（None → HAS_PRIVATE_KEY 位不设 → 驱动保留现有私钥，
+        // crate 源码实证）——幂等重应用契约跨平台成立的第一环；真机
+        // 行为锚定 PoC 是 backend 接线批前置（todo 禁区条款）。
+        let mut t = spec_tunnel();
+        t.private_key = None;
+        t.peers[0].public_key = valid_key_bytes(2);
+        let plan = nt_interface_plan(&t, "net-a").unwrap();
+        let spec = nt_apply_spec(&plan).unwrap();
+        assert!(spec.private_key.is_none());
+    }
+
+    #[test]
+    fn apply_spec_rejects_undecodable_keys() {
+        // 非 base64 / 长度不对 / 空串，私钥与 peer 公钥同规。
+        let mut t = spec_tunnel();
+        t.private_key = Some("not-base64!!".into());
+        t.peers[0].public_key = valid_key_bytes(2);
+        let plan = nt_interface_plan(&t, "net-a").unwrap();
+        assert!(matches!(
+            nt_apply_spec(&plan),
+            Err(crate::NetworkError::ApplyRejected(msg))
+                if msg.contains("private_key") && msg.contains("base64")
+        ));
+
+        let mut t = spec_tunnel();
+        t.private_key = Some(valid_key_bytes(1));
+        t.peers[0].public_key = BASE64.encode([9u8; 4]); // 合法 base64，长度错
+        let plan = nt_interface_plan(&t, "net-a").unwrap();
+        assert!(matches!(
+            nt_apply_spec(&plan),
+            Err(crate::NetworkError::ApplyRejected(msg))
+                if msg.contains("peer 0") && msg.contains("expected 32")
+        ));
+
+        let mut t = spec_tunnel();
+        t.private_key = Some("   ".into()); // trim 后为空
+        t.peers[0].public_key = valid_key_bytes(2);
+        let plan = nt_interface_plan(&t, "net-a").unwrap();
+        assert!(matches!(
+            nt_apply_spec(&plan),
+            Err(crate::NetworkError::ApplyRejected(_))
+        ));
+    }
+
+    #[test]
+    fn apply_spec_pins_mtu_to_the_crate_hardcoded_1420() {
+        // crate set_default_route 硬编码 NlMtu=1420：非 1420 计划明确拒绝
+        // （PPPoE 1412 这类计划在 nt 路径不可用），绝不静默套 1420。
+        let mut t = tunnel();
+        t.private_key = Some(valid_key_bytes(1));
+        t.peers[0].public_key = valid_key_bytes(2);
+        t.mtu = Some(1380);
+        let plan = nt_interface_plan(&t, "net-a").unwrap();
+        assert!(matches!(
+            nt_apply_spec(&plan),
+            Err(crate::NetworkError::ApplyRejected(msg)) if msg.contains("1380")));
+
+        // None（随 crate 1420）与显式 1420 都放行。
+        for mtu in [None, Some(NT_INTERFACE_MTU)] {
+            let mut t = spec_tunnel();
+            t.private_key = Some(valid_key_bytes(1));
+            t.peers[0].public_key = valid_key_bytes(2);
+            t.mtu = mtu;
+            let plan = nt_interface_plan(&t, "net-a").unwrap();
+            assert!(nt_apply_spec(&plan).is_ok(), "mtu {mtu:?} should pass");
+        }
+    }
+
+    #[test]
+    fn apply_spec_debug_redacts_private_key() {
+        let mut t = spec_tunnel();
+        t.private_key = Some(valid_key_bytes(7));
+        t.peers[0].public_key = valid_key_bytes(2);
+        let plan = nt_interface_plan(&t, "net-a").unwrap();
+        let spec = nt_apply_spec(&plan).unwrap();
+        let rendered = format!("{spec:?}");
+        assert!(
+            !rendered.contains(&valid_key_bytes(7)),
+            "raw key must not leak"
+        );
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    // ----- dll 候选序 -----
+
+    #[test]
+    fn dll_candidates_order_env_exe_then_programdata() {
+        let env = Some("/srv/override/wireguard.dll");
+        let exe_dir = Some(std::path::Path::new(r"C:\Program Files\Meshlet"));
+        let got = nt_dll_candidates(env, exe_dir);
+        assert_eq!(got.len(), 3);
+        assert_eq!(
+            got[0],
+            std::path::PathBuf::from("/srv/override/wireguard.dll")
+        );
+        assert_eq!(
+            got[1],
+            std::path::Path::new(r"C:\Program Files\Meshlet").join("wireguard.dll")
+        );
+        assert_eq!(
+            got[2],
+            std::path::PathBuf::from(r"C:\ProgramData\meshlet\wireguard.dll")
+        );
+
+        // 环境变量空白串不进候选；exe 目录缺失时只剩 ProgramData 兜底。
+        assert_eq!(
+            nt_dll_candidates(Some("  "), None),
+            vec![std::path::PathBuf::from(
+                r"C:\ProgramData\meshlet\wireguard.dll"
+            )]
+        );
+        assert_eq!(nt_dll_candidates(None, None).len(), 1);
     }
 }
