@@ -3,10 +3,10 @@ import { useLanguage } from '../../i18n/language-context';
 import { useNetwork } from '../../network-context';
 import { AliasesSection } from './AliasesSection';
 import { DevicesSection } from './DevicesSection';
-import { HostForwardsSection } from './HostForwardsSection';
 import { TasksSection } from './TasksSection';
 
-/** /devices — enrolled devices, alias mappings, host forwarding, task queue. */
+/** /devices — enrolled devices, alias mappings, task queue. Host forwarding
+ * lives on its own /forwards page. */
 export function DevicesPage() {
   const { selectedNetwork, refresh } = useNetwork();
   const { t } = useLanguage();
@@ -17,7 +17,6 @@ export function DevicesPage() {
       <h1>{t('page.devices')}</h1>
       <DevicesSection networkId={id} onChanged={refresh} />
       <AliasesSection networkId={id} onChanged={refresh} />
-      <HostForwardsSection networkId={id} onChanged={refresh} />
       <TasksSection networkId={id} onChanged={refresh} />
     </div>
   );

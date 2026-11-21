@@ -19,6 +19,7 @@ import { antdThemeConfig } from './theme/antd-theme';
 import { ThemeSwitch } from './theme/ThemeSwitch';
 import { AccessPage } from './pages/access/AccessPage';
 import { DevicesPage } from './pages/devices/DevicesPage';
+import { ForwardsPage } from './pages/forwards/ForwardsPage';
 import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
 import { TopologyPage } from './pages/topology/TopologyPage';
 import { NetworksPage } from './pages/networks/NetworksPage';
@@ -108,6 +109,7 @@ function ConsoleLayout({
           <NavLink to="/networks">{t('nav.networks')}</NavLink>
           <NavLink to="/access">{t('nav.access')}</NavLink>
           <NavLink to="/devices">{t('nav.devices')}</NavLink>
+          <NavLink to="/forwards">{t('nav.forwards')}</NavLink>
           <NavLink to="/topology">{t('nav.topology')}</NavLink>
           <NavLink to="/diagnostics">{t('nav.diagnostics')}</NavLink>
         </nav>
@@ -117,6 +119,7 @@ function ConsoleLayout({
             <Route path="/networks" element={<NetworksPage />} />
             <Route path="/access" element={<AccessPage />} />
             <Route path="/devices" element={<DevicesPage />} />
+            <Route path="/forwards" element={<ForwardsPage />} />
             <Route path="/topology" element={<TopologyPage />} />
             <Route path="/diagnostics" element={<DiagnosticsPage />} />
           </Routes>
