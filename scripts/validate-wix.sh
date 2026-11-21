@@ -73,7 +73,8 @@ echo "msi File table:   $files"
 echo "msi Shortcut tab: $shortcuts"
 echo "msi version:      $version_msi (workspace $version)"
 
-for f in meshlet-server.exe meshlet-agent.exe meshlet-cli.exe meshlet-tray.exe; do
+for f in meshlet-server.exe meshlet-agent.exe meshlet-cli.exe meshlet-tray.exe \
+         wireguard.dll wireguard-nt-LICENSE.txt; do
     case " $files " in
         *" $f "*) ;;
         *) echo "msi File table is missing $f"; exit 1 ;;

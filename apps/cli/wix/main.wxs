@@ -81,6 +81,19 @@
         <File Id='MeshletTrayAppFile' Name='meshlet-tray.exe'
               Source='$(var.CargoTargetBinDir)\meshlet-tray.exe' KeyPath='yes' />
       </Component>
+      <!-- wireguard-nt runtime dll (WG-NT-SWITCH): the official WireGuard for
+           Windows install does not ship it (the tunnel service static-links it
+           into wireguard.exe), so it must be delivered by meshlet. Vendored
+           at packaging/windows/wireguard-nt/; see that README for provenance.
+           It ships dormant until the nt backend is enabled (tunnel_backend=nt). -->
+      <Component Id='WireGuardNtDll' Guid='d3342d08-348e-44fa-8e97-1918e61299b9'>
+        <File Id='WireGuardNtDllFile' Name='wireguard.dll'
+              Source='packaging/windows/wireguard-nt/wireguard.dll' KeyPath='yes' />
+      </Component>
+      <Component Id='WireGuardNtLicense' Guid='f819b8f5-251e-47b7-a6b4-6cd4c78bdaa0'>
+        <File Id='WireGuardNtLicenseFile' Name='wireguard-nt-LICENSE.txt'
+              Source='packaging/windows/wireguard-nt/wireguard-nt-LICENSE.txt' />
+      </Component>
     </DirectoryRef>
 
     <DirectoryRef Id='MeshletProgramsFolder'>
@@ -115,6 +128,8 @@
       <ComponentRef Id='MeshletAgentExe' />
       <ComponentRef Id='MeshletCliExe' />
       <ComponentRef Id='MeshletTrayAppExe' />
+      <ComponentRef Id='WireGuardNtDll' />
+      <ComponentRef Id='WireGuardNtLicense' />
       <ComponentRef Id='MeshletShortcuts' />
     </Feature>
   </Product>

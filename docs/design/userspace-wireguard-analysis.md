@@ -512,7 +512,11 @@ investigation.
 ## 5. Open questions
 
 - Whether wireguard-nt's runtime DLL loading means the agent ships `wireguard.dll` or
-  depends on a WireGuardNT install. The crate provides neither.
+  depends on a WireGuardNT install. The crate provides neither. **Resolved (ships)**:
+  the dll is vendored at `packaging/windows/wireguard-nt/` (amd64 1.1, SHA256
+  `b1b85e07…`) and delivered in all three Windows forms (MSI, nightly zip,
+  `install.ps1` deploy) — the official WireGuard for Windows install does not
+  carry it (its tunnel service static-links it into `wireguard.exe`).
 - Whether a per-network name derived from the hub's `nwid` survives a hub migration —
   `nwid` embeds the hub's own node ID (`docs/design/meshlet-identity-network-id.md` §4),
   so a renamed hub renames every tunnel on that machine and churns them.

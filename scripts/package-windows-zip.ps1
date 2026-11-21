@@ -2,9 +2,13 @@
 Package the Windows agent, CLI and tray app binaries into the nightly zip asset.
 The Windows build only produces the agent, CLI and tray app (the server stays
 Linux-only); the zip contains meshlet-agent.exe, meshlet-cli.exe,
-meshlet-tray.exe, LICENSE and BUILD_INFO. No WebView2Loader.dll: msvc links
-the WebView2 loader statically (webview2-com-sys WebView2LoaderStatic); only
-windows-gnu builds need the dll beside the exe. The legacy
+meshlet-tray.exe, wireguard.dll, LICENSE, wireguard-nt-LICENSE.txt and
+BUILD_INFO. No WebView2Loader.dll: msvc links the WebView2 loader statically
+(webview2-com-sys WebView2LoaderStatic); only windows-gnu builds need that dll
+beside the exe. wireguard.dll is the wireguard-nt runtime (WG-NT-SWITCH) the
+official WireGuard for Windows install does not ship (its tunnel service
+static-links it into wireguard.exe) — vendored at
+packaging/windows/wireguard-nt/, dormant until tunnel_backend=nt. The legacy
 meshlet-tray-host.exe was retired on 2026-11-20.
 #>
 param([Parameter(Mandatory = $true)][string]$Target)
@@ -29,6 +33,16 @@ Copy-Item (Join-Path $binroot 'meshlet-agent.exe') $stage
 Copy-Item (Join-Path $binroot 'meshlet-cli.exe') $stage
 Copy-Item (Join-Path $binroot 'meshlet-tray.exe') $stage
 Copy-Item (Join-Path $root 'LICENSE') $stage
+
+# wireguard-nt runtime dll (WG-NT-SWITCH): the official WireGuard for Windows
+# install does not ship it (tunnel service static-links it into wireguard.exe),
+# so meshlet delivers it beside the agent exe. Dormant until tunnel_backend=nt.
+$ntDir = Join-Path $root 'packaging\windows\wireguard-nt'
+if (-not (Test-Path (Join-Path $ntDir 'wireguard.dll'))) {
+    throw "missing vendored wireguard.dll: $(Join-Path $ntDir 'wireguard.dll')"
+}
+Copy-Item (Join-Path $ntDir 'wireguard.dll') $stage
+Copy-Item (Join-Path $ntDir 'wireguard-nt-LICENSE.txt') $stage
 
 $commit = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { (git rev-parse HEAD) }
 $repo = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { 'cuihairu/meshlet' }

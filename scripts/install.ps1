@@ -16,6 +16,12 @@ needed; the agent runs in the user session, not as a machine service):
   meshlet-tray.exe                     tray app (settings panel), replaced on
                                        every run; msvc links the WebView2
                                        loader statically, so no dll ships
+  wireguard.dll,                       wireguard-nt runtime (WG-NT-SWITCH),
+  wireguard-nt-LICENSE.txt             replaced on every run; the official
+                                       WireGuard for Windows install does not
+                                       ship it (its tunnel service
+                                       static-links it into wireguard.exe).
+                                       Dormant until tunnel_backend=nt
   agent.toml                           created once, then preserved
   agent.key                            generated once, then preserved
   state\                               agent state directory
@@ -142,7 +148,7 @@ try {
     }
 
     Expand-Archive -Path $archivePath -DestinationPath (Join-Path $work 'package') -Force
-    foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray.exe') {
+    foreach ($name in 'meshlet-agent.exe', 'meshlet-cli.exe', 'meshlet-tray.exe', 'wireguard.dll') {
         if (-not (Test-Path (Join-Path $work "package\$name"))) {
             Fail "release archive is incomplete: $name missing"
         }
@@ -160,6 +166,8 @@ try {
     Copy-Item (Join-Path $work 'package\meshlet-agent.exe') (Join-Path $installDir 'meshlet-agent.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-cli.exe') (Join-Path $installDir 'meshlet-cli.exe') -Force
     Copy-Item (Join-Path $work 'package\meshlet-tray.exe') (Join-Path $installDir 'meshlet-tray.exe') -Force
+    Copy-Item (Join-Path $work 'package\wireguard.dll') (Join-Path $installDir 'wireguard.dll') -Force
+    Copy-Item (Join-Path $work 'package\wireguard-nt-LICENSE.txt') (Join-Path $installDir 'wireguard-nt-LICENSE.txt') -Force
 }
 finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue

@@ -113,7 +113,7 @@ Invoke-RestMethod https://github.com/cuihairu/meshlet/releases/download/nightly/
 pwsh -File .\install.ps1 -ServerUrl 'https://meshlet.example.com' -HubEndpoint '203.0.113.10:51820' -BootstrapToken '控制台里的TOKEN' -DeviceName 'home-windows'
 ```
 
-安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` / `meshlet-tray.exe` 装进 `%LOCALAPPDATA%\meshlet`。把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器同时安装并注册托盘应用 `meshlet-tray.exe`（设置面板：诊断/路由表/对等节点/退出密码保护——设置了退出密码后，退出托盘需先验证；`-NoStartTray` 可跳过立即启动，登录自启仍在）；Windows 上数据面 apply 已按 ADR-008 接线（tunnel-only v1），端到端真机 apply 走查已于 2026-11-13 通过——见下文。
+安装脚本会校验 zip 的 SHA-256（对照 release 的 `SHA256SUMS`），把 `meshlet-agent.exe` / `meshlet-cli.exe` / `meshlet-tray.exe` / wireguard-nt 运行时 `wireguard.dll`（WG-NT-SWITCH：官方 WireGuard for Windows 不带这个 dll——它的隧道服务静态链在 `wireguard.exe` 内——由 meshlet 随 agent exe 一起分发；在 `tunnel_backend = "nt"` 启用前保持休眠）装进 `%LOCALAPPDATA%\meshlet`。把该目录加入用户 PATH，一次性生成 agent 密钥与配置，并注册隐藏运行的 HKCU Run 开机自启。重复执行即为升级——已有 `agent.toml` 与密钥保留，设备凭据不丢。离线/分阶段安装设 `$env:MESHLET_INSTALL_ARCHIVE` 与 `$env:MESHLET_INSTALL_SHA256SUMS`。安装器同时安装并注册托盘应用 `meshlet-tray.exe`（设置面板：诊断/路由表/对等节点/退出密码保护——设置了退出密码后，退出托盘需先验证；`-NoStartTray` 可跳过立即启动，登录自启仍在）；Windows 上数据面 apply 已按 ADR-008 接线（tunnel-only v1），端到端真机 apply 走查已于 2026-11-13 通过——见下文。
 
 ### 在 Windows 从源码构建并运行 agent
 
