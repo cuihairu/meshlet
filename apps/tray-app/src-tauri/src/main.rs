@@ -24,6 +24,7 @@ fn main() {
             commands::get_config,
             commands::save_config,
             commands::get_peers,
+            commands::get_direct_peers,
             commands::get_commands,
             commands::get_diag,
             commands::set_autostart,

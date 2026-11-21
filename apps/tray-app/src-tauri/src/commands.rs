@@ -55,6 +55,19 @@ pub(crate) async fn get_peers() -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
+/// 直连节点表（`<state_dir>/direct-peers.json`，agent 对账循环维护）。
+/// 设置窗「直连」tab 数据源：name/virtual_ipv4/endpoint/rtt_ms/last_handshake_at。
+#[tauri::command]
+pub(crate) fn get_direct_peers() -> Vec<serde_json::Value> {
+    let path = std::path::Path::new(&crate::config_io::meshlet_state_dir())
+        .join("direct-peers.json");
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
 #[tauri::command]
 pub(crate) fn get_commands() -> Vec<meshlet_commands::CommandSpec> {
     meshlet_commands::COMMANDS.to_vec()
