@@ -59,8 +59,8 @@ pub(crate) async fn get_peers() -> Vec<serde_json::Value> {
 /// 设置窗「直连」tab 数据源：name/virtual_ipv4/endpoint/rtt_ms/last_handshake_at。
 #[tauri::command]
 pub(crate) fn get_direct_peers() -> Vec<serde_json::Value> {
-    let path = std::path::Path::new(&crate::config_io::meshlet_state_dir())
-        .join("direct-peers.json");
+    let path =
+        std::path::Path::new(&crate::config_io::meshlet_state_dir()).join("direct-peers.json");
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(_) => return Vec::new(),
@@ -143,9 +143,13 @@ fn set_autostart_impl(enabled: bool) -> Result<(), String> {
 pub(crate) fn open_log_dir() -> Result<(), String> {
     #[cfg(windows)]
     {
-        let directory = meshlet_state_dir();
+        // 日志目录直指 `<state_dir>/logs`（agent 每日滚动写这里，fc8c3af）；
+        // 不存在则建，避免 explorer 打开 state 根只见一堆数据文件。
+        let log_dir = std::path::Path::new(&meshlet_state_dir()).join("logs");
+        std::fs::create_dir_all(&log_dir)
+            .map_err(|error| format!("create log dir {}: {error}", log_dir.display()))?;
         std::process::Command::new("explorer")
-            .arg(directory)
+            .arg(&log_dir)
             .spawn()
             .map_err(|error| error.to_string())?;
         Ok(())
