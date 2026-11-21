@@ -35,7 +35,7 @@ use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
-use meshlet_config::{AgentConfig, DataplaneConfig};
+use meshlet_config::{AgentConfig, DataplaneConfig, TunnelBackend};
 use meshlet_network::probe::RecoveryGate;
 use meshlet_network::SystemBackend;
 
@@ -133,9 +133,35 @@ pub struct Agent {
 
 impl Agent {
     /// 已是 root 或已免密的环境下同样成立）。
-    pub fn new(config: AgentConfig, private_key: Option<String>) -> Self {
+    ///
+    /// `tunnel_backend = "nt"`（Windows）时装载 wireguard-nt 运行时：
+    /// dll 缺失/装载失败**拒绝启动**（返回 `Err`）——绝不静默回落 service
+    /// 模型（配置显式点名 nt 却跑服务模型是模型错配，不是降级）。其他平台
+    /// 忽略该值（config 契约：仅 Windows 生效）。
+    pub fn new(config: AgentConfig, private_key: Option<String>) -> Result<Self, String> {
         let backend = SystemBackend::new().with_interface(config.dataplane.interface.clone());
-        Self::with_backend(config, private_key, backend)
+        #[cfg(target_os = "windows")]
+        let backend = if config.dataplane.tunnel_backend == TunnelBackend::Nt {
+            let runtime = meshlet_network::windows_wireguard_nt::NtRuntime::load().map_err(|e| {
+                format!(
+                    "tunnel_backend=nt requested but the wireguard-nt runtime is unavailable: {e}"
+                )
+            })?;
+            tracing::info!(
+                interface = %config.dataplane.interface,
+                "data plane backend: wireguard-nt"
+            );
+            backend.with_nt_runtime(runtime)
+        } else {
+            backend
+        };
+        #[cfg(not(target_os = "windows"))]
+        if config.dataplane.tunnel_backend == TunnelBackend::Nt {
+            tracing::warn!(
+                "tunnel_backend=nt is a Windows-only setting; using this platform's data plane"
+            );
+        }
+        Ok(Self::with_backend(config, private_key, backend))
     }
 
     /// 注入后端（netns 集成测试用；生产走 [`Agent::new`]）。

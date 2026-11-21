@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn state_path_lives_under_the_configured_state_dir() {
-        let agent = Agent::new(config("/var/lib/meshlet"), None);
+        let agent = Agent::new(config("/var/lib/meshlet"), None).expect("test agent builds");
         assert_eq!(
             agent.state_path(),
             Path::new("/var/lib/meshlet/applied.json")
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn heartbeat_against_a_dead_server_fails_visibly() {
         // 拉不到服务端时报错（可见），而不是静默「成功」——tick 据此退避重试。
-        let agent = Agent::new(config("/tmp/meshlet-agent-dead"), None);
+        let agent = Agent::new(config("/tmp/meshlet-agent-dead"), None).expect("test agent builds");
         let err = agent.heartbeat(None).expect_err("dead server");
         assert!(!err.is_empty(), "failure must be reported: {err}");
     }

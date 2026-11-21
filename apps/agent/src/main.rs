@@ -123,7 +123,16 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    Agent::new(config, private_key).run()
+    // tunnel_backend=nt 装载失败等启动期错误：可见退出（错误一行），
+    // 绝不静默回落 service 模型跑错数据面。
+    let agent = match Agent::new(config, private_key) {
+        Ok(agent) => agent,
+        Err(e) => {
+            eprintln!("meshlet-agent: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    agent.run()
 }
 
 fn load_config() -> Result<AgentConfig, String> {
