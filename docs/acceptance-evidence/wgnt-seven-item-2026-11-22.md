@@ -175,8 +175,12 @@ hub ping 0% 丢、`applied.json` 03:08:17）。
    `item1-verify.txt` L121-123、`item4a-failclosed.txt` L15-19、
    `item7r-early.txt` 尾部。待修面与 8c1bb93 同源：direct 模块的 wg 工具
    调用面也要过 nt 别名解析。
-2. **item 4 诊断性缺口**：缺 wireguard.dll 时 agent 静默退出，无明确
-   ERROR 日志行。
+2. **item 4 诊断性缺口——已修复（本批）**：缺 wireguard.dll 时 agent
+   `Agent::new` 失败只 `eprintln` 到 stderr；本进程经 MeshletAgentDeploy
+   （S4U/无 console 会话）运行，stderr 无人接 → 启动期失败原因在日志
+   不可恢复（观察到的「config loaded ×3 后静默消失」）。修复：main.rs
+   启动失败路径同写 `tracing::error!`（state/logs 文件 sink），失败原因
+   落日志。**未改**：进程仍 fail-closed 退出（正确行为），只补了可观测性。
 3. **QmAF 死端点黑洞**（既有、非 nt）：本工作站 10.240.0.7/32 钉死
    ZeroTier 死端点不回落 hub——`item7-overlay-note.txt`（step12 顽疾，
    overlay SSH 断连的既有成因，直连 imac 不受影响）。

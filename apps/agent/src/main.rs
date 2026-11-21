@@ -124,9 +124,16 @@ fn main() -> std::process::ExitCode {
 
     // tunnel_backend=nt 装载失败等启动期错误：可见退出（错误一行），
     // 绝不静默回落 service 模型跑错数据面。
+    //
+    // 错误必须同时写进 tracing 文件 sink（state/logs/meshlet-agent.log.*）：
+    // 本进程经 MeshletAgentDeploy（S4U/无 console 会话）运行，stderr 无人接，
+    // 只在 stderr eprintln 的话启动期失败原因在日志里不可恢复——ADR-008 七项
+    // item 4（缺 wireguard.dll fail-closed）诊断性缺口，记录于
+    // wgnt-seven-item-2026-11-22.md 相邻发现②。
     let agent = match Agent::new(config, private_key) {
         Ok(agent) => agent,
         Err(e) => {
+            tracing::error!(error = %e, "agent startup failed");
             eprintln!("meshlet-agent: {e}");
             return std::process::ExitCode::FAILURE;
         }
