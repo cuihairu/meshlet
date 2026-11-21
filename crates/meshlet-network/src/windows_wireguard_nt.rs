@@ -65,6 +65,8 @@
 //!   计划（如 PPPoE 1412）在本路径被明确拒绝而非错配。按计划值装配
 //!   MTU 需自行调 `SetIpInterfaceEntry`，是后续批次的活，不在本层。
 
+use crate::windows_console::NoWindowCommand;
+use crate::NetworkError;
 use crate::TunnelConfig;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -501,6 +503,81 @@ pub fn nt_dll_candidates(
     }
     candidates.push(std::path::PathBuf::from(NT_DLL_PROGRAMDATA));
     candidates
+}
+
+// ---------------------------------------------------------------------------
+// nt adapter OS 别名解析（跨平台纯函数 + 真机 PowerShell 查询）。
+//
+// 七项验收 item 1 证据（wgnt-seven-item-2026-11-21.md）：wireguard-nt 给
+// adapter 的 OS 级 InterfaceAlias 是驱动固定名 `WireGuard`，隧道名
+// `wg-mlt-<handle>` 只出现在 InterfaceDescription（`<adapter_name> Tunnel`）。
+// 因此任何 `-InterfaceAlias` / `InterfaceAlias ==` 匹配都**不能**直接用
+// `wg-mlt-<handle>` 或受管接口名——必须按 InterfaceDescription 反查 OS
+// Name。绝不硬编码 `WireGuard`（crate 默认名，但不得依赖它做匹配）。
+// ---------------------------------------------------------------------------
+
+/// 从 `Get-NetAdapter | Select Name,InterfaceDescription | ConvertTo-Json`
+/// 输出中按 InterfaceDescription 反查 OS 接口名（Name）。
+///
+/// 匹配规则：InterfaceDescription **大小写不敏感** 精确等于
+/// `"<adapter_name> Tunnel"`（wireguard-nt 命名约定，证据见模块头）。
+/// 返回对应 `Name`；JSON 畸形 / 无匹配 → `None`（调用方按 fail closed
+/// 语义处理，绝不静默落空）。PowerShell 单对象输出为 object、多对象为
+/// array——按 `Value` 统一归一（同 `parse_lan_ip_json` 的模式）；畸形条目
+/// 跳过，不阻断后续匹配。
+pub fn os_alias_from_adapter_enum_json(json: &str, adapter_name: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let entries: Vec<&serde_json::Value> = match &value {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        serde_json::Value::Object(_) => vec![&value],
+        _ => return None,
+    };
+    let needle = format!("{adapter_name} Tunnel");
+    for entry in entries {
+        let Some(name) = entry.get("Name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(desc) = entry.get("InterfaceDescription").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if desc.eq_ignore_ascii_case(&needle) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// 真机解析 nt adapter 的 OS 接口名：`Get-NetAdapter` 枚举（字段名英文、
+/// locale 无关）→ 按 InterfaceDescription 反查（[os_alias_from_adapter_enum_json]）。
+///
+/// fail closed：命令失败 / 适配器不存在 / JSON 畸形 → `Err(ApplyRejected)`
+/// （调用方绝不带错名继续，宁可整次 apply 拒）。仅 Windows 真机有效；
+/// 跨平台可编译（宿主 CI 跑 windows-gnu 交叉验证）。
+pub fn resolve_nt_os_alias(adapter_name: &str) -> Result<String, NetworkError> {
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-NetAdapter | Select-Object Name,InterfaceDescription | \
+             ConvertTo-Json -Compress",
+        ])
+        .no_window()
+        .output()
+        .map_err(|error| NetworkError::Io(format!("spawn powershell (Get-NetAdapter): {error}")))?;
+    if !output.status.success() {
+        return Err(NetworkError::ApplyRejected(format!(
+            "Get-NetAdapter failed: {}",
+            crate::windows_console::decode_output(&output.stderr)
+        )));
+    }
+    let json = crate::windows_console::decode_output(&output.stdout);
+    os_alias_from_adapter_enum_json(&json, adapter_name).ok_or_else(|| {
+        NetworkError::ApplyRejected(format!(
+            "no nt adapter with InterfaceDescription '{adapter_name} Tunnel' in \
+             Get-NetAdapter output (is the wireguard-nt adapter up?)"
+        ))
+    })
 }
 
 #[cfg(windows)]
@@ -1120,5 +1197,66 @@ mod tests {
             )]
         );
         assert_eq!(nt_dll_candidates(None, None).len(), 1);
+    }
+
+    // ----- nt adapter OS 别名解析（七项验收 item 1 缺陷回归） -----
+
+    #[test]
+    fn os_alias_matches_by_interface_description_case_insensitive() {
+        // 真机形态（wgnt-seven-item-2026-11-21.md）：OS Name 是驱动默认名
+        // `WireGuard`，隧道名只在 InterfaceDescription。
+        let json = r#"[
+            {"Name":"Ethernet","InterfaceDescription":"Intel(R) Ethernet Connection"},
+            {"Name":"WireGuard","InterfaceDescription":"wg-mlt-wg-mdc44 Tunnel"}
+        ]"#;
+        assert_eq!(
+            os_alias_from_adapter_enum_json(json, "wg-mlt-wg-mdc44"),
+            Some("WireGuard".to_string())
+        );
+        // 大小写不敏感（OS 给的描述大小写不作信任前提）。
+        let upper = r#"[{"Name":"WireGuard","InterfaceDescription":"WG-MLT-WG-MDC44 TUNNEL"}]"#;
+        assert_eq!(
+            os_alias_from_adapter_enum_json(upper, "wg-mlt-wg-mdc44"),
+            Some("WireGuard".to_string())
+        );
+    }
+
+    #[test]
+    fn os_alias_survives_noise_and_malformed_entries() {
+        // 多 adapter 噪声行 + 畸形条目（缺 InterfaceDescription）不阻断后续匹配。
+        let json = r#"[
+            {"Name":"Ethernet"},
+            {"Name":"Hyper-V","InterfaceDescription":"Microsoft Hyper-V Virtual Ethernet Adapter"},
+            {"Name":"WireGuard","InterfaceDescription":"wg-mlt-a1b2 Tunnel"}
+        ]"#;
+        assert_eq!(
+            os_alias_from_adapter_enum_json(json, "wg-mlt-a1b2"),
+            Some("WireGuard".to_string())
+        );
+    }
+
+    #[test]
+    fn os_alias_single_object_and_fail_closed_on_miss() {
+        // PowerShell 单对象输出（非数组）。
+        let single = r#"{"Name":"WireGuard","InterfaceDescription":"wg-mlt-net1 Tunnel"}"#;
+        assert_eq!(
+            os_alias_from_adapter_enum_json(single, "wg-mlt-net1"),
+            Some("WireGuard".to_string())
+        );
+        // 查不到 → None（调用方 fail closed）。
+        assert_eq!(
+            os_alias_from_adapter_enum_json(single, "wg-mlt-other"),
+            None
+        );
+        // 畸形 JSON / 数组元素非对象 / 非对象非数组 → None。
+        assert_eq!(
+            os_alias_from_adapter_enum_json("not json", "wg-mlt-net1"),
+            None
+        );
+        assert_eq!(
+            os_alias_from_adapter_enum_json(r#"[42]"#, "wg-mlt-net1"),
+            None
+        );
+        assert_eq!(os_alias_from_adapter_enum_json(r#"3"#, "wg-mlt-net1"), None);
     }
 }

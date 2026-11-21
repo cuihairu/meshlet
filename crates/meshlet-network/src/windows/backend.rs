@@ -234,14 +234,35 @@ impl WindowsNetworkBackend {
         })
     }
 
-    /// nt adapter 的地址读数：`Get-NetIPAddress` 里 InterfaceAlias 精确等于
-    /// adapter 名（`wg-mlt-<handle>`）的条目。读不到 → `None`（证据缺失
-    /// 不判，同 [Self::lan_addresses_sync] 的口径）。
+    /// 受管接口在 OS 层的可用别名：service 模型 = `self.interface`；nt 模型
+    /// = adapter 名（`wg-mlt-<handle>`）经
+    /// [crate::windows_wireguard_nt::resolve_nt_os_alias] 反查 OS Name。
+    ///
+    /// 七项验收 item 1 证据（wgnt-seven-item-2026-11-21.md）：nt adapter 的
+    /// OS InterfaceAlias 是驱动默认名 `WireGuard`，隧道名只出现在
+    /// InterfaceDescription——绝不能把 `wg-mlt-<handle>` 或 `wg-meshlet`
+    /// 直接当 OS 别名传给 `Set-NetConnectionProfile`/`Get-NetIPAddress`。
+    /// 解析失败 fail closed（apply 拒绝），绝不带错名继续。
+    pub(super) fn effective_interface_alias(&self) -> Result<String, NetworkError> {
+        if self.nt.is_some() {
+            let adapter_name = nt_adapter_name(&nt_adapter_handle(&self.interface))?;
+            crate::windows_wireguard_nt::resolve_nt_os_alias(&adapter_name)
+        } else {
+            Ok(self.interface.clone())
+        }
+    }
+
+    /// nt adapter 的地址读数：`Get-NetIPAddress` 里 InterfaceAlias 等于 OS
+    /// 别名（[crate::windows_wireguard_nt::resolve_nt_os_alias] 按
+    /// InterfaceDescription 反查——隧道名 `wg-mlt-<handle>` 不在 OS 别名上，
+    /// 见七项验收 item 1 证据）的条目。读不到 → `None`（证据缺失不判，同
+    /// [Self::lan_addresses_sync] 的口径）。
     fn nt_adapter_address(&self, adapter_name: &str) -> Option<Ipv4Addr> {
+        let os_alias = crate::windows_wireguard_nt::resolve_nt_os_alias(adapter_name).ok()?;
         self.lan_ip_entries()
             .ok()?
             .into_iter()
-            .find(|(alias, _, _)| alias.eq_ignore_ascii_case(adapter_name))
+            .find(|(alias, _, _)| alias.eq_ignore_ascii_case(&os_alias))
             .map(|(_, addr, _)| addr)
     }
 

@@ -77,10 +77,15 @@ impl WindowsNetworkBackend {
         &self,
         device_addr: std::net::Ipv4Addr,
     ) -> Result<(), NetworkError> {
-        let category_is_private = self.probe_net_category_is_private();
+        // nt 模型下 `self.interface`（如 `wg-meshlet`）不是 OS 别名（WireGuardNT
+        // adapter 的 OS 别名是驱动默认名 `WireGuard`，隧道名只在
+        // InterfaceDescription——七项验收 item 1 证据）。probe 与 set 都用
+        // 解析出的 OS 别名；service 模型路径行为不变。
+        let interface = self.effective_interface_alias()?;
+        let category_is_private = self.probe_net_category_is_private(&interface);
         let icmp_rule_state = self.probe_icmp_rule_state(device_addr);
         let commands = crate::windows_firewall::mesh_reachability_commands(
-            &self.interface,
+            &interface,
             device_addr,
             category_is_private,
             icmp_rule_state,
@@ -94,8 +99,9 @@ impl WindowsNetworkBackend {
     /// `(Get-NetConnectionProfile -InterfaceAlias <if>).NetworkCategory` 探测：
     /// exit 0 且值为 Private → 已满足；接口未找到 / 命令失败 → 未满足（宁补
     /// 不漏，档位 set 天然幂等）。只取档位值，绝不在整段输出搜 `private`——
-    /// 否则连接名含该词的 Public 档会被误判（审核发现 #4）。
-    pub(super) fn probe_net_category_is_private(&self) -> bool {
+    /// 否则连接名含该词的 Public 档会被误判（审核发现 #4）。`interface` 是
+    /// 调用方已解析的 OS 层别名（见 [Self::effective_interface_alias]）。
+    pub(super) fn probe_net_category_is_private(&self, interface: &str) -> bool {
         let Ok(output) = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -103,7 +109,7 @@ impl WindowsNetworkBackend {
                 "-Command",
                 &format!(
                     "(Get-NetConnectionProfile -InterfaceAlias '{}').NetworkCategory",
-                    self.interface
+                    interface
                 ),
             ])
             .no_window()
