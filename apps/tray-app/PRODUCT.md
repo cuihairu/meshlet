@@ -32,7 +32,7 @@ meshlet agent 的托盘常驻面，让用户**不必打开设置窗**就能完�
 - 托盘现状：菜单**只有 2 项** —— `打开设置` / `退出`（`apps/tray-app/src-tauri/src/main.rs:307-309`）。
 - 图标机制现状：`main.rs:365` 已有 `tray.set_icon(...)` 运行时换图标能力；2026-11-03 图标方案已替换为四态（用户批准）：`icons/icon-online.png`（青实心六边形+中心孔）、`icon-degraded.png`（铜削角）、`icon-offline.png`（灰空心环）、`icon-error.png`（红挖空感叹号）、`icon.png`/`icon.ico`（默认铜色实心）。
 - 设置窗现状：`index.html` 591 行，4 个分区 —— Connection（连接信息 / Hub 配置 / Peers）、诊断（Route table / Interfaces / WireGuard peers）、命令、常规（autostart）。
-- 发布：nightly 每日构建产出 Windows agent+CLI zip 与 `install.ps1`；README 明示 **托盘宿主真机验收仍待完成（R-05）**。
+- 发布：nightly 每日构建产出 Windows agent+CLI+tray-app zip 与 `install.ps1`（legacy `tray-host` 已于 2026-11-20 退役、由本应用 `meshlet-tray.exe` 接替，`install.ps1` 升级时清退其进程与自启项）；README 明示 **托盘应用 `meshlet-tray.exe` 真机验收仍待完成**（MSI/侧载 imac 亲验，见 `todo.md`）。
 - 平台可得性：本机为 Linux headless，**无法截取真实 Windows 托盘与 macOS 菜单栏的现状图**；Windows 实机 `openclaw` 当前离线（No route to host）；macOS 无可用实机。
 
 ## Capabilities and Constraints

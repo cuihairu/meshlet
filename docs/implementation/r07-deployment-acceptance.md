@@ -203,6 +203,8 @@ Each iteration forks a fresh `curl` process, so these are floors set by client p
     boot-recovery) passed on imac on 2026-11-12, and the data-plane backend is wired
     (`1324dd2`, ADR-008 tunnel-only v1). The end-to-end apply walkthrough and the
     MSI/tray-host real-machine acceptance passed on 2026-11-13 (AGENT-WIN-3, NIGHTLY-MSI-1, #52).
+    The tray-host covered was retired on 2026-11-20 and replaced by the `meshlet-tray.exe`
+    settings panel, which is not yet accepted on a real machine.
     Still open: the long-run soak and wide cross-NAT punch acceptance on real machines; NAT-bearing
     plans are explicitly rejected per ADR-008.
   - **2026-11-05 update**: three Windows machines have been provided (imac 192.168.5.117,

@@ -6,7 +6,7 @@ Linux is the first complete networking target. It uses WireGuard and host route/
 
 ## Windows acceptance state
 
-The tunnel service lifecycle, elevation exec, boot recovery and route management items passed on real machines on 2026-11-12; the MSI/tray-host installer and the end-to-end apply walkthrough passed on 2026-11-13. A command wrapper or partial prototype does not establish a complete agent — the acceptance record is what counts. Remaining open items: NAT-bearing plans are explicitly rejected per ADR-008, wide cross-NAT punch scenarios still need real-machine acceptance, and the long-run soak needs weeks of data.
+The tunnel service lifecycle, elevation exec, boot recovery and route management items passed on real machines on 2026-11-12; the MSI/tray-host installer and the end-to-end apply walkthrough passed on 2026-11-13 (the tray-host that acceptance covered was retired on 2026-11-20 and replaced by the `meshlet-tray.exe` settings panel, which is not yet accepted on a real machine). A command wrapper or partial prototype does not establish a complete agent — the acceptance record is what counts. Remaining open items: NAT-bearing plans are explicitly rejected per ADR-008, wide cross-NAT punch scenarios still need real-machine acceptance, and the long-run soak needs weeks of data.
 
 ## Linux constraints
 
