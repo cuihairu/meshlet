@@ -37,6 +37,10 @@ fn windows_lan_interface_filter_keeps_lan_and_zerotier_drops_virtual() {
     ));
     assert!(!is_windows_lan_interface("Tailscale", "wg-meshlet"));
     assert!(!is_windows_lan_interface("wg-newapi", "wg-meshlet"));
+    // wireguard-nt 隧道 OS 别名恰为 `WireGuard`（隧道名只在 InterfaceDescription）
+    // → 必须排除，否则被当 LAN 候选（lan 过收）。
+    assert!(!is_windows_lan_interface("WireGuard", "wg-meshlet"));
+    assert!(!is_windows_lan_interface("wireguard", "wg-meshlet"));
     // 物理 LAN 与 ZeroTier → 保留（候选口径与 Linux 一致）。
     assert!(is_windows_lan_interface("WLAN 7", "wg-meshlet"));
     assert!(is_windows_lan_interface(

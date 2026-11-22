@@ -159,7 +159,9 @@ pub(super) fn parse_windows_interfaces_json(text: &str) -> Vec<InterfaceDiagnost
 }
 
 /// Windows 局域网接口判定（§12 P2P 候选口径，镜像 Linux `is_lan_interface`）：
-/// 排除本受管 wg 接口、回环、Hyper-V vEthernet、Tailscale 与其余 wg 接口；
+/// 排除本受管 wg 接口、回环、Hyper-V vEthernet、Tailscale、其余 wg 接口与
+/// wireguard-nt 隧道（nt 模型 OS 别名恰为 `WireGuard`，隧道名只在 InterfaceDescription——
+/// 不排除会把隧道当 LAN 候选，lan 过收）；
 /// ZeroTier 等私有网段**保留**（可路由的私有网段都是直连候选）。别名比对
 /// 大小写不敏感（Windows 接口别名如 `Tailscale`、`vEthernet (WSL …)`）。
 pub(super) fn is_windows_lan_interface(alias: &str, wg_interface: &str) -> bool {
@@ -167,7 +169,14 @@ pub(super) fn is_windows_lan_interface(alias: &str, wg_interface: &str) -> bool 
     if alias == wg_interface || lower.starts_with("loopback") {
         return false;
     }
-    for prefix in ["vethernet", "tailscale", "wg", "docker", "veth"] {
+    for prefix in [
+        "vethernet",
+        "tailscale",
+        "wg",
+        "wireguard",
+        "docker",
+        "veth",
+    ] {
         if lower.starts_with(prefix) {
             return false;
         }
