@@ -165,6 +165,9 @@ impl WindowsNetworkBackend {
             local_public_key,
             tunnel_address,
             tunnel_listen_port,
+            // service 模型：路由经 netsh 独立下发（plan.routes → 内核），
+            // 与 peer allowed-ips 无关，drifted 按 plan.routes 对照。
+            routes_from_peers: false,
         })
     }
 
@@ -231,6 +234,10 @@ impl WindowsNetworkBackend {
             local_public_key,
             tunnel_address,
             tunnel_listen_port,
+            // nt 模型：路由由 adapter set_default_route 按 peer allowed-ips
+            // 装配（见上 installed_routes 注释），plan.routes 不经 netsh 下发；
+            // 漂移判定据此跳过 plan.routes 对照（peer 身份级比对已完全决定路由）。
+            routes_from_peers: true,
         })
     }
 

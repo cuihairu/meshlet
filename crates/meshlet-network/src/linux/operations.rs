@@ -73,6 +73,7 @@ impl LinuxNetworkBackend {
             local_public_key,
             tunnel_address,
             tunnel_listen_port,
+            routes_from_peers: false,
         })
     }
 

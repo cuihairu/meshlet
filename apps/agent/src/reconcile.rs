@@ -234,30 +234,38 @@ fn drifted(
     {
         return true;
     }
-    let installed: BTreeSet<String> = snapshot
-        .installed_routes
-        .iter()
-        .map(|c| c.to_string())
-        .collect();
-    let missing = plan
-        .routes
-        .iter()
-        .map(|r| r.destination.to_string())
-        .any(|d| !installed.contains(&d));
-    if missing {
-        return true;
-    }
-    // A route previously installed by the same interface but no longer desired
-    // is Meshlet-owned drift. Applying routes then removes it without sweeping
-    // connected or foreign paths.
-    let extra = snapshot.installed_routes.iter().any(|installed| {
-        !plan
+    // 路由对照只对「路由独立于 peer 下发」的后端成立（service 模型：netsh
+    // 独立 apply plan.routes）。peer allowed-ips 装配路由的后端（nt 模型：
+    // adapter set_default_route）不走此处——路由已由上面的 peer 身份级比对
+    // （公钥 → allowed-ips 逐项）完全决定；再按 plan.routes 判「计划外路由」
+    // 会把 hub `/16` 在叶节点 `routes=[]` 下恒判漂移，KernelDrift 每轮重放
+    // 死循环（2026-11-22 imac 实锤：旧二进制 pre 边界 185 次）。
+    if !snapshot.routes_from_peers {
+        let installed: BTreeSet<String> = snapshot
+            .installed_routes
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        let missing = plan
             .routes
             .iter()
-            .any(|route| &route.destination == installed)
-    });
-    if extra {
-        return true;
+            .map(|r| r.destination.to_string())
+            .any(|d| !installed.contains(&d));
+        if missing {
+            return true;
+        }
+        // A route previously installed by the same interface but no longer
+        // desired is Meshlet-owned drift. Applying routes then removes it
+        // without sweeping connected or foreign paths.
+        let extra = snapshot.installed_routes.iter().any(|installed| {
+            !plan
+                .routes
+                .iter()
+                .any(|route| &route.destination == installed)
+        });
+        if extra {
+            return true;
+        }
     }
     // NAT 身份：规则指纹集合精确比对（不是「有没有 NAT 规则」）。少一条要装的
     // DNAT/SNAT、或多出一条 Meshlet 注释下的规则（下发只增不删，旧单元残留），
@@ -435,6 +443,7 @@ mod tests {
             local_public_key: None,
             tunnel_address: Some(plan.tunnel.address),
             tunnel_listen_port: plan.tunnel.listen_port,
+            routes_from_peers: false,
         }
     }
 
@@ -549,6 +558,45 @@ mod tests {
             ..healthy(&p)
         };
         assert_eq!(apply(&state, &no_peer, &p).reason, Reason::KernelDrift);
+    }
+
+    #[test]
+    fn nt_peer_implied_routes_are_not_route_drift() {
+        // nt 模型（wireguard-nt adapter set_default_route）的内核路由完全由
+        // peer allowed-ips 装配，plan.routes 不经独立路径下发。漂移判定据此
+        // 跳过 plan.routes 对照——hub `/16` 不得因「不在 plan.routes」被判
+        // 计划外路由（叶节点 routes=[] 下每轮重放死循环；2026-11-22 imac
+        // 实锤：旧二进制 pre 边界 KernelDrift 185 次）。
+        let mut p = plan("hash-a", false);
+        p.routes = Vec::new(); // 叶节点：无显式路由计划（imac 实况 routes=[]）
+        let state = state_of(&p);
+        let peer_routes: Vec<Ipv4Cidr> = p.tunnel.peers[0].allowed_ips.clone();
+        assert!(
+            !peer_routes.is_empty(),
+            "test plan must carry peer allowed-ips to model the nt route set"
+        );
+
+        // nt 口径：已装路由=peer allowed-ips（hub `/16`），跳过 plan.routes 对照
+        // → 不判漂移（修复后收敛）。
+        let nt_snapshot = NetworkSnapshot {
+            installed_routes: peer_routes.clone(),
+            routes_from_peers: true,
+            ..healthy(&p)
+        };
+        assert_eq!(apply(&state, &nt_snapshot, &p).reason, Reason::UpToDate);
+
+        // 同一快照按 service 模型口径（路由独立于 peer、按 plan.routes 对照）
+        // 判：hub `/16` 不在空 plan.routes → 计划外路由 → 必须判漂移。
+        // 这是 pre-fix 实况（routes_from_peers 未引入），作为修复的回归守卫。
+        let service_snapshot = NetworkSnapshot {
+            installed_routes: peer_routes,
+            routes_from_peers: false,
+            ..healthy(&p)
+        };
+        assert_eq!(
+            apply(&state, &service_snapshot, &p).reason,
+            Reason::KernelDrift
+        );
     }
 
     #[test]

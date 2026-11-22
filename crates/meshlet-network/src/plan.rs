@@ -203,6 +203,14 @@ pub struct NetworkSnapshot {
     /// 与计划不符必须判不匹配（否则对端按上报端口发包，本机收不到，
     /// 打洞静默失败）；读不到 → `None`（证据缺失不判，不进重放死循环）。
     pub tunnel_listen_port: Option<u16>,
+    /// 路由来源语义（后端声明）：`true` = 本后端的内核路由完全由 peer
+    /// allowed-ips 装配（wireguard-nt 的 adapter `set_default_route`；
+    /// `plan.routes` 在此后端不经独立路径下发，netsh route apply 显式拒绝）。
+    /// 漂移判定据此不再按 `plan.routes` 判「缺路由/计划外路由」——路由
+    /// 已由 peer 身份级比对（公钥 → allowed-ips 逐项）完全决定；否则 hub
+    /// `/16` 在叶节点 `routes=[]` 下恒判「计划外路由」→ KernelDrift 每
+    /// 轮重放死循环（2026-11-22 imac 真机实锤：旧二进制 pre 边界 185 次）。
+    pub routes_from_peers: bool,
 }
 
 /// 受管接口上读出的一个 WireGuard peer（身份级事实：公钥 + allowed-ips）。

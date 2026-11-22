@@ -108,9 +108,14 @@ pub(crate) fn device_plan_matches(
         }
         return false;
     }
-    for route in &plan.routes {
-        if !snapshot.installed_routes.contains(&route.destination) {
-            return false;
+    // 路由对照只对「路由独立于 peer 下发」的后端成立（service 模型）。
+    // peer allowed-ips 装配路由的后端（nt 模型 adapter set_default_route）
+    // 不走此处——路由已由上方 peer 身份级比对完全决定（同 drifted 口径）。
+    if !snapshot.routes_from_peers {
+        for route in &plan.routes {
+            if !snapshot.installed_routes.contains(&route.destination) {
+                return false;
+            }
         }
     }
     if let Some(mtu) = plan.tunnel.mtu {
@@ -203,6 +208,7 @@ mod device_plan_matches_tests {
             local_public_key: None,
             tunnel_address: None,
             tunnel_listen_port: None,
+            routes_from_peers: false,
         }
     }
 
@@ -295,6 +301,23 @@ mod device_plan_matches_tests {
         // 计划路由 10.240.0.0/24 未安装 → 漂移。
         let p = plan(&[], &["10.240.0.0/24"], None);
         let s = snapshot(true, &[], &["192.168.1.0/24"], None);
+        assert!(!device_plan_matches(&p, &empty_extra(), &s));
+    }
+
+    #[test]
+    fn peer_implied_routes_skip_plan_route_check() {
+        // nt 模型（wireguard-nt adapter set_default_route）的路由完全由 peer
+        // allowed-ips 装配，plan.routes 不经独立路径下发（netsh route apply
+        // 显式拒绝）。device_plan_matches 按 plan.routes 的「缺路由」判定对
+        // nt 恒假——routes_from_peers 时跳过（同 drifted 口径）。
+        let p = plan(&[], &["10.240.0.0/24"], None);
+        let mut s = snapshot(true, &[], &[], None);
+        s.routes_from_peers = true;
+        assert!(device_plan_matches(&p, &empty_extra(), &s));
+
+        // 对照：同一快照按 service 模型口径（路由独立于 peer、按 plan.routes
+        // 判「缺路由」）→ 计划路由未装 → 必须判不匹配。
+        s.routes_from_peers = false;
         assert!(!device_plan_matches(&p, &empty_extra(), &s));
     }
 

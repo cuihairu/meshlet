@@ -164,6 +164,7 @@ mod tests {
                 local_public_key: None,
                 tunnel_address: None,
                 tunnel_listen_port: None,
+                routes_from_peers: false,
             })
         }
 
