@@ -7,14 +7,15 @@
 //!
 //! 三层纪律：
 //!
-//! - **命令计划（全平台纯函数）**：[bt_apply_commands] 把
-//!   [BtInterfacePlan] → `Vec<[BtCommand]>`（确定性顺序：地址 → MTU →
-//!   逐 peer 逐 allowed_ip 路由）。mac 无 netns 等价物，测试钩子退化为
-//!   **命令记录器 mock**——单测断言生成的命令序列，不真执行。
-//! - **执行器（`cfg(target_os = "macos")`）**：[exec] 的 [MacNetworkBackend]
-//!   把命令计划逐条 spawn（对齐 [crate::linux::backend] 执行器模型：前缀
-//!   测试钩子、非零退出落 [NetworkError::Io] 携带 stderr）。宿主 CI 不跑
-//!   macOS 测试，本层经 `x86_64-apple-darwin` 交叉 check 编译验证。
+//! - **命令计划（全平台纯函数）**：[bt_apply_commands] 把 [BtInterfacePlan]
+//!   → `Vec<[BtCommand]>`（确定性顺序：地址 → MTU → 逐 peer 逐 allowed_ip
+//!   路由）。mac 无 netns 等价物，测试钩子退化为**命令记录器 mock**——单测
+//!   断言生成的命令序列，不真执行。
+//! - **执行器（`cfg(target_os = "macos")`）**：`exec` 子模块的
+//!   `MacNetworkBackend` 把命令计划逐条 spawn（对齐 [crate::linux::backend]
+//!   执行器模型：前缀测试钩子、非零退出落 [NetworkError::Io] 携带 stderr）。
+//!   宿主 CI 不跑 macOS 测试，本层经 `x86_64-apple-darwin` 交叉 check 编译
+//!   验证。
 //! - **接口名守门**：utun 名白名单对 `resolved_iface` 同样生效——执行层从
 //!   `WG_TUN_NAME_FILE` 读到的内核分配名同样不可信（fail closed）。
 

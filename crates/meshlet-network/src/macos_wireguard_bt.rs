@@ -11,7 +11,8 @@
 //! 的纯转换与 utun 命名/端口/MTU 守门（[bt_interface_plan]）。
 //!
 //! **命令计划**（任意平台编译+单测）：[BtInterfacePlan] →
-//! `Vec<[BtCommand]>`（ifconfig/route/MTU——utun 是**哑设备**，IP/路由
+//! `Vec<[crate::macos::backend::BtCommand]>`（ifconfig/route/MTU——utun
+//! 是**哑设备**，IP/路由
 //! 自管，见 [crate::macos] 的 `bt_apply_commands`）。
 //!
 //! **`#[cfg(target_os = "macos")]` 执行层**：spawn boringtun-cli——起 utun
@@ -91,7 +92,7 @@ impl From<BtPlanError> for NetworkError {
     }
 }
 
-/// 单 peer 的 boringtun 计划（[PeerConfig] 的执行形态前置转换）。
+/// 单 peer 的 boringtun 计划（[crate::PeerConfig] 的执行形态前置转换）。
 ///
 /// 字段对应标准 `wg` 配置面（boringtun-cli UAPI 同构）：公钥/keepalive 仍持
 /// 计划层形态（base64 `String` / `Option<u16>`），二进制转换留给执行层——
