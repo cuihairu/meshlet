@@ -210,15 +210,20 @@ impl TrayConfig {
     };
 }
 
-/// Windows 数据面后端（WG-NT-SWITCH 接线批，任务书 meshlet-wireguard-nt-switch）。
+/// 数据面后端选择（WG-NT-SWITCH 接线批 + WG-MAC-BT 接线批）。
 ///
-/// - [`Service`](TunnelBackend::Service)（默认）：`wireguard.exe` 隧道服务模型
-///   （`installtunnelservice` 受管服务 + netsh 路由）——现网三台的现行路径。
-/// - [`Nt`](TunnelBackend::Nt)：wireguard-nt 0.5.0 嵌入式 adapter 绑定
-///   （一网络一 adapter、单 agent 进程承载，根治服务模型 §1.2 同名互踩 /
+/// - [`Service`](TunnelBackend::Service)（默认）：Windows `wireguard.exe`
+///   隧道服务模型（`installtunnelservice` 受管服务 + netsh 路由）——现网三台
+///   的现行路径。
+/// - [`Nt`](TunnelBackend::Nt)：Windows wireguard-nt 0.5.0 嵌入式 adapter
+///   绑定（一网络一 adapter、单 agent 进程承载，根治服务模型 §1.2 同名互踩 /
 ///   §2.5 端口撞绑）。
+/// - [`MacBoringtun`](TunnelBackend::MacBoringtun)：macOS boringtun 用户态
+///   后端（spawn boringtun-cli + wg.sock UAPI，见 meshlet-network 的
+///   `macos_wireguard_bt` 模块；接线批 ③-C）。
 ///
-/// 仅 Windows 生效；其他平台（kernel 后端）忽略此值。
+/// 按平台生效：`service`/`nt` 仅 Windows、`mac-boringtun` 仅 macOS。平台与
+/// 变体不匹配时 fail-closed（agent 接线显式报错，绝不静默回退默认后端）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TunnelBackend {
     /// `wireguard.exe` 隧道服务模型（现行路径）。
@@ -226,6 +231,19 @@ pub enum TunnelBackend {
     Service,
     /// wireguard-nt 嵌入式 adapter 绑定。
     Nt,
+    /// macOS boringtun 用户态后端（接线批 ③-C）。
+    MacBoringtun,
+}
+
+impl TunnelBackend {
+    /// 配置串（与 [AgentConfig::from_toml] 解析面互为逆操作，round-trip 钉）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Service => "service",
+            Self::Nt => "nt",
+            Self::MacBoringtun => "mac-boringtun",
+        }
+    }
 }
 
 /// Agent 数据面配置（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）：
@@ -233,9 +251,9 @@ pub enum TunnelBackend {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataplaneConfig {
     pub enabled: bool,
-    /// Windows 数据面后端选择（见 [`TunnelBackend`]）。默认
-    /// [`Service`](TunnelBackend::Service)（行为不变）；`nt` 仅在 Windows
-    /// 且接线批完成并验收后有意义。
+    /// 数据面后端选择（见 [`TunnelBackend`]）。默认
+    /// [`Service`](TunnelBackend::Service)（行为不变）；`nt` 仅在 Windows、
+    /// `mac-boringtun` 仅在 macOS，且各自接线批完成并验收后有意义。
     pub tunnel_backend: TunnelBackend,
     /// 受管 WireGuard 接口名。
     pub interface: String,
@@ -500,9 +518,11 @@ impl AgentConfig {
             None => default.dataplane.tunnel_backend,
             Some("service") => TunnelBackend::Service,
             Some("nt") => TunnelBackend::Nt,
+            Some("mac-boringtun") => TunnelBackend::MacBoringtun,
             Some(other) => {
                 return Err(ConfigError::InvalidDataPlane(format!(
-                    "dataplane.tunnel_backend must be \"service\" or \"nt\", got \"{other}\""
+                    "dataplane.tunnel_backend must be \"service\", \"nt\", or \
+                     \"mac-boringtun\", got \"{other}\""
                 )));
             }
         };

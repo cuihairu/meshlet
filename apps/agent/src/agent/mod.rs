@@ -137,10 +137,28 @@ impl Agent {
     ///
     /// `tunnel_backend = "nt"`（Windows）时装载 wireguard-nt 运行时：
     /// dll 缺失/装载失败**拒绝启动**（返回 `Err`）——绝不静默回落 service
-    /// 模型（配置显式点名 nt 却跑服务模型是模型错配，不是降级）。其他平台
-    /// 忽略该值（config 契约：仅 Windows 生效）。
+    /// 模型（配置显式点名 nt 却跑服务模型是模型错配，不是降级）。
+    ///
+    /// `tunnel_backend = "mac-boringtun"`（macOS）切 boringtun 数据面；**非
+    /// macOS 平台选到该变体显式 `Err`（fail-closed）**，绝不静默回落默认后端
+    /// （config 契约：各后端仅其平台生效，平台错配是模型错配）。
     pub fn new(config: AgentConfig, private_key: Option<String>) -> Result<Self, String> {
         let backend = SystemBackend::new().with_interface(config.dataplane.interface.clone());
+        // fail-closed：mac-boringtun 仅 macOS 生效；其余平台拒绝启动。
+        #[cfg(not(target_os = "macos"))]
+        if config.dataplane.tunnel_backend == TunnelBackend::MacBoringtun {
+            return Err("tunnel_backend=mac-boringtun is a macOS-only setting".into());
+        }
+        #[cfg(target_os = "macos")]
+        let backend = if config.dataplane.tunnel_backend == TunnelBackend::MacBoringtun {
+            tracing::info!(
+                interface = %config.dataplane.interface,
+                "data plane backend: mac-boringtun"
+            );
+            backend.with_mac_boringtun()
+        } else {
+            backend
+        };
         #[cfg(target_os = "windows")]
         let backend = if config.dataplane.tunnel_backend == TunnelBackend::Nt {
             let runtime =

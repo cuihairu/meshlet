@@ -96,9 +96,15 @@ pub type SystemBackend = linux::LinuxNetworkBackend;
 #[cfg(target_os = "windows")]
 pub type SystemBackend = windows::WindowsNetworkBackend;
 
+/// 平台默认后端（macOS）：[macos::system::MacSystemBackend]——默认占位
+/// （行为与旧 [unsupported] 占位一致）+ `mac-boringtun` 数据面分派
+/// （③-C 接线；`tunnel_backend` 未选时行为零变化）。
+#[cfg(target_os = "macos")]
+pub type SystemBackend = macos::system::MacSystemBackend;
+
 /// 平台默认后端（其余平台）：[unsupported] 模块的明确占位，每个数据面操作
 /// 都失败可见（`NetworkError::Unsupported`），绝不静默假装生效。
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub type SystemBackend = unsupported::UnsupportedBackend;
 
 /// 统一网络后端抽象：inspect → apply → rollback。

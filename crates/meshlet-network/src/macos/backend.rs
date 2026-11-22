@@ -157,6 +157,23 @@ pub fn bt_apply_commands(
     Ok(commands)
 }
 
+/// 隧道配置 → 命令计划（③-C 接线组合面，全平台纯函数）：
+/// [bt_interface_plan] → [bt_resolved_interface_name] → [bt_apply_commands]。
+///
+/// `interface_name` 是配置侧 utun 名（`utun` 让内核选 / `utun<N>` 显式）；
+/// `kernel_assigned` 是执行层拿到的内核分配名（计划名显式时被忽略）。密钥
+/// /peer 配置面走 `wg` UAPI（不在命令计划内）——本函数只产出哑 utun 的
+/// 地址/MTU/路由命令序列。
+pub fn bt_apply(
+    tunnel: &crate::TunnelConfig,
+    interface_name: &str,
+    kernel_assigned: &str,
+) -> Result<Vec<BtCommand>, NetworkError> {
+    let plan = crate::macos_wireguard_bt::bt_interface_plan(tunnel, interface_name)?;
+    let resolved = bt_resolved_interface_name(&plan, kernel_assigned)?;
+    bt_apply_commands(&plan, &resolved)
+}
+
 #[cfg(target_os = "macos")]
 mod exec {
     use super::BtCommand;
@@ -166,6 +183,7 @@ mod exec {
 
     /// macOS 命令执行器（`cfg(target_os = "macos")`，宿主 CI 不跑 macOS
     /// 测试，仅经 `x86_64-apple-darwin` 交叉 check 编译验证）。
+    #[derive(Clone)]
     pub struct MacNetworkBackend {
         /// 测试钩子：每条命令前缀 `sudo -n`（无特权验证用）。
         sudo: bool,
@@ -479,5 +497,34 @@ mod tests {
         assert_eq!(rendered, vec!["scutil", "--dns"]);
         // 白名单校验：诊断命令同样可被提升执行（scutil 在 sudo 白名单内）。
         assert!(crate::macos_privileges::check_sudo_elevation(&rendered).is_ok());
+    }
+
+    /// ③-C 钉：`bt_apply` 组合面（配置 → 命令计划）与 `bt_apply_commands`
+    /// 语义一致；显式 utun 名时内核分配名被忽略（不覆盖）。
+    #[test]
+    fn bt_apply_composes_plan_and_ignores_kernel_name_for_explicit_iface() {
+        let commands = bt_apply(&tunnel(), "utun5", "utun9").unwrap();
+        let expected = bt_apply_commands(
+            &crate::macos_wireguard_bt::bt_interface_plan(&tunnel(), "utun5").unwrap(),
+            "utun5",
+        )
+        .unwrap();
+        assert_eq!(commands, expected);
+        assert!(commands
+            .iter()
+            .all(|c| !matches!(c, BtCommand::AddRoute { iface, .. } if iface != "utun5")));
+    }
+
+    /// ③-C 钉：`bt_apply` 走 `utun`（内核自选）时采用内核分配名——执行层拿
+    /// 到的名字不可信，仍过白名单（非 utun 名拒）。
+    #[test]
+    fn bt_apply_uses_kernel_assigned_name_for_bare_utun() {
+        let commands = bt_apply(&tunnel(), "utun", "utun12").unwrap();
+        assert!(commands.iter().all(
+            |c| matches!(c, BtCommand::SetAddress { iface, .. } if iface == "utun12")
+                || matches!(c, BtCommand::SetMtu { iface, .. } if iface == "utun12")
+                || matches!(c, BtCommand::AddRoute { iface, .. } if iface == "utun12")
+        ));
+        assert!(bt_apply(&tunnel(), "utun", "wg0").is_err());
     }
 }

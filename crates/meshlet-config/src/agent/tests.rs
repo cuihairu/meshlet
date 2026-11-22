@@ -150,6 +150,32 @@ fn agent_dataplane_tunnel_backend_defaults_service_and_parses() {
 }
 
 #[test]
+fn agent_dataplane_tunnel_backend_mac_boringtun_round_trips() {
+    // ③-C 钉："mac-boringtun" 解析到 MacBoringtun，且 as_str → 解析互为
+    // 逆操作（round-trip）；三个变体逐一走查。
+    let c = AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"mac-boringtun\"").unwrap();
+    assert_eq!(c.dataplane.tunnel_backend, TunnelBackend::MacBoringtun);
+
+    for (variant, text) in [
+        (TunnelBackend::Service, "service"),
+        (TunnelBackend::Nt, "nt"),
+        (TunnelBackend::MacBoringtun, "mac-boringtun"),
+    ] {
+        assert_eq!(variant.as_str(), text);
+        let parsed = AgentConfig::from_toml(&format!("[dataplane]\ntunnel_backend = \"{text}\""))
+            .unwrap()
+            .dataplane
+            .tunnel_backend;
+        assert_eq!(parsed, variant, "round-trip {text}");
+    }
+
+    // 近似拼写 fail closed（mac_boringtun 下划线不是合法串）。
+    let err =
+        AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"mac_boringtun\"").unwrap_err();
+    assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
+}
+
+#[test]
 fn agent_dataplane_rejects_empty_interface_and_zero_poll() {
     let err = AgentConfig::from_toml(
         r#"
