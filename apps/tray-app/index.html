@@ -534,8 +534,12 @@
           el.innerHTML = `<div class="muted">${t.noPeers}</div>`;
           return;
         }
-        // 对齐 get_peers 实际字段：last_handshake（字符串）/ connected / rx_bytes / tx_bytes。
-        el.innerHTML = peers.map(p => `
+        // 对齐 get_peers 实际字段：last_handshake（epoch 秒）/ connected / rx_bytes / tx_bytes。
+        // R-UI-1：按最近握手倒序（最新在上）；原来直接按后端 JSON 顺序渲染，
+        // 列表随设备字典序漂，新握手的老设备不会浮上来。
+        el.innerHTML = [...peers]
+          .sort((a, b) => (b.last_handshake || 0) - (a.last_handshake || 0))
+          .map(p => `
           <div class="peer-card">
             <div class="peer-header">
               <span class="peer-dot ${p.connected ? 'on' : 'off'}"></span>
@@ -556,14 +560,28 @@
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
+    function fmtAbs(epoch, fallback) {
+      if (!epoch || epoch <= 0) return t.never;
+      try {
+        return new Date(epoch * 1000).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US');
+      } catch (_) { return fallback; }
+    }
     function fmtEpoch(epoch) {
       if (epoch == null || epoch <= 0) return t.never;
       const secs = Math.max(0, Math.floor(Date.now() / 1000) - epoch);
       if (secs < 60) return lang === 'zh' ? `${secs} 秒前` : `${secs}s ago`;
       if (secs < 3600) { const m = Math.floor(secs / 60); return lang === 'zh' ? `${m} 分钟前` : `${m}m ago`; }
       if (secs < 86400) { const h = Math.floor(secs / 3600); return lang === 'zh' ? `${h} 小时前` : `${h}h ago`; }
+      // R-UI-1：超过一天的不再只显示「N 天前」——用户看不出是哪一天。
+      // 改为绝对日期，秒/分/小时仍用相对值（当天事件用相对值最直观）。
       const d = Math.floor(secs / 86400);
-      return lang === 'zh' ? `${d} 天前` : `${d}d ago`;
+      return fmtAbs(epoch, lang === 'zh' ? `${d} 天前` : `${d}d ago`);
+    }
+    function fmtAbs(epoch, fallback) {
+      if (!epoch || epoch <= 0) return t.never;
+      try {
+        return new Date(epoch * 1000).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US');
+      } catch (_) { return fallback; }
     }
     async function loadDirectPeers() {
       if (!invoke) return;
@@ -584,7 +602,9 @@
               <th>${t.directColEndpoint}</th><th>${t.directColMode}</th>
               <th>${t.directColRtt}</th><th>${t.directColHandshake}</th>
             </tr></thead>
-            <tbody>${peers.map(p => `
+            <tbody>${[...peers]
+              .sort((a, b) => (b.last_handshake_at || 0) - (a.last_handshake_at || 0))
+              .map(p => `
               <tr>
                 <td>${escapeHtml(p.name)}${
                   p.device_id

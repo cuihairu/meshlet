@@ -149,11 +149,10 @@ pub(crate) fn get_peers() -> Vec<serde_json::Value> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            let last_seen = if handshake > 0 && now > handshake {
-                format!("{} 秒前", now - handshake)
-            } else {
-                "从未".to_string()
-            };
+            // R-UI-1：把原始 epoch 交给前端 fmtEpoch 统一渲染。原来这里硬编码
+            // “{} 秒前”，超过一天的握手只显示「61028 秒前」——既看不出是哪一天，
+            // 也没法按时间排序。秒数/分钟前等相对格式一律在前端做。
+            let last_seen = handshake;
 
             let short_key: String = public_key.chars().take(16).collect();
             peers.push(serde_json::json!({
