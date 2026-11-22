@@ -49,16 +49,16 @@ LogonTrigger IMAC\cui + S4U/HighestAvailable + PT0S + IgnoreNew + Restart 3x）�
 | 隧道从账本重建 | 04:37:22Z agent starting → orphaned adapter 清理 → driver 1.1 → Creating adapter → 04:37:28Z `applied the desired device plan … reason=KernelDrift`（冷应用）；instance lock 正常持锁 | `log-boot-sequence.txt` |
 | 无恢复循环 | 起机后日志无 ERROR/panic/could-not-restore（唯一 ERROR 行是驱动孤儿适配器扫描诊断 0x00000490，紧随 "Removed orphaned adapter" 成功重建，自愈面） | `log-boot-sequence.txt` |
 | 数据面连通 | hub ping 全程 0% 丢；`wg show` hub/FSaf/b6tx 握手新鲜（`wg-dump-postboot.txt`） | `wg-dump-postboot.txt`、`ping-cvm-to-imac.txt` |
-| RTT 收敛 | 起机初双端落 ZT 面 ~175ms（冷启动面重收敛，fliploop 族既有动态）→ +8min 自然回 LAN 面 ~2.7ms（端点 192.168.5.117/.188） | `ping-cvm-to-imac.txt` |
+| RTT 收敛 | pre 重启基线 LAN 面 avg 1.97ms → 起机后 +1min 双端落 ZT 面（min 160.4 / avg 253.6 / max 518.0ms，冷启动面重收敛，fliploop 族既有动态）→ +8min 自然回 LAN 面 avg 2.71ms（端点 192.168.5.117/.188） | `ping-cvm-to-imac.txt` |
 | 防火墙 | Meshlet* 规则在场（2 条） | 走查记录 |
 
 **如实边界**：
 
 - TaskScheduler Operational 日志通道被禁（查无事件）——归因不依赖它，由父进程
   PID + 任务 LastRunTime 精确一致 + 无用户登录三重钉死。
-- 起机初 ZT 面 ~175ms 属直连面选择的既有动态（fliploop 族，用户待拍板残余），
-  非 boot trigger 缺陷；boot trigger 契约=「agent 起 → 隧道从账本重建」，两项
-  全 PASS。
+- 起机后 +1min ZT 面（avg 253.6ms）属直连面选择的既有动态（fliploop 族，用户
+  待拍板残余），非 boot trigger 缺陷；boot trigger 契约=「agent 起 → 隧道从账本
+  重建」，两项全 PASS。
 - RTT 收敛耗时 ~8min（长于既有文档的 ~3min warmup 口径）——冷启动直连面选择
   重新收敛所致，0% 丢包贯穿，如实记录。
 
