@@ -136,6 +136,7 @@ impl ResolverSink for RecordingResolverSink {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+    #[cfg(unix)]
     use std::path::Path;
 
     #[test]
@@ -207,9 +208,18 @@ mod tests {
         // 内存 mock 断言的是落盘计划序列，不真写盘。
     }
 
+    /// 钉：解析器根目录是 macOS 标准路径（跨平台只钉字符串本身）。
     #[test]
     fn resolver_root_is_the_expected_directory() {
         assert_eq!(RESOLVER_ROOT, "/etc/resolver");
+    }
+
+    /// Unix 路径语义下 `/etc/resolver` 是绝对路径。Windows 的 `Path::is_absolute`
+    /// 要求盘符/UNC 前缀，同一字符串在此不成立——本模块是 macOS 机制，只钉
+    /// Unix 侧（Windows CI 跑 `cargo test --workspace`，该断言在 Win32 为 false）。
+    #[cfg(unix)]
+    #[test]
+    fn resolver_root_is_absolute_on_unix() {
         assert!(Path::new(RESOLVER_ROOT).is_absolute());
     }
 }
