@@ -1,8 +1,19 @@
 import { defineConfig } from 'vitepress'
 
 // Dead links and invalid anchors fail the production build.
+
+const BASE = '/meshlet/'
+
+// 首次访问按浏览器语言自动跳 /zh/（FLEET-DOC-G2 ①，2026-11-22 用户拍板）。
+// 与 console 的 language-provider 同款探测：navigator.language 以 zh 开头即中文。
+// 只在「无任何显式选择（localStorage['meshlet-lang'] 未设）」且落在英文首页时跳一次；
+// 显式切换会写 localStorage['meshlet-lang']（theme/index.ts 监听切换器），之后尊重用户选择不再跳。
+// 只重定向首页（首次访问的典型落点），不映射深层链接——zh 目录尚非 100% 覆盖（存在 EN-only 页），
+// 深层页保持英文、由手动 switcher 切换，避免把用户导向 404。
+const localeRedirectScript = `(function(){try{var s=localStorage.getItem('meshlet-lang');if(s==='zh'||s==='en')return;var l=(navigator.language||'').toLowerCase();if(l.indexOf('zh')!==0)return;var p=window.location.pathname;var b=${JSON.stringify(BASE)};if(p===b||p===b.slice(0,-1)){window.location.replace(b+'zh/')}}catch(e){}})()`
+
 export default defineConfig({
-  base: '/meshlet/',
+  base: BASE,
   title: 'Meshlet',
   description: 'Self-hosted private networking — design documents and project records',
   ignoreDeadLinks: false,
@@ -11,7 +22,10 @@ export default defineConfig({
       chunkSizeWarningLimit: 1600,
     },
   },
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/meshlet/logo-copper.svg' }]],
+  head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/meshlet/logo-copper.svg' }],
+    ['script', {}, localeRedirectScript],
+  ],
   themeConfig: {
     logo: '/logo-copper.svg',
     siteTitle: 'Meshlet',
