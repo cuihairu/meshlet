@@ -194,12 +194,13 @@ export default defineConfig({
             { text: 'ADR-012 网段即信任组', link: '/zh/decisions/adr-012-network-segment-trust' },
             { text: 'ADR-013 Cockpit Agent 作为本机基础信息源', link: '/zh/decisions/adr-013-cockpit-agent-host-info' },
             { text: 'ADR-014 与 ZeroTier 类组网互为备份', link: '/zh/decisions/adr-014-coexistence-personal-positioning' },
-            { text: '阻塞项代决记录（2026-10-30）', link: '/decisions/2026-10-30-decisions' },
+            { text: '阻塞项代决记录（2026-10-30）', link: '/zh/decisions/2026-10-30-decisions' },
           ] }],
           '/zh/design/': [{ text: '设计', items: [
             { text: '网段信任组', link: '/zh/design/network-segment-trust' },
             { text: '重叠 LAN Alias 设计', link: '/zh/design/overlapping-lan-alias' },
             { text: 'R-01 领域模型（草案）', link: '/zh/design/r01-domain-model' },
+            { text: '节点与网络唯一身份', link: '/zh/design/meshlet-identity-network-id' },
           ] }],
           '/zh/guide/': [{ text: '指南', items: [
             { text: '安装指南', link: '/zh/guide/install' },
@@ -218,7 +219,7 @@ export default defineConfig({
             { text: 'R-06 服务发布', link: '/zh/implementation/r06-service-publishing' },
             { text: 'R-07 部署验收', link: '/zh/implementation/r07-deployment-acceptance' },
             { text: 'M3 故障矩阵', link: '/zh/implementation/m3-fault-matrix' },
-            { text: '决策立即动作执行（2026-10-30）', link: '/implementation/decisions-actions-2026-10-30' },
+            { text: '决策立即动作执行（2026-10-30）', link: '/zh/implementation/decisions-actions-2026-10-30' },
           ] }],
           '/zh/review/': [{ text: '存档', items: [
             { text: '对话存档 · 2026-10-13', link: '/zh/review/chatgpt-2026-10-13' },
