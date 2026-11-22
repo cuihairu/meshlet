@@ -186,9 +186,29 @@ mod exec {
             }
         }
 
+        /// `sudo -n` 失败是否因「需要密码/未配 NOPASSWD」。
+        ///
+        /// 只匹配 sudo 自身报错面，不匹配下游命令失败（那走 Io）。
+        fn sudo_password_required(stderr: &str) -> bool {
+            let lower = stderr.to_ascii_lowercase();
+            lower.contains("password is required")
+                || lower.contains("a password is required")
+                || lower.contains("no password was provided")
+                || lower.contains("may not run sudo")
+        }
+
         /// 执行一条命令。非零退出返回携带 stderr 的 [NetworkError::Io]
         /// （不静默、不假装成功）。
+        ///
+        /// `sudo` 模式下先过 [crate::macos_privileges] 白名单：白名单外
+        /// 拒绝提升（fail-closed）；`sudo -n` 因未配置 NOPASSWD / 需密码
+        /// 失败时返回 [NetworkError::InsufficientPrivileges] 并点名
+        /// `docs/macos-privileges.md`。
         pub fn run(&self, argv: &[&str]) -> Result<Output, NetworkError> {
+            let owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+            if self.sudo {
+                crate::macos_privileges::check_sudo_elevation(&owned)?;
+            }
             let mut full = self.command_prefix();
             full.extend_from_slice(argv);
             let out = Command::new(full[0])
@@ -199,11 +219,20 @@ mod exec {
                 .output()
                 .map_err(|e| NetworkError::Io(format!("spawn {}: {e}", full.join(" "))))?;
             if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if self.sudo && Self::sudo_password_required(&stderr) {
+                    return Err(NetworkError::InsufficientPrivileges(format!(
+                        "sudo -n for `{}` needs a sudoers NOPASSWD entry \
+                         (docs/macos-privileges.md): {}",
+                        full.join(" "),
+                        stderr.trim()
+                    )));
+                }
                 return Err(NetworkError::Io(format!(
                     "{} failed ({}): {}",
                     full.join(" "),
                     out.status,
-                    String::from_utf8_lossy(&out.stderr).trim()
+                    stderr.trim()
                 )));
             }
             Ok(out)
@@ -217,6 +246,12 @@ mod exec {
                 self.run(&argv)?;
             }
             Ok(())
+        }
+    }
+
+    impl Default for MacNetworkBackend {
+        fn default() -> Self {
+            Self::new()
         }
     }
 }

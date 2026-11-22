@@ -89,6 +89,7 @@ export default defineConfig({
             { text: 'R-01 Domain Model (Draft)', link: '/design/r01-domain-model' },
             { text: 'Node and Network Identity', link: '/design/meshlet-identity-network-id' },
             { text: 'Multi-Instance Failure and Userspace WireGuard', link: '/design/userspace-wireguard-analysis' },
+            { text: 'macOS Privileges', link: '/design/macos-privileges' },
           ] }],
           '/guide/': [{ text: 'Guides', items: [
             { text: 'Installation', link: '/guide/install' },
