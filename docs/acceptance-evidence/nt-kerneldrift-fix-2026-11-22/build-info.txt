@@ -1,0 +1,10 @@
+repository=cuihairu/meshlet
+commit=23935caeb954e3af43a64c791f9dc08a4224ccc9
+built_at=2026-11-22T03:12:00Z
+target=x86_64-pc-windows-gnu
+source_dirty=false
+exe_sha256=6f17ffc1ba199df5ebd2c8b7e74ee22de2b1baee659d6cac2e4abdf34924f1c1
+deployed_exe_sha256=6F17FFC1BA199DF5EBD2C8B7E74EE22DE2B1BAEE659D6CAC2E4ABDF34924F1C1
+deployed_agent_pid=11816
+deployed_start_local=2026-11-22 11:17:28
+deployed_start_utc=2026-11-22T03:17:28Z

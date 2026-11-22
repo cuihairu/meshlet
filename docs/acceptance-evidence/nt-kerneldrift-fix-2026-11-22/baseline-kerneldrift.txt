@@ -1,0 +1,8 @@
+== pre-fix binary 18cef2e (PID 544, started 07:22:37 local = 2026-11-21T23:22:37Z) ==
+KernelDrift count (meshlet-agent.log.2026-11-22) at 11:06: 245
+KernelDrift count at 11:09: 250
+KernelDrift count at 11:16 (pre-swap): 260
+cadence: ~every 30-45s
+sample:
+2026-11-22T03:09:05.088017Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-22T03:16:45.927564Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift

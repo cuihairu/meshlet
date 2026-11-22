@@ -1,0 +1,7 @@
+imac nt test-bed deploy (LAN 192.168.5.117, meshlet overlay 10.240.0.7 down pre-existing):
+1. stage new exe: scp target/.../meshlet-agent.exe imac:/tmp/meshlet-agent.exe.new
+2. kill old agent (Stop-Process -Id 544)
+3. replace AppData exe (Copy-Item C:/tmp/...new -> C:\Users\cui\AppData\Local\meshlet\meshlet-agent.exe)
+4. write BUILD_INFO (commit 23935ca)
+5. Start-ScheduledTask -TaskName MeshletAgentDeploy (task exec = meshlet-agent.exe, LastRunTime matched PID 544/11816 start)
+note: overlay 10.240.0.7 unreachable from coding-vm both pre- and post-swap (pre-existing, not caused by this fix); LAN SSH path unaffected.

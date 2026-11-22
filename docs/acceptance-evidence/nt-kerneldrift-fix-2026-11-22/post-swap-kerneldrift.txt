@@ -1,0 +1,10 @@
+== swap at 11:17:28 local (23935ca binary, PID 11816) ==
+one cold-start apply immediately after start:
+2026-11-22T03:17:32.605967Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+after that (03:17:35Z onward, 4.5+ min observed to 03:21:47Z):
+KernelDrift_after_03_17_35 = 0
+total KernelDrift in log = 261 (260 pre + 1 cold-start, no growth)
+reconcile loop active (direct-peer transitions continue):
+2026-11-22T03:21:04.303706Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/... from=direct_pending to=p2p_direct reason=pending verified: fresh handshake (probe Healthy)
+2026-11-22T03:21:47.970517Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=qaa2xB4O7... from=direct_pending to=p2p_direct reason=pending verified: fresh handshake (probe Healthy)
+nt adapter Up, 10.240.0.7/16 Preferred.
