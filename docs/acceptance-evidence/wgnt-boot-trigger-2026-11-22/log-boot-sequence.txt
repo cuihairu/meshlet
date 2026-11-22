@@ -1,0 +1,25 @@
+2026-11-22T04:37:22.414855Z  INFO meshlet_agent: agent starting version="0.1.0"
+2026-11-22T04:37:22.416671Z  INFO meshlet_agent: agent config loaded server_url=http://106.14.216.177:8080 state_dir=C:\Users\cui\AppData\Local\meshlet\state dataplane_enabled=true interface=wg-meshlet poll_interval_secs=30
+2026-11-22T04:37:22.420036Z  INFO meshlet_agent: single-instance lock held instance_lock=C:\Users\cui\AppData\Local\meshlet\state\agent.lock
+2026-11-22T04:37:22.430418Z  INFO meshlet_agent::bootstrap: using the saved agent token path=C:\Users\cui\AppData\Local\meshlet\state\device_token
+2026-11-22T04:37:22.622883Z  INFO meshlet_agent::agent: data plane backend: wireguard-nt interface=wg-meshlet
+2026-11-22T04:37:23.272656Z ERROR wireguard_nt::log: wireguard: Failed to find matching adapter name: ??????????(Code 0x00000490)
+2026-11-22T04:37:23.314298Z  INFO wireguard_nt::log: wireguard: Removed orphaned adapter "WireGuard"
+2026-11-22T04:37:23.791246Z  INFO wireguard_nt::log: wireguard: Using existing driver 1.1
+2026-11-22T04:37:23.804401Z  INFO wireguard_nt::log: wireguard: Creating adapter
+2026-11-22T04:37:23.907055Z  INFO wireguard_nt::adapter: endpoint: 106.14.216.177:51820
+2026-11-22T04:37:28.670356Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-22T04:37:42.329622Z  INFO meshlet_agent::agent::direct: direct link demoted to hub relay public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE=
+2026-11-22T04:37:43.048222Z  INFO meshlet_agent::agent::direct: direct link demoted to hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=
+2026-11-22T04:37:43.780347Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= endpoint=10.147.19.49:51820
+2026-11-22T04:37:43.832417Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= from=p2p_direct to=hub_relay reason=handshake stale beyond health window (probe Unhealthy)
+2026-11-22T04:37:43.834995Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= from=p2p_direct to=hub_relay reason=handshake stale beyond health window (probe Unhealthy)
+2026-11-22T04:37:43.836271Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=hub_relay to=direct_pending reason=promote attempt via candidate table (probe Unhealthy)
+2026-11-22T04:37:43.853189Z  INFO meshlet_agent::agent: network change observed: retrying immediately
+2026-11-22T04:37:54.307845Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= from=direct_pending to=p2p_direct reason=pending verified: fresh handshake (probe Healthy)
+2026-11-22T04:38:35.120544Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= endpoint=180.152.54.66:52931
+2026-11-22T04:38:35.827908Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= endpoint=10.147.19.130:51820
+2026-11-22T04:38:35.828814Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= from=hub_relay to=direct_pending reason=promote attempt via candidate table (probe Unhealthy)
+2026-11-22T04:38:35.829470Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= from=hub_relay to=direct_pending reason=promote attempt via candidate table (probe Unhealthy)
+2026-11-22T04:39:05.458802Z  INFO meshlet_agent::agent: network change observed: retrying immediately
+2026-11-22T04:39:15.729429Z  INFO meshlet_agent::agent::direct: direct mode flipped public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= from=direct_pending to=p2p_direct reason=pending verified: fresh handshake (probe Healthy)

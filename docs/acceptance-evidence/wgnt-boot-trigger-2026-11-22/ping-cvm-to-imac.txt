@@ -1,0 +1,14 @@
+== ping coding-vm -> imac overlay VIP 10.240.0.7 (meshlet) ==
+== A. pre-reboot baseline (12:35:3x CST, agent PID 11816, LAN face) ==
+3 packets transmitted, 3 received, 0% packet loss
+rtt min/avg/max/mdev = 1.574/1.965/2.459/0.368 ms
+
+== B. post-boot +1min (12:38:xx, warmup / face re-convergence, ZT face both sides) ==
+4 packets transmitted, 4 received, 0% packet loss
+rtt min/avg/max/mdev = 160.422/253.554/517.978/152.699 ms
+(endpoints at that moment: cvm->QmAF 10.147.19.226:51820, imac->b6tx 10.147.19.130:51820, both ZT-relayed)
+
+== C. post-boot +8min (12:44:xx, direct face settled back to LAN) ==
+6 packets transmitted, 6 received, 0% packet loss
+rtt min/avg/max/mdev = 1.971/2.706/3.981/0.685 ms
+(endpoint after settle: cvm->QmAF 192.168.5.117:51820 LAN face; imac->b6tx 192.168.5.188:51820 LAN face)

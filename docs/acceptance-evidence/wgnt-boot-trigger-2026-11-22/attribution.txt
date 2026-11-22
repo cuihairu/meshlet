@@ -1,0 +1,15 @@
+captured=2026-11-22T12:46:27Z
+boot=2026-11-22T12:36:56
+agent PID=3528 Sess=0 Parent=2828 Created=2026-11-22T12:37:13
+parentName=svchost.exe cmd=C:\WINDOWS\system32\svchost.exe -k netsvcs -p -s Schedule
+task LastRun=2026-11-22T12:37:13 Result=267009
+task state=Running
+=== users (quser) ===
+quser : * 没有用户
+所在位置 C:\Users\cui\AppData\Local\Temp\capture.ps1:19 字符: 10
++ $out += (quser 2>&1 | Out-String)
++          ~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (* 没有用户:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
