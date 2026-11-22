@@ -67,6 +67,12 @@ pub mod windows_service;
 pub mod windows_tunnel;
 pub mod windows_wireguard_nt;
 
+/// boringtun 计划层（全平台编译+单测）与 macOS 后端模块（命令计划全平台、
+/// `cfg(macos)` 执行器）。见 [crate::macos_wireguard_bt] 模块文档（②-3 路径
+/// 决策：spawn boringtun-cli + wg.sock UAPI）。
+pub mod macos;
+pub mod macos_wireguard_bt;
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 
