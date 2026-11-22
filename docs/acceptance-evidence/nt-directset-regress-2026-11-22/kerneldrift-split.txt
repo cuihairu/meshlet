@@ -1,0 +1,10 @@
+== KernelDrift replay split ==
+log=meshlet-agent.log.2026-11-21  pre=185  post=46
+log=meshlet-agent.log.2026-11-22  pre=0  post=64
+--- first 3 + last 3 (post) ---
+2026-11-22T00:00:22.513940Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-22T00:01:05.083522Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-22T00:01:54.332349Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-22T00:46:13.437622Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-22T00:46:59.235106Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift
+2026-11-22T00:47:44.357035Z  INFO meshlet_agent::agent::reconcile: applied the desired device plan desired_config_hash=07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814 routes=0 nat_rules=0 reason=KernelDrift

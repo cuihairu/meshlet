@@ -1,0 +1,105 @@
+== BUILD_INFO ==
+repository=cuihairu/meshlet
+commit=18cef2ea54cfb975f08035dd6c58fe4fc8ab3ffc
+built_at=2026-11-21T23:19:03Z
+target=x86_64-pc-windows-gnu
+source_dirty=false
+== agent process ==
+
+
+ProcessId    : 544
+CreationDate : 2026/11/22 7:22:37
+
+
+
+
+== scheduled task state ==
+Running
+== hub ping (106.14.216.177) ==
+True
+== applied.json (ledger) ==
+{
+  "desired_config_hash": "07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814",
+  "tunnel_address": "10.240.0.7",
+  "routes": [],
+  "nat_rules": [],
+  "nat_owners": [],
+  "applied_at": "2026-11-22T00:47:44Z",
+  "local_public_key": "QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=",
+  "last_good_plan": {
+    "desired_revision": 33,
+    "hub_port": 51820,
+    "tunnel": {
+      "name": "wg-meshlet",
+      "address": "10.240.0.7",
+      "address_prefix": 16,
+      "listen_port": 51820,
+      "peers": [
+        {
+          "public_key": "vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=",
+          "allowed_ips": [
+            "10.240.0.0/16"
+          ],
+          "endpoint": "106.14.216.177:51820",
+          "persistent_keepalive_secs": 25
+        }
+      ],
+      "mtu": null,
+      "private_key": null
+    },
+    "routes": [],
+    "nat_rules": [],
+    "hub_address": "10.240.0.1",
+    "publish": null,
+    "ssh_config": {
+      "hosts": [
+        {
+          "name": "coding-vm",
+          "alias": "m-cvm",
+          "address": "10.240.0.4",
+          "user": "cui",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "cuihaitao",
+          "alias": "m-cuihaitao",
+          "address": "10.240.0.8",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "home-pve",
+          "alias": "m-home-pve",
+          "address": "10.240.0.9",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "imac",
+          "alias": "m-imac",
+          "address": "10.240.0.7",
+          "user": "cui",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "openclaw-win",
+          "alias": "m-openclaw",
+          "address": "10.240.0.3",
+          "user": "Administrator",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "vps-ns-agent",
+          "alias": "m-vps-ns",
+          "address": "10.240.0.2",
+          "alias_source": "hub-config"
+        },
+        {
+          "name": "windows-desktop",
+          "alias": "m-wd",
+          "address": "10.240.0.5",
+          "alias_source": "hub-config"
+        }
+      ]
+    },
+    "desired_config_hash": "07152c0605b9bcc8d2a18dca23c8aec4216afdfafe1523f55bd87a4e7382e814"
+  }
+}

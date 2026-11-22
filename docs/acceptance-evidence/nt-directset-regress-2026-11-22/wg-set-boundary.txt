@@ -1,0 +1,8 @@
+== wg set failures split by binary boundary 2026-11-21T23:22:37 ==
+log=meshlet-agent.log.2026-11-21  TOTAL=187  pre=187  post=0
+--- distinct error shapes (pre) ---
+wg-meshlet :: Unable to modify interface: No such file or directory
+count 'wg set WireGuard' (new form) post=0
+log=meshlet-agent.log.2026-11-22  TOTAL=0  pre=0  post=0
+--- distinct error shapes (pre) ---
+count 'wg set WireGuard' (new form) post=0

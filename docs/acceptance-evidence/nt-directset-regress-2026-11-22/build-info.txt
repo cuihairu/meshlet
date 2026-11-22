@@ -1,0 +1,4 @@
+36feb05940727fcafec27411ac20ce7a11e40ebbee534290272d8e40158684d8  /tmp/meshlet-ntregress/meshlet-agent.exe
+b1b85e072c45d81358be29d94c599dc76652f912be8c0f0a41e2d5d89a6461d3  /tmp/meshlet-ntregress/wireguard.dll
+git_commit=18cef2ea54cfb975f08035dd6c58fe4fc8ab3ffc
+built_at_utc=2026-11-21T23:19:03Z

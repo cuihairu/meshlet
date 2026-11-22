@@ -1,0 +1,25 @@
+== direct link promoted/demoted post-boundary (counts) ==
+log=meshlet-agent.log.2026-11-21
+promoted=24
+demoted=23
+promote_failed=0
+--- sample promoted lines ---
+2026-11-21T23:22:59.556540Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE= endpoint=10.147.19.97:52931
+2026-11-21T23:23:00.854948Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= endpoint=10.147.19.130:51820
+2026-11-21T23:23:02.169452Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g= endpoint=10.147.19.49:51820
+--- sample demoted lines ---
+2026-11-21T23:25:04.052514Z  INFO meshlet_agent::agent::direct: direct link demoted to hub relay public_key=qaa2xB4O7Tno26+gO3qDI5vvm5SZjgCJ+iJHZ+GDllE=
+2026-11-21T23:25:05.150579Z  INFO meshlet_agent::agent::direct: direct link demoted to hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=
+2026-11-21T23:25:06.250377Z  INFO meshlet_agent::agent::direct: direct link demoted to hub relay public_key=FSaf/1S9kdPMrZASj8+mrjmPSixzXpTMU1anfDLXV2g=
+log=meshlet-agent.log.2026-11-22
+promoted=26
+demoted=26
+promote_failed=0
+--- sample promoted lines ---
+2026-11-22T00:02:03.711190Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= endpoint=10.147.19.130:51820
+2026-11-22T00:05:00.404952Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= endpoint=10.147.19.130:51820
+2026-11-22T00:07:59.826185Z  INFO meshlet_agent::agent::direct: direct link promoted public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc= endpoint=10.147.19.130:51820
+--- sample demoted lines ---
+2026-11-22T00:01:20.280898Z  INFO meshlet_agent::agent::direct: direct link demoted to hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=
+2026-11-22T00:04:16.889709Z  INFO meshlet_agent::agent::direct: direct link demoted to hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=
+2026-11-22T00:07:15.191365Z  INFO meshlet_agent::agent::direct: direct link demoted to hub relay public_key=b6txQ61FHR82eciDlw6G/4x0Z+n7FJvajjIBVv8APnc=

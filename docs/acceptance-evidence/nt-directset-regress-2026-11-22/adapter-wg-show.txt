@@ -1,0 +1,17 @@
+== wg show WireGuard (human) ==
+interface: WireGuard
+  public key: QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=
+  private key: (hidden)
+  listening port: 51820
+
+peer: vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=
+  endpoint: 106.14.216.177:51820
+  allowed ips: 10.240.0.0/16
+  latest handshake: 28 seconds ago
+  transfer: 1.76 KiB received, 6.28 KiB sent
+  persistent keepalive: every 25 seconds
+== wg show WireGuard dump (raw) ==
+SL6Nx13UeamrYMyIiYMjTtskZF1l+9TVYvWBA2/w0VI=	QmAFaSKbFqm3qGql/DH+mJOWSfN1n6VyNhXwaRrXdlg=	51820	off
+vLkJb0o0T3ljv6LmvDawzrE+3m9AvNSBEW/n/UKLLHM=	(none)	106.14.216.177:51820	10.240.0.0/16	1795308461	1800	6432	25
+== Get-NetIPAddress ==
+10.240.0.7
