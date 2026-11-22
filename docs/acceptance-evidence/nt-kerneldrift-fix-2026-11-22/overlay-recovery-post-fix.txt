@@ -1,0 +1,50 @@
+overlay-recovery-post-fix.txt
+=============================
+recorded_utc=2026-11-22T03:45:00Z  (30 min post-swap, 23935ca / PID 11816)
+
+CORRECTION: earlier disclosure "overlay 10.240.0.7 unreachable from coding-vm
+(pre-existing, separate case)" is WITHDRAWN. Post-fix the overlay is UP, stable,
+and DIRECT. The unreachability observed at ~03:00Z (m-imac timeout) was
+concurrent with the old binary's (18cef2e) 30-45s KernelDrift replay loop, which
+re-applied the device plan and flapped the tunnel. After the fix the replay
+loop stops, the tunnel stabilizes, and overlay connectivity is restored.
+
+causality framing: observed correlation + coherent mechanism. No controlled
+experiment (no before/after toggle); stated as "coincident + mechanism", not
+"proven causal".
+
+--- 1. coding-vm (10.240.0.4) -> imac overlay 10.240.0.7, stability ---
+$ timeout 15 ping -c 10 10.240.0.7
+10 packets transmitted, 10 received, 0% packet loss, time 9010ms
+rtt min/avg/max/mdev = 1.531/2.901/6.104/1.316 ms
+(control: 10.240.0.1 hub 0% loss ~9.6ms)
+
+--- 2. ssh m-imac (overlay route) works ---
+$ timeout 12 ssh -o ConnectTimeout=8 m-imac 'echo m-imac-ok'
+m-imac-ok
+(earlier, ~03:00Z, this same command TIMED OUT)
+
+--- 3. coding-vm direct peer to imac (LAN endpoint = direct P2P, not hub relay) ---
+$ sudo wg show | grep -A3 "10.240.0.7/32"
+  allowed ips: 10.240.0.7/32
+  latest handshake: 1 minute, 10 seconds ago   (keepalive 15s -> refreshing)
+  persistent keepalive: every 15 seconds
+endpoint (from earlier dump): 192.168.5.117:51820   (imac LAN ip)
+
+--- 4. imac side reachability ---
+now_utc=2026-11-22T03:42:45Z
+imac_can_reach_hub_overlay=Test-Connection 10.240.0.1 -> True
+imac_can_reach_codingvm_overlay=Test-Connection 10.240.0.4 -> True
+imac nt adapter peers: hub vLkJb0o0... handshake 6s ago;
+  coding-vm b6txQ61... endpoint 192.168.5.188:51820, 10.240.0.4/32, handshake 1m52s
+
+--- 5. p2p state (imac log since agent start) ---
+p2p_direct=7  promoted=99  demoted=97
+(interpretation: direct connection IS established and holding; promote/demote
+cycling residue remains, consistent with the 11-13 "P2P not persistent" note
+but now with a live direct peer present)
+
+--- 6. KernelDrift unchanged (fix still holding) ---
+total_KernelDrift=261 (260 pre + 1 cold apply), zero growth for 28 min
+KernelDrift_after_03_17_35=0
+pid 11816 running
