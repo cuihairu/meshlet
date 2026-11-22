@@ -50,7 +50,7 @@ The task layer deliberately extends the no-server-shell-command rule with an exp
 
 The Axum router exposes public, management, and agent API surfaces under one process. Management requests authenticate as users, and mutating requests require `WriteUser` plus CSRF (`apps/server/src/auth.rs:504` and `:521`); agent requests use a separate Bearer extractor (`apps/server/src/agent.rs:223`). The router composition and static console fallback are explicit (`apps/server/src/lib.rs:979` and `:1113`). There is no standalone generic schema file beyond the API contracts in `crates/meshlet-api-types/src/lib.rs:8`, `docs/architecture/api-contract.md`, and `docs/public/api/openapi.yaml`.
 
-The CLI and local UIs are separate consumers of state. The CLI reads agent-produced files and calls only the task API (`apps/cli/src/main.rs:78` and `:896`); the Tauri tray reads and writes local config and status JSON (`apps/tray-app/src-tauri/src/main.rs:57`); the Windows tray host listens to no agent channel and polls status files while rebuilding menus (`apps/tray-host/src/main.rs:106` and `:430`).
+The CLI and local UIs are separate consumers of state. The CLI reads agent-produced files and calls only the task API (`apps/cli/src/main.rs:78` and `:896`); the Tauri tray reads and writes local config and status JSON (`apps/tray-app/src-tauri/src/main.rs:57`); the Windows tray host (retired from the shipping surface on 2026-11-20, replaced by the Tauri tray; source retained in the workspace) listens to no agent channel and polls status files while rebuilding menus (`apps/tray-host/src/main.rs:106` and `:430`).
 
 ### Observability and Diagnostics Layer
 

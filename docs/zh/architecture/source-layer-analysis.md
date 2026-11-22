@@ -50,7 +50,7 @@ agent 消费结构化计划、记录最近成功计划并对账内核。主循�
 
 Axum router 暴露公开、管理与 agent API。管理请求经用户认证，写请求还要 `WriteUser` 加 CSRF（`apps/server/src/auth.rs:504`、`:521`）；agent 请求使用独立 Bearer extractor（`apps/server/src/agent.rs:223`）。router 组合与可选控制台静态 fallback 明确（`apps/server/src/lib.rs:979`、`:1113`）。除 `crates/meshlet-api-types/src/lib.rs:8`、`docs/architecture/api-contract.md` 与 `docs/public/api/openapi.yaml` 外，没有通用 schema 文件。
 
-CLI 与本地 UI 是状态的独立消费者。CLI 读 agent 产生的文件，只在显式任务命令中调用 HTTP（`apps/cli/src/main.rs:78`、`:896`）；Tauri 托盘读写本地配置与状态 JSON（`apps/tray-app/src-tauri/src/main.rs:57`）；Windows tray host 不监听 agent 通道，而是轮询状态文件并重建菜单（`apps/tray-host/src/main.rs:106`、`:430`）。
+CLI 与本地 UI 是状态的独立消费者。CLI 读 agent 产生的文件，只在显式任务命令中调用 HTTP（`apps/cli/src/main.rs:78`、`:896`）；Tauri 托盘读写本地配置与状态 JSON（`apps/tray-app/src-tauri/src/main.rs:57`）；Windows tray host（2026-11-20 起退出发布面、由 Tauri 托盘接替；源码仍在 workspace 保留）不监听 agent 通道，而是轮询状态文件并重建菜单（`apps/tray-host/src/main.rs:106`、`:430`）。
 
 ### 可观测与诊断层
 
