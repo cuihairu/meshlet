@@ -49,6 +49,9 @@ pub enum BtCommand {
         network: Ipv4Addr,
         mask: Ipv4Addr,
     },
+    /// `scutil --dns`——**只读诊断**：读解析器现状（对账/取证面）。写面
+    /// 是 [crate::macos_dns] 的 resolver 文件计划，不经本命令。
+    DumpDns,
 }
 
 impl BtCommand {
@@ -90,6 +93,7 @@ impl BtCommand {
                 "-interface".into(),
                 iface.clone(),
             ],
+            Self::DumpDns => vec!["scutil".into(), "--dns".into()],
         }
     }
 }
@@ -157,6 +161,7 @@ pub fn bt_apply_commands(
 mod exec {
     use super::BtCommand;
     use crate::NetworkError;
+    use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Output, Stdio};
 
     /// macOS 命令执行器（`cfg(target_os = "macos")`，宿主 CI 不跑 macOS
@@ -254,10 +259,55 @@ mod exec {
             Self::new()
         }
     }
+
+    /// 真实解析器文件落盘执行器（`cfg(target_os = "macos")`）。
+    ///
+    /// 写 `/etc/resolver/<domain>` 并设 [crate::macos_dns::RESOLVER_FILE_MODE]；
+    /// 非特权进程的写失败返回
+    /// [NetworkError::InsufficientPrivileges]（可见，不假写）——提升该写
+    /// 是 launchd 特权 helper 后续（见 docs/macos-privileges.md §5）。
+    pub struct FsResolverSink;
+
+    impl FsResolverSink {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl Default for FsResolverSink {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl crate::macos_dns::ResolverSink for FsResolverSink {
+        fn write(&self, plan: &crate::macos_dns::ResolverFilePlan) -> Result<(), NetworkError> {
+            if let Some(parent) = plan.path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    NetworkError::Io(format!("create {}: {error}", parent.display()))
+                })?;
+            }
+            std::fs::write(&plan.path, &plan.content).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    NetworkError::InsufficientPrivileges(format!(
+                        "write {}: {error} (needs root or the launchd helper follow-up)",
+                        plan.path.display()
+                    ))
+                } else {
+                    NetworkError::Io(format!("write {}: {error}", plan.path.display()))
+                }
+            })?;
+            std::fs::set_permissions(&plan.path, std::fs::Permissions::from_mode(plan.mode))
+                .map_err(|error| {
+                    NetworkError::Io(format!("chmod {}: {error}", plan.path.display()))
+                })?;
+            Ok(())
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
-pub use exec::MacNetworkBackend;
+pub use exec::{FsResolverSink, MacNetworkBackend};
 
 #[cfg(test)]
 mod tests {
@@ -420,5 +470,14 @@ mod tests {
         let rendered = format!("{commands:?}");
         assert!(!rendered.contains("secret-key-material"), "{rendered}");
         assert!(!rendered.contains("private_key"), "{rendered}");
+    }
+
+    /// ③-B 钉：DNS 诊断子命令渲染 `scutil --dns`（只读，无接口名/写面成分）。
+    #[test]
+    fn dump_dns_renders_scutil_diagnostics() {
+        let rendered = BtCommand::DumpDns.argv();
+        assert_eq!(rendered, vec!["scutil", "--dns"]);
+        // 白名单校验：诊断命令同样可被提升执行（scutil 在 sudo 白名单内）。
+        assert!(crate::macos_privileges::check_sudo_elevation(&rendered).is_ok());
     }
 }

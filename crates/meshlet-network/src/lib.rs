@@ -71,6 +71,7 @@ pub mod windows_wireguard_nt;
 /// `cfg(macos)` 执行器）。见 [crate::macos_wireguard_bt] 模块文档（②-3 路径
 /// 决策：spawn boringtun-cli + wg.sock UAPI）。
 pub mod macos;
+pub mod macos_dns;
 pub mod macos_privileges;
 pub mod macos_wireguard_bt;
 
