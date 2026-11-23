@@ -4,7 +4,7 @@
 //!
 //! 覆盖：
 //! 1. `initialize` → 拿到 `Mcp-Session-Id`，服务宣告 tools 能力；
-//! 2. `tools/list` → 六个只读工具俱全（status/info/peers/routes/networks/diag）；
+//! 2. `tools/list` → 七个只读工具俱全（status/info/peers/routes/networks/diag/doctor）；
 //! 3. `tools/call` status/peers → 返回的是 state_dir 里真实文件内容；
 //! 4. 交接文件 `mcp.json` 有 url/port/pid，drop 服务后被清掉；
 //! 5. 只读边界：`info` 不吐 `device_token`/`bootstrap_token`。
@@ -212,7 +212,7 @@ fn mcp_serves_read_only_facts_over_loopback_and_cleans_up() {
         "got {note_status}"
     );
 
-    // 2) tools/list → 六个只读工具
+    // 2) tools/list → 七个只读工具
     let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
     let (status, _, payload) = rpc(port, Some(&session), list);
     assert_eq!(status, 200);
@@ -226,7 +226,7 @@ fn mcp_serves_read_only_facts_over_loopback_and_cleans_up() {
     names.sort();
     assert_eq!(
         names,
-        vec!["diag", "info", "networks", "peers", "routes", "status"],
+        vec!["diag", "doctor", "info", "networks", "peers", "routes", "status"],
         "exactly the read-only tool set"
     );
 

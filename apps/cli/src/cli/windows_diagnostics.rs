@@ -1,5 +1,5 @@
 use crate::cli::render::{print_peers_table, print_wg_peers};
-use meshlet_network::SystemBackend;
+use meshlet_network::{NetworkBackend, SystemBackend};
 
 /// 构造诊断后端：默认 `wg0`，若本机存在实际 wg 接口则用其名（配置常改
 /// `wg-mlt` 等，默认名不符实；按链路类型自动检测，读不到回落默认）。
@@ -11,30 +11,10 @@ pub(crate) fn diag_backend() -> SystemBackend {
     }
 }
 
-/// 检测本机 wireguard 类型接口名（Linux `ip -o link show type wireguard`）。
+/// 检测本机 wireguard 类型接口名（复用 [meshlet_network::detect_wireguard_interface]，
+/// 与 MCP `doctor` 同一事实源，避免两处探测逻辑漂移）。
 pub(crate) fn detect_wg_interface() -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        let output = std::process::Command::new("ip")
-            .args(["-o", "link", "show", "type", "wireguard"])
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        for line in text.lines() {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() >= 2 {
-                let name = fields[1].trim_end_matches(':');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
-            }
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = ();
-    }
-    None
+    meshlet_network::detect_wireguard_interface()
 }
 
 /// `meshlet agent diag [--peers]`（R-DIAG / R-DIAG-2）：本机网络诊断快照。
@@ -91,6 +71,53 @@ pub(crate) fn cmd_agent_diag(show_peers: bool) {
     if show_peers {
         println!("\n== direct peers ==");
         print_peers_table(&backend, &interface);
+    }
+}
+
+/// `meshlet agent doctor`（AGENT-DOC-1）：外来 overlay 共存体检。
+///
+/// 只读体检，不改任何内核状态。**存在 FAIL 时退出码 1**（供监控 / 脚本判据）；
+/// 数据不足的项标 `SKIP` 而非 PASS——缺数据不等于没问题（§7.5）。
+pub(crate) fn cmd_agent_doctor() {
+    use meshlet_network::doctor::CheckStatus;
+
+    // `wg` / `iptables` / `zerotier-cli` 都要特权才能读。agent 本身以 root 跑，
+    // CLI 却常由普通用户敲——不提权则 5 项里 3 项只能 SKIP，体检等于没做。
+    // `/proc/self` 的属主 uid 即本进程 euid（Linux 语义，无需 libc）；非 root
+    // 时走 `sudo -n`，免密不可用则命令失败 → 判定层如实报 not_assessed。
+    let backend = diag_backend();
+    #[cfg(unix)]
+    let is_root = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self")
+            .map(|meta| meta.uid() == 0)
+            .unwrap_or(false)
+    };
+    #[cfg(not(unix))]
+    let is_root = true; // Windows：命令自身按权限降级，不额外提权。
+    let backend = if is_root {
+        backend
+    } else {
+        backend.with_sudo()
+    };
+
+    let report = backend.doctor();
+    println!("== meshlet agent doctor ({}) ==", report.collected_at);
+    for check in &report.checks {
+        let badge = match check.status {
+            CheckStatus::Pass => "PASS",
+            CheckStatus::Warn => "WARN",
+            CheckStatus::Fail => "FAIL",
+            CheckStatus::NotAssessed => "SKIP",
+        };
+        println!("{badge}  {:<24} {}", check.id, check.title);
+        println!("      {}", check.evidence);
+    }
+    let [pass, warn, fail, skip] = report.counts();
+    println!();
+    println!("{pass} pass, {warn} warn, {fail} fail, {skip} not assessed");
+    if report.has_failure() {
+        std::process::exit(1);
     }
 }
 

@@ -38,7 +38,7 @@ use std::time::Instant;
 
 use meshlet_config::{AgentConfig, DataplaneConfig, TunnelBackend};
 use meshlet_network::probe::RecoveryGate;
-use meshlet_network::SystemBackend;
+use meshlet_network::{NetworkBackend, SystemBackend};
 
 #[cfg(target_os = "linux")]
 use crate::dbus::DesktopClient;
@@ -365,6 +365,13 @@ impl Agent {
             }
             Err(e) => return Err(e),
         };
+        // AGENT-ISO-1：外来 overlay 隔离**每轮必跑**（不等计划变更——规则可能
+        // 被外部 flush，且受管隧道与 zerotier 启动有竞态，只在 apply 时补会漏，
+        // 2026-11-23 实测规则整批丢失 → 递归封装 185:1 放大）。失败只记日志不
+        // 打断数据面：隔离是加固而非隧道前提（doctor 面负责报 FAIL）。
+        if let Err(error) = self.backend.ensure_overlay_isolation() {
+            tracing::warn!(%error, "foreign-overlay isolation not enforced");
+        }
         let result = self.reconcile(&plan);
         let error = result.as_ref().err().map(String::as_str);
         if let Err(error) = server::report_apply(&self.server_url, &self.token, &plan, error) {

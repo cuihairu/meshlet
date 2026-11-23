@@ -3,7 +3,7 @@ use crate::cli::peer_dial::cmd_peer_dial;
 use crate::cli::task_client::{
     cmd_task_assign, cmd_task_confirm, cmd_task_ls, cmd_task_retry, print_task_usage,
 };
-use crate::cli::windows_diagnostics::cmd_agent_diag;
+use crate::cli::windows_diagnostics::{cmd_agent_diag, cmd_agent_doctor};
 
 pub(crate) fn dispatch(args: Vec<String>) {
     let cmd = args.first().map(String::as_str).unwrap_or("");
@@ -16,6 +16,7 @@ pub(crate) fn dispatch(args: Vec<String>) {
                 let show_peers = args.iter().any(|arg| arg == "--peers");
                 cmd_agent_diag(show_peers);
             }
+            "doctor" => cmd_agent_doctor(),
             other => {
                 eprintln!("error: unknown agent subcommand '{other}'");
                 std::process::exit(1);

@@ -595,6 +595,117 @@ mod tests {
         );
     }
 
+    // -------------------------------------- AGENT-ISO-1 外来 overlay 隔离 ----
+
+    /// 完整身份 → 三条规则齐全：出向 owner 拦截 + 入向端口拦截（逐本地端口）
+    /// + 入向知名源端口拦截。顺序确定（OUTPUT 在前，端口升序）。
+    #[test]
+    fn overlay_isolation_plan_covers_both_directions() {
+        let foreign = ForeignOverlay {
+            uid: Some(995),
+            local_ports: vec![28162, 9993],
+            wellknown_port: 9993,
+        };
+        let rules = overlay_isolation_rules("wg-mlt", &foreign);
+        assert_eq!(rules.len(), 4);
+        assert_eq!(rules[0].chain, "OUTPUT");
+        assert!(rules[0].spec.contains(&"--uid-owner".to_string()));
+        assert!(rules[0].spec.contains(&"995".to_string()));
+        assert!(rules[0].spec.contains(&"wg-mlt".to_string()));
+        assert_eq!(rules[1].chain, "INPUT");
+        assert!(rules[1].spec.contains(&"--dport".to_string()));
+        assert!(rules[1].spec.contains(&"28162".to_string()));
+        assert!(rules[2].spec.contains(&"9993".to_string()));
+        assert_eq!(rules[3].chain, "INPUT");
+        assert!(rules[3].spec.contains(&"--sport".to_string()));
+    }
+
+    /// 读不到身份（uid 与端口都缺席）→ 空计划，绝不编造 uid（§7.5）。
+    #[test]
+    fn overlay_isolation_plan_absent_without_identity() {
+        let foreign = ForeignOverlay::default();
+        assert!(overlay_isolation_rules("wg-mlt", &foreign).is_empty());
+    }
+
+    /// 接口名为空 → 空计划（规则必须绑在受管隧道上，不能落到宿主全接口）。
+    #[test]
+    fn overlay_isolation_plan_requires_a_managed_interface() {
+        let foreign = ForeignOverlay {
+            uid: Some(995),
+            local_ports: vec![9993],
+            wellknown_port: 9993,
+        };
+        assert!(overlay_isolation_rules("", &foreign).is_empty());
+    }
+
+    /// uid 缺席但端口读到 → 仍出端口规则（部分身份也要拦，能拦一条是一条）。
+    #[test]
+    fn overlay_isolation_plan_keeps_port_rules_when_uid_is_unknown() {
+        let foreign = ForeignOverlay {
+            uid: None,
+            local_ports: vec![9993],
+            wellknown_port: 9993,
+        };
+        let rules = overlay_isolation_rules("wg-mlt", &foreign);
+        assert_eq!(rules.len(), 2);
+        assert!(rules.iter().all(|r| r.chain == "INPUT"));
+    }
+
+    /// `wellknown_port = 0`（对方无知名端口）→ 不出 sport 规则。
+    #[test]
+    fn overlay_isolation_plan_skips_sport_rule_without_wellknown_port() {
+        let foreign = ForeignOverlay {
+            uid: Some(995),
+            local_ports: vec![],
+            wellknown_port: 0,
+        };
+        let rules = overlay_isolation_rules("wg-mlt", &foreign);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].chain, "OUTPUT");
+    }
+
+    /// 全部规则带所有权注释——回滚/清理按注释精确定位（§10.3），与
+    /// `meshlet tunnel` / `meshlet alias` 同一纪律。
+    #[test]
+    fn overlay_isolation_rules_carry_ownership_comment() {
+        let foreign = ForeignOverlay {
+            uid: Some(995),
+            local_ports: vec![9993],
+            wellknown_port: 9993,
+        };
+        let rules = overlay_isolation_rules("wg-mlt", &foreign);
+        for rule in &rules {
+            assert!(
+                rule.spec
+                    .windows(2)
+                    .any(|w| w[0] == "--comment" && w[1] == MESHLET_ISOLATION_COMMENT),
+                "rule {:?} 缺所有权注释",
+                rule.spec
+            );
+            assert_eq!(rule.spec.last().map(String::as_str), Some("DROP"));
+        }
+    }
+
+    /// `ss -H -ulnp` → 端口解析：按进程名过滤、取本地地址端口（含 `%接口`
+    /// 作用域后缀）、去重升序、不串到其他进程。
+    #[test]
+    fn ss_udp_listen_ports_parse_dedupes_and_sorts() {
+        let out = "UNCONN 0 0 10.147.19.130%ztksetoehl:9993 0.0.0.0:* users:((\"zerotier-one\",pid=1579,fd=25))\n\
+                   UNCONN 0 0 0.0.0.0:28162 0.0.0.0:* users:((\"zerotier-one\",pid=1579,fd=5))\n\
+                   UNCONN 0 0 10.240.0.4%wg-mlt:63614 0.0.0.0:* users:((\"zerotier-one\",pid=1579,fd=24))\n\
+                   UNCONN 0 0 10.240.0.4%wg-mlt:63614 0.0.0.0:* users:((\"zerotier-one\",pid=1579,fd=23))\n\
+                   UNCONN 0 0 10.240.0.4%wg-mlt:51820 0.0.0.0:* users:((\"wg-mlt\",pid=9,fd=4))\n\
+                   UNCONN 0 0 127.0.0.1:631 0.0.0.0:* users:((\"cupsd\",pid=10,fd=6))\n";
+        let ports = parse_ss_udp_listen_ports(out, "zerotier-one");
+        assert_eq!(
+            ports,
+            vec![9993, 28162, 63614],
+            "去重升序，`%接口` 后缀剥掉，不串到其他进程"
+        );
+        assert!(parse_ss_udp_listen_ports(out, "no-such-user").is_empty());
+        assert!(parse_ss_udp_listen_ports("", "zerotier-one").is_empty());
+    }
+
     #[test]
     fn ufw_status_port_line_detects_direct_udp_allow() {
         // `ufw status` 的端口行是 `51820/udp ALLOW IN Anywhere`；放行后

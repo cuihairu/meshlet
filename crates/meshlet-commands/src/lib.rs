@@ -67,6 +67,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         args: &["--peers"],
     },
     CommandSpec {
+        name: "agent doctor",
+        group: GROUP_DIAGNOSTICS,
+        summary: "Check ZeroTier-class coexistence (amplification/loop/MTU)",
+        args: &[],
+    },
+    CommandSpec {
         name: "networks",
         group: GROUP_CONFIG,
         summary: "List subnets/routes",

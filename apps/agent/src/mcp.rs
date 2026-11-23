@@ -354,6 +354,43 @@ impl McpHandler {
             "{}".to_string()
         }
     }
+
+    /// AGENT-DOC-1：外来 overlay（ZeroTier 类）共存体检（与
+    /// `meshlet agent doctor` 同链路，见 [meshlet_network::doctor]）。
+    ///
+    /// agent 以特权进程运行，采集不经 sudo；`has_failure=true` 即存在 FAIL，
+    /// 调用方应据此告警。**只读**——体检不改任何内核状态。
+    #[tool(
+        name = "doctor",
+        description = "Coexistence health: tunnel amplification, cross-overlay paths, isolation rules, MTU"
+    )]
+    pub async fn doctor(&self) -> String {
+        use meshlet_network::NetworkBackend;
+        // 受管接口按链路类型现探（配置默认 wg0、真机常叫 wg-mlt，按默认名读
+        // 会读空）；探不到回落默认，由判定层报 not_assessed。
+        let backend = match meshlet_network::detect_wireguard_interface() {
+            Some(interface) => meshlet_network::SystemBackend::new().with_interface(interface),
+            None => meshlet_network::SystemBackend::new(),
+        };
+        let report = backend.doctor();
+        serde_json::json!({
+            "collected_at": report.collected_at,
+            "has_failure": report.has_failure(),
+            "counts": {
+                "pass": report.counts()[0],
+                "warn": report.counts()[1],
+                "fail": report.counts()[2],
+                "not_assessed": report.counts()[3],
+            },
+            "checks": report.checks.iter().map(|c| serde_json::json!({
+                "id": c.id,
+                "title": c.title,
+                "status": c.status,
+                "evidence": c.evidence,
+            })).collect::<Vec<_>>(),
+        })
+        .to_string()
+    }
 }
 
 /// 读 `{state_dir}/../<file>` 单个**顶层**键（`agent.toml` / 旧 `config.toml`），

@@ -1,9 +1,14 @@
 use super::{
     chrono_now_iso, direct_udp_firewall_allow_actions, enforced_tunnel_mtu, foreign_route_line,
     host_firewall_allow_actions, is_lan_interface, mtu_matches_planned,
-    parse_default_route_interface, parse_ip_octet_addrs, parse_ip_octet_subnets, parse_link_mtu,
-    parse_ping_rtt_ms, parse_wg_dump_diag_line, route_source, HostFirewallAction,
-    MESHLET_FILTER_COMMENT, MESHLET_ROUTE_PROTO,
+    overlay_isolation_rules, parse_default_route_interface, parse_ip_octet_addrs,
+    parse_ip_octet_subnets, parse_link_mtu, parse_ping_rtt_ms, parse_ss_udp_listen_ports,
+    parse_wg_dump_diag_line, route_source, ForeignOverlay, HostFirewallAction,
+    FOREIGN_OVERLAY_USER, FOREIGN_OVERLAY_WELLKNOWN_PORT, MESHLET_FILTER_COMMENT,
+    MESHLET_ISOLATION_COMMENT, MESHLET_ROUTE_PROTO,
+};
+use crate::doctor::{
+    parse_zerotier_paths, run_doctor, DoctorInputs, DoctorReport, DOCTOR_SAMPLE_SECS,
 };
 use crate::nat::{NatAction, NatRule};
 use crate::{
@@ -930,6 +935,12 @@ impl LinuxNetworkBackend {
         // 探测失败按「未活跃」处理，放行失败显式报错——不假装生效）。netns
         // 测试钩子不跑此步，避免污染宿主防火墙。
         self.ensure_host_firewall_sync()?;
+        // AGENT-ISO-1：外来 overlay（ZeroTier 类）不得借道本隧道——两条隧道
+        // 互为路径会互相封装成环（见 overlay_isolation_rules）。**每轮 reconcile
+        // 都跑**而非只在开机：规则可能被外部 flush，且 wg-mlt 何时起来与
+        // zerotier 启动存在竞态（2026-11-23 实测 ExecStartPost 早于接口 0.7s，
+        // 隔离规则整批丢失 → 递归封装 185:1 放大）。幂等 + 自愈。
+        self.ensure_overlay_isolation_sync()?;
         // §12.4 防火墙联动：直连开启（计划携带 listen_port——agent 只在
         // direct_connect.enabled 时改写）→ 自动放行直连 UDP 端口。直连 peer
         // 经 LAN/公网接口到达，接口级放行不覆盖，须按端口开。
@@ -1121,6 +1132,206 @@ impl LinuxNetworkBackend {
         Ok(())
     }
 
+    /// 探测外来 overlay（ZeroTier 类）身份（AGENT-ISO-1）。
+    ///
+    /// 用户不存在 / 命令缺失一律按「缺席」处理（no-op）——**不臆测** uid 与
+    /// 端口（§7.5）。端口现读（`ss`）而非写死：ZeroTier 重启后主套接字端口
+    /// 会变，写死的规则会在重启后失效。
+    fn foreign_overlay_probe(&self) -> Option<ForeignOverlay> {
+        // `id -u zerotier-one`：用户不存在 → 非退出码 0，按缺席处理。
+        let uid = self
+            .run(&["id", "-u", FOREIGN_OVERLAY_USER])
+            .ok()
+            .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok());
+        let local_ports = self
+            .run(&["ss", "-H", "-ulnp"])
+            .map(|out| {
+                parse_ss_udp_listen_ports(&String::from_utf8_lossy(&out.stdout), FOREIGN_OVERLAY_USER)
+            })
+            .unwrap_or_default();
+        // uid 与端口都读不到 → 本机没有该 overlay，不产出规则。
+        if uid.is_none() && local_ports.is_empty() {
+            return None;
+        }
+        Some(ForeignOverlay {
+            uid,
+            local_ports,
+            wellknown_port: FOREIGN_OVERLAY_WELLKNOWN_PORT,
+        })
+    }
+
+    /// 执行外来 overlay 隔离（AGENT-ISO-1）。netns 钩子下跳过（同
+    /// [ensure_host_firewall_sync]：netns 内的 `id`/`ss` 读的是宿主状态，
+    /// 真插规则会污染宿主防火墙）。
+    ///
+    /// 幂等：`-C` 探到即跳过，缺则 `-I` 插入（与 `meshlet-zt-separation.sh`
+    /// 同一判据）。**失败显式报错**——隔离是硬保证，不假装生效。
+    fn ensure_overlay_isolation_sync(&self) -> Result<(), NetworkError> {
+        if self.netns.is_some() {
+            return Ok(());
+        }
+        let Some(foreign) = self.foreign_overlay_probe() else {
+            return Ok(());
+        };
+        for rule in overlay_isolation_rules(&self.interface, &foreign) {
+            let mut check = vec!["iptables", "-C", &rule.chain];
+            check.extend(rule.spec.iter().map(String::as_str));
+            if self.run(&check).is_ok() {
+                continue;
+            }
+            let mut insert = vec!["iptables", "-I", &rule.chain, "1"];
+            insert.extend(rule.spec.iter().map(String::as_str));
+            self.run(&insert)?;
+        }
+        Ok(())
+    }
+
+    /// 读单个接口的累计 TX 字节（sysfs，只读）。
+    fn interface_tx_bytes(&self, ifname: &str) -> Option<u64> {
+        std::fs::read_to_string(format!("/sys/class/net/{ifname}/statistics/tx_bytes"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// 采样窗口内各接口的 TX 速率（B/s）。
+    ///
+    /// 三条链路各读两次、间隔 [DOCTOR_SAMPLE_SECS] 秒：放大判定看的是**速率比**
+    /// 而非累计值——累计值会被历史正常流量稀释，事故窗口（几分钟内烧掉上百 GB）
+    /// 反而看不出来。任一接口读不到 → `None`（判定层报 not_assessed）。
+    fn sample_tx_rates(&self, interfaces: &[String]) -> Option<Vec<f64>> {
+        let read_all = || -> Option<Vec<u64>> {
+            interfaces
+                .iter()
+                .map(|name| self.interface_tx_bytes(name))
+                .collect()
+        };
+        let first = read_all()?;
+        std::thread::sleep(std::time::Duration::from_secs(DOCTOR_SAMPLE_SECS));
+        let second = read_all()?;
+        let secs = DOCTOR_SAMPLE_SECS as f64;
+        Some(
+            second
+                .into_iter()
+                .zip(first)
+                .map(|(now, before)| now.saturating_sub(before) as f64 / secs)
+                .collect(),
+        )
+    }
+
+    /// AGENT-DOC-1 采集体检读数（[crate::doctor] 的平台侧取数）。
+    ///
+    /// **只负责如实取数**：读不到的段留 `None` / 0，由
+    /// [crate::doctor::run_doctor] 判 `not_assessed`——采集层不臆测（§7.5），
+    /// 判定层不因缺数据报 PASS。
+    pub fn collect_doctor_inputs(&self) -> DoctorInputs {
+        // 承载物理出口：默认路由的出接口（读不到就留空，MTU/速率项自行降级）。
+        let physical = self
+            .run(&["ip", "route", "show", "default"])
+            .ok()
+            .and_then(|out| parse_default_route_interface(&String::from_utf8_lossy(&out.stdout)))
+            .unwrap_or_default();
+        // 外来 overlay 接口：从 zerotier 自己的网络配置读（它的 portDeviceName
+        // 才是权威；按 10.147. 前缀反猜会在它换接口名时误判）。
+        let foreign = self
+            .run(&["zerotier-cli", "-j", "listnetworks"])
+            .ok()
+            .and_then(|out| {
+                let value: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).ok()?;
+                value
+                    .as_array()?
+                    .first()?
+                    .get("portDeviceName")?
+                    .as_str()
+                    .map(str::to_string)
+            });
+
+        let mut interfaces = vec![self.interface.clone()];
+        if !physical.is_empty() && physical != self.interface {
+            interfaces.push(physical.clone());
+        }
+        if let Some(name) = &foreign {
+            if name != &self.interface && name != &physical {
+                interfaces.push(name.clone());
+            }
+        }
+        // 展开成 (隧道, 外来, 物理) 的固定次序；缺项按 0 补，速率项照常判定。
+        let rates = self.sample_tx_rates(&interfaces).map(|values| {
+            let at = |name: &str| {
+                interfaces
+                    .iter()
+                    .position(|i| i == name)
+                    .and_then(|idx| values.get(idx).copied())
+                    .unwrap_or(0.0)
+            };
+            (
+                at(&self.interface),
+                foreign.as_deref().map(at).unwrap_or(0.0),
+                if physical.is_empty() {
+                    0.0
+                } else {
+                    at(&physical)
+                },
+            )
+        });
+
+        let isolation_rules = self
+            .run(&["iptables", "-S"])
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter(|line| line.contains(MESHLET_ISOLATION_COMMENT))
+                    .count()
+            })
+            .unwrap_or(0);
+        let foreign_uid = self
+            .run(&["id", "-u", FOREIGN_OVERLAY_USER])
+            .ok()
+            .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok());
+        let foreign_paths = self
+            .run(&["zerotier-cli", "-j", "listpeers"])
+            .ok()
+            .and_then(|out| parse_zerotier_paths(&String::from_utf8_lossy(&out.stdout)));
+        let endpoints = self
+            .run(&["wg", "show", &self.interface, "dump"])
+            .ok()
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter_map(parse_wg_dump_diag_line)
+                    .map(|peer| peer.endpoint)
+                    .filter(|endpoint| {
+                        !endpoint.is_empty() && endpoint != "(none)" && endpoint != "off"
+                    })
+                    .collect::<Vec<_>>()
+            });
+        let mtu_of = |name: &str| -> Option<u32> {
+            std::fs::read_to_string(format!("/sys/class/net/{name}/mtu"))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        let physical_mtu = if physical.is_empty() {
+            None
+        } else {
+            mtu_of(&physical)
+        };
+        DoctorInputs {
+            collected_at: chrono_now_iso(),
+            tunnel_interface: self.interface.clone(),
+            physical_interface: physical,
+            rates,
+            isolation_rules,
+            foreign_uid,
+            foreign_paths,
+            endpoints,
+            tunnel_mtu: mtu_of(&self.interface),
+            physical_mtu,
+        }
+    }
+
     /// 同步回滚（[NetworkBackend::rollback] 的命令核心）。
     pub fn rollback_sync(&self) -> Result<ApplyResult, NetworkError> {
         // §10.3：只删 Meshlet 自有对象——本后端拥有的隧道接口上的全部数据面
@@ -1198,6 +1409,16 @@ impl NetworkBackend for LinuxNetworkBackend {
 
     async fn rollback(&self, _revision: ConfigRevisionRef) -> Result<ApplyResult, NetworkError> {
         self.rollback_sync()
+    }
+
+    /// AGENT-ISO-1：每轮 reconcile 幂等补外来 overlay 隔离规则（见 trait 文档）。
+    fn ensure_overlay_isolation(&self) -> Result<(), NetworkError> {
+        self.ensure_overlay_isolation_sync()
+    }
+
+    /// AGENT-DOC-1：真实采集 + 判定（覆盖 trait 的「未实现」默认）。
+    fn doctor(&self) -> DoctorReport {
+        run_doctor(&self.collect_doctor_inputs())
     }
 }
 

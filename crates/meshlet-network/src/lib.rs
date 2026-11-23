@@ -53,6 +53,7 @@ pub use types::{InterfaceDiagnostic, NetworkDiagnostics, WgPeerDiagnostic};
 
 pub mod diag;
 pub mod dial;
+pub mod doctor;
 pub mod keys;
 pub mod nat;
 pub mod probe;
@@ -148,6 +149,57 @@ pub trait NetworkBackend {
         &'s self,
         revision: ConfigRevisionRef,
     ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
+
+    /// AGENT-ISO-1：外来 overlay（ZeroTier 类）隔离**自愈**。
+    ///
+    /// 与 [`NetworkBackend::apply_tunnel`] 等「有变更才跑」的接口不同，本方法
+    /// **每轮 reconcile 都要跑**：隔离规则可能被外部 flush，且受管隧道与外来
+    /// overlay 的启动存在竞态（2026-11-23 实测 zerotier 的 ExecStartPost 早于
+    /// wg-mlt 起来 0.7s，规则整批丢失 → 两条隧道互为路径、递归封装 185:1
+    /// 放大）。只挂在 apply 上会漏掉「无计划变更」的轮次，规则丢了补不回来。
+    ///
+    /// 默认 no-op（无外来 overlay 需要隔离的平台）；Linux 实现幂等补
+    /// iptables 规则。失败由调用方记日志——隔离是加固而非数据面前提，
+    /// 不因它中断隧道（[`crate::diag`] / `doctor` 面负责把它报成 FAIL）。
+    fn ensure_overlay_isolation(&self) -> Result<(), NetworkError> {
+        Ok(())
+    }
+
+    /// AGENT-DOC-1：外来 overlay 共存体检（见 [crate::doctor]）。
+    ///
+    /// 默认返回 [crate::doctor::unsupported_report]——未实现的平台全项
+    /// `not_assessed`，**绝不返回 PASS**（§7.5「没实现」≠「检查过没问题」）。
+    /// Linux 后端覆盖为真实采集。
+    fn doctor(&self) -> crate::doctor::DoctorReport {
+        crate::doctor::unsupported_report()
+    }
+}
+
+/// 探测本机 WireGuard 类型接口名（`ip -o link show type wireguard` 首个命中）。
+///
+/// CLI / MCP 都没有「受管接口名」的硬编码来源——配置里写 `wg0`、真机却叫
+/// `wg-mlt` 时，按默认名读会读到空（`diag` 的 wg 段长期 `(not collected)` 就是
+/// 这么来的）。按链路类型现探，读不到返回 `None` 由调用方回落默认。
+#[cfg(target_os = "linux")]
+pub fn detect_wireguard_interface() -> Option<String> {
+    let out = std::process::Command::new("ip")
+        .args(["-o", "link", "show", "type", "wireguard"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let name = fields.get(1)?.trim_end_matches(':');
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .next()
+}
+
+/// 非 Linux 平台暂无同款探测（wireguard-nt / boringtun 的接口枚举另走后端）。
+#[cfg(not(target_os = "linux"))]
+pub fn detect_wireguard_interface() -> Option<String> {
+    None
 }
 
 #[cfg(test)]

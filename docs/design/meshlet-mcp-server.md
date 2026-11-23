@@ -23,7 +23,7 @@ consumer change.
   默认关，配置显式开，开启时明示范围). AI querying a node's mesh facts is a
   read surface, but it is still a listener, so it is opt-in.
 - **Read-only tool set by default** (AI query, no mutation):
-  `status`, `info`, `peers`, `routes`, `networks`, `diag`. Write tools
+  `status`, `info`, `peers`, `routes`, `networks`, `diag`, `doctor`. Write tools
   (`peer dial`) are a later phase behind their own flag.
 - **Secrets never exposed**: `agent.toml` fields `device_token` / `bootstrap_token`
   are redacted in any `config` output; the `config` tool is excluded from the
@@ -39,6 +39,7 @@ consumer change.
 | `routes` | `applied.json` (`last_good_plan.routes`, fallback ledger `routes`) | destination, next-hop, interface, source |
 | `networks` | wg routes (Windows) / platform | destination + interface |
 | `diag` | wg + interface snapshot | network diagnostics (same as `meshlet agent diag`) |
+| `doctor` | tunnel/ZT/iptables counters | AGENT-DOC-1 coexistence health (same as `meshlet agent doctor`); `has_failure` drives alerting |
 
 All read the same files the local panel and CLI read — one source, three surfaces.
 
@@ -85,7 +86,7 @@ port = 0
 ## Phases
 
 1. **P1 — read-only MCP in agent + config + `mcp.json` handoff.** Tools:
-   status/info/peers/routes/networks/diag. Loopback streamable HTTP. No tray change.
+   status/info/peers/routes/networks/diag/doctor. Loopback streamable HTTP. No tray change.
 2. **P2 — tray menu row** (MCP on/off + port). Depends on P1's `mcp.json`.
 3. **P3 — write tool** `peer dial` behind `[mcp] allow_dial = false` (default off).
    Only if the user wants an AI to trigger dials.
