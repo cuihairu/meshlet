@@ -1,6 +1,6 @@
 //! Tauri IPC handlers for local state, settings, peers, diagnostics, and navigation.
 
-use crate::config_io::{meshlet_config_path, rebuild_config};
+use crate::config_io::meshlet_config_path;
 // 仅 windows 分支用到（open_log_dir 的 explorer 调用）；非 windows 编译期
 // 摘除，避免 unused import 破坏 linux 目标 -D warnings。
 #[cfg(windows)]
@@ -13,37 +13,32 @@ pub(crate) fn get_status() -> serde_json::Value {
     crate::state::get_status()
 }
 
+/// 只回设置页使用的三项（M-SET-UX-01）：不外泄 bootstrap_token /
+/// private_key_file 等 agent 自管键（旧实现把整文件扁平键全发给前端）。
 #[tauri::command]
 pub(crate) fn get_config() -> serde_json::Value {
-    let config_path = meshlet_config_path();
-    let text = std::fs::read_to_string(config_path).unwrap_or_default();
-    // 简单解析 TOML 为 JSON（避免额外依赖）
-    let mut result = serde_json::Map::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            result.insert(
-                key.trim().to_string(),
-                serde_json::Value::String(value.trim().trim_matches('"').to_string()),
-            );
-        }
-    }
-    serde_json::Value::Object(result)
+    let text = std::fs::read_to_string(meshlet_config_path()).unwrap_or_default();
+    let config = crate::config_io::read_ui_config(&text);
+    serde_json::json!({
+        "server_url": config.server_url,
+        "device_name": config.device_name,
+        "hub_endpoint": config.hub_endpoint,
+    })
 }
 
+/// 保存三项：先校验（与 agent 装载口径一致），再无损外科手术式重写
+/// + 原子落盘。不改其他键/节/注释。返回错误键供前端按语言包映射。
 #[tauri::command]
 pub(crate) fn save_config(
     server_url: String,
     device_name: String,
     hub_endpoint: String,
 ) -> Result<(), String> {
-    let config_path = meshlet_config_path();
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let content = rebuild_config(&existing, &server_url, &device_name, &hub_endpoint);
-    std::fs::write(config_path, content).map_err(|error| error.to_string())
+    crate::config_io::validate_connection(&server_url, &device_name, &hub_endpoint)
+        .map_err(|key| key.to_string())?;
+    let path = std::path::PathBuf::from(meshlet_config_path());
+    crate::config_io::save_ui_config_at(&path, &server_url, &device_name, &hub_endpoint)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -137,6 +132,17 @@ fn set_autostart_impl(enabled: bool) -> Result<(), String> {
         let _ = enabled;
         Err("autostart is only supported on Windows".into())
     }
+}
+
+/// 平台能力位（M-SET-UX-05 前端按作用域显示/禁用）：自启与日志入口只在
+/// Windows 可用；退出保护全平台可用（文件存储平台无关）。
+#[tauri::command]
+pub(crate) fn platform_caps() -> serde_json::Value {
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "autostart": cfg!(windows),
+        "open_log_dir": cfg!(windows),
+    })
 }
 
 #[tauri::command]

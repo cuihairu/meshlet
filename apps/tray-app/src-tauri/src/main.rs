@@ -28,6 +28,7 @@ fn main() {
             commands::get_commands,
             commands::get_diag,
             commands::set_autostart,
+            commands::platform_caps,
             commands::open_log_dir,
             commands::set_tray_lang,
             commands::take_pending_goto,
