@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meshlet · 设置原型</title>
+<style>
+:root{color-scheme:dark;--desktop:#20262c;--background:#171d23;--rail:#1b222a;--panel:#202831;--hover:#28343e;--line:#35444e;--text:#eef2f4;--sub:#aebcc5;--teal:#85d6ca;--teal-bg:#243b3b;--copper:#f1bd84;--copper-bg:#3a3027;--bad:#ffb6b4;--bad-bg:#422d33}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;padding:30px;background:var(--desktop);color:var(--text);font:14px/1.47 "Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif}
+h1,h2,h3,p{margin:0}h1{font-size:29px;line-height:1.2;letter-spacing:-.035em}h2{font-size:16px}h3{font-size:14px}small,.muted{color:var(--sub);font-size:12px}
+code,.code{font-family:Consolas,"SFMono-Regular",monospace;font-size:12px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.num{font-variant-numeric:tabular-nums}
+button,input,select{font:inherit;color:inherit}button,select{cursor:pointer}button{padding:7px 10px;border-radius:7px;border:1px solid var(--line);background:var(--panel);white-space:nowrap}
+button:hover{background:var(--hover)}button:disabled{opacity:.55;cursor:default}button.primary{background:var(--teal);color:#142f2d;border-color:var(--teal);font-weight:700}button.primary:not(:disabled):hover{background:#a4e0d8}
+button.link{background:transparent;border-color:transparent;color:var(--teal);padding-inline:6px}button.link:hover{background:var(--teal-bg)}
+:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.app{max-width:1120px;margin:auto;background:var(--background);border:1px solid #3b4852;border-radius:12px;overflow:hidden;box-shadow:0 16px 35px #11151b4f}
+.chrome{height:42px;background:#232d35;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;padding:0 13px;font-size:12px}
+.brand,.window-buttons{display:flex;align-items:center;gap:8px}.brand img{width:17px;height:17px}.window-buttons{gap:17px;color:var(--sub)}
+.icon{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.55;stroke-linejoin:round;stroke-linecap:round;flex:none}.window-buttons .icon{width:13px;height:13px}
+.shell{display:grid;grid-template-columns:168px minmax(0,1fr);min-height:638px}
+aside{border-right:1px solid var(--line);background:var(--rail);padding:15px 9px;display:flex;flex-direction:column}
+nav{display:grid;gap:3px}.nav{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border-color:transparent;background:transparent;white-space:normal}.nav[aria-current=true]{color:var(--teal);background:var(--teal-bg);font-weight:650}.nav-caption{margin:13px 9px 3px;color:var(--sub);font-size:11px}.meta{margin-top:auto;padding:10px 8px 1px;color:var(--sub);font-size:11px}
+main{min-width:0;padding:22px 24px}.head{display:flex;justify-content:space-between;align-items:start;gap:11px;margin-bottom:16px}.head p{margin-top:6px;color:var(--sub)}
+.between,.controls{display:flex;align-items:center;justify-content:space-between;gap:10px}.controls{justify-content:flex-start;flex-wrap:wrap}
+.section{margin-top:17px}.section h2{margin-bottom:7px}
+.chip{color:var(--sub);background:#2b363f;padding:3px 7px;border-radius:5px;font-size:11px;font-weight:650;white-space:nowrap}.chip.ok{color:var(--teal);background:var(--teal-bg)}.chip.warn{color:var(--copper);background:var(--copper-bg)}.chip.err{color:var(--bad);background:var(--bad-bg)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-right:5px;vertical-align:1px}
+.state-strip{padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);display:grid;grid-template-columns:1.25fr 1.1fr 1fr;gap:12px;align-items:start}.state-strip div{display:grid;gap:4px}.state-strip div+div{border-left:1px solid var(--line);padding-left:11px}.state-strip small{line-height:1.28}
+.inset{border:1px solid var(--line);border-radius:8px}.field{padding:8px 11px;display:flex;justify-content:space-between;align-items:center;gap:15px;min-height:45px}.field+.field{border-top:1px solid var(--line)}.field small{display:block;margin-top:2px}.field b{display:block}
+input:not([type=checkbox]),select{padding:6px 8px;min-width:0;max-width:100%;border:1px solid #42545f;border-radius:6px;background:#141b20}
+input[type=checkbox]{accent-color:var(--teal);width:17px;height:17px;flex:none}
+.endpoint{width:min(270px,100%);font:12px/1.5 Consolas,monospace!important}
+.note{padding:9px 11px;border-radius:7px;background:var(--panel);font-size:12px;color:var(--sub)}.note.warn{color:var(--copper);background:var(--copper-bg)}.note.error{color:var(--bad);background:var(--bad-bg)}.note.ok{color:var(--teal);background:var(--teal-bg)}
+.footer{display:flex;justify-content:space-between;flex-wrap:wrap;align-items:center;gap:8px;margin-top:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}.tabs button{padding:5px 9px}.tabs button[aria-pressed=true]{color:var(--teal);border-color:#577f7e;background:var(--teal-bg)}
+.tablebox{overflow-x:auto;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;text-align:left;font-size:13px}th,td{padding:9px 11px;border-bottom:1px solid var(--line);white-space:nowrap}th{font-size:12px;color:var(--sub);background:var(--rail);font-weight:620}tr:last-child td{border-bottom:0}.tablebox small{display:block}
+.snapshot{display:grid;gap:8px}.snapshot h2{margin-bottom:3px}
+.command{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:9px;padding:9px 11px}.command+.command{border-top:1px solid var(--line)}.command small{display:block;margin-top:2px}
+details summary{cursor:pointer;color:var(--teal);font-weight:650}pre{margin:8px 0 0;padding:10px;background:#10161a;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+.guard-fields{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:11px}.guard-fields label{display:grid;gap:4px}
+.diff{display:grid;grid-template-columns:130px minmax(0,1fr);gap:4px 8px;font-size:12px}.diff code{color:var(--text)}.statusline{min-height:20px;color:var(--sub);font-size:12px}
+@media(max-width:880px){body{padding:12px}.shell{grid-template-columns:136px minmax(0,1fr)}main{padding:17px}.head p{font-size:13px}}
+@media(max-width:646px){body{padding:0}.app{border-radius:0;border:0}.shell{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid var(--line);padding:7px}.meta,.nav-caption{display:none}nav{grid-template-columns:repeat(3,minmax(0,1fr))}.nav{padding:6px;font-size:12px}.state-strip{grid-template-columns:1fr 1fr}.state-strip div:last-child{border-left:0;padding-left:0}.field,.head{flex-wrap:wrap}.guard-fields{grid-template-columns:1fr}h1{font-size:25px}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+<symbol id="connection-icon" viewBox="0 0 24 24"><path d="M8 16H6a4 4 0 0 1 0-8h3m6 0h3a4 4 0 0 1 0 8h-3M8 12h8"/></symbol>
+<symbol id="peers-icon" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="17" r="2"/><circle cx="19" cy="17" r="2"/><path d="m11 7-5 8m7-8 5 8m-11 2h10"/></symbol>
+<symbol id="diagnose-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M6 12h3l2-4 3 7 2-3h2"/></symbol>
+<symbol id="cmd-icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 10 2 2-2 2m5 0h4"/></symbol>
+<symbol id="general-icon" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16M9 4v4m6 2v4m-7 2v4"/></symbol>
+<symbol id="min" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+<symbol id="max" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12"/></symbol>
+<symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12m0-12L6 18"/></symbol>
+</svg>
+<div class="app">
+<header class="chrome"><div class="brand"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj4KICA8IS0tIG1lc2hsZXQgYnJhbmQgbWFyazogcG9pbnR5LXRvcCBoZXggbnV0IChhcHByb3ZlZCBmb3VyLXN0YXRlIHRyYXkgZ2VvbWV0cnksIGdlbl9pY29ucy5weSBjb25zdGFudHM7IFI9MTMuNCwgaG9sZT01LjApIC0tPgogIDxwYXRoIGZpbGwtcnVsZT0iZXZlbm9kZCIgZmlsbD0iIzMyNjA3MiIgZD0iTTE2LjAwLDIuNjAgTDQuNDAsOS4zMCBMNC40MCwyMi43MCBMMTYuMDAsMjkuNDAgTDI3LjYwLDIyLjcwIEwyNy42MCw5LjMwIFogTTE2LDExLjAgYTUuMCw1LjAgMCAxLDAgMCwxMC4wIGE1LjAsNS4wIDAgMSwwIDAsLTEwLjAgWiIvPgo8L3N2Zz4K" alt=""> Meshlet 设置</div><div class="window-buttons" aria-hidden="true"><svg class="icon"><use href="#min"/></svg><svg class="icon"><use href="#max"/></svg><svg class="icon"><use href="#close"/></svg></div></header>
+<div class="shell">
+<aside><nav aria-label="设置导航">
+<button class="nav" data-go="connection"><svg class="icon"><use href="#connection-icon"/></svg>连接</button>
+<button class="nav" data-go="peers"><svg class="icon"><use href="#peers-icon"/></svg>对等节点</button>
+<button class="nav" data-go="diagnostics"><svg class="icon"><use href="#diagnose-icon"/></svg>诊断</button>
+<div class="nav-caption">应用</div>
+<button class="nav" data-go="general"><svg class="icon"><use href="#general-icon"/></svg>常规</button>
+<button class="nav" data-go="commands"><svg class="icon"><use href="#cmd-icon"/></svg>命令参考</button>
+</nav><p class="meta">Tauri 窗口原型 · 示例数据</p></aside>
+<main>
+<article id="connection" data-page>
+<header class="head"><div><h1>连接</h1><p>查看本机连接，再编辑保存到磁盘的设置。</p></div><button data-go="diagnostics">打开诊断</button></header>
+<div class="state-strip" aria-label="当前连接">
+<div><small>隧道</small><b><span class="chip ok"><i class="dot"></i>已建立</span></b></div>
+<div><small>虚拟 IP</small><b class="code">10.240.0.7</b></div>
+<div><small>当前状态</small><b>在线</b></div>
+</div>
+<section class="section"><div class="between"><h2>本机连接设置</h2><span class="chip" id="saved-label">agent 配置文件</span></div><div class="inset">
+<div class="field"><div><label for="device"><b>设备名称</b></label><small>用于识别这台设备。</small></div><input id="device" class="endpoint" value="workbench"></div>
+<div class="field"><div><label for="server"><b>控制服务器地址</b></label><small>Agent 用于接收网络配置的 HTTP(S) 地址。</small></div><input id="server" class="endpoint" value="https://control.meshlet.example"></div>
+<div class="field"><div><label for="hub"><b>Hub 隧道端点</b></label><small>WireGuard 数据流量使用的主机和 UDP 端口。</small></div><input id="hub" class="endpoint" value="hub.meshlet.example:51820"></div>
+</div></section>
+<div class="footer"><span class="statusline" id="connection-msg" role="status">保存后请重启 Agent，并在此核对连接。</span><div class="controls"><button id="discard" disabled>放弃改动</button><button class="primary" id="review" disabled>查看改动</button></div></div>
+<section class="section" id="review-box" hidden><h2>保存前核对</h2><div class="note warn"><p>改动会写入 Agent 配置。重启后重新建立连接，现有流量可能短时中断。</p><div class="diff" id="diff" style="margin-top:7px"></div><div class="footer"><small>原型只模拟保存。</small><button class="primary" id="save">保存到配置</button></div></div></section>
+<section class="section"><h2>快速检查</h2><div class="field inset"><div><b>当前对等节点</b><small>查看 Hub 路径、P2P 路径及最后一次握手。</small></div><button class="link" data-go="peers">查看对等节点</button></div></section>
+</article>
+<article id="peers" data-page hidden>
+<header class="head"><div><h1>对等节点</h1><p>区分已配置的路径、最近握手与直连样本。</p></div><span class="chip">观测时间 15:42:18</span></header>
+<div class="tabs" role="group" aria-label="对等节点视图"><button data-peer="direct" aria-pressed="true">P2P 直连</button><button data-peer="wg" aria-pressed="false">WireGuard 对端</button></div>
+<div id="peer-direct">
+<div class="tablebox"><table><thead><tr><th>对端</th><th>虚拟 IP</th><th>直连端点</th><th>RTT</th><th>最近握手</th></tr></thead><tbody>
+<tr><td><b>build-node</b><small>已观测直连</small></td><td class="code">10.240.0.12</td><td class="code">198.51.100.23:51820</td><td class="num">24 ms<small>主动探测</small></td><td class="num">15:42:10</td></tr>
+<tr><td><b>nas</b><small>已观测直连</small></td><td class="code">10.240.0.18</td><td class="code">203.0.113.18:51820</td><td><span class="chip">无样本</span></td><td class="num">15:41:58</td></tr>
+</tbody></table></div>
+<p class="note section">RTT 无样本时保留其他观测。直连列表为空时，节点仍可能使用 Hub 路径。</p>
+</div>
+<div id="peer-wg" hidden><div class="tablebox"><table><thead><tr><th>对端</th><th>端点</th><th>最近握手</th><th>累计接收 / 发送</th></tr></thead><tbody>
+<tr><td><b>Hub</b><small class="code">H21Q…Rk9k</small></td><td class="code">192.0.2.10:51820</td><td class="num">15:42:15</td><td class="num">12.6 MB / 4.8 MB</td></tr>
+<tr><td><b>build-node</b><small class="code">w4DM…VpFg</small></td><td class="code">198.51.100.23:51820</td><td class="num">15:42:10</td><td class="num">2.4 MB / 880 KB</td></tr>
+</tbody></table></div><p class="note section">握手时间反映上一次成功通信；流量为累计计数。</p></div>
+<section class="section"><h2>诊断入口</h2><div class="inset field"><div><b>检查本机路由和 WireGuard 快照</b><small>用于排查隧道已启用但目标不可达。</small></div><button class="link" data-go="diagnostics">打开诊断</button></div></section>
+</article>
+<article id="diagnostics" data-page hidden>
+<header class="head"><div><h1>诊断</h1><p>从本机快照判断接口、路由和握手分别是否正常。</p></div><button id="refresh-diag">刷新快照</button></header>
+<div class="controls" style="margin-bottom:11px"><span class="chip" id="diag-stamp">示例采集时间 15:42:18</span><span class="muted" id="diag-progress" role="status">只读 · 不改变网络</span></div>
+<div class="tabs" role="group" aria-label="诊断快照"><button data-diag="routes" aria-pressed="true">路由表</button><button data-diag="interfaces" aria-pressed="false">接口</button><button data-diag="wireguard" aria-pressed="false">WireGuard</button></div>
+<div class="snapshot" id="diag-routes"><div class="tablebox"><table><thead><tr><th>目标网段</th><th>下一跳</th><th>接口</th><th>用途</th></tr></thead><tbody>
+<tr><td class="code">10.240.0.0/16</td><td>本地直达</td><td class="code">wg-meshlet</td><td>虚拟网络</td></tr>
+<tr><td class="code">192.168.20.0/24</td><td class="code">10.240.0.12</td><td class="code">wg-meshlet</td><td>远端网段</td></tr>
+<tr><td class="code">0.0.0.0/0</td><td class="code">192.168.1.1</td><td>物理网卡</td><td>系统默认</td></tr>
+</tbody></table></div><details class="note"><summary>查看原始路由输出</summary><pre>10.240.0.0/16       on-link       wg-meshlet
+192.168.20.0/24     10.240.0.12   wg-meshlet
+0.0.0.0/0           192.168.1.1   Ethernet</pre></details></div>
+<div class="snapshot" id="diag-interfaces" hidden><div class="tablebox"><table><thead><tr><th>接口</th><th>IPv4</th><th>状态</th><th>MTU</th></tr></thead><tbody>
+<tr><td class="code">wg-meshlet</td><td class="code">10.240.0.7/16</td><td><span class="chip ok">已启用</span></td><td class="num">1420</td></tr>
+<tr><td>Ethernet</td><td class="code">192.168.1.19/24</td><td><span class="chip ok">已启用</span></td><td class="num">1500</td></tr>
+</tbody></table></div></div>
+<div class="snapshot" id="diag-wireguard" hidden><div class="tablebox"><table><thead><tr><th>对端</th><th>Allowed IPs</th><th>最近握手</th><th>累计接收 / 发送</th></tr></thead><tbody>
+<tr><td>Hub</td><td class="code">10.240.0.0/16</td><td class="num">15:42:15</td><td>12.6 MB / 4.8 MB</td></tr>
+<tr><td>build-node</td><td class="code">10.240.0.12/32</td><td class="num">15:42:10</td><td>2.4 MB / 880 KB</td></tr>
+</tbody></table></div></div>
+<section class="section"><h2>继续排查</h2><div class="inset field"><div><b>诊断命令</b><small>复制命令到终端运行，可核对 Agent 输出。</small></div><button class="link" data-go="commands">查看命令参考</button></div></section>
+</article>
+<article id="general" data-page hidden>
+<header class="head"><div><h1>常规</h1><p>管理托盘应用偏好、退出保护和维护入口。</p></div></header>
+<section><h2 style="margin-bottom:7px">应用偏好</h2><div class="inset">
+<div class="field"><div><label for="startup"><b>登录 Windows 时打开托盘</b></label><small>作用于当前用户的托盘程序。</small></div><input id="startup" type="checkbox" checked></div>
+<div class="field"><div><label for="animation"><b>界面动画</b></label><small>关闭后减少窗口内的动态过渡。</small></div><input id="animation" type="checkbox" checked></div>
+<div class="field"><div><label for="language"><b>界面语言</b></label><small>设置窗和托盘菜单。</small></div><select id="language"><option>简体中文</option><option>English</option></select></div>
+</div></section>
+<section class="section"><h2>退出保护</h2><div class="inset">
+<div class="field"><div><b>退出密码 <span class="chip ok" id="guard-state">已设置</span></b><small>用于确认从托盘退出应用。配置独立存放。</small></div><button id="guard-edit">更改或移除</button></div>
+<div class="guard-fields" id="guard-fields" hidden><label>当前密码<input id="guard-current" type="password" autocomplete="off"></label><label>新密码<input id="guard-new" type="password" autocomplete="off"></label><button id="guard-remove">移除保护</button><button class="primary" id="guard-save">保存新密码</button></div>
+</div><p class="statusline" id="guard-result" role="status"></p></section>
+<section class="section"><h2>维护</h2><div class="inset field"><div><b>Agent 日志</b><small>查看本机日志。当前快捷入口用于 Windows。</small></div><button data-go="diagnostics">去诊断</button></div></section>
+<p class="statusline" id="pref-result" role="status" style="margin-top:8px"></p>
+</article>
+<article id="commands" data-page hidden>
+<header class="head"><div><h1>命令参考</h1><p>复制到终端运行。设置窗只显示命令。</p></div><button data-go="diagnostics">返回诊断</button></header>
+<section><h2 style="margin-bottom:7px">先检查状态</h2><div class="inset" id="command-list"></div><p class="statusline" id="copy-result" role="status" style="margin-top:8px"></p></section>
+</article>
+</main>
+</div></div>
+<script>
+const $=id=>document.getElementById(id);
+const all=selector=>[...document.querySelectorAll(selector)];
+const pages=new Set(all('[data-page]').map(page=>page.id));
+function go(view){
+  if(!pages.has(view))view='connection';
+  all('[data-page]').forEach(page=>page.hidden=page.id!==view);
+  all('.nav').forEach(button=>button.setAttribute('aria-current',String(button.dataset.go===view)));
+  window.scrollTo(0,0);
+}
+all('[data-go]').forEach(button=>button.addEventListener('click',()=>go(button.dataset.go)));
+for(const type of ['peer','diag']){
+  all('[data-'+type+']').forEach(button=>button.addEventListener('click',()=>{
+    all('[data-'+type+']').forEach(item=>{
+      item.setAttribute('aria-pressed',String(item===button));
+      $(type+'-'+item.dataset[type]).hidden=item!==button;
+    });
+  }));
+}
+
+const fields=['device','server','hub'];
+const fieldLabels={device:'设备名称',server:'控制服务器',hub:'Hub 隧道端点'};
+let pendingRestart=false;
+const savedSettings=Object.fromEntries(fields.map(id=>[id,$(id).value]));
+function formChanged(){
+  const changed=fields.some(id=>$(id).value!==savedSettings[id]);
+  $('review').disabled=!changed;
+  $('discard').disabled=!changed;
+  $('review-box').hidden=true;
+  $('connection-msg').textContent=changed?'有未保存改动。':pendingRestart?'示例已保存 · 等待重启 Agent，当前连接值仍是原状态。':'保存后请重启 Agent，并在此核对连接。';
+  $('saved-label').textContent=changed?'编辑中':pendingRestart?'等待重启':'Agent 配置文件';
+}
+fields.forEach(id=>$(id).addEventListener('input',formChanged));
+$('discard').addEventListener('click',()=>{fields.forEach(id=>$(id).value=savedSettings[id]);formChanged();});
+$('review').addEventListener('click',()=>{
+  let serverOk=false;
+  try{serverOk=['https:','http:'].includes(new URL($('server').value).protocol);}catch{}
+  const endpoint=/^(?:\[[^\]]+\]|[^:\s]+):(\d+)$/.exec($('hub').value);
+  if(!serverOk||!endpoint||+endpoint[1]<1||+endpoint[1]>65535||!$('device').value.trim()){
+    $('connection-msg').textContent='核对设备名、HTTP(S) 地址和 Hub 端口后再保存。';
+    return;
+  }
+  $('diff').replaceChildren();
+  for(const id of fields.filter(id=>$(id).value!==savedSettings[id])){
+    const label=document.createElement('span');
+    const value=document.createElement('code');
+    label.textContent=fieldLabels[id];
+    value.textContent=savedSettings[id]+' → '+$(id).value;
+    $('diff').append(label,value);
+  }
+  $('review-box').hidden=false;
+});
+$('save').addEventListener('click',()=>{
+  fields.forEach(id=>savedSettings[id]=$(id).value);
+  pendingRestart=true;
+  formChanged();
+});
+$('refresh-diag').addEventListener('click',()=>{
+  $('refresh-diag').disabled=true;
+  $('diag-progress').textContent='正在读取示例快照…';
+  setTimeout(()=>{
+    $('refresh-diag').disabled=false;
+    $('diag-stamp').textContent='示例采集时间 15:42:36';
+    $('diag-progress').textContent='已刷新 · 只读';
+  },350);
+});
+let protectedExit=true;
+function guardUi(){
+  $('guard-state').textContent=protectedExit?'已设置':'未设置';
+  $('guard-state').className=protectedExit?'chip ok':'chip';
+  $('guard-edit').textContent=protectedExit?'更改或移除':'设置密码';
+  $('guard-current').parentElement.hidden=!protectedExit;
+  $('guard-remove').hidden=!protectedExit;
+}
+$('guard-edit').addEventListener('click',()=>{
+  $('guard-fields').hidden=!$('guard-fields').hidden;
+  if(!$('guard-fields').hidden)$(protectedExit?'guard-current':'guard-new').focus();
+});
+function applyGuard(next){
+  if(protectedExit&&!$('guard-current').value){$('guard-result').textContent='请先填写当前密码。';return;}
+  if(next&&$('guard-new').value.length<4){$('guard-result').textContent='请至少输入 4 个字符。';return;}
+  protectedExit=next;
+  $('guard-current').value='';
+  $('guard-new').value='';
+  $('guard-fields').hidden=true;
+  $('guard-result').textContent=next?'示例退出密码已设置。':'示例退出保护已移除。';
+  guardUi();
+}
+$('guard-remove').addEventListener('click',()=>applyGuard(false));
+$('guard-save').addEventListener('click',()=>applyGuard(true));
+for(const id of ['startup','animation','language']){
+  $(id).addEventListener('change',()=>$('pref-result').textContent='已更新原型中的偏好。');
+}
+for(const [command,description] of [['meshlet status','查看 Agent 状态'],['meshlet peers','查看直连对端'],['meshlet agent diag --peers','查看路由、接口与 WireGuard 快照']]){
+  const row=document.createElement('div');
+  row.className='command';
+  const info=document.createElement('div');
+  const line=document.createElement('code');
+  line.textContent=command;
+  const sub=document.createElement('small');
+  sub.textContent=description;
+  info.append(line,sub);
+  const button=document.createElement('button');
+  button.textContent='复制';
+  button.addEventListener('click',async()=>{
+    try{await navigator.clipboard.writeText(command);$('copy-result').textContent='已复制 '+command;}
+    catch{$('copy-result').textContent='可手动选中并复制 '+command;}
+  });
+  row.append(info,button);
+  $('command-list').append(row);
+}
+guardUi();
+const view=new URLSearchParams(location.search).get('view');
+if(view==='connection-review'){
+  go('connection');
+  $('hub').value='hub-backup.meshlet.example:51820';
+  formChanged();
+  $('review').click();
+}else{
+  go(view);
+}
+</script>
+</body></html>

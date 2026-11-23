@@ -1,5 +1,50 @@
 # TODO
 
+## 托盘设置窗改版（M-SET-UX，7 项待办）
+
+现有 Tauri 设置窗按「连接 / 对等节点 / 诊断 / 常规 / 命令参考」组织。连接页区分正在运行的连接、待编辑值和已经保存但待重启的值。网络级配置仍由网页管理控制台负责。原型使用示例数据。
+
+[交互原型](docs/design/settings-redesign/prototype.html) · [连接](docs/design/settings-redesign/01-connection.png) · [连接改动预览](docs/design/settings-redesign/02-connection-review.png) · [对等节点](docs/design/settings-redesign/03-peers.png) · [诊断](docs/design/settings-redesign/04-diagnostics.png) · [常规](docs/design/settings-redesign/05-general.png)
+
+| 数据特征 | 设置窗展示 | 其他位置的呈现 |
+|---|---|---|
+| 隧道、在线态、虚拟 IP | 当前连接摘要明确分项、用文字表达状态 | 托盘保持图标四态，弹层给当前状态与诊断入口 |
+| 设备名、HTTP(S) 控制地址、Hub UDP 端点 | 说明字段职责，逐项对照待保存差异 | 保存后单列待重启。实时连接保持现场数据，重启后再核对 |
+| WireGuard 对端、P2P 路径、握手及 RTT | 分表表达实际观测，数值带单位、来源和时间 | 连接页给摘要；诊断提供相应快照。无 RTT 或无直连样本单独表达 |
+| 接口、路由与源输出 | 可确认的字段用表，原始路由输出按需展开 | 终端参考给现有只读查询命令，无法可靠解析时继续显示原文 |
+| 自启、动画、语言与退出密码 | 按作用域分组，平台不支持时说明，密码只显示是否已配置 | 各偏好仍使用其现有注册表、WebView、托盘或退出保护存储 |
+
+- [ ] **M-SET-UX-01 [P0] 连接保存只改界面管理的键。**
+  - **问题** 当前扁平读取并重建 TOML，会覆盖接口和启用值，也可能丢掉其他节与原有键。
+  - **怎么做** 读取/保存都遵循 TOML 节与引号语义，只改设备名、控制地址、Hub 端点。原子落盘，处理并发、原文件缺失或损坏和无写权限；IPC 读取只返回界面使用的字段。
+  - **怎么验证** 用含注释、引号、附加段和自定义 dataplane 的夹具仅改设备名，对比其他键。覆盖权限失败、破损文件、并发与重试。 [配置重建](apps/tray-app/src-tauri/src/config_io.rs) · [IPC](apps/tray-app/src-tauri/src/commands.rs)
+- [ ] **M-SET-UX-02 [P1] 连接页区分现状和待重启配置。**
+  - **问题** 状态摘要与可写表单没有说明磁盘改动何时切到实际连接。
+  - **怎么做** 拆成实时连接和文件设置，解释两个地址。校验、对照差异、保存或放弃，明确手动重启 Agent 及短时中断预期。
+  - **怎么验证** 覆盖 HTTPS、自定义端口、IPv6、无改动、错误和放弃。保存只改变磁盘值；重启后按现场数据核对生效。
+- [ ] **M-SET-UX-03 [P1] 对端状态按真实数据拆分。**
+  - **问题** 当前连接和直连页并列，RTT 缺样本或直连为空容易被当成整个网络离线。
+  - **怎么做** 对等节点下分别列 P2P 实测与 WireGuard 对端，时间、端点、累计流量和 RTT 来源按可用字段显示。保留现有深链。
+  - **怎么验证** 跑 Hub-only、P2P、无 RTT、未握手、旧快照和读取失败六种夹具，核对语义与旧入口定位。 [设置窗](apps/tray-app/index.html)
+- [ ] **M-SET-UX-04 [P1] 诊断按路由、接口和 WireGuard 组织。**
+  - **问题** 路由目前主要为文本；采集未开始、空结果、部分失败或旧快照不易区分。
+  - **怎么做** 分开子页和采集反馈；仅可靠解析的路由进表，保留原始快照。依现有阻塞任务隔离采集，命令参考复用共享目录并提供复制。
+  - **怎么验证** 覆盖空、部分缺失、长路由、刷新成功和失败。对照系统源输出与 CLI help；确认采集与复制不改变网络配置。 [命令目录](crates/meshlet-commands/src/lib.rs)
+- [ ] **M-SET-UX-05 [P1] 常规设置标明作用域。**
+  - **问题** 登录启动、界面语言、动效与退出密码写入不同位置，当前平台支持与影响范围不明显。
+  - **怎么做** 分成应用偏好、退出保护与维护。自启展示 Windows 真实系统状态，写失败恢复显示；托盘语言同步失败可见；密码表单按需展开，日志入口依平台可用性显示。
+  - **怎么验证** 使用标准用户验开关、权限失败、重开、语言同步、密码设置/错误/移除与取消退出。核对截图和诊断不回显密码。 [退出保护](apps/tray-app/src-tauri/src/exit_guard.rs)
+- [ ] **M-SET-UX-06 [P1] 托盘直达与窄窗可达。**
+  - **问题** 现有托盘菜单、弹层与第二实例依赖原有 zone 和目标控件。
+  - **怎么做** 映射既有 zone、锚点与相应子页，保留 760×600 默认和 600×480 最小窗宽；表格局部滚动，焦点可见。
+  - **怎么验证** 对两个窗口尺寸、125%/150% DPI、键盘、冷启动、隐藏窗口与第二实例逐项验证。 [窗口接线](apps/tray-app/src-tauri/src/windows.rs)
+- [ ] **M-SET-UX-07 [P1] 原生窗口与安装包验收。**
+  - **问题** 浏览器原型无法验证真实 Tauri IPC、系统自启、Agent 重启与网络快照。
+  - **怎么做** 用隔离 Agent 配置和安装包执行 Windows 真机检查，同步中英文指引；macOS 对应项随可运行产物验证。
+  - **怎么验证** 新用户能解释两个地址的区别、判断重启时机、查到路由和最近握手、设置退出保护。保留版本、前后截图、配置差异与运行证据后逐项关闭。
+
+**实施顺序** 01 先建立无损写入，02 复用；03、04 并行落地，06 同步接线；05 完成后执行 07。
+
 ## 待验收 / 进行中（README 与 docs 已声明 pending，账本必须可见）
 
 - [ ] WG-MAC-BT：macOS 数据面 boringtun 嵌入式用户态后端（用户拍板 2026-11-22「macos 使用 boringtun」+「只有 Intel 版本的 macos」→ **选型钉死：cloudflare/boringtun（x86_64-apple-darwin ✓ 官方支持）**，gotatun/wireguard-go 出局；Intel mac 真机可作 ⑤ 验收机）。【架构对齐：与 Windows NT 同款「计划层中性结构 + cfg(target_os) 执行层」分层；复用 `wg` UAPI 配置面（boringtun-cli 起 utun 后挂 `/var/run/wireguard/*.sock`，标准 `wg` 工具直接配，linux/backend.rs 命令执行器+对账模型平移）】。分批：②macos 后端模块：`crates/meshlet-network/src/macos.rs` + `macos/`——utun 接口命名（必须 `utun[0-9]+` 或 `utun` 让内核选，`WG_TUN_NAME_FILE` 拿实际名）、`ifconfig`/`route` 方言（IP/路由自管，utun 是哑设备）、MTU 1420、DNS（scutil resolver）面。③权限模型：创建 utun 需 root——launchd 特权 helper（SMAppService）或 sudo 白名单，agent 常驻面。④计划层+执行层测试钉（对齐 windows_wireguard_nt.rs 的规格层单测风格：接口名校验/MTU 守门/私钥脱敏 ADR-010）。⑤真机验收：Intel mac（用户确认 2026-11-22 有）——boringtun-cli 冒烟（utun 起接口+wg set 配置+握手）→ meshlet agent 2-peer 入网。门禁基线对齐：fmt/clippy -D warnings/workspace test/x86_64-apple-darwin 交叉 check（本机可跑）/docs:build。**前置依赖**：WG-NT-SWITCH 灰度收尾不阻塞本条开工（文件面完全隔离：macos.rs 新文件），但 config `TunnelBackend` 加 `MacBoringtun` 变体须等 ② 有实体再动避免空枚举。**Intel mac 打进 fleet 需用户侧配合项**：真机开 SSH 远程登录+（可选）ZeroTier 入网，给到即可开 ⑤。**Fallback 记录（2026-11-22 调研）**：备选 NordSecurity/NepTUN v3.0.6（boringtun 同源 fork，BSD-3，x86_64-apple-darwin ✓，NordVPN libtelio 数千万用户生产背书，维护活跃 2026-10 仍有 commit）——**不切换**：meshlet 3 机 mesh 流量非性能瓶颈位，NepTUN 活跃维护优势（PQ rekey/meshnet/16K 页等消费级修复）价值有限，且 git-only 依赖（不上 crates.io）增加供应链面；两 API 同源切换成本=改一行依赖。**切换条件：boringtun 出现 mac 实锤 bug 且 NepTUN 已修**（已知共性风险备忘：CLOCK_MONOTONIC 在 mac 可能回跳触发会话限速断连，NepTUN issue #13 2024-12 报告，boringtun 同源大概率同样存在——⑤ 真机验收时留意睡眠唤醒后握手恢复）。【**②④ 已落 main（855dad5 代码批 + ae45bb2 docs 链修，2026-11-22）**：②-1 计划层 `macos_wireguard_bt.rs`（BtPlanError→ApplyRejected/BtPeerPlan/BtInterfacePlan 私钥 Debug 脱敏 ADR-010/bt_utun_name `utun`|`utun[0-9]+` 白名单/bt_listen_port fail-closed/bt_interface_plan MTU 1420 守门+peer endpoint 必填+keepalive 超 u16 拒）；②-2 命令计划 `macos/backend.rs`（BtCommand SetAddress/SetMtu/AddRoute + bt_apply_commands 确定性序列 + bt_resolved_interface_name，全平台纯函数）+ cfg(macos) 执行器 MacNetworkBackend（sudo 钩子+非零退 Io 携 stderr，仅交叉编译验证）；④ 钉子 16 个（utun 名校验/MTU 守门/listen_port None 拒/keepalive 越界拒/私钥脱敏/命令序列断言 ifconfig-route-MTU 顺序参数/Debug 无私钥字节）；门禁全绿：darwin 交叉 check/network 235 test/workspace clippy -D warnings/fmt。**②-3 决策：PATH B——spawn boringtun-cli + wg.sock UAPI**（非库级嵌入 PATH A：boringtun 0.7.1 是 WireGuard 协议库仅 noise/x25519 模块、无 macOS utun 设备抽象（device 走 socket2），PATH A 需自建 utun ioctl+事件循环+线程生命周期，远超测试钉批；todo.md 架构注记亦明写 PATH B）——**boringtun crate 依赖因此不加**（仅运行时 boringtun-cli 二进制，打包属 ⑤）。**未落**：③权限模型（launchd 特权 helper/sudo 白名单）、DNS scutil 面、config TunnelBackend MacBoringtun 变体（留接线批，避免空枚举）。**⑤ 真机验收 BLOCKED——等用户给 Intel mac SSH**（+可选 ZeroTier 入网）。】【**③ 接线批已落 main（2026-11-22）**：32fb50c sudo 白名单线（`macos_privileges.rs` 纯函数白名单+`check_sudo_elevation` fail-closed，`MacNetworkBackend.run` sudo 钩子接线，docs/macos-privileges.md 入侧栏）+ a994ac1 DNS resolver 文件计划（`macos_dns.rs` 纯函数 `resolver_file_plan` 路径守门 0644 防穿越，`BtCommand::DumpDns` `scutil --dns` 只读诊断，`FsResolverSink` cfg(macos) 落盘）+ 7dcd3e0 config `TunnelBackend::MacBoringtun` 变体（`"mac-boringtun"` round-trip 钉，agent 接线 cfg(macos)→`with_mac_boringtun`、非 mac 选到显式 Err fail-closed，`macos/system.rs` `MacSystemBackend` 双模分派：默认委托占位零变化、boringtun 隧道面走 `bt_apply` 命令计划）。**launchd SMAppService 特权 helper 留 ADR 后续**（docs/macos-privileges.md §5，不实现）。**⑤ 真机验收仍 BLOCKED——等用户给 Intel mac SSH**（+可选 ZeroTier 入网）。】
