@@ -578,12 +578,6 @@
       const d = Math.floor(secs / 86400);
       return fmtAbs(epoch, lang === 'zh' ? `${d} 天前` : `${d}d ago`);
     }
-    function fmtAbs(epoch, fallback) {
-      if (!epoch || epoch <= 0) return t.never;
-      try {
-        return new Date(epoch * 1000).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US');
-      } catch (_) { return fallback; }
-    }
     async function loadDirectPeers() {
       if (!invoke) return;
       const el = document.getElementById('directBody');
