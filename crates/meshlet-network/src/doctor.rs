@@ -42,7 +42,12 @@ pub struct Check {
 }
 
 impl Check {
-    fn new(id: &str, title: impl Into<String>, status: CheckStatus, evidence: impl Into<String>) -> Self {
+    fn new(
+        id: &str,
+        title: impl Into<String>,
+        status: CheckStatus,
+        evidence: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             title: title.into(),
@@ -119,9 +124,7 @@ pub fn check_tunnel_amplification(
             ID,
             TITLE,
             CheckStatus::Fail,
-            format!(
-                "内部循环 {internal:.0} B/s 而物理口 {physical_tx_bps:.0} B/s —— 流量不出网卡"
-            ),
+            format!("内部循环 {internal:.0} B/s 而物理口 {physical_tx_bps:.0} B/s —— 流量不出网卡"),
         );
     }
     let ratio = internal / physical_tx_bps;
@@ -149,10 +152,7 @@ pub fn check_tunnel_amplification(
 /// 这正是事故现场（`402477b104 -> 10.240.0.3/9993 preferred`）。
 ///
 /// 读不到 zerotier → `zt_paths = None` → `not_assessed`。
-pub fn check_foreign_overlay_paths(
-    zt_paths: Option<&[String]>,
-    overlay_prefix: &str,
-) -> Check {
+pub fn check_foreign_overlay_paths(zt_paths: Option<&[String]>, overlay_prefix: &str) -> Check {
     const ID: &str = "foreign-overlay-paths";
     const TITLE: &str = "ZeroTier 路径未借道 meshlet overlay";
     let Some(paths) = zt_paths else {
@@ -169,7 +169,12 @@ pub fn check_foreign_overlay_paths(
         .filter(|p| p.starts_with(overlay_prefix))
         .collect();
     if hits.is_empty() {
-        Check::new(ID, TITLE, CheckStatus::Pass, format!("{} 条路径均不在 overlay 网段", paths.len()))
+        Check::new(
+            ID,
+            TITLE,
+            CheckStatus::Pass,
+            format!("{} 条路径均不在 overlay 网段", paths.len()),
+        )
     } else {
         Check::new(
             ID,
@@ -226,7 +231,12 @@ pub fn check_foreign_endpoints(
         );
     };
     if endpoints.is_empty() {
-        return Check::new(ID, TITLE, CheckStatus::NotAssessed, "无已配置的 peer endpoint");
+        return Check::new(
+            ID,
+            TITLE,
+            CheckStatus::NotAssessed,
+            "无已配置的 peer endpoint",
+        );
     }
     let ip_of = endpoint_ip;
     let foreign: Vec<&str> = endpoints
@@ -312,7 +322,12 @@ pub fn check_mtu_consistency(tunnel_mtu: Option<u32>, physical_mtu: Option<u32>)
                     format!("隧道 {tunnel} vs 物理 {physical}，差 {delta}（依赖 IP 分片）"),
                 )
             } else {
-                Check::new(ID, TITLE, CheckStatus::Pass, format!("隧道 {tunnel} / 物理 {physical}"))
+                Check::new(
+                    ID,
+                    TITLE,
+                    CheckStatus::Pass,
+                    format!("隧道 {tunnel} / 物理 {physical}"),
+                )
             }
         }
         _ => Check::new(ID, TITLE, CheckStatus::NotAssessed, "MTU 读数缺失"),
@@ -425,8 +440,14 @@ pub fn parse_zerotier_paths(json: &str) -> Option<Vec<String>> {
             continue;
         };
         for path in peer_paths {
-            let active = path.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
-            let expired = path.get("expired").and_then(|v| v.as_bool()).unwrap_or(true);
+            let active = path
+                .get("active")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let expired = path
+                .get("expired")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
             if !active || expired {
                 continue;
             }
@@ -492,10 +513,7 @@ mod tests {
             rates: Some((108e6, 0.0, 0.6e6)),
             isolation_rules: 0,
             foreign_uid: Some(995),
-            foreign_paths: Some(vec![
-                "180.153.160.8/9993".into(),
-                "10.240.0.3/9993".into(),
-            ]),
+            foreign_paths: Some(vec!["180.153.160.8/9993".into(), "10.240.0.3/9993".into()]),
             endpoints: Some(vec!["10.147.19.49:51820".into()]),
             tunnel_mtu: Some(1420),
             physical_mtu: Some(1500),
@@ -539,9 +557,17 @@ mod tests {
             ..DoctorInputs::default()
         };
         let report = run_doctor(&inputs);
-        let amplification = report.checks.iter().find(|c| c.id == "tunnel-amplification").unwrap();
+        let amplification = report
+            .checks
+            .iter()
+            .find(|c| c.id == "tunnel-amplification")
+            .unwrap();
         assert_eq!(amplification.status, CheckStatus::NotAssessed);
-        assert!(amplification.evidence.contains("采样失败"), "{}", amplification.evidence);
+        assert!(
+            amplification.evidence.contains("采样失败"),
+            "{}",
+            amplification.evidence
+        );
     }
 
     /// 默认输入（什么都没读到）下不得出现 FAIL——缺数据不等于故障（§7.5）。
@@ -586,7 +612,11 @@ mod tests {
         // 双侧都近 0：无流量无从判断，**不臆测**成 PASS（§7.5）。
         let check = check_tunnel_amplification(0.0, 0.0, 0.0);
         assert_eq!(check.status, CheckStatus::NotAssessed);
-        assert!(check.evidence.contains("无可观测流量"), "{}", check.evidence);
+        assert!(
+            check.evidence.contains("无可观测流量"),
+            "{}",
+            check.evidence
+        );
     }
 
     #[test]
@@ -606,12 +636,19 @@ mod tests {
         ];
         let check = check_foreign_overlay_paths(Some(&paths), "10.240.");
         assert_eq!(check.status, CheckStatus::Fail);
-        assert!(check.evidence.contains("10.240.0.3/9993"), "{}", check.evidence);
+        assert!(
+            check.evidence.contains("10.240.0.3/9993"),
+            "{}",
+            check.evidence
+        );
     }
 
     #[test]
     fn foreign_paths_pass_when_all_are_off_overlay() {
-        let paths = vec!["180.153.160.8/9993".to_string(), "192.168.5.11/38760".to_string()];
+        let paths = vec![
+            "180.153.160.8/9993".to_string(),
+            "192.168.5.11/38760".to_string(),
+        ];
         let check = check_foreign_overlay_paths(Some(&paths), "10.240.");
         assert_eq!(check.status, CheckStatus::Pass);
     }
@@ -633,10 +670,17 @@ mod tests {
 
     #[test]
     fn endpoint_on_foreign_overlay_is_warned() {
-        let eps = vec!["10.147.19.49:51820".to_string(), "180.153.160.8:51820".to_string()];
+        let eps = vec![
+            "10.147.19.49:51820".to_string(),
+            "180.153.160.8:51820".to_string(),
+        ];
         let check = check_foreign_endpoints(Some(&eps), &["10.147."], "10.240.");
         assert_eq!(check.status, CheckStatus::Warn);
-        assert!(check.evidence.contains("10.147.19.49"), "{}", check.evidence);
+        assert!(
+            check.evidence.contains("10.147.19.49"),
+            "{}",
+            check.evidence
+        );
     }
 
     #[test]
@@ -650,7 +694,10 @@ mod tests {
 
     #[test]
     fn endpoint_on_physical_or_public_passes() {
-        let eps = vec!["192.168.5.11:51820".to_string(), "106.14.216.177:51820".to_string()];
+        let eps = vec![
+            "192.168.5.11:51820".to_string(),
+            "106.14.216.177:51820".to_string(),
+        ];
         let check = check_foreign_endpoints(Some(&eps), &["10.147."], "10.240.");
         assert_eq!(check.status, CheckStatus::Pass);
     }
@@ -658,7 +705,10 @@ mod tests {
     #[test]
     fn endpoint_scope_suffix_and_bracket_forms_are_stripped() {
         // 带 `%接口` 作用域与 IPv6 方括号端口的形态都要能剥出 IP。
-        let eps = vec!["fe80::1%wg-mlt:51820".to_string(), "[2001:db8::1]:51820".to_string()];
+        let eps = vec![
+            "fe80::1%wg-mlt:51820".to_string(),
+            "[2001:db8::1]:51820".to_string(),
+        ];
         let check = check_foreign_endpoints(Some(&eps), &["10.147."], "10.240.");
         assert_eq!(check.status, CheckStatus::Pass, "{}", check.evidence);
     }
@@ -687,7 +737,10 @@ mod tests {
 
     #[test]
     fn isolation_present_passes_and_absent_foreign_too() {
-        assert_eq!(check_isolation_rules(5, Some(995)).status, CheckStatus::Pass);
+        assert_eq!(
+            check_isolation_rules(5, Some(995)).status,
+            CheckStatus::Pass
+        );
         // 本机没装 zerotier → 无需隔离，是 PASS 而非 not_assessed。
         assert_eq!(check_isolation_rules(0, None).status, CheckStatus::Pass);
     }
@@ -704,7 +757,10 @@ mod tests {
 
     #[test]
     fn mtu_matched_passes_and_missing_is_not_assessed() {
-        assert_eq!(check_mtu_consistency(Some(1500), Some(1500)).status, CheckStatus::Pass);
+        assert_eq!(
+            check_mtu_consistency(Some(1500), Some(1500)).status,
+            CheckStatus::Pass
+        );
         assert_eq!(
             check_mtu_consistency(None, Some(1500)).status,
             CheckStatus::NotAssessed

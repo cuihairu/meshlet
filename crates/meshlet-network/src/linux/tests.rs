@@ -138,8 +138,13 @@ mod tests {
         assert!(!is_lan_interface("lo", "wg0"));
         assert!(!is_lan_interface("wg0", "wg0"));
         assert!(!is_lan_interface("wg9", "wg0")); // 其它 wg 接口同样排除
+                                                  // 外来 overlay（ZeroTier 的 `zt*` 接口）出局：保留会把它的网段当本机
+                                                  // LAN，对端 ZT 地址被判成同网段直连 → WG endpoint 借道另一套隧道成环。
+        assert!(!is_lan_interface("ztksetoehl", "wg0"));
+        assert!(!is_lan_interface("ztabc123def", "wg0"));
         assert!(is_lan_interface("eth0", "wg0"));
         assert!(is_lan_interface("enp2s0", "wg0"));
+        assert!(is_lan_interface("ens18", "wg0"));
     }
 
     #[test]

@@ -86,19 +86,21 @@ pub(crate) fn cmd_agent_doctor() {
     // `/proc/self` 的属主 uid 即本进程 euid（Linux 语义，无需 libc）；非 root
     // 时走 `sudo -n`，免密不可用则命令失败 → 判定层如实报 not_assessed。
     let backend = diag_backend();
+    // sudo 提权仅 Unix 语义：root 直跑、非 root 走 `sudo -n`（免密不可用
+    // 则命令失败 → 判定层如实报 not_assessed）。Windows 命令自身按权限
+    // 降级，不额外提权——with_sudo 只在 unix 后端存在，必须 cfg 门控，
+    // 否则 windows 目标因另一分支类型检查报 E0599（run 45321046165 实证）。
     #[cfg(unix)]
-    let is_root = {
+    let backend = {
         use std::os::unix::fs::MetadataExt;
-        std::fs::metadata("/proc/self")
+        let is_root = std::fs::metadata("/proc/self")
             .map(|meta| meta.uid() == 0)
-            .unwrap_or(false)
-    };
-    #[cfg(not(unix))]
-    let is_root = true; // Windows：命令自身按权限降级，不额外提权。
-    let backend = if is_root {
-        backend
-    } else {
-        backend.with_sudo()
+            .unwrap_or(false);
+        if is_root {
+            backend
+        } else {
+            backend.with_sudo()
+        }
     };
 
     let report = backend.doctor();

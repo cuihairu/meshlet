@@ -74,11 +74,26 @@ pub(crate) fn parse_ip_octet_subnets(output: &str) -> Vec<(String, Ipv4Cidr)> {
 /// 候选 LAN 接口：排除回环、受管隧道，以及容器/虚拟化/vpn 等不会承载
 /// 对端直连的虚拟接口（`docker*`/`br-*`/`veth*`/`virbr*`/`vmbr*`/
 /// `tailscale*`/`wg*`）。
+///
+/// **外来 overlay 同样出局**（`zt*` = ZeroTier，Linux 侧恒 `zt` + 随机后缀）：
+/// 把它的网段当成本机 LAN，会把对端的 ZeroTier 地址判成「同网段直连」，于是
+/// WG endpoint 指进另一套隧道——两条隧道互为路径即互相封装成环（2026-11-23
+/// 真机事故：内部/物理 185:1）。ADR-014 的「互为备份、不争路由」也要求两者
+/// 各走各的路，而不是借道对方。
 pub(crate) fn is_lan_interface(ifname: &str, wg_interface: &str) -> bool {
     if ifname == "lo" || ifname == wg_interface {
         return false;
     }
-    for prefix in ["docker", "br-", "veth", "virbr", "vmbr", "tailscale", "wg"] {
+    for prefix in [
+        "docker",
+        "br-",
+        "veth",
+        "virbr",
+        "vmbr",
+        "tailscale",
+        "wg",
+        "zt",
+    ] {
         if ifname.starts_with(prefix) {
             return false;
         }

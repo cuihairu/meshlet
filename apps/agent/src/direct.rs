@@ -23,10 +23,10 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::Path;
 
 use meshlet_domain::{
-    classify_probe, classify_promote_probe, decide_direct_path, direct_peer_allowed_ips, on_probe,
-    DirectDecision, DirectLinkStatus, EndpointCandidate, Ipv4Cidr, PeerEndpoints, PeerLinkAction,
-    PeerLinkState, DIRECT_HEALTH_WINDOW_SECS, DIRECT_PERSISTENT_KEEPALIVE_SECS,
-    DIRECT_PROMOTE_FRESH_SECS, MAX_PROMOTE_ATTEMPTS,
+    classify_probe, classify_promote_probe, decide_direct_path, direct_peer_allowed_ips,
+    is_lan_reachable, on_probe, DirectDecision, DirectLinkStatus, EndpointCandidate, EndpointKind,
+    Ipv4Cidr, PeerEndpoints, PeerLinkAction, PeerLinkState, DIRECT_HEALTH_WINDOW_SECS,
+    DIRECT_PERSISTENT_KEEPALIVE_SECS, DIRECT_PROMOTE_FRESH_SECS, MAX_PROMOTE_ATTEMPTS,
 };
 
 /// 单个对端的直连管理状态（域层状态机状态 + 对端 overlay 地址）。
@@ -431,25 +431,42 @@ pub fn plan_updates_logged(
         // /探测关的面不在 unhealthy_faces（不武断封面），行为同旧口径。
         let mut used_memory_face = false;
         let mut deferred_face: Option<EndpointCandidate> = None;
+        // AGENT-ISO-2：endpoint 落在本机 overlay 范围内 = 拿隧道里的地址当隧道
+        // endpoint——包要先进隧道才够得到它，纯 hairpin 空转。imac 2026-11-23
+        // 实测该形态 RTT 1750ms，同网段直连仅 19ms。候选面与记忆面都要滤：
+        // 记忆面绕过 decide_direct_path 直接当选，只滤候选拦不住它回潮。
+        // `scope` 即单段网络的整个 overlay（分段网络为所属段前缀），语义正好。
+        let candidates: Vec<EndpointCandidate> = peer
+            .endpoints
+            .iter()
+            .copied()
+            .filter(|c| !scope.contains(c.ip))
+            .collect();
         let unhealthy = |c: &EndpointCandidate| unhealthy_faces.contains(&(key.clone(), *c));
+        // 记忆面必须**仍然够格**才可复用：它是历史/内核漫游写下的，绕过
+        // decide_direct_path 直接当选——若不复核，换成 LAN 口径后的旧地址
+        // （如对端的 ZeroTier 地址，本机已不认它是同网段）会一直被选回，
+        // 永远切不到物理面。判据与源头过滤同一条（[is_viable_endpoint]）。
+        let memory = current
+            .get(&key)
+            .and_then(|entry| entry.last_direct)
+            .filter(|c| is_viable_endpoint(c, my_lan_subnets, scope));
         let decision = match state {
             PeerLinkState::Relay => {
-                let memory = current.get(&key).and_then(|entry| entry.last_direct);
                 match memory {
                     Some(c) if !unhealthy(&c) => {
                         used_memory_face = true;
                         DirectDecision::SameLan(c)
                     }
                     _ => {
-                        let healthy: Vec<_> = peer
-                            .endpoints
+                        let healthy: Vec<_> = candidates
                             .iter()
-                            .filter(|c| !unhealthy(c))
                             .copied()
+                            .filter(|c| !unhealthy(c))
                             .collect();
                         let filtered = decide_direct_path(my_lan_subnets, &healthy);
                         if matches!(filtered, DirectDecision::Relay) {
-                            let full = decide_direct_path(my_lan_subnets, &peer.endpoints);
+                            let full = decide_direct_path(my_lan_subnets, &candidates);
                             if let DirectDecision::SameLan(c) | DirectDecision::HolePunch(c) = full
                             {
                                 deferred_face = Some(c);
@@ -462,7 +479,7 @@ pub fn plan_updates_logged(
                     }
                 }
             }
-            _ => decide_direct_path(my_lan_subnets, &peer.endpoints),
+            _ => decide_direct_path(my_lan_subnets, &candidates),
         };
         // SEL-003 恢复门：回中继后未连续健康 N 轮 → 保持中继（不立即切回，
         // 防抖）。健康已稳定（ready）后才允许状态机重新 Promote。记忆面
@@ -637,7 +654,33 @@ pub fn plan_updates_logged(
             ),
             _ => classify_probe(state, handshake_age, DIRECT_HEALTH_WINDOW_SECS),
         };
-        let (next_state, action) = on_probe(state, decision, probe, MAX_PROMOTE_ATTEMPTS);
+        let (next_state, mut action) = on_probe(state, decision, probe, MAX_PROMOTE_ATTEMPTS);
+        // AGENT-ISO-3：现役面不达标时强制重选。历史遗留 / 内核漫游写下的坏面
+        // （对端 ZeroTier 地址、自身 overlay hairpin）只要握手还健康，状态机就
+        // 一直 `Keep` 它——源头过滤永远没机会生效（2026-11-23 实录：重启后
+        // endpoint 原样保留）。这里补一次纠正：有达标替代面就直接 Promote 覆盖
+        // （不先 Demote，不中断现有握手）。切完现役面即达标，下轮不再触发——
+        // 收敛，不会来回抖；读不到现役面则不武断（§7.5），维持原动作。
+        if matches!(action, PeerLinkAction::Keep) {
+            let current_viable = current
+                .get(&key)
+                .and_then(|entry| crate::agent::endpoint::parse_endpoint_candidate(&entry.endpoint))
+                .map(|c| is_viable_endpoint(&c, my_lan_subnets, scope))
+                .unwrap_or(true);
+            if !current_viable
+                && matches!(
+                    decision,
+                    DirectDecision::SameLan(_) | DirectDecision::HolePunch(_)
+                )
+            {
+                tracing::info!(
+                    public_key = %key,
+                    current = %current.get(&key).map(|e| e.endpoint.as_str()).unwrap_or(""),
+                    "direct endpoint not viable; re-selecting"
+                );
+                action = PeerLinkAction::Promote(decision);
+            }
+        }
         // 记忆面维护：promote 记下要拨的面；pending 验证失败的回退弃用记忆
         // （该 endpoint 未能建立握手，死面不锁死再晋升）；已建立直连的回退
         // 保留（面大概率还在，见劣化分支同款语义）。
@@ -790,6 +833,29 @@ pub fn plan_updates(
         suppress_promote,
     )
     .0
+}
+
+/// endpoint 是否仍可作为直连面（AGENT-ISO-3，源头过滤与记忆面复核共用）。
+///
+/// 判据与 [decide_direct_path] 同源：**同网段可达，或公网可打洞**。据此剔除
+/// 三类坏面：
+/// - 落在本机 overlay 范围内 → hairpin 自环（包要先进隧道才够得到它，
+///   imac 2026-11-23 实测 1750ms vs 同网段 19ms）；
+/// - 私网但既不同网段也不在 overlay → **外来网段**（对端的 ZeroTier 地址），
+///   用它当 endpoint 等于借道本机不掌握的另一套隧道；
+/// - 其余远端 LAN 私网 → 本机本就无法直达，挡在候选表外免得探测窗口与
+///   SEL-002 切换绕过决策层把它选成现役面。
+///
+/// `scope` = 本机 overlay 可路由范围（单段网络即整个 overlay）。
+pub(crate) fn is_viable_endpoint(
+    candidate: &EndpointCandidate,
+    my_lan_subnets: &[Ipv4Cidr],
+    scope: Ipv4Cidr,
+) -> bool {
+    if scope.contains(candidate.ip) {
+        return false;
+    }
+    is_lan_reachable(my_lan_subnets, candidate) || candidate.kind == EndpointKind::Public
 }
 
 /// 决策路径的 endpoint（SameLan / HolePunch 都给出一个直连地址）。

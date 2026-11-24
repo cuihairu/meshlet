@@ -24,7 +24,7 @@ fn lan_ip_json_parses_single_object_and_array() {
 }
 
 #[test]
-fn windows_lan_interface_filter_keeps_lan_and_zerotier_drops_virtual() {
+fn windows_lan_interface_filter_keeps_lan_drops_virtual_and_foreign_overlay() {
     // 受管接口 / 回环 / Hyper-V / Tailscale / 其余 wg → 排除。
     assert!(!is_windows_lan_interface("wg-meshlet", "wg-meshlet"));
     assert!(!is_windows_lan_interface(
@@ -41,12 +41,17 @@ fn windows_lan_interface_filter_keeps_lan_and_zerotier_drops_virtual() {
     // → 必须排除，否则被当 LAN 候选（lan 过收）。
     assert!(!is_windows_lan_interface("WireGuard", "wg-meshlet"));
     assert!(!is_windows_lan_interface("wireguard", "wg-meshlet"));
-    // 物理 LAN 与 ZeroTier → 保留（候选口径与 Linux 一致）。
-    assert!(is_windows_lan_interface("WLAN 7", "wg-meshlet"));
-    assert!(is_windows_lan_interface(
+    // 外来 overlay（ZeroTier）同样排除：保留会把对端 ZT 地址判成同网段直连，
+    // WG endpoint 指进另一套隧道 → 互相封装成环（2026-11-23 真机事故）。
+    // 大小写不敏感（别名 `ZeroTier One [nwid]`）。
+    assert!(!is_windows_lan_interface(
         "ZeroTier One [db64858fedb29f06]",
         "wg-meshlet"
     ));
+    assert!(!is_windows_lan_interface("zerotier", "wg-meshlet"));
+    // 物理 LAN → 保留（候选口径与 Linux 一致）。
+    assert!(is_windows_lan_interface("WLAN 7", "wg-meshlet"));
+    assert!(is_windows_lan_interface("以太网 2", "wg-meshlet"));
 }
 
 #[test]

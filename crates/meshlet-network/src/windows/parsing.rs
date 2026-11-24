@@ -162,7 +162,9 @@ pub(super) fn parse_windows_interfaces_json(text: &str) -> Vec<InterfaceDiagnost
 /// 排除本受管 wg 接口、回环、Hyper-V vEthernet、Tailscale、其余 wg 接口与
 /// wireguard-nt 隧道（nt 模型 OS 别名恰为 `WireGuard`，隧道名只在 InterfaceDescription——
 /// 不排除会把隧道当 LAN 候选，lan 过收）；
-/// ZeroTier 等私有网段**保留**（可路由的私有网段都是直连候选）。别名比对
+/// **外来 overlay 同样出局**（`zerotier*` = `ZeroTier One [nwid]` 别名，与 Linux
+/// 侧 `zt*` 对位）：它的网段当成本机 LAN 会把对端 ZeroTier 地址判成同网段直连，
+/// WG endpoint 指进另一套隧道即互相封装成环（2026-11-23 真机事故）。别名比对
 /// 大小写不敏感（Windows 接口别名如 `Tailscale`、`vEthernet (WSL …)`）。
 pub(super) fn is_windows_lan_interface(alias: &str, wg_interface: &str) -> bool {
     let lower = alias.to_ascii_lowercase();
@@ -176,6 +178,7 @@ pub(super) fn is_windows_lan_interface(alias: &str, wg_interface: &str) -> bool 
         "wireguard",
         "docker",
         "veth",
+        "zerotier",
     ] {
         if lower.starts_with(prefix) {
             return false;
