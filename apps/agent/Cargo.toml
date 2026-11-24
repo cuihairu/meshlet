@@ -35,6 +35,7 @@ zbus = { version = "5.19.0", default-features = false, features = ["async-io"] }
 windows-sys = { workspace = true, features = [
   "Win32_System_RemoteDesktop",
   "Win32_System_IO",
+  "Win32_System_Console",
   "Win32_NetworkManagement_IpHelper",
 ] }
 

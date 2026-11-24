@@ -1,3 +1,4 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! meshlet-agent 可执行入口（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
 //!
 //! 业务逻辑在库层（[`meshlet_agent`]）：本文件只做**启动纪律**——读配置、
@@ -11,7 +12,22 @@
 use meshlet_agent::{read_private_key, Agent};
 use meshlet_config::AgentConfig;
 
+/// TRAY-TF-01：release 构建若留在 CONSOLE 子系统，被计划任务/启动链拉起时：release 构建若留在 CONSOLE 子系统，被计划任务/启动链拉起时
+/// Windows 会挂出一个终端宿主进程——用户看到的「第一次弹 terminal 界面
+/// 然后闪退」正是这个（真机 imac 取证 WT 常驻窗口，subsys=3 实锤）。
+/// release 改 GUI 子系统后，日志要回到父控制台才能继续落盘。
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_parent_console() -> bool {
+    use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    // SAFETY: 进程启动时一次性调用，参数是文档约定的父控制台句柄常量；
+    // 失败只表示没有可挂的父控制台（Explorer 双击、S4U 会话），无副作用。
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) != 0 }
+}
+
 fn main() -> std::process::ExitCode {
+    #[cfg(all(windows, not(debug_assertions)))]
+    attach_parent_console();
+
     // `--version`/`--help` 先行处理，避免被当成配置文件路径而报错
     // （真机验收 NIGHTLY-MSI-1 抓到：`meshlet-agent --help` 曾 exit 1）。
     if let Some(flag) = std::env::args().nth(1).as_deref() {
