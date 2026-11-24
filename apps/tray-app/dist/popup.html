@@ -96,6 +96,14 @@
   </div>
 
   <script type="module">
+    // 纯展示逻辑与设置窗共用 view-logic.js（last_handshake 已迁 raw epoch，
+    // 这里不再各抄一份口径——此前按「N 秒前」字符串解析，握手列显示成
+    // 天文数字秒）。
+    import {
+      tierOf, fmtBytes, fmtEpoch, fmtUpdatedAt,
+      pickWgInterface, isTunnelUp, summarizePeers, newestHandshakeAt,
+    } from './view-logic.js';
+
     const invoke = window.__TAURI_INTERNALS__?.invoke;
 
     // i18n：与设置窗同一 localStorage 键（meshlet-lang），同源窗口共享存储；
@@ -154,34 +162,13 @@
     document.getElementById('btnSettings').textContent = t.settings;
     document.getElementById('btnLogs').textContent = t.logs;
 
-    // ── 状态分档（口径与 main.rs state_tier 完全一致）──────────────────
-    // 真实生产者是 agent accessible_name() 全称句（"Meshlet online" 等），
-    // 小写化后按子串匹配；判定顺序固定：降级 → 异常 → 在线 → 离线。
-    // snake_case（online/tunnel_only/error…）继续兼容防回归。
-    function tierOf(state) {
-      const s = String(state || '').toLowerCase();
-      if (s.includes('tunnel only') || s.includes('tunnel_only') ||
-          s.includes('tunnel drift') || s.includes('tunnel_drift') ||
-          s.includes('degraded')) return 'degraded';
-      if (s.includes('error') || s.includes('failed')) return 'error';
-      if (s.includes('online') || ['connected', 'ready', 'up', 'ok'].includes(s)) return 'online';
-      return 'offline';
-    }
+    // ── 状态分档 / 字节与时间格式：抽到 view-logic.js（与设置窗共用，
+    // 口径 = src-tauri/src/state.rs state_tier，夹具测试钉住）─────────
 
-    function fmtBytes(n) {
-      if (n == null) return '—';
-      if (n < 1024) return n + ' B';
-      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
-      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
-      return (n / 1073741824).toFixed(2) + ' GB';
-    }
-
-    // status.updated_at（RFC3339，agent 写出）→ 相对时间
+    // status.updated_at（RFC3339，agent 写出）→ 相对时间（view-logic 同口径）
     function fmtUpdated(rfc3339) {
-      if (!rfc3339) return '—';
-      const secs = Math.max(0, Math.round((Date.now() - new Date(rfc3339).getTime()) / 1000));
-      if (secs < 3600) return `${t.lastUpdate} ${t.secsAgo(secs)}`;
-      return `${t.lastUpdate} ${t.minsAgo(Math.round(secs / 60))}`;
+      const text = fmtUpdatedAt(rfc3339, lang, t);
+      return text || '—';
     }
 
     function renderHeader(status) {
@@ -194,20 +181,20 @@
       document.getElementById('upd').textContent = fmtUpdated(status.updated_at);
     }
 
-    // 隧道状态 / Overlay IP：与设置窗 renderConnFromDiag 同口径
+    // 隧道状态 / Overlay IP：与设置窗状态条同口径
     //（get_diag interfaces 实测字段 name/ipv4/prefix/state），不臆测字段。
     function renderDiag(diag) {
-      const wgIf = (diag.interfaces || []).find(i => /meshlet|wg/i.test(i.name) && i.ipv4);
+      const wgIf = pickWgInterface(diag.interfaces);
       document.getElementById('vOverlayIp').textContent =
         wgIf ? (wgIf.ipv4 + (wgIf.prefix != null ? '/' + wgIf.prefix : '')) : '—';
-      const wgUp = (diag.interfaces || []).some(i => /meshlet|wg/i.test(i.name) && i.state === 'up');
-      document.getElementById('vTunnel').textContent = wgUp ? t.tunnelUp : t.tunnelDown;
+      document.getElementById('vTunnel').textContent =
+        isTunnelUp(diag.interfaces) ? t.tunnelUp : t.tunnelDown;
     }
 
     // 对等节点：get_peers 实测字段 connected/last_handshake/rx_bytes/tx_bytes
+    // last_handshake 是 raw epoch（state.rs R-UI-1），相对化交给 fmtEpoch。
     function renderPeers(peers) {
-      const total = peers.length;
-      const online = peers.filter(p => p.connected).length;
+      const { online, total, rx, tx } = summarizePeers(peers);
       if (total === 0) {
         document.getElementById('vPeers').innerHTML = `<span class="muted">${t.noPeers}</span>`;
       } else {
@@ -216,18 +203,11 @@
       const onPct = total ? Math.round((online / total) * 100) : 0;
       document.getElementById('barOn').style.width = onPct + '%';
       document.getElementById('barOff').style.width = (100 - onPct) + '%';
-      const rx = peers.reduce((a, p) => a + (p.rx_bytes || 0), 0);
-      const tx = peers.reduce((a, p) => a + (p.tx_bytes || 0), 0);
       document.getElementById('vTraffic').textContent = `↓${fmtBytes(rx)} ↑${fmtBytes(tx)}`;
-      // 最近一次握手：peer 的 last_handshake 是「N 秒前」字符串（main.rs 生成），
-      // 取数值最小（最新）的一个；解析不出就如实显示第一条。
-      let best = null;
-      for (const p of peers) {
-        const m = /(\d+)/.exec(p.last_handshake || '');
-        if (m && (best === null || Number(m[1]) < best)) best = Number(m[1]);
-      }
+      // 最近一次握手：取全部对端里最新（最大 epoch）的一个；全无样本显「从未」。
+      const newest = newestHandshakeAt(peers, 'last_handshake');
       document.getElementById('vHandshake').textContent =
-        best !== null ? t.secsAgo(best) : (peers[0]?.last_handshake || t.never);
+        newest ? fmtEpoch(newest, lang, t) : t.never;
     }
 
     async function refresh(status) {

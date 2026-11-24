@@ -393,6 +393,12 @@
   </svg>
 
   <script type="module">
+    // 纯展示逻辑抽到 view-logic.js（与弹层共用，node 夹具测试覆盖）。
+    import {
+      tierOf, fmtBytes, clockOf, fmtEpoch, fmtUpdatedAt,
+      pickWgInterface, directPeerRows, wgPeerRows, newestHandshakeAt, ZONE_MAP,
+    } from './view-logic.js';
+
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     const $ = (id) => document.getElementById(id);
     const all = (sel) => [...document.querySelectorAll(sel)];
@@ -463,6 +469,7 @@
         guardSetOk: 'Quit password set', guardCleanOk: 'Quit protection removed',
         guardCurrentRequired: 'Enter the current password first.', guardFailed: 'Operation failed: ',
         unitMs: 'ms', probe: 'probe', handshake: 'handshake',
+        lastUpdate: 'Updated',
       },
       zh: {
         navConn: '连接', navPeers: '对等节点', navDiag: '诊断',
@@ -529,6 +536,7 @@
         guardSetOk: '退出密码已设置', guardCleanOk: '退出保护已移除',
         guardCurrentRequired: '请先填写当前密码。', guardFailed: '操作失败：',
         unitMs: 'ms', probe: '主动探测', handshake: '握手',
+        lastUpdate: '最后更新',
       },
     };
 
@@ -549,23 +557,10 @@
     }
 
     // ── 页面路由（zone → 子页；保留既有锚点语义）─────────────────
+    // zone 契约映射（ZONE_MAP）抽到 view-logic.js，与弹层/夹具测试共用。
     const pages = new Set(all('[data-page]').map((page) => page.id));
     const PEERS_VIEWS = new Set(['direct', 'wg']);
     const DIAG_VIEWS = new Set(['routes', 'interfaces', 'wireguard']);
-    // 既有 zone 契约（state.rs GOTO_ZONES）映射到新结构：
-    //  conn → 连接；peers → 对等节点(P2P tab)；
-    //  diag → 诊断(路由 tab)；routes/ifaces/wg → 诊断对应 tab；
-    //  cmd → 命令参考；gen → 常规。
-    const ZONE_MAP = {
-      conn: ['connection'],
-      peers: ['peers', 'direct'],
-      diag: ['diagnostics', 'routes'],
-      routes: ['diagnostics', 'routes'],
-      ifaces: ['diagnostics', 'interfaces'],
-      wg: ['diagnostics', 'wireguard'],
-      cmd: ['commands'],
-      gen: ['general'],
-    };
 
     function showPage(view) {
       if (!pages.has(view)) view = 'connection';
@@ -615,46 +610,19 @@
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
-    function formatBytes(n) {
-      n = Number(n) || 0;
-      if (n < 1024) return n + ' B';
-      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
-      if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
-      return (n / 1073741824).toFixed(2) + ' GB';
-    }
-    function clockOf(epoch) {
-      if (!epoch || epoch <= 0) return '—';
-      try { return new Date(epoch * 1000).toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US'); }
-      catch (_) { return '—'; }
-    }
-    function fmtEpoch(epoch) {
-      if (epoch == null || epoch <= 0) return t.never;
-      const secs = Math.max(0, Math.floor(Date.now() / 1000) - epoch);
-      if (secs < 60) return lang === 'zh' ? `${secs} 秒前` : `${secs}s ago`;
-      if (secs < 3600) return lang === 'zh' ? `${Math.floor(secs / 60)} 分钟前` : `${Math.floor(secs / 60)}m ago`;
-      if (secs < 86400) return lang === 'zh' ? `${Math.floor(secs / 3600)} 小时前` : `${Math.floor(secs / 3600)}h ago`;
-      try { return new Date(epoch * 1000).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US'); }
-      catch (_) { return '—'; }
-    }
-    function stateTier(state) {
-      const s = String(state || '').toLowerCase();
-      if (s.includes('tunnel only') || s.includes('tunnel_only') || s.includes('tunnel drift') ||
-          s.includes('tunnel_drift') || s.includes('degraded')) return 'degraded';
-      if (s.includes('error') || s.includes('failed')) return 'error';
-      if (s.includes('online') || ['connected', 'ready', 'up', 'ok'].includes(s)) return 'online';
-      return 'offline';
-    }
 
     // ── 连接：实时摘要（来自 status.json + 诊断快照）───────────────
     let lastDiag = null;
-    let running = { tier: 'offline', tooltip: '—' };
+    // updatedAt 原文保留，快照年龄在渲染时按当前语言计算（切语言即翻新）。
+    let running = { tier: 'offline', tooltip: '—', updatedAt: null };
 
     async function loadStatus() {
       if (!invoke) return;
       try {
         const status = await invoke('get_status');
-        running.tier = stateTier(status.state);
+        running.tier = tierOf(status.state);
         running.tooltip = status.tooltip || status.state || t.statusUnknown;
+        running.updatedAt = status.updated_at || null;
         renderLiveStrip();
       } catch (_) {
         $('stateNow').textContent = t.errStatus;
@@ -667,10 +635,10 @@
         error: t.statusError, offline: t.statusOffline,
       }[running.tier] || t.statusUnknown;
       $('stateTunnel').innerHTML = `<span class="chip ${chip}"><i class="dot"></i>${escapeHtml(label)}</span>`;
-      $('stateNow').textContent = running.tooltip;
-      const wgIf = lastDiag && lastDiag.interfaces
-        ? lastDiag.interfaces.find((i) => /meshlet|wg/i.test(i.name) && i.ipv4)
-        : null;
+      // 快照年龄与旧入口（弹层「最后更新 N 前」）同口径：旧快照不得冒充新鲜。
+      const age = fmtUpdatedAt(running.updatedAt, lang, t);
+      $('stateNow').textContent = running.tooltip + (age ? ` · ${age}` : '');
+      const wgIf = pickWgInterface(lastDiag && lastDiag.interfaces);
       $('stateVip').textContent = wgIf
         ? wgIf.ipv4 + (wgIf.prefix != null ? '/' + wgIf.prefix : '')
         : '—';
@@ -776,31 +744,31 @@
     });
 
     // ── 对等节点：P2P 直连 + WireGuard 两表 ──────────────────────
+    // 行投影（排序/无样本/未握手判定）抽到 view-logic.js，夹具测试钉语义。
     async function loadDirectPeers() {
       if (!invoke) return;
       const body = $('directBody');
       try {
         const peers = await invoke('get_direct_peers');
-        const newest = peers.reduce((max, p) => Math.max(max, p.last_handshake_at || 0), 0);
-        $('peerStamp').textContent = newest ? clockOf(newest) : t.notCollected;
-        if (!peers || peers.length === 0) {
+        const newest = newestHandshakeAt(peers, 'last_handshake_at');
+        $('peerStamp').textContent = newest ? clockOf(newest, lang) : t.notCollected;
+        const rows = directPeerRows(peers, t, lang);
+        if (rows.length === 0) {
           body.innerHTML = `<tr><td colspan="5" class="muted">${t.noPeers}</td></tr>`;
           return;
         }
-        body.innerHTML = [...peers]
-          .sort((a, b) => (b.last_handshake_at || 0) - (a.last_handshake_at || 0))
-          .map((p) => `
+        body.innerHTML = rows.map((row) => `
             <tr>
-              <td><b>${escapeHtml(p.name)}</b>${
-                p.device_id ? `<small class="code muted" title="${escapeHtml(p.device_id)}">${escapeHtml(p.device_id.slice(0, 8))}</small>` : ''
+              <td><b>${escapeHtml(row.name)}</b>${
+                row.deviceShort ? `<small class="code muted" title="${escapeHtml(row.deviceFull)}">${escapeHtml(row.deviceShort)}</small>` : ''
               }</td>
-              <td class="code">${escapeHtml(p.virtual_ipv4) || '—'}</td>
-              <td class="code">${escapeHtml(p.endpoint) || '—'}</td>
-              <td class="num">${p.rtt_ms == null
-                ? `<span class="chip">${t.noSample}</span>`
-                : escapeHtml(p.rtt_ms) + ' ' + t.unitMs +
-                  (p.rtt_source ? `<small>${escapeHtml(p.rtt_source)}</small>` : '')}</td>
-              <td class="num">${escapeHtml(clockOf(p.last_handshake_at))}</td>
+              <td class="code">${escapeHtml(row.vip) || '—'}</td>
+              <td class="code">${escapeHtml(row.endpoint) || '—'}</td>
+              <td class="num">${row.rtt.chip
+                ? `<span class="chip">${escapeHtml(row.rtt.text)}</span>`
+                : escapeHtml(row.rtt.text) +
+                  (row.rtt.source ? `<small>${escapeHtml(row.rtt.source)}</small>` : '')}</td>
+              <td class="num">${escapeHtml(row.stamp)}</td>
             </tr>`).join('');
       } catch (e) {
         body.innerHTML = `<tr><td colspan="5" class="muted">${t.errLoad}${escapeHtml(e)}</td></tr>`;
@@ -812,18 +780,17 @@
       const body = $('wgBody');
       try {
         const peers = await invoke('get_peers');
-        if (!peers || peers.length === 0) {
+        const rows = wgPeerRows(peers, t, lang);
+        if (rows.length === 0) {
           body.innerHTML = `<tr><td colspan="4" class="muted">${t.noPeersWg}</td></tr>`;
           return;
         }
-        body.innerHTML = [...peers]
-          .sort((a, b) => (b.last_handshake || 0) - (a.last_handshake || 0))
-          .map((p) => `
+        body.innerHTML = rows.map((row) => `
             <tr>
-              <td><b>${escapeHtml(p.public_key) || '—'}</b><small class="code muted">${escapeHtml(p.allowed_ips)}</small></td>
-              <td class="code">${escapeHtml(p.endpoint) || '—'}</td>
-              <td class="num">${escapeHtml(fmtEpoch(p.last_handshake))}</td>
-              <td class="num">${formatBytes(p.rx_bytes)} / ${formatBytes(p.tx_bytes)}</td>
+              <td><b>${escapeHtml(row.key) || '—'}</b><small class="code muted">${escapeHtml(row.allowed)}</small></td>
+              <td class="code">${escapeHtml(row.endpoint) || '—'}</td>
+              <td class="num">${escapeHtml(row.handshake)}</td>
+              <td class="num">${escapeHtml(row.traffic)}</td>
             </tr>`).join('');
       } catch (e) {
         body.innerHTML = `<tr><td colspan="4" class="muted">${t.errLoad}${escapeHtml(e)}</td></tr>`;
@@ -840,7 +807,7 @@
       try {
         const diag = await invoke('get_diag');
         lastDiag = diag;
-        $('diagStamp').textContent = clockOf(Math.floor(Date.now() / 1000));
+        $('diagStamp').textContent = clockOf(Math.floor(Date.now() / 1000), lang);
         $('diagProgress').textContent = t.diagReadonly;
 
         const routeCount = (diag.route_table || []).length;
@@ -864,8 +831,8 @@
               <tr>
                 <td><b>${escapeHtml(p.endpoint) || '—'}</b></td>
                 <td class="code">${escapeHtml(p.allowed_ips) || '—'}</td>
-                <td class="num">${escapeHtml(fmtEpoch(p.last_handshake))}</td>
-                <td class="num">${formatBytes(p.rx_bytes)} / ${formatBytes(p.tx_bytes)}</td>
+                <td class="num">${escapeHtml(fmtEpoch(p.last_handshake, lang, t))}</td>
+                <td class="num">${escapeHtml(fmtBytes(p.rx_bytes))} / ${escapeHtml(fmtBytes(p.tx_bytes))}</td>
               </tr>`).join('')
           : `<tr><td colspan="4" class="muted">${t.noPeersWg}</td></tr>`;
 
