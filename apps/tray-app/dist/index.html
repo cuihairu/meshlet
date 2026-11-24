@@ -280,7 +280,8 @@
   </section>
 
   <script type="module">
-    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    const invokeRef = { fn: window.__TAURI_INTERNALS__?.invoke };
+    const invoke = (...args) => invokeRef.fn?.(...args);
 
     // i18n（语言优先级：localStorage > navigator.language）
     const i18n = {
@@ -819,11 +820,28 @@
     window.openLogs = openLogs;
     window.copyCmd = copyCmd;
 
-    load();
-    loadPeers();
-    loadDirectPeers();
-    loadDiag();
-    loadCommands();
+    // TRAY-OPEN-TWICE-1（用户报十几次的「打开两次才正常」）：__TAURI_INTERNALS__ 注入
+    // 与页面脚本执行存在时序竞态——首开窗口时 invoke 可能还没挂上，load()/loadPeers()
+    // 全部静默 return，页面停在空态；用户关掉重开（窗口复用、注入已完成）才正常。
+    // 修法：等待注入完成（上限 5s）再触发首屏加载，替代 822 行的直接调用。
+    function whenInvokeReady(timeoutMs = 5000) {
+      return new Promise((resolve) => {
+        const started = Date.now();
+        (function poll() {
+          if (window.__TAURI_INTERNALS__?.invoke) { resolve(window.__TAURI_INTERNALS__.invoke); return; }
+          if (Date.now() - started >= timeoutMs) { resolve(null); return; }
+          setTimeout(poll, 50);
+        })();
+      });
+    }
+    whenInvokeReady().then((readyInvoke) => {
+      if (readyInvoke && !invokeRef.fn) { invokeRef.fn = readyInvoke; }
+      load();
+      loadPeers();
+      loadDirectPeers();
+      loadDiag();
+      loadCommands();
+    });
     refreshGuardStatus();
 
     // 启动取件（双通道第二条）：新建窗口还在加载时，Rust eval 的定位 JS
