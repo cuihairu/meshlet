@@ -367,25 +367,46 @@ pub(crate) fn save_ui_config_at(
     write_atomic(path, content.as_bytes()).map_err(|error| SaveError::Write(error.to_string()))
 }
 
-/// 同目录临时文件 + rename。临时名带随机后缀避免并发保存互踩。
+/// 临时文件序号：临时名 = `agent.toml.tmp-<pid>-<seq>`。只用 pid 会互踩
+/// （同一进程内并发保存共享一个临时路径：A 写入后 B 覆盖，A rename 到
+/// 别人的内容，B rename 落 ENOENT），序号保证每次调用独占一个临时文件。
+static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// rename 竞争重试上限：Windows 上对同一目标的并发 MoveFileEx 替换/杀软
+/// 短暂占用会以共享冲突失败，短暂退避后重试；POSIX 上 rename 幂等，重试
+/// 只是兜底。
+const WRITE_ATTEMPTS: usize = 3;
+const WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// 同目录临时文件 + rename。临时名带进程内序号避免并发保存互踩；写入或
+/// rename 失败都清掉临时文件再退避重试，重试耗尽浮出最后一次错误。
 fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let directory = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let temporary = directory.join(format!(
-        "{}.tmp-{}",
+        "{}.tmp-{}-{}",
         path.file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "agent.toml".into()),
-        std::process::id()
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
-    std::fs::write(&temporary, bytes)?;
-    match std::fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            // rename 失败不留垃圾临时文件。
-            let _ = std::fs::remove_file(&temporary);
-            Err(error)
+    let mut last_error = None;
+    for attempt in 0..WRITE_ATTEMPTS {
+        let outcome =
+            std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, path));
+        match outcome {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // 失败不留垃圾临时文件（写入半截同样清掉）。
+                let _ = std::fs::remove_file(&temporary);
+                last_error = Some(Err(error));
+                if attempt + 1 < WRITE_ATTEMPTS {
+                    std::thread::sleep(WRITE_RETRY_DELAY);
+                }
+            }
         }
     }
+    last_error.unwrap()
 }
 
 /// 连接表单校验（可测，M-SET-UX-02 复用）：设备名非空；控制地址必须是
@@ -746,5 +767,158 @@ mod tests {
         let edited = edit_managed_keys(&with_newline, "b", "d", "h:1");
         assert!(edited.ends_with('\n'));
         assert!(!edited.ends_with("\n\n"));
+    }
+
+    // ── 01 收口批：权限失败 / 破损文件 / 并发写 / 重试路径 ──────────────
+
+    /// 只读目录：写错误浮出、原文件逐字节不动、无临时文件残留；权限恢复后
+    /// 重试成功（重试路径）。
+    #[cfg(unix)]
+    #[test]
+    fn save_surfaces_permission_error_then_retry_succeeds() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!(
+            "meshlet-tray-perm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("agent.toml");
+        std::fs::write(&path, FIXTURE).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // root 无视权限位（CI 容器场景）：探测到仍可写就还原跳过，不作断言。
+        if std::fs::write(directory.join(".probe"), b"x").is_ok() {
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::remove_dir_all(&directory).ok();
+            return;
+        }
+        let error = save_ui_config_at(&path, "https://old.example.com", "renamed", "1.2.3.4:51820")
+            .unwrap_err();
+        assert!(
+            matches!(error, SaveError::Write(_)),
+            "permission failure surfaces as Write: {error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "original untouched");
+        let leftovers: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files left: {leftovers:?}");
+
+        // 权限恢复后重试：保存成功且内容正确。
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        save_ui_config_at(&path, "https://old.example.com", "renamed", "1.2.3.4:51820").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("device_name = \"renamed\""));
+        assert!(after.contains("[hub_failover]"));
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    /// 破损文件（非法 UTF-8）：读错误浮出、字节不动，不写半份配置。
+    #[test]
+    fn save_reports_read_error_for_invalid_utf8_and_leaves_file_untouched() {
+        let directory = std::env::temp_dir().join(format!(
+            "meshlet-tray-badutf-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("agent.toml");
+        let broken = b"device_name = \"\xff\xfe\xfd\"\nhub = ok\n";
+        std::fs::write(&path, broken).unwrap();
+        let error = save_ui_config_at(&path, "https://x", "d", "1.2.3.4:51820").unwrap_err();
+        assert!(matches!(error, SaveError::Read(_)), "got: {error}");
+        assert_eq!(std::fs::read(&path).unwrap(), broken, "file untouched");
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    /// 破损文件（UTF-8 合法但行不可解析）：保存仍成功；无法识别的行逐字节
+    /// 保留，损坏的受管行重写为合法值，产出可被读面回读的配置。
+    #[test]
+    fn broken_lines_survive_save_verbatim_except_managed_keys() {
+        let directory = std::env::temp_dir().join(format!(
+            "meshlet-tray-broken-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("agent.toml");
+        let broken = "device_name = \"unclosed\nnope this line\n[dataplane]\nhub_endpoint = \"1.2.3.4:51820\" # keep\nweird~~~\n";
+        std::fs::write(&path, broken).unwrap();
+        save_ui_config_at(&path, "https://x.example", "new-name", "1.2.3.4:51820").unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        // 无法识别的行逐字节保留，交 agent 侧裁决。
+        assert!(after.contains("nope this line"));
+        assert!(after.contains("weird~~~"));
+        assert!(after.contains("hub_endpoint = \"1.2.3.4:51820\" # keep"));
+        // 损坏的受管行重写为合法引号值。
+        assert!(after.contains("device_name = \"new-name\""));
+        let config = read_ui_config(&after);
+        assert_eq!(config.device_name, "new-name");
+        assert_eq!(config.server_url, "https://x.example");
+        assert_eq!(config.hub_endpoint, "1.2.3.4:51820");
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    /// 并发保存：全部成功、互不覆盖临时文件、终态是某一位写者的完整内容，
+    /// 其余键/节完整、无临时文件残留。
+    #[test]
+    fn concurrent_saves_all_land_and_keep_file_valid() {
+        let directory = std::env::temp_dir().join(format!(
+            "meshlet-tray-conc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("agent.toml");
+        std::fs::write(&path, FIXTURE).unwrap();
+        let names: Vec<String> = (0..8).map(|i| format!("dev-{i}")).collect();
+        let handles: Vec<_> = names
+            .iter()
+            .map(|name| {
+                let path = path.clone();
+                let name = name.clone();
+                std::thread::spawn(move || {
+                    save_ui_config_at(&path, "https://old.example.com", &name, "1.2.3.4:51820")
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        let after = std::fs::read_to_string(&path).unwrap();
+        let config = read_ui_config(&after);
+        assert!(
+            names.contains(&config.device_name),
+            "final device_name is one writer's value: {}",
+            config.device_name
+        );
+        assert_eq!(config.server_url, "https://old.example.com");
+        assert_eq!(config.hub_endpoint, "1.2.3.4:51820");
+        assert!(after.contains("bootstrap_token"));
+        assert!(after.contains("[hub_failover]"));
+        assert!(after.contains("poll_extra = 42"));
+        let leftovers: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files left: {leftovers:?}");
+        std::fs::remove_dir_all(&directory).ok();
     }
 }
