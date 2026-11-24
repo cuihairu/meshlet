@@ -4,6 +4,36 @@ use crate::state::{clear_pending_goto, goto_zone_js, set_pending_goto};
 use crate::tray::popup_origin;
 use tauri::{Manager, PhysicalPosition, Position};
 
+/// 窗口创建失败只往 stderr 打时，GUI 子系统的托盘进程没有控制台、日志无处可去，
+/// 「设置窗点了没反应」就无法自诊断（2026-11-25 用户报障后加的落盘面）。
+/// 写失败本身静默：诊断通道不能成为新的故障源。
+#[cfg(target_os = "windows")]
+pub(crate) fn log_diag(message: &str) {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let dir = std::path::Path::new(&local).join("meshlet").join("logs");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("tray.err.log"))
+        .and_then(|mut f| {
+            std::io::Write::write_all(&mut f, format!("{stamp} {message}\n").as_bytes())
+        });
+}
+
+/// 非 Windows 侧没有「GUI 进程无控制台」的自诊断缺口，保留同名空实现，
+/// 让调用处不必各带一份 cfg。
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn log_diag(_message: &str) {}
+
 /// 把弹层摆到托盘附近：Windows 右下角（托盘所在的任务栏上方）、macOS
 /// 菜单栏下方右侧。
 pub(crate) fn position_popup(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
@@ -48,6 +78,7 @@ pub(crate) fn toggle_popup_window(app: &tauri::AppHandle) {
             .build()
     {
         eprintln!("meshlet-tray: build popup window failed: {error}");
+        log_diag(&format!("build popup window failed: {error}"));
         return;
     }
     if let Some(window) = app.get_webview_window("popup") {
@@ -137,6 +168,7 @@ fn build_settings_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     .build()
     {
         eprintln!("meshlet-tray: build settings window failed: {error}");
+        log_diag(&format!("build settings window failed: {error}"));
     }
 }
 
@@ -163,6 +195,7 @@ pub(crate) fn open_exit_guard_window<R: tauri::Runtime>(app: &tauri::AppHandle<R
     .build()
     {
         eprintln!("meshlet-tray: build exit guard window failed: {error}");
+        log_diag(&format!("build exit guard window failed: {error}"));
     }
 }
 
