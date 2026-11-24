@@ -54,6 +54,137 @@ fn peer_without_any_path_stays_relay_and_emits_nothing() {
 }
 
 #[test]
+fn endpoint_inside_overlay_scope_is_rejected_as_hairpin() {
+    // AGENT-ISO-2：候选落在 overlay 范围内 = 拿隧道里的地址当隧道 endpoint，
+    // 包先进隧道才够得到它（imac 2026-11-23 实测该形态 1750ms，同网段直连 19ms）。
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("10.240.0.7", 51820)])];
+    let mut current = BTreeMap::new();
+    let updates = plan_updates(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+    );
+    assert!(
+        updates.is_empty(),
+        "overlay 内 endpoint 不得晋升: {updates:?}"
+    );
+    assert_eq!(
+        current.get("dev-b").map(|p| p.state),
+        Some(PeerLinkState::Relay)
+    );
+}
+
+#[test]
+fn overlay_endpoint_does_not_shadow_a_physical_candidate() {
+    // 滤掉 overlay 面后，同 peer 的物理面照常晋升——过滤是**剔除坏面**，
+    // 不是把整个 peer 打成不可直连。
+    let wanted = vec![peer(
+        "dev-b",
+        "10.240.0.3",
+        &[lan("10.240.0.7", 51820), lan("192.168.1.50", 51821)],
+    )];
+    let mut current = BTreeMap::new();
+    let updates = plan_updates(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+    );
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    match &updates[0] {
+        DirectUpdate::Promote { endpoint, .. } => {
+            assert_eq!(
+                endpoint.to_string(),
+                "192.168.1.50:51821",
+                "必须选物理面，不得落到 overlay 面"
+            );
+        }
+        other => panic!("expected Promote, got {other:?}"),
+    }
+}
+
+#[test]
+fn memory_face_inside_overlay_scope_is_not_reused() {
+    // 记忆面绕过 decide_direct_path 直接当选——历史遗留 / 内核漫游写进去的
+    // overlay 地址若不滤，会一直被选回（只滤候选拦不住它）。
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    let mut seeded = direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay);
+    seeded.last_direct = Some(lan("10.240.0.7", 51820));
+    current.insert("dev-b".into(), seeded);
+
+    let updates = plan_updates(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+    );
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    match &updates[0] {
+        DirectUpdate::Promote { endpoint, .. } => {
+            assert_eq!(
+                endpoint.to_string(),
+                "192.168.1.50:51821",
+                "记忆面是 overlay 地址时应回落候选表，不得选回它"
+            );
+        }
+        other => panic!("expected Promote, got {other:?}"),
+    }
+}
+
+#[test]
+fn memory_face_on_a_foreign_network_is_not_reused() {
+    // 对端的 ZeroTier 地址：本机 LAN 口径已不认它同网段（zt* 接口出局），
+    // 记忆面若不复核会一直被选回，永远切不到物理面（2026-11-23 实录）。
+    let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
+    let mut current = BTreeMap::new();
+    let mut seeded = direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay);
+    seeded.last_direct = Some(lan("10.147.19.97", 52931));
+    current.insert("dev-b".into(), seeded);
+
+    let updates = plan_updates(
+        &wanted,
+        &[cidr(HOME)],
+        cidr(OVERLAY),
+        "10.240.0.2".parse().unwrap(),
+        &mut current,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+    );
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    match &updates[0] {
+        DirectUpdate::Promote { endpoint, .. } => assert_eq!(
+            endpoint.to_string(),
+            "192.168.1.50:51821",
+            "外来网段的记忆面必须回落候选表"
+        ),
+        other => panic!("expected Promote, got {other:?}"),
+    }
+}
+
+#[test]
 fn healthy_direct_peer_is_kept_without_repromoting() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();

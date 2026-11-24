@@ -16,7 +16,9 @@ use crate::agent::rtt_source::honest_rtt_source;
 use crate::agent::scope::direct_scope;
 use crate::agent::verdict::dial_verdict;
 use crate::agent::views::direct_peer_views;
-use crate::direct::{keepalive_secs, merge_handshake_ages, DirectUpdate, PeerDecisionRecord};
+use crate::direct::{
+    is_viable_endpoint, keepalive_secs, merge_handshake_ages, DirectUpdate, PeerDecisionRecord,
+};
 use crate::direct_rtt::{RttCandidate, RttProbe};
 use crate::server;
 
@@ -73,7 +75,7 @@ impl super::Agent {
             return;
         }
         self.last_direct_probe = Some(Instant::now());
-        let wanted = match server::fetch_peer_endpoints(&self.server_url, &self.token) {
+        let mut wanted = match server::fetch_peer_endpoints(&self.server_url, &self.token) {
             Ok(wanted) => wanted,
             Err(e) => {
                 tracing::warn!(error = %e, "direct probe: peer endpoints unavailable");
@@ -92,16 +94,10 @@ impl super::Agent {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        // FLIP-001 候选表对账：config 面（服务端权威）插入/保鲜 → 回收出集
-        // 对端与过期 roaming 面 → 合并成有效候选集（config 原序在前，表内
-        // 新增面按地址排序追加）。SEL-001 自此探测**全部已知面**（含内核
-        // roaming 面），不再只盯服务端单一 endpoint 等它劣化。
-        self.candidates.sync_config(&wanted, now_secs);
-        self.candidates.retain_peers(&wanted);
-        self.candidates.expire(now_secs);
-        let effective = self.candidates.merge_into(&wanted);
-        // SEL-001：候选集刷新（探测线程复用，不额外请求 server——零控制面负载）。
-        self.probe.update_candidates(&effective);
+        // scope / LAN 子网**提前**到候选表对账之前：AGENT-ISO-3 要在源头滤掉
+        // 不可用的 endpoint，否则候选表、探测窗口与 SEL-002 切换三条路径都会
+        // 拿到坏面——逐处补滤必然漏（2026-11-23 实录：决策层已滤，探测切换
+        // 仍把对端 ZeroTier 地址选成现役面）。
         let Some(scope) = direct_scope(plan) else {
             tracing::warn!("direct probe: no routable scope in the plan; keeping hub relay");
             if let Some(req) = request {
@@ -116,6 +112,30 @@ impl super::Agent {
                 Vec::new()
             }
         };
+        // AGENT-ISO-3：源头过滤——只留「同网段可达 或 公网可打洞」的面。对端
+        // 自己的 overlay 地址（hairpin）与外来网段地址（如其 ZeroTier 地址）
+        // 一律出局；peer 本身保留（无可用面 = 走中继，与无候选同语义）。
+        for peer in &mut wanted {
+            peer.endpoints
+                .retain(|c| is_viable_endpoint(c, &my_lan_subnets, scope));
+        }
+        // FLIP-001 候选表对账：config 面（服务端权威）插入/保鲜 → 回收出集
+        // 对端与过期 roaming 面 → 合并成有效候选集（config 原序在前，表内
+        // 新增面按地址排序追加）。SEL-001 自此探测**全部已知面**（含内核
+        // roaming 面），不再只盯服务端单一 endpoint 等它劣化。
+        self.candidates.sync_config(&wanted, now_secs);
+        self.candidates.retain_peers(&wanted);
+        self.candidates.expire(now_secs);
+        // 表内还可能留着过滤上线**之前**存下的坏面（config 面已滤，但 roaming
+        // 面是历史积累、TTL 内不过期）——合并后再滤一次，探测窗口才拿不到它们，
+        // SEL-002 也就无从把它们选成现役面。
+        let mut effective = self.candidates.merge_into(&wanted);
+        for peer in &mut effective {
+            peer.endpoints
+                .retain(|c| is_viable_endpoint(c, &my_lan_subnets, scope));
+        }
+        // SEL-001：候选集刷新（探测线程复用，不额外请求 server——零控制面负载）。
+        self.probe.update_candidates(&effective);
         let handshake_ages = match self.backend.handshake_ages_sync() {
             Ok(ages) => ages,
             Err(e) => {
@@ -165,7 +185,14 @@ impl super::Agent {
         }
         drop(wanted_keys);
         // 本轮统一用含 roaming 面的有效候选集（观测后重合并 + 刷新探测缓存）。
-        let effective = self.candidates.merge_into(&wanted);
+        // 同样过一遍 AGENT-ISO-3：内核漫游回来的面可能是对端借道其 ZeroTier
+        // 发包的源地址（对端未升级时的常态），灌进探测窗口就会被 SEL-002 选中，
+        // 等于我们主动挑了一条借道面。漫游照观测、照记录，但**不进可选集**。
+        let mut effective = self.candidates.merge_into(&wanted);
+        for peer in &mut effective {
+            peer.endpoints
+                .retain(|c| is_viable_endpoint(c, &my_lan_subnets, scope));
+        }
         self.probe.update_candidates(&effective);
         // SEL-003：从探测窗口推导各对端**当前直连路径**是否劣化（丢包尖峰/
         // 超时/RTT 深劣化——中位数 ≥ degrade_rtt_ms）。只看现役 endpoint 的
