@@ -18,16 +18,17 @@
   - **问题** 当前扁平读取并重建 TOML，会覆盖接口和启用值，也可能丢掉其他节与原有键。
   - **怎么做** 读取/保存都遵循 TOML 节与引号语义，只改设备名、控制地址、Hub 端点。原子落盘，处理并发、原文件缺失或损坏和无写权限；IPC 读取只返回界面使用的字段。
   - **怎么验证** 用含注释、引号、附加段和自定义 dataplane 的夹具仅改设备名，对比其他键。覆盖权限失败、破损文件、并发与重试。 [配置重建](apps/tray-app/src-tauri/src/config_io.rs) · [IPC](apps/tray-app/src-tauri/src/commands.rs)
-  - **落地记录** `edit_managed_keys` 逐行外科手术（只换三键所在行，缩进/`=` 后空白/行内注释/未知键/其他节逐字节保留；重复键只改首个；缺失键按顶层区与 `[dataplane]` 头定位插入）；`parse_basic_string`+`split_inline_comment` 按引号语义取值（引号内 `#` 非注释、转义子集）；`quote` 补 `\\` 转义（旧实现遇 Windows 路径产出非法 TOML）；`write_atomic` 同目录临时文件 + rename；`save_ui_config_at` 区分 Missing/Read/Write 三型错误（配置文件缺失拒绝凭空创建）；`get_config` 只回三字段（不再外泄 bootstrap_token/private_key_file）。单测 21 项（夹具仅改设备名逐行比对、三键仅三行变、插入定位、幂等、尾换行保真、原子保存端到端并断言无临时文件残留、缺失/写错误浮出、破损行容错）。
+  - **落地记录** `edit_managed_keys` 逐行外科手术（只换三键所在行，缩进/`=` 后空白/行内注释/未知键/其他节逐字节保留；重复键只改首个；缺失键按顶层区与 `[dataplane]` 头定位插入）；`parse_basic_string`+`split_inline_comment` 按引号语义取值（引号内 `#` 非注释、转义子集）；`quote` 补 `\\` 转义（旧实现遇 Windows 路径产出非法 TOML）；`write_atomic` 同目录临时文件 + rename；`save_ui_config_at` 区分 Missing/Read/Write 三型错误（配置文件缺失拒绝凭空创建）；`get_config` 只回三字段（不再外泄 bootstrap_token/private_key_file）。单测 21 项（夹具仅改设备名逐行比对、三键仅三行变、插入定位、幂等、尾换行保真、原子保存端到端并断言无临时文件残留、缺失/写错误浮出、破损行容错）。**收口批补验（2026-11-24）**：临时名补进程内序号（原只用 pid，同进程并发保存互踩：A rename 到 B 的内容、B rename 落 ENOENT）+ rename 共享冲突 3 次退避重试；新测 8 项——只读目录写错误浮出且原文件逐字节不动、权限恢复后重试成功、非法 UTF-8 报 Read 且字节不动、破损行逐字节保留（损坏受管行重写为合法值）、8 线程并发保存全落地且终态为单写者完整内容、IPC 载荷恰三字段不外泄 token/私钥路径（`ui_config_payload` 纯函数钉契约）。tray 单测 51→63。
 - [x] **M-SET-UX-02 [P1] 连接页区分现状和待重启配置。**（2026-11-24 落地 `be140f9`）
   - **问题** 状态摘要与可写表单没有说明磁盘改动何时切到实际连接。
   - **怎么做** 拆成实时连接和文件设置，解释两个地址。校验、对照差异、保存或放弃，明确手动重启 Agent 及短时中断预期。
   - **怎么验证** 覆盖 HTTPS、自定义端口、IPv6、无改动、错误和放弃。保存只改变磁盘值；重启后按现场数据核对生效。
   - **落地记录** 连接页顶部「当前连接」三栏（隧道四态 chip + 虚拟 IP + 当前状态，隧道/IP 取自诊断快照 `renderLiveStrip`）与下方「本机连接设置」拆分；标签随脏态/待重启切换（`agent 配置文件`→`编辑中`→`等待重启`），状态行复用同一套文案；`放弃改动`/`查看改动` 脏态启用，`查看改动` 出「保存前核对」diff（旧值 → 新值，空值显 ∅）+ 保存前短时中断警示 + 「保存只改磁盘值，不触碰当前连接」；校验 `validate_connection` 与 agent 装载口径一致（`http(s)://` 前缀 + 非空主机；Hub `host:port` 端口 1-65535、IPv6 方括号；错误键 `deviceNameRequired`/`serverUrlInvalid`/`hubEndpointInvalid` 由前端按语言包映射）；保存成功置 `pendingRestart` 并提示「已保存，重启 Agent 后生效」。校验单测覆盖 HTTPS/自定义端口/IPv6/无改动/各类错误（config_io tests）。**视觉项待用户装机亲验**。
-- [ ] **M-SET-UX-03 [P1] 对端状态按真实数据拆分。**
+- [x] **M-SET-UX-03 [P1] 对等状态按真实数据拆分。**（功能主体 2026-11-24 落地 `be140f9`，夹具收口同日）
   - **问题** 当前连接和直连页并列，RTT 缺样本或直连为空容易被当成整个网络离线。
   - **怎么做** 对等节点下分别列 P2P 实测与 WireGuard 对端，时间、端点、累计流量和 RTT 来源按可用字段显示。保留现有深链。
   - **怎么验证** 跑 Hub-only、P2P、无 RTT、未握手、旧快照和读取失败六种夹具，核对语义与旧入口定位。 [设置窗](apps/tray-app/index.html)
+  - **落地记录** 对等节点页 P2P 直连 / WireGuard 两分表（be140f9）：直连表列对端/VIP/直连端点/RTT/最近握手，RTT 缺样本显「无样本」chip（≠离线）、`rtt_source` 随值展示；WG 表列公钥/端点/最近握手（raw epoch 相对化）/累计流量；直连列表空显「暂无直连对端」并保留 noteDirect「空 ≠ 不可达」说明；深链 `peers→P2P tab`、`wg→诊断 WG tab` 保留。**收口批（2026-11-24）**：纯展示逻辑抽 `view-logic.js`（index/popup 共用，node 夹具测试 `tests/view-fixtures.mjs` 9 项全绿）——六种夹具逐项钉死：Hub-only（直连空≠网络空，WG 表仍有对端 online 0/1）、P2P（新→旧排序、RTT 值+来源）、无 RTT（chip 无样本）、未握手（WG「从未」/直连 stamp「—」）、旧快照（小时/绝对时间回落、`fmtUpdatedAt` 快照年龄入状态条、无 meshlet/wg 接口不臆造虚拟 IP）、读取失败（null/坏输入一律空投影不炸）；tierOf 四档与 Rust `state_tier` 同表对齐、ZONE_MAP 键集=GOTO_ZONES 八串钉死。**顺带修复**：popup 握手列仍按「N 秒前」字符串解析而 state.rs 已迁 raw epoch（显示成天文数字秒）——共用 `fmtEpoch` 修复；连接页状态条补「最后更新 N 前」快照年龄（与弹层旧口径一致，旧快照不冒充新鲜）。
 - [ ] **M-SET-UX-04 [P1] 诊断按路由、接口和 WireGuard 组织。**
   - **问题** 路由目前主要为文本；采集未开始、空结果、部分失败或旧快照不易区分。
   - **怎么做** 分开子页和采集反馈；仅可靠解析的路由进表，保留原始快照。依现有阻塞任务隔离采集，命令参考复用共享目录并提供复制。
@@ -36,11 +37,12 @@
   - **问题** 登录启动、界面语言、动效与退出密码写入不同位置，当前平台支持与影响范围不明显。
   - **怎么做** 分成应用偏好、退出保护与维护。自启展示 Windows 真实系统状态，写失败恢复显示；托盘语言同步失败可见；密码表单按需展开，日志入口依平台可用性显示。
   - **怎么验证** 使用标准用户验开关、权限失败、重开、语言同步、密码设置/错误/移除与取消退出。核对截图和诊断不回显密码。 [退出保护](apps/tray-app/src-tauri/src/exit_guard.rs)
+  - **收口批测试面（2026-11-24，功能仍开放不闭项）**：退出保护 Rust 单测补齐——权限失败（文件只读拦 set 覆盖写、目录只读拦 clear unlink，两腿分开钉；记录逐字节不动；权限恢复后重试成功）、重开（磁盘无内存缓存、改密后旧密码即失效）、明文密码不落盘不进错误串（salt+hash 十六进制 only；失败文案零回显）、损坏/旧版本记录放行不锁死（既有）；语言同步 Rust 侧锚点 `exit_guard_title`（zh/en/未知回落）入 `i18n.rs` 测试。**仍开放**：自启展示 Windows 真实注册表状态、托盘语言同步失败可见两项功能未做；截图/诊断路径不回显密码的视觉面待 07 真机验收。
 - [x] **M-SET-UX-06 [P1] 托盘直达与窄窗可达。**（2026-11-24 落地 `be140f9`）
   - **问题** 现有托盘菜单、弹层与第二实例依赖原有 zone 和目标控件。
   - **怎么做** 映射既有 zone、锚点与相应子页，保留 760×600 默认和 600×480 最小窗宽；表格局部滚动，焦点可见。
   - **怎么验证** 对两个窗口尺寸、125%/150% DPI、键盘、冷启动、隐藏窗口与第二实例逐项验证。 [窗口接线](apps/tray-app/src-tauri/src/windows.rs)
-  - **落地记录** 既有 zone 契约（`state.rs` GOTO_ZONES `conn/diag/cmd/gen/routes/ifaces/wg/peers`）**字符串零改动**，前端新增 `ZONE_MAP` 映射到新五页结构：`peers→对等节点(P2P tab)`、`routes/ifaces/wg→诊断对应 tab`；`__gotoZone` 切页切 tab 后把 `h1` 设 `tabindex=-1` 并聚焦（键盘可达、焦点可见）；`index.html` 改 `height:100vh` flex + `main` 独立滚动、`<760px` 时侧栏收窄与状态条两列、所有表格 `.tablebox{overflow-x:auto}` 局部横向滚动；窗口默认 760×600 / 最小 600×480 由 `windows.rs` 既有 `.inner_size/.min_inner_size` 保持（未改）。**真机验收（两尺寸/DPI 125%·150%/键盘/冷启动/隐藏/第二实例）待用户 Windows 装机逐项亲验**，本机 Linux 仅类型与单测门。
+  - **落地记录** 既有 zone 契约（`state.rs` GOTO_ZONES `conn/diag/cmd/gen/routes/ifaces/wg/peers`）**字符串零改动**，前端新增 `ZONE_MAP` 映射到新五页结构：`peers→对等节点(P2P tab)`、`routes/ifaces/wg→诊断对应 tab`；`__gotoZone` 切页切 tab 后把 `h1` 设 `tabindex=-1` 并聚焦（键盘可达、焦点可见）；`index.html` 改 `height:100vh` flex + `main` 独立滚动、`<760px` 时侧栏收窄与状态条两列、所有表格 `.tablebox{overflow-x:auto}` 局部横向滚动；窗口默认 760×600 / 最小 600×480 由 `windows.rs` 既有 `.inner_size/.min_inner_size` 保持（未改）。**真机验收（两尺寸/DPI 125%·150%/键盘/冷启动/隐藏/第二实例）待用户 Windows 装机逐项亲验**，本机 Linux 仅类型与单测门。**收口批补钉（2026-11-24）**：尺寸契约常量化（`SETTINGS_DEFAULT_SIZE`/`SETTINGS_MIN_SIZE` 测试钉 760×600 / 600×480）；`open_settings_at_zone` 泛型化后 MockRuntime 上 GOTO_ZONES 八 zone 逐个开同一扇 settings 窗（不开第二扇）契约测试入 `windows.rs`；退出验证小窗标题改走 `i18n::exit_guard_title`（语言同步锚点）。
 - [ ] **M-SET-UX-07 [P1] 原生窗口与安装包验收。**
   - **问题** 浏览器原型无法验证真实 Tauri IPC、系统自启、Agent 重启与网络快照。
   - **怎么做** 用隔离 Agent 配置和安装包执行 Windows 真机检查，同步中英文指引；macOS 对应项随可运行产物验证。
