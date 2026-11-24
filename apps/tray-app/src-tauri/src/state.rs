@@ -63,7 +63,8 @@ pub(crate) fn icon_for_state(state: &str) -> (&'static str, &'static str) {
 
 // ── 设置窗定位（深链，纯函数可测）──────────────────────────────────────
 /// `__gotoZone` 接受的定位目标白名单：4 个 Tab + 诊断区锚点 + 连接区 Peers。
-const GOTO_ZONES: &[&str] = &[
+/// 前端 ZONE_MAP 键集与本表一一对应（view-fixtures.mjs 钉住两侧一致）。
+pub(crate) const GOTO_ZONES: &[&str] = &[
     "conn", "diag", "cmd", "gen", "routes", "ifaces", "wg", "peers",
 ];
 

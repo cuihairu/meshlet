@@ -279,4 +279,111 @@ mod tests {
         assert!(verify_quit_at(&path, "anything"));
         let _ = std::fs::remove_dir_all(&state);
     }
+
+    // ── 05 收口批：权限失败 / 重开 / 明文不落盘不回显 ─────────────────────
+
+    /// 权限失败：记录文件只读（set 的覆盖写被拒）+ 目录只读（clear 的
+    /// unlink 被拒）时改密/清除都失败且原记录逐字节不动（保护不被静默
+    /// 拆掉）；未设置状态下清除仍幂等成功；权限恢复后重试成功。
+    /// 注：save_at 是对已有文件的就地覆盖写，目录只读拦不住它——文件位
+    /// 才是 set 的权限闸；clear 的 unlink 走目录位。两条腿分开钉。
+    #[cfg(unix)]
+    #[test]
+    fn readonly_dir_surfaces_errors_and_keeps_previous_guard() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = temp_state("perm");
+        let path = guard_path_from(state.to_str().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        set_guard_at(&path, None, "secret1").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let tray_dir = path.parent().unwrap();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(tray_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // root 无视权限位（CI 容器场景）：探测到仍可写就还原跳过，不作断言。
+        // 探测用 append 打开（非破坏性，不截断记录）。
+        let probe = std::fs::OpenOptions::new().append(true).open(&path).is_ok();
+        if probe {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::fs::set_permissions(tray_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir_all(&state);
+            return;
+        }
+        // 改密（文件覆盖写）/清除（unlink）失败浮出，记录原样（不能因为
+        // 写不进就把锁拆了或换掉）。
+        assert!(set_guard_at(&path, Some("secret1"), "secret3").is_err());
+        assert!(clear_guard_at(&path, Some("secret1")).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        // 未设置状态：清除幂等成功（缺文件的 NotFound 优先于目录权限错）。
+        let empty_state = temp_state("perm-empty");
+        let empty_path = guard_path_from(empty_state.to_str().unwrap());
+        std::fs::create_dir_all(empty_path.parent().unwrap()).unwrap();
+        std::fs::set_permissions(
+            empty_path.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o555),
+        )
+        .unwrap();
+        assert!(clear_guard_at(&empty_path, None).is_ok());
+        std::fs::set_permissions(
+            empty_path.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        // 权限恢复后重试成功，且状态与预期一致（重试路径）。
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(tray_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        set_guard_at(&path, Some("secret1"), "secret3").unwrap();
+        assert!(verify_quit_at(&path, "secret3"));
+        assert!(!verify_quit_at(&path, "secret1"));
+        let _ = std::fs::remove_dir_all(&state);
+        let _ = std::fs::remove_dir_all(&empty_state);
+    }
+
+    /// 重开：设置后跨「进程重启」（重新从磁盘加载）仍生效；改密后旧密码
+    /// 立即失效——状态只认磁盘记录，无内存缓存可漂移。
+    #[test]
+    fn guard_persists_across_reopen() {
+        let state = temp_state("reopen");
+        let path = guard_path_from(state.to_str().unwrap());
+        set_guard_at(&path, None, "first-pw").unwrap();
+        // 模拟重开：不借助任何既有内存状态，直接从文件重新加载。
+        assert!(load_from(&path).is_some());
+        assert!(verify_quit_at(&path, "first-pw"));
+        set_guard_at(&path, Some("first-pw"), "second-pw").unwrap();
+        assert!(load_from(&path).is_some());
+        assert!(!verify_quit_at(&path, "first-pw"));
+        assert!(verify_quit_at(&path, "second-pw"));
+        let _ = std::fs::remove_dir_all(&state);
+    }
+
+    /// 明文密码不落盘、不进错误串（截图/诊断不回显密码的存储侧前提）：
+    /// 磁盘只有 salt+hash 十六进制；各类失败文案不含尝试过的密码。
+    #[test]
+    fn plaintext_password_never_reaches_disk_or_errors() {
+        let state = temp_state("plain");
+        let path = guard_path_from(state.to_str().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        set_guard_at(&path, None, "sEkret-pw").unwrap();
+        let raw = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+        assert!(
+            !raw.contains("sEkret"),
+            "password bytes must not be on disk: {raw}"
+        );
+        assert!(!raw.contains("pw"), "no password fragment on disk: {raw}");
+
+        // 失败文案：长度不足 / 当前密码缺失 / 当前密码错误，都不回显尝试值。
+        let short = set_guard_at(&path, Some("sEkret-pw"), "ab").unwrap_err();
+        assert!(!short.contains("ab") && !short.contains("sEkret"));
+        let missing = set_guard_at(&path, None, "brand-new-pw").unwrap_err();
+        assert!(!missing.contains("brand-new-pw"));
+        let wrong = set_guard_at(&path, Some("wrong-guess"), "brand-new-pw").unwrap_err();
+        assert!(!wrong.contains("wrong-guess") && !wrong.contains("brand-new-pw"));
+        let wrong_clear = clear_guard_at(&path, Some("bad-attempt")).unwrap_err();
+        assert!(!wrong_clear.contains("bad-attempt"));
+
+        // 一串失败之后记录未被动过：原密码仍可验证（失败路径不写盘）。
+        assert!(verify_quit_at(&path, "sEkret-pw"));
+        let _ = std::fs::remove_dir_all(&state);
+    }
 }

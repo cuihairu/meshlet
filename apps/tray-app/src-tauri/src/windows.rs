@@ -57,8 +57,9 @@ pub(crate) fn toggle_popup_window(app: &tauri::AppHandle) {
 }
 
 /// 打开（或聚焦）设置窗并定位到 zone。菜单「诊断/路由表/对等节点」与
-/// 弹层快捷入口共用此入口。
-pub(crate) fn open_settings_at_zone(app: &tauri::AppHandle, zone: &str) {
+/// 弹层快捷入口共用此入口。泛型 Runtime 以便契约测试在 MockRuntime 上
+/// 走与真回调完全相同的调用链（同 second_instance_focus 的做法）。
+pub(crate) fn open_settings_at_zone<R: tauri::Runtime>(app: &tauri::AppHandle<R>, zone: &str) {
     set_pending_goto(zone);
     open_settings_window(app);
     if let Some(window) = app.get_webview_window("settings") {
@@ -122,6 +123,12 @@ pub(crate) fn toggle_settings_window(app: &tauri::AppHandle) {
     build_settings_window(app);
 }
 
+/// 设置窗默认/最小尺寸（M-SET-UX-06 契约：760×600 默认、600×480 最小，
+/// MockRuntime 建窗参数不可观测，常量在此钉住防回归；125%/150% DPI 与
+/// 窄窗真机项待用户 Windows 装机亲验）。
+const SETTINGS_DEFAULT_SIZE: (f64, f64) = (760.0, 600.0);
+const SETTINGS_MIN_SIZE: (f64, f64) = (600.0, 480.0);
+
 fn build_settings_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     // 创建失败不再静默吞掉：窗口创建竞态/WebView 故障时至少留一条诊断线
     //（此前 `let _ =` 让「点打开设置没反应」无迹可查）。
@@ -131,8 +138,8 @@ fn build_settings_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("Meshlet 设置")
-    .inner_size(760.0, 600.0)
-    .min_inner_size(600.0, 480.0)
+    .inner_size(SETTINGS_DEFAULT_SIZE.0, SETTINGS_DEFAULT_SIZE.1)
+    .min_inner_size(SETTINGS_MIN_SIZE.0, SETTINGS_MIN_SIZE.1)
     .resizable(true)
     .build()
     {
@@ -148,7 +155,7 @@ pub(crate) fn open_exit_guard_window<R: tauri::Runtime>(app: &tauri::AppHandle<R
         reveal_window(&window);
         return;
     }
-    let title = crate::i18n::menu_texts(&crate::i18n::read_tray_lang()).quit;
+    let title = crate::i18n::exit_guard_title(&crate::i18n::read_tray_lang());
     if let Err(error) = tauri::WebviewWindowBuilder::new(
         app,
         "exit-guard",
@@ -212,5 +219,29 @@ mod tests {
         assert!(app.get_webview_window("exit-guard").is_none());
         open_exit_guard_window(app.handle());
         assert!(app.get_webview_window("exit-guard").is_some());
+    }
+
+    /// M-SET-UX-06 窗口尺寸契约钉：默认 760×600、最小 600×480（窄窗
+    /// CSS 按 600px 断点收窄；DPI/键盘/冷启动真机项待用户装机亲验）。
+    #[test]
+    fn settings_window_sizes_match_contract() {
+        assert_eq!(SETTINGS_DEFAULT_SIZE, (760.0, 600.0));
+        assert_eq!(SETTINGS_MIN_SIZE, (600.0, 480.0));
+    }
+
+    /// 契约：菜单/弹层全部白名单 zone（state.rs GOTO_ZONES 单一来源）逐个
+    /// 都能开出 settings 窗且复用同一扇（不开第二扇）。PENDING_GOTO 是
+    /// 进程级全局，本测试独占循环（兄弟测试不触 zone 路径）。
+    #[test]
+    fn open_settings_at_zone_reuses_one_settings_window() {
+        let app = tauri::test::mock_app();
+        for zone in crate::state::GOTO_ZONES {
+            open_settings_at_zone(app.handle(), zone);
+            assert!(
+                app.get_webview_window("settings").is_some(),
+                "zone {zone} must open the settings window"
+            );
+        }
+        assert_eq!(app.webview_windows().len(), 1, "one reused window only");
     }
 }

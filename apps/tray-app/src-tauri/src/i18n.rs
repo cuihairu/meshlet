@@ -60,6 +60,12 @@ pub(crate) fn menu_texts(lang: &str) -> MenuTexts {
     }
 }
 
+/// 退出验证小窗标题（可测）：复用菜单「退出」文案，跟随托盘语言镜像
+/// （windows.rs 建窗时调用——语言同步链路的 Rust 侧锚点）。
+pub(crate) fn exit_guard_title(lang: &str) -> &'static str {
+    menu_texts(lang).quit
+}
+
 /// 菜单首行状态摘要（disabled 行）：`Meshlet · 在线 · 直连 3/4`。直连计数
 /// 仅在确实读到 peers 时附加（wg.exe 缺失/无隧道时不画 0/0）。
 pub(crate) fn summary_line(tier: Tier, online: usize, total: usize, lang: &str) -> String {
@@ -198,5 +204,15 @@ mod tests {
         assert_eq!(en.quit, "Quit Meshlet");
         assert_eq!(tier_label(Tier::Degraded, "zh"), "降级");
         assert_eq!(tier_label(Tier::Degraded, "en"), "Degraded");
+    }
+
+    /// 退出验证小窗标题跟随托盘语言（05 语言同步链路的 Rust 侧锚点：
+    /// read_tray_lang → exit_guard_title → 建窗 title）。
+    #[test]
+    fn exit_guard_title_follows_tray_lang() {
+        assert_eq!(exit_guard_title("zh"), "退出 Meshlet");
+        assert_eq!(exit_guard_title("en"), "Quit Meshlet");
+        // 未知语言回落中文（与 read_tray_lang 的回落口径一致）。
+        assert_eq!(exit_guard_title("fr"), "退出 Meshlet");
     }
 }

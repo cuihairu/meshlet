@@ -18,7 +18,13 @@ pub(crate) fn get_status() -> serde_json::Value {
 #[tauri::command]
 pub(crate) fn get_config() -> serde_json::Value {
     let text = std::fs::read_to_string(meshlet_config_path()).unwrap_or_default();
-    let config = crate::config_io::read_ui_config(&text);
+    ui_config_payload(&text)
+}
+
+/// IPC 读面载荷（纯函数，可测）：配置文本 → 三字段 JSON。键集契约由
+/// 测试钉住——多回一个键就是一次 IPC 面泄漏。
+pub(crate) fn ui_config_payload(text: &str) -> serde_json::Value {
+    let config = crate::config_io::read_ui_config(text);
     serde_json::json!({
         "server_url": config.server_url,
         "device_name": config.device_name,
@@ -230,5 +236,40 @@ pub(crate) fn verify_exit_guard(app: tauri::AppHandle, password: String) -> Resu
         Ok(())
     } else {
         Err("wrong password".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// IPC 读面契约（M-SET-UX-01「IPC 只回界面使用的字段」）：含 agent
+    /// 自管键的配置文本 → 载荷恰好三字段，token/私钥路径不外泄。
+    #[test]
+    fn ui_config_payload_exposes_only_ui_fields() {
+        let text = "server_url = \"https://hub.example\"\n\
+                    device_name = \"dev-a\"\n\
+                    bootstrap_token = \"bt-secret-token\"\n\
+                    private_key_file = \"C:\\\\keys\\\\priv.key\"\n\
+                    [dataplane]\n\
+                    hub_endpoint = \"10.0.0.1:51820\"\n";
+        let payload = ui_config_payload(text);
+        let object = payload.as_object().unwrap();
+        assert_eq!(object.len(), 3, "exactly the three UI fields");
+        assert_eq!(payload["server_url"], "https://hub.example");
+        assert_eq!(payload["device_name"], "dev-a");
+        assert_eq!(payload["hub_endpoint"], "10.0.0.1:51820");
+        let rendered = payload.to_string();
+        assert!(!rendered.contains("bt-secret-token"), "token must not leak");
+        assert!(!rendered.contains("priv.key"), "key path must not leak");
+    }
+
+    /// 缺键回落空串：表单置空由用户补填，保存时校验拦住。
+    #[test]
+    fn ui_config_payload_defaults_missing_keys_to_empty() {
+        assert_eq!(
+            ui_config_payload(""),
+            serde_json::json!({"server_url": "", "device_name": "", "hub_endpoint": ""})
+        );
     }
 }
