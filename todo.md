@@ -2,7 +2,7 @@
 
 ## 待验收 / 进行中（README 与 docs 已声明 pending，账本必须可见）
 
-- [ ] SERVER-BIND-1：server `bind` 失败不得 panic（2026-11-24 用户令「同样的问题看其他仓库，都需要处理掉」）。
+- [x] SERVER-BIND-1：server `bind` 失败不得 panic（2026-11-24 用户令「同样的问题看其他仓库，都需要处理掉」）。【2026-11-25 落地：main.rs 启动期 7 处 panic/expect（bind/库锁/连接/重建/serve/读配置/坏配置）统一收敛 startup_failure（error 日志+stderr+exit(1)，消息含目标与 os error 根因）；全仓扫描其余 bind 均走 ?/is_ok/错误面或属测试 mock，agent publish.rs 运行时构建 expect 为唯一同族候选（另单）；单钉 startup_failure_message + 真端口占用 tokio 测试】
   **病灶（已代码取证，勿重查）**：`apps/server/src/main.rs:68-72` —— `TcpListener::bind(&config.bind).await
   .unwrap_or_else(|e| panic!("bind {}: {e}"))`；`config.bind` 默认 `127.0.0.1:8080`
   （`crates/meshlet-config/src/server.rs:157`）。别的本机服务先占 8080 → meshlet-server **启动即崩**，

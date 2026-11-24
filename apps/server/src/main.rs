@@ -66,9 +66,10 @@ async fn main() {
     };
 
     info!(bind = %config.bind, overlay = %config.overlay_cidr, "starting meshlet-server");
-    let listener = tokio::net::TcpListener::bind(&config.bind)
-        .await
-        .unwrap_or_else(|e| panic!("bind {}: {e}", config.bind));
+    let listener = match tokio::net::TcpListener::bind(&config.bind).await {
+        Ok(listener) => listener,
+        Err(error) => startup_failure("bind", &config.bind, error),
+    };
 
     let database_url = if config.database_path.starts_with("sqlite:") {
         config.database_path.clone()
@@ -78,27 +79,30 @@ async fn main() {
     // §17.4 恢复守卫：进程全程持有活动库锁。`restore` 子命令在动任何文件之前
     // 拿同一把锁，拿不到就整体拒绝——运行中恢复会把写入送进脱链 inode（旧库
     // 被换名覆盖），而 `systemctl` 全程显示 active。
-    let _instance_lock = meshlet_server::instance_lock::try_acquire(std::path::Path::new(
+    let _instance_lock = match meshlet_server::instance_lock::try_acquire(std::path::Path::new(
         config.database_path.trim_start_matches("sqlite:"),
-    ))
-    .unwrap_or_else(|e| {
-        panic!(
-            "database lock for {} not acquired ({e}); another meshlet-server is likely already running",
-            config.database_path
-        )
-    });
-    let pool = meshlet_server::store::connect(&database_url)
-        .await
-        .unwrap_or_else(|e| panic!("database {}: {e}", config.database_path));
+    )) {
+        Ok(lock) => lock,
+        Err(error) => startup_failure(
+            "database lock",
+            &config.database_path,
+            format!("{error}; another meshlet-server is likely already running"),
+        ),
+    };
+    let pool = match meshlet_server::store::connect(&database_url).await {
+        Ok(pool) => pool,
+        Err(error) => startup_failure("database", &config.database_path, error),
+    };
     let presence_thresholds = meshlet_domain::PresenceThresholds {
         agent_window: std::time::Duration::from_secs(config.presence_agent_window_secs),
         handshake_window: std::time::Duration::from_secs(config.presence_handshake_window_secs),
     };
     // §17.3 故障恢复：启动从 DB 重建期望状态（网络/设备/路由/邀请/修订），
     // 停在 applying 的修订收敛为 failed（§10.3 不假装成功）。
-    let boot = meshlet_server::persist::load(&pool, presence_thresholds)
-        .await
-        .unwrap_or_else(|e| panic!("rebuild mesh state from {}: {e}", config.database_path));
+    let boot = match meshlet_server::persist::load(&pool, presence_thresholds).await {
+        Ok(boot) => boot,
+        Err(error) => startup_failure("mesh state rebuild", &config.database_path, error),
+    };
     info!(
         networks = boot.summary.networks,
         devices = boot.summary.devices,
@@ -180,23 +184,47 @@ async fn main() {
         None => meshlet_server::router(state),
     };
     // ConnectInfo<SocketAddr>：agent 心跳据此观测直连候选的源地址（§12）。
-    axum::serve(
+    if let Err(error) = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await
-    .expect("server error");
+    {
+        startup_failure("serve", &config.bind, error);
+    }
 }
 
 fn load_config(path: Option<String>) -> ServerConfig {
     match path {
         Some(path) => {
-            let raw = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read config {path}: {e}"));
-            ServerConfig::from_toml(&raw).unwrap_or_else(|e| panic!("invalid config {path}: {e}"))
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(raw) => raw,
+                Err(error) => startup_failure("read config", &path, error),
+            };
+            match ServerConfig::from_toml(&raw) {
+                Ok(config) => config,
+                Err(error) => startup_failure("invalid config", &path, error),
+            }
         }
         None => ServerConfig::default(),
     }
+}
+
+/// 启动期致命资源获取失败（bind/库锁/连接/重建/serve/读配置）的统一出口：
+/// 先记一条带资源与根因的 error（§17.1 JSON 面可达），再在 stderr 用同一
+/// 句话直陈，最后整体非零退出。不 panic——崩溃现场的 backtrace 对运维是
+/// 噪音；对 systemd Restart 两者同样生效，但 exit(1) 日志可 grep、退出码
+/// 语义干净。此前的半初始化面（库锁/连接池）随进程退出由内核回收。
+fn startup_failure(resource: &str, target: &str, error: impl std::fmt::Display) -> ! {
+    let message = startup_failure_message(resource, target, &error.to_string());
+    tracing::error!(resource, target, error = %error, "{message}");
+    eprintln!("meshlet-server: {message}");
+    std::process::exit(1);
+}
+
+/// 纯函数（可测）：`{resource} {target}: {error}`——消息必含目标与根因。
+fn startup_failure_message(resource: &str, target: &str, error: &str) -> String {
+    format!("{resource} {target}: {error}")
 }
 
 /// §17.4 离线恢复：校验 → 原子换名 → 审计留痕 → §17.3 收敛；任何失败都
@@ -236,4 +264,36 @@ async fn restore_command(backup: &str, config: &ServerConfig) {
         );
     }
     println!("audit: system.restore recorded; start meshlet-server to serve");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 失败消息钉：必含资源、目标（地址/路径）与根因（os error）。
+    #[test]
+    fn startup_failure_message_carries_target_and_root_cause() {
+        let message = startup_failure_message(
+            "bind",
+            "0.0.0.0:8080",
+            "Address already in use (os error 98)",
+        );
+        assert!(message.starts_with("bind "), "{message}");
+        assert!(message.contains("0.0.0.0:8080"), "{message}");
+        assert!(message.contains("os error 98"), "{message}");
+    }
+
+    /// 真端口占用（本机可跑）：占住具体端口后再绑同址必 Err，包装后的
+    /// 消息同时携带 bind 地址与 os error 根因；:0 临时端口正常成功。
+    #[tokio::test]
+    async fn bind_conflict_message_carries_address_and_cause() {
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap().to_string();
+        let error = tokio::net::TcpListener::bind(&addr)
+            .await
+            .expect_err("re-binding a held concrete address must fail");
+        let message = startup_failure_message("bind", &addr, &error.to_string());
+        assert!(message.contains(&addr), "{message}");
+        assert!(message.contains("os error"), "{message}");
+    }
 }
