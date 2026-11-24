@@ -1,11 +1,10 @@
 use super::{
     chrono_now_iso, direct_udp_firewall_allow_actions, enforced_tunnel_mtu, foreign_route_line,
-    host_firewall_allow_actions, is_lan_interface, mtu_matches_planned,
-    overlay_isolation_rules, parse_default_route_interface, parse_ip_octet_addrs,
-    parse_ip_octet_subnets, parse_link_mtu, parse_ping_rtt_ms, parse_ss_udp_listen_ports,
-    parse_wg_dump_diag_line, route_source, ForeignOverlay, HostFirewallAction,
-    FOREIGN_OVERLAY_USER, FOREIGN_OVERLAY_WELLKNOWN_PORT, MESHLET_FILTER_COMMENT,
-    MESHLET_ISOLATION_COMMENT, MESHLET_ROUTE_PROTO,
+    host_firewall_allow_actions, is_lan_interface, mtu_matches_planned, overlay_isolation_rules,
+    parse_default_route_interface, parse_ip_octet_addrs, parse_ip_octet_subnets, parse_link_mtu,
+    parse_ping_rtt_ms, parse_ss_udp_listen_ports, parse_wg_dump_diag_line, route_source,
+    ForeignOverlay, HostFirewallAction, FOREIGN_OVERLAY_USER, FOREIGN_OVERLAY_WELLKNOWN_PORT,
+    MESHLET_FILTER_COMMENT, MESHLET_ISOLATION_COMMENT, MESHLET_ROUTE_PROTO,
 };
 use crate::doctor::{
     parse_zerotier_paths, run_doctor, DoctorInputs, DoctorReport, DOCTOR_SAMPLE_SECS,
@@ -1146,7 +1145,10 @@ impl LinuxNetworkBackend {
         let local_ports = self
             .run(&["ss", "-H", "-ulnp"])
             .map(|out| {
-                parse_ss_udp_listen_ports(&String::from_utf8_lossy(&out.stdout), FOREIGN_OVERLAY_USER)
+                parse_ss_udp_listen_ports(
+                    &String::from_utf8_lossy(&out.stdout),
+                    FOREIGN_OVERLAY_USER,
+                )
             })
             .unwrap_or_default();
         // uid 与端口都读不到 → 本机没有该 overlay，不产出规则。
@@ -1238,7 +1240,8 @@ impl LinuxNetworkBackend {
             .run(&["zerotier-cli", "-j", "listnetworks"])
             .ok()
             .and_then(|out| {
-                let value: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).ok()?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).ok()?;
                 value
                     .as_array()?
                     .first()?
