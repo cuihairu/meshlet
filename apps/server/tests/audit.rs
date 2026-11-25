@@ -1,8 +1,8 @@
-//! 集成测试：审计日志（[存档 §16.5](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Integration tests: audit log ([archive §16.5](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 验收：**敏感操作全记录；无密码/私钥/Token 明文**。
-//! 口径：不留痕不放行——审计写失败即请求失败（`audit::record_or_fail`），
-//! 因此凡请求成功，事件必已落库。
+//! Acceptance: **every sensitive operation is recorded; no plaintext passwords/private keys/tokens**.
+//! Policy: no audit trail, no admission — a failed audit write fails the request (`audit::record_or_fail`),
+//! so any successful request implies the event has already been persisted.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -92,7 +92,7 @@ async fn write(c: &Ctx, method: &str, uri: &str, body: Option<Value>) -> (Status
     call(c, method, uri, Some(&c.cookie), true, body).await
 }
 
-/// 登录并返回（状态, 新会话 Cookie）。
+/// Log in and return (status, new session cookie).
 async fn login(c: &Ctx) -> (StatusCode, String) {
     let res = c
         .app
@@ -144,7 +144,7 @@ fn events_with<'a>(page: &'a Value, action: &str) -> Vec<&'a Value> {
         .collect()
 }
 
-/// 全生命周期：管理面敏感操作逐一落审计，actor/target 归属正确。
+/// Full lifecycle: every sensitive management-plane operation lands in the audit log with correct actor/target attribution.
 #[tokio::test]
 async fn management_lifecycle_is_fully_recorded() {
     let c = ctx().await;
@@ -177,7 +177,7 @@ async fn management_lifecycle_is_fully_recorded() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // 第二张邀请 → 设备加入（actor=None，经邀请 Token 而来）。
+    // Second invite -> device enrollment (actor=None, via the invite token).
     let (status, invite2) = write(
         &c,
         "POST",
@@ -252,8 +252,8 @@ async fn management_lifecycle_is_fully_recorded() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // 最新修订（撤建设备那次变更）应用：无数据面 backend → 失败必留痕；
-    // 随后回滚它（§10.4：只允许回滚当前修订）。
+    // Apply the latest revision (the device-revocation change): no data-plane backend -> the failure must be recorded;
+    // then roll it back (§10.4: only the current revision may be rolled back).
     let (status, revisions) = call(
         &c,
         "GET",
@@ -284,7 +284,7 @@ async fn management_lifecycle_is_fully_recorded() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // 登出（bootstrap 会话）→ 重新登录换会话，凑齐 user.logout / user.login。
+    // Log out (bootstrap session) -> log in again for a fresh session, covering user.logout / user.login.
     let (status, _) = write(&c, "POST", "/api/v1/auth/logout", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, cookie) = login(&c).await;
@@ -317,7 +317,7 @@ async fn management_lifecycle_is_fully_recorded() {
     }
     assert_eq!(page["total"].as_i64().unwrap() as usize, a.len());
 
-    // 归属：用户操作 actor = 管理员；设备加入 actor = None。
+    // Attribution: user operations have actor = the admin; device enrollment has actor = None.
     let me = call(&c, "GET", "/api/v1/auth/me", Some(&c.cookie), false, None)
         .await
         .1;
@@ -329,7 +329,7 @@ async fn management_lifecycle_is_fully_recorded() {
     let enrolled_ev = &events_with(&page, "device.enrolled")[0];
     assert!(enrolled_ev["actor_id"].is_null());
     assert_eq!(enrolled_ev["target_id"], device_id);
-    // 失败留痕带诊断摘要（§16.5：配置应用失败必记录）。
+    // Failure records carry a diagnostic summary (§16.5: config apply failures must be recorded).
     let failed = &events_with(&page, "revision.apply_failed")[0];
     assert_eq!(failed["target_type"], "revision");
     assert_eq!(failed["target_id"], latest.to_string());
@@ -338,7 +338,7 @@ async fn management_lifecycle_is_fully_recorded() {
     assert!(detail.contains("error_summary"));
 }
 
-/// 登录失败留痕：email 可见（暴破诊断），密码永不入库。
+/// Login failures are recorded: the email stays visible (brute-force diagnostics), the password never reaches storage.
 #[tokio::test]
 async fn login_failures_are_recorded_without_password() {
     let c = ctx().await;
@@ -389,8 +389,8 @@ async fn login_failures_are_recorded_without_password() {
     assert!(!dumped.contains("wrong-guess-2"));
 }
 
-/// §16.5 红线：密码 / 邀请 Token / agent Token / API Token 原始材料
-/// 一律不出现在审计表中（类型上就进不来，测试再兜一道底）。
+/// §16.5 red line: raw password / invite token / agent token / API token material
+/// must never appear in the audit table (the types already keep it out; this test adds a second net).
 #[tokio::test]
 async fn no_secret_material_in_audit() {
     let c = ctx().await;
@@ -442,8 +442,8 @@ async fn no_secret_material_in_audit() {
     assert_eq!(status, StatusCode::CREATED);
     let api_token = token["token"].as_str().unwrap().to_string();
 
-    // 自举注册流的两份秘密材料同样不得入审计：原始自举码（公开端点即凭证）
-    // 与注册期签发的 agent_token。
+    // The two secrets of the bootstrap-registration flow must likewise stay out of the audit: the raw bootstrap code (served by a public endpoint, so the code is itself the credential)
+    // and the agent_token issued at registration time.
     let (status, bt) = write(
         &c,
         "POST",
@@ -485,7 +485,7 @@ async fn no_secret_material_in_audit() {
             "audit must not contain raw secret material"
         );
     }
-    // 事件本身仍在：各凭证的签发痕迹可追溯。
+    // The events themselves remain: issuance of each credential is still traceable.
     assert!(!events_with(&page, "invite.created").is_empty());
     assert!(!events_with(&page, "device.enrolled").is_empty());
     assert!(!events_with(&page, "api_token.created").is_empty());
@@ -493,7 +493,7 @@ async fn no_secret_material_in_audit() {
     assert!(!events_with(&page, "device.registered").is_empty());
 }
 
-/// 审计是管理数据：未认证不得读取。
+/// Audit data is management data: unauthenticated reads are forbidden.
 #[tokio::test]
 async fn audit_requires_authentication() {
     let c = ctx().await;

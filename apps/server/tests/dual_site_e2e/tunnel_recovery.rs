@@ -1,10 +1,10 @@
-//! 断线自愈全链路（P2，2026-11-12 任务清单；R-07 soak 前置门禁）。
+//! Full self-healing chain after a disconnect (P2, 2026-11-12 task list; precondition gate for the R-07 soak).
 //!
-//! 场景：隧道接口被杀（`ip link del wg0`，即 Windows WireGuardNT 崩溃/
-//! 驱动重置的 netns 等价物）→ agent 一轮 tick 感知并重建 → 与 hub 重新
-//! 握手 → server 侧设备时间线前进、在线判定收敛回 `online`——全链路
-//! ≤60s（任务口径）。数据面真跑：需要 sudo -n + wireguard-tools，缺席
-//! 则 SKIP（与其它 dual_site 用例同一守卫）。
+//! Scenario: the tunnel interface is killed (`ip link del wg0`, the netns equivalent of a Windows
+//! WireGuardNT crash / driver reset) -> the agent notices and rebuilds within one tick -> re-handshakes
+//! with the hub -> the device timeline advances on the server side and presence converges back to `online`
+//! — the whole chain in <=60s (task budget). The data plane really runs: it needs sudo -n + wireguard-tools,
+//! otherwise SKIP (the same guard as the other dual_site cases).
 
 #![cfg(target_os = "linux")]
 
@@ -13,7 +13,7 @@ use super::support::*;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-/// 从设备列表里摘一台设备（按 enroll 时的 device_name 匹配）。
+/// Pull one device out of the device list (matched by the device_name given at enroll time).
 fn device_of<'a>(devices: &'a Value, name: &str) -> &'a Value {
     devices
         .as_array()
@@ -29,8 +29,8 @@ fn killed_tunnel_is_rebuilt_within_sixty_seconds_and_the_server_sees_it() {
     let Some(ctx) = Context::setup() else {
         return;
     };
-    // 铺底同 recovery.rs：一条真实业务路由 + 别名，站点2（lan2 在 g2 后面）
-    // 经隧道可达——「10.241.2.x = 站点2 的 192.168.1.x」。
+    // Same groundwork as recovery.rs: one real business route + an alias, so site 2 (lan2, behind g2)
+    // is reachable through the tunnel — "10.241.2.x = site 2's 192.168.1.x".
     let routes_uri = format!("/api/v1/networks/{}/routes", ctx.network_id);
     let aliases_uri = format!("/api/v1/networks/{}/aliases", ctx.network_id);
     let (code, route) = http_json(
@@ -93,7 +93,7 @@ fn killed_tunnel_is_rebuilt_within_sixty_seconds_and_the_server_sees_it() {
         assert!(ctx.topo.wait_handshake(ns), "baseline handshake in {ns}");
     }
 
-    // 基线：站点2 别名跨隧道可达，server 已把 laptop-a 判在线。
+    // Baseline: site 2's alias is reachable across the tunnel, and the server already judges laptop-a online.
     let devices_before = ctx.devices();
     let baseline = device_of(&devices_before, "laptop-a");
     assert_eq!(
@@ -117,20 +117,20 @@ fn killed_tunnel_is_rebuilt_within_sixty_seconds_and_the_server_sees_it() {
         "baseline cross-tunnel echo: {before}"
     );
 
-    // 杀隧道：接口直接删掉（数据面事故的 netns 等价物）。控制面（HTTPS
-    // 走 underlay）不受影响——与真机断线场景一致。
+    // Kill the tunnel: delete the interface outright (the netns equivalent of a data-plane incident).
+    // The control plane (HTTPS over the underlay) is unaffected — matching the real-machine disconnect case.
     require_ok(
         &netns_exec(&ctx.topo.a.netns, &["ip", "link", "del", "wg0"]),
         "kill the tunnel interface",
     );
-    // now() 是秒级精度：留一秒保证重建后心跳时间戳严格前进。
+    // now() has second-level precision: leave a second so the post-rebuild heartbeat timestamp strictly advances.
     std::thread::sleep(Duration::from_secs(1));
 
-    // 全链路计时（任务口径 ≤60s）：从「开始自愈」到「server 看到收敛」。
+    // Full-chain timing (task budget <=60s): from "self-healing starts" to "the server observes convergence".
     let started = Instant::now();
     let deadline = started + Duration::from_secs(60);
 
-    // agent 感知并重建：一轮 tick 对账（账本仍在，内核漂移被收敛）。
+    // The agent notices and rebuilds: one tick of reconciliation (the ledger survives, kernel drift is converged away).
     tick_agent(
         &ctx.dir,
         &ctx.base,
@@ -144,8 +144,8 @@ fn killed_tunnel_is_rebuilt_within_sixty_seconds_and_the_server_sees_it() {
         "handshake must re-establish after rebuild"
     );
 
-    // server 状态收敛：laptop-a 的时间线前进（新心跳到达）、在线判定回
-    // `online` 且来源是 agent 上报（presence 收敛的完整口径）。
+    // Server state converges: laptop-a's timeline advances (a fresh heartbeat arrives), presence returns to
+    // `online` and the source is an agent report (the complete definition of presence convergence).
     let mut view = device_of(&ctx.devices(), "laptop-a").clone();
     while view["last_seen_at"] == json!(seen_before) {
         assert!(
@@ -169,9 +169,9 @@ fn killed_tunnel_is_rebuilt_within_sixty_seconds_and_the_server_sees_it() {
         view["presence_source"], "agent_report",
         "converged state must come from a fresh agent report: {view}"
     );
-    // 修订面不残留卡死：没有任何修订停在 applying（§10.3——被中断的 applying
-    // 只有收敛为 failed 才合法；pending/applied 是正常历史，superseded 的
-    // 旧修订保持 pending 属预期）。
+    // Nothing is left stuck on the revision side: no revision parks in applying (§10.3 — an interrupted
+    // applying is only legal once converged to failed; pending/applied are normal history, and a
+    // superseded older revision staying pending is expected).
     let revisions = admin(
         &ctx.base,
         &ctx.cookie,
@@ -185,7 +185,7 @@ fn killed_tunnel_is_rebuilt_within_sixty_seconds_and_the_server_sees_it() {
             "no revision may be stuck mid-apply after self-healing: {revision}"
         );
     }
-    // 数据面恢复：跨隧道 echo 重新可达。
+    // Data-plane recovery: the cross-tunnel echo is reachable again.
     let after = tcp_echo(
         &ctx.topo,
         &ctx.dir,

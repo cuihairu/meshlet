@@ -1,8 +1,8 @@
-//! 集成测试：在线状态判定（存档 §12.2/§12.4、§14.1）。
+//! Integration test: online-state determination (archive §12.2/§12.4, §14.1).
 //!
-//! 端到端路径：加入（签发 agent_token，仅此一次）→ agent 心跳上报
-//! （Bearer 凭证，可带 `wg show` 握手读数）→ 设备列表携带
-//! `online_state` / `presence_source` / `last_seen_at`（数据来源 + 更新时间）。
+//! End-to-end path: enrollment (issues the agent_token, exactly once) → agent heartbeat
+//! (Bearer credential, optionally carrying a `wg show` handshake reading) → the device list carries
+//! `online_state` / `presence_source` / `last_seen_at` (evidence source + update time).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -14,8 +14,8 @@ use tower::ServiceExt; // oneshot
 
 const OVERLAY: &str = "10.240.0.0/16";
 
-/// 测试上下文：router + 管理会话 Cookie + agent_token + network_id。
-/// Clone 后共享同一底层状态。
+/// Test context: router + admin session cookie + agent_token + network_id.
+/// Cloning shares the same underlying state.
 #[derive(Clone)]
 struct Ctx {
     app: Router,
@@ -25,8 +25,8 @@ struct Ctx {
     agent_token: String,
 }
 
-/// 判定窗口可注入（默认 300s/120s；tunnel_only 场景收紧上报窗口到 0，
-/// 使「上报已过窗口、握手仍新鲜」可确定性构造）。
+/// The decision windows are injectable (defaults 300s/120s; the tunnel_only case tightens the report window to 0,
+/// making "report past the window, handshake still fresh" deterministically constructible).
 async fn app(thresholds: PresenceThresholds) -> Ctx {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
@@ -43,7 +43,7 @@ async fn app(thresholds: PresenceThresholds) -> Ctx {
     ));
     let app = meshlet_server::router(state);
 
-    // 空库 bootstrap 首个管理员，取会话 Cookie。
+    // Bootstrap the first admin on the empty db, taking the session cookie.
     let res = app
         .clone()
         .oneshot(
@@ -71,7 +71,7 @@ async fn app(thresholds: PresenceThresholds) -> Ctx {
         .expect("session cookie")
         .to_string();
 
-    // 创建网络 + 邀请 + 设备加入（公开端点，管理 API 边界之外）。
+    // Create the network + invite + device enrollment (public endpoints, outside the admin API boundary).
     let res = app
         .clone()
         .oneshot(
@@ -152,7 +152,7 @@ async fn res_body(res: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// agent 心跳（Bearer 凭证；非管理 API，不需要 CSRF 头）。
+/// Agent heartbeat (Bearer credential; not the admin API, so no CSRF header needed).
 async fn heartbeat(
     ctx: Ctx,
     agent_token: &str,
@@ -165,7 +165,7 @@ async fn heartbeat(
         .header("authorization", format!("Bearer {agent_token}"))
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
-    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    // §12: observe the direct-connect source address on heartbeat (ConnectInfo is assembled at the serve layer).
     req.extensions_mut().insert(axum::extract::ConnectInfo(
         "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
     ));
@@ -173,7 +173,7 @@ async fn heartbeat(
     (res.status(), res_body(res).await)
 }
 
-/// 管理端设备列表（Cookie 会话 + CSRF）。
+/// Admin device list (cookie session + CSRF).
 async fn list_devices(ctx: &Ctx) -> (StatusCode, serde_json::Value) {
     let res = ctx
         .app
@@ -204,7 +204,7 @@ fn device_of(list: &serde_json::Value, device_id: &str) -> serde_json::Value {
 async fn heartbeat_marks_device_online_with_agent_source() {
     let ctx = app(PresenceThresholds::default()).await;
 
-    // 心跳：agent 上报 + 本地读到的握手时间。
+    // Heartbeat: agent report + the handshake time read locally.
     let (status, body) = heartbeat(
         ctx.clone(),
         &ctx.agent_token,
@@ -216,7 +216,7 @@ async fn heartbeat_marks_device_online_with_agent_source() {
     assert_eq!(body["presence_source"], "agent_report");
     assert!(body["last_seen_at"].as_str().is_some_and(|s| !s.is_empty()));
 
-    // 设备列表携带状态 + 数据来源 + 更新时间（§12.2：不得只给绿色图标）。
+    // The device list carries state + evidence source + update time (§12.2: never just a green icon).
     let (status, list) = list_devices(&ctx).await;
     assert_eq!(status, StatusCode::OK);
     let device = device_of(&list, &ctx.device_id);
@@ -229,7 +229,7 @@ async fn heartbeat_marks_device_online_with_agent_source() {
 
 #[tokio::test]
 async fn device_before_any_heartbeat_is_offline_with_enrollment_source() {
-    // 刚加入、无任何心跳/握手：offline，来源 = enrollment，最后时间 = 加入时刻。
+    // Freshly enrolled with no heartbeat/handshake yet: offline, source = enrollment, last time = enrollment moment.
     let ctx = app(PresenceThresholds::default()).await;
     let (status, list) = list_devices(&ctx).await;
     assert_eq!(status, StatusCode::OK);
@@ -241,10 +241,10 @@ async fn device_before_any_heartbeat_is_offline_with_enrollment_source() {
 
 #[tokio::test]
 async fn handshake_only_evidence_is_tunnel_only_not_online() {
-    // §12.4：最近有 WireGuard 握手 ≠ 设备全部网络功能正常。
-    // 上报窗口收紧到 0：心跳到达的当下上报仍新鲜（delta=0）；1 秒后上报过期，
-    // 而握手读数仍在窗口内 → tunnel_only（确定性：秒级时间戳截距 delta>=1 > 0）。
-    // 握手读数取自当前时刻（相对时间，不受挂钟日期影响）。
+    // §12.4: a recent WireGuard handshake ≠ all of the device's networking working.
+    // The report window is tightened to 0: at the moment the heartbeat arrives the report is still fresh (delta=0); one second later the report is stale,
+    // while the handshake reading is still inside the window → tunnel_only (deterministic: second-granularity timestamps give delta>=1 > 0).
+    // The handshake reading comes from the current instant (relative time, unaffected by the wall-clock date).
     let ctx = app(PresenceThresholds {
         agent_window: Duration::ZERO,
         handshake_window: Duration::from_secs(300),
@@ -258,7 +258,7 @@ async fn handshake_only_evidence_is_tunnel_only_not_online() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["online_state"], "online"); // 到达瞬间上报仍新鲜
+    assert_eq!(body["online_state"], "online"); // the report is still fresh the instant it arrives
 
     tokio::time::sleep(std::time::Duration::from_millis(1050)).await;
 
@@ -274,7 +274,7 @@ async fn heartbeat_requires_valid_agent_token() {
     let ctx = app(PresenceThresholds::default()).await;
     let body = serde_json::json!({});
 
-    // 无 Authorization 头 → 401。
+    // No Authorization header → 401.
     let res = ctx
         .app
         .clone()
@@ -290,11 +290,11 @@ async fn heartbeat_requires_valid_agent_token() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-    // 伪造 Token → 401。
+    // A forged token → 401.
     let (status, _) = heartbeat(ctx.clone(), &"deadbeef".repeat(8), body.clone()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // 错误 scheme → 401。
+    // A wrong scheme → 401.
     let res = ctx
         .app
         .clone()
@@ -311,7 +311,7 @@ async fn heartbeat_requires_valid_agent_token() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
-    // 伪造/失效 Token 不应污染设备状态。
+    // A forged or invalid token must not pollute the device state.
     let (_, list) = list_devices(&ctx).await;
     let device = device_of(&list, &ctx.device_id);
     assert_eq!(device["online_state"], "offline");
@@ -332,7 +332,7 @@ async fn heartbeat_rejects_malformed_handshake_timestamp() {
 
 #[tokio::test]
 async fn heartbeat_without_handshake_field_still_reports() {
-    // 不携带握手读数：仅上报时间也可判定（agent 上报即最强证据）。
+    // No handshake reading carried: the report time alone is enough to decide (an agent report is the strongest evidence).
     let ctx = app(PresenceThresholds::default()).await;
     let (status, body) = heartbeat(ctx.clone(), &ctx.agent_token, serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK);
@@ -342,7 +342,7 @@ async fn heartbeat_without_handshake_field_still_reports() {
 
 #[tokio::test]
 async fn repeated_heartbeat_keeps_token_valid_and_state_accumulates() {
-    // 同一 Token 多次心跳均放行（摘要校验路径），状态持续累积。
+    // Repeated heartbeats with the same token are all accepted (the digest verification path), and the state keeps accumulating.
     let ctx = app(PresenceThresholds::default()).await;
     for _ in 0..2 {
         let (status, body) = heartbeat(ctx.clone(), &ctx.agent_token, serde_json::json!({})).await;
@@ -354,7 +354,7 @@ async fn repeated_heartbeat_keeps_token_valid_and_state_accumulates() {
 
 #[tokio::test]
 async fn unknown_path_stays_404_not_401_with_agent_token() {
-    // 提取器只在命中路由上运行；未知路径保持 404（即便携带 agent Token）。
+    // The extractor only runs on a matched route; an unknown path stays 404 (even with an agent token).
     let ctx = app(PresenceThresholds::default()).await;
     let res = ctx
         .app

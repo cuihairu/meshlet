@@ -44,8 +44,8 @@ pub(crate) struct Ctx {
     pub(crate) pool: sqlx::SqlitePool,
 }
 
-/// 打开（或恢复后重新打开）文件库并组装应用；`backup_dir` 注入
-/// `POST /system/backup` 的目标目录（None = 未配置 → 503）。
+/// Open (or reopen after a restore) the file db and assemble the app; `backup_dir` injects
+/// the target directory for `POST /system/backup` (None = not configured → 503).
 pub(crate) async fn open_app(db: &Path, backup_dir: Option<PathBuf>) -> Ctx {
     let pool = meshlet_server::store::connect(&format!("sqlite:{}", db.display()))
         .await
@@ -66,7 +66,7 @@ pub(crate) async fn open_app(db: &Path, backup_dir: Option<PathBuf>) -> Ctx {
     let app = meshlet_server::router(state.clone());
     let app_for_ctx = app.clone();
 
-    // bootstrap（空库 201）或 login（重启后 200）——都取会话 Cookie。
+    // bootstrap (201 on an empty db) or login (200 after a restart) -- the session cookie comes from Set-Cookie either way.
     let res = app
         .clone()
         .oneshot(
@@ -145,8 +145,8 @@ pub(crate) async fn json_get(c: &Ctx, uri: &str) -> (StatusCode, Value) {
     call(c, "GET", uri, None).await
 }
 
-/// 不带认证/CSRF 的裸 POST（认证门禁用例；用目标应用自己的 router，
-/// Cookie 会话须与其存储同库）。
+/// A bare POST without auth/CSRF (auth-gate cases; uses the target app's own router,
+/// so the cookie session must share its storage db).
 pub(crate) async fn raw_post(
     app: Router,
     uri: &str,
@@ -175,7 +175,7 @@ pub(crate) async fn raw_post(
     (status, value)
 }
 
-/// 建网 + 邀请 + 加入一台设备，返回 (network_id, device_id)。
+/// Create a network + invite + enroll one device, returning (network_id, device_id).
 pub(crate) async fn net_with_device(c: &Ctx) -> (String, String) {
     let (st, net) = json_post(
         c,
@@ -210,7 +210,7 @@ pub(crate) async fn net_with_device(c: &Ctx) -> (String, String) {
     )
 }
 
-/// 触发一次端点备份，断言 200 并返回响应（path/bytes/counts）。
+/// Trigger one endpoint backup, asserting 200 and returning the response (path/bytes/counts).
 pub(crate) async fn do_backup(c: &Ctx) -> Value {
     let (status, body) = json_post(c, "/api/v1/system/backup", json!({})).await;
     assert_eq!(status, StatusCode::OK, "backup endpoint: {body}");
@@ -235,7 +235,7 @@ pub(crate) async fn route_post(
     .await
 }
 
-/// 只读打开备份文件，取 (表数, 迁移数, 路由行数, route_seq)。
+/// Open a backup file read-only and return (table count, migration count, route row count, route_seq).
 pub(crate) async fn inspect_backup(path: &Path) -> (usize, i64, i64, Option<String>) {
     let options =
         sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite:{}", path.display()))

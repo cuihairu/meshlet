@@ -7,11 +7,11 @@ async fn backup_endpoint_auth_and_configuration_gates() {
     let db = tmp_file("gates", "db");
     let c = open_app(&db, None).await;
 
-    // 无凭证 → 401。
+    // No credentials → 401.
     let (st, body) = raw_post(c.app.clone(), "/api/v1/system/backup", None, true).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "no credentials: {body}");
 
-    // 会话在，CSRF 头缺失 → 403。
+    // Session present but CSRF header missing → 403.
     let (st, body) = raw_post(
         c.app.clone(),
         "/api/v1/system/backup",
@@ -21,7 +21,7 @@ async fn backup_endpoint_auth_and_configuration_gates() {
     .await;
     assert_eq!(st, StatusCode::FORBIDDEN, "missing CSRF: {body}");
 
-    // 已认证但未配置备份目录 → 503 backup_not_configured（默认部署不产生文件）。
+    // Authenticated but no backup directory configured → 503 backup_not_configured (the default deployment produces no files).
     let (st, body) = raw_post(
         c.app.clone(),
         "/api/v1/system/backup",

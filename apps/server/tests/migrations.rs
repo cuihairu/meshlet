@@ -1,4 +1,4 @@
-//! 集成测试：SQLite migrations（Phase 1「核心实体 migrations」条目）。
+//! Integration test: SQLite migrations (the Phase 1 "core entity migrations" item).
 use sqlx::Error::Database;
 use sqlx::Row;
 
@@ -117,12 +117,12 @@ async fn segment_default_migration_repairs_missing_rows_and_assignments() {
 
 #[tokio::test]
 async fn schema_stores_no_private_key_material() {
-    // ADR-010 / §11.2：私钥不出客户端，schema 层不存在私钥列。
+    // ADR-010 / §11.2: private keys never leave the client, so no private key column exists at the schema level.
     //
-    // 豁免：`users.totp_secret`（014_user_totp）。RFC 6238 要求服务端持有 TOTP
-    // 共享密钥才能校验验证码——这是**对称**共享密钥，与 ADR-010 针对的
-    // WireGuard **非对称私钥**不同类；私钥/seed 检查仍严格，`secret` 列改为
-    // 逐表逐列精确检查（仅放行 totp_secret，不因出现它就放行一切 secret 列）。
+    // Exemption: `users.totp_secret` (014_user_totp). RFC 6238 requires the server to hold the TOTP
+    // shared key to verify codes -- this is a **symmetric** shared key, a different class from the
+    // WireGuard **asymmetric private key** that ADR-010 targets; the private-key/seed checks stay strict, and
+    // `secret` columns are now checked table by table, column by column (only totp_secret is allowed, it is not a blanket pass for all secret columns).
     let pool = db().await;
     let all = table_sql(&pool).await;
     assert!(
@@ -175,7 +175,7 @@ async fn invitations_store_digest_only() {
     .execute(&pool)
     .await
     .unwrap();
-    // token_hash 唯一。
+    // token_hash is unique.
     assert!(matches!(
         sqlx::query(
             "INSERT INTO invitations (id, network_id, token_hash, max_uses, used_count, created_at)
@@ -205,7 +205,7 @@ async fn devices_enforce_unique_name_and_virtual_ip() {
     .await
     .unwrap();
 
-    // 同网络内设备名唯一。
+    // Device names are unique within a network.
     assert!(matches!(
         sqlx::query(
             "INSERT INTO devices (id, network_id, name, virtual_ipv4, public_key, platform, status, created_at)
@@ -215,7 +215,7 @@ async fn devices_enforce_unique_name_and_virtual_ip() {
         .await,
         Err(Database(e)) if e.is_unique_violation()
     ));
-    // 同网络内虚拟 IP 唯一。
+    // Virtual IPs are unique within a network.
     assert!(matches!(
         sqlx::query(
             "INSERT INTO devices (id, network_id, name, virtual_ipv4, public_key, platform, status, created_at)
@@ -225,7 +225,7 @@ async fn devices_enforce_unique_name_and_virtual_ip() {
         .await,
         Err(Database(e)) if e.is_unique_violation()
     ));
-    // 其他网络可以复用同名。
+    // Another network may reuse the same name.
     sqlx::query(
         "INSERT INTO networks (id, name, overlay_cidr, created_at, updated_at)
          VALUES ('net-2', 'm', '10.241.0.0/16', 't', 't')",
@@ -348,7 +348,7 @@ async fn agent_tokens_store_digest_only_with_unique_hash() {
     .execute(&pool)
     .await
     .unwrap();
-    // token_hash 唯一。
+    // token_hash is unique.
     assert!(matches!(
         sqlx::query(
             "INSERT INTO agent_tokens (token_hash, device_id, created_at)
@@ -370,8 +370,8 @@ async fn devices_carry_presence_evidence_timestamps() {
 
 #[tokio::test]
 async fn users_carry_totp_columns() {
-    // 014_user_totp：`users.totp_secret`（base32，服务端唯一持有）与
-    // `users.totp_enabled`（0/1，激活后登录需第二步）。
+    // 014_user_totp: `users.totp_secret` (base32, held only by the server) and
+    // `users.totp_enabled` (0/1, login requires the second step once enabled).
     let pool = db().await;
     let cols = columns(&pool, "users").await;
     assert!(cols.contains(&"totp_secret".to_string()), "{cols:?}");
@@ -380,14 +380,14 @@ async fn users_carry_totp_columns() {
 
 #[tokio::test]
 async fn migrations_are_idempotent_across_reopens() {
-    // 迁移必须可重复应用（重启不破坏库）。
+    // Migrations must be re-appliable (a restart must not corrupt the db).
     let pool = db().await;
     meshlet_server::store::MIGRATIONS.run(&pool).await.unwrap();
-    // 005 新增 mesh_meta（route_seq 等单调计数，§17.3）；006 新增
-    // diagnostics_runs（§12.7 诊断快照）；008 新增 bootstrap_tokens +
-    // device_registrations（设备自举注册，Pending 不进 devices）；012 新增
-    // 四类发布对象 + 探针健康镜像（R-06）；015 新增 tasks（MT-002 任务通道）；
-    // 016 仅给 tasks 加列（confirmed_at/rejected_at/parent_task_id），不新表。
+    // 005 adds mesh_meta (monotonic counters like route_seq, §17.3); 006 adds
+    // diagnostics_runs (§12.7 diagnostics snapshots); 008 adds bootstrap_tokens +
+    // device_registrations (device bootstrap registration, Pending stays out of devices); 012 adds
+    // the four publish object kinds + the probe health mirror (R-06); 015 adds tasks (MT-002 task channel);
+    // 016 only adds columns to tasks (confirmed_at/rejected_at/parent_task_id), no new table.
     let tables = tables(&pool).await;
     assert_eq!(tables.len(), 26);
     assert!(tables.contains(&"mesh_meta".to_string()), "{tables:?}");
@@ -416,8 +416,8 @@ async fn migrations_are_idempotent_across_reopens() {
 
 #[tokio::test]
 async fn migration_017_adds_labels_and_task_required_labels_columns() {
-    // 017 只加列不新表：devices.labels（节点标签，路由依据）与
-    // tasks.required_labels（任务负载的标签约束，重启后 payload 保留）。
+    // 017 only adds columns, no new table: devices.labels (node labels, routing basis) and
+    // tasks.required_labels (label constraints on task payloads, kept in the payload across restarts).
     let pool = db().await;
     let device_cols = columns(&pool, "devices").await;
     assert!(
@@ -448,7 +448,7 @@ async fn api_tokens_store_digest_only_with_scopes() {
             "revoked_at"
         ]
     );
-    // 无原始 Token 列：只存摘要，原始 Token 仅创建响应返回一次。
+    // No raw token column: only the digest is stored, the raw token is returned exactly once in the creation response.
     assert!(
         !cols.contains(&"token".to_string()) && !cols.contains(&"raw_token".to_string()),
         "api_tokens must not store the raw token: {cols:?}"
@@ -474,7 +474,7 @@ async fn api_tokens_store_digest_only_with_scopes() {
         .unwrap();
     }
     insert(&pool, "tok-1", "at-1", "read").await;
-    // token_hash 唯一（不同 id 也不行）。
+    // token_hash is unique (even with a different id).
     assert!(matches!(
         sqlx::query("INSERT INTO api_tokens (id, token_hash, user_id, name, scopes, created_at)
                      VALUES ('tok-2', 'at-1', 'u-1', 'n', 'write', 't')")
@@ -482,7 +482,7 @@ async fn api_tokens_store_digest_only_with_scopes() {
             .await,
         Err(Database(e)) if e.is_unique_violation()
     ));
-    // id 唯一。
+    // id is unique.
     assert!(matches!(
         sqlx::query("INSERT INTO api_tokens (id, token_hash, user_id, name, scopes, created_at)
                      VALUES ('tok-1', 'at-2', 'u-1', 'n', 'read', 't')")
@@ -490,7 +490,7 @@ async fn api_tokens_store_digest_only_with_scopes() {
             .await,
         Err(Database(e)) if e.is_unique_violation()
     ));
-    // 撤销态由 revoked_at 承载（可撤销）。
+    // The revoked state is carried by revoked_at (so it can be revoked).
     sqlx::query("UPDATE api_tokens SET revoked_at = 't2' WHERE id = 'tok-1'")
         .execute(&pool)
         .await

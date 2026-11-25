@@ -1,7 +1,7 @@
-//! 集成测试：结构化日志与指标（[存档 §17.1/§17.2](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Integration test: structured logging and metrics ([archive §17.1/§17.2](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 验收：§17.1 八字段齐全（结构化字段，非拼串）；§17.2 八项指标可观测，
-//! 控制面计数器与数据面量规两条独立来源都真实反映状态。
+//! Acceptance: §17.1 all eight fields present (structured fields, not string concatenation); §17.2 eight metrics observable,
+//! with two independent sources (control-plane counters and data-plane gauges) each faithfully reflecting state.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -20,7 +20,7 @@ struct Ctx {
 }
 
 async fn ctx() -> Ctx {
-    // 安装日志捕获（幂等）：之后所有 op_log! / 访问日志都进共享缓冲。
+    // Install the log capture (idempotent): every op_log! / access log afterwards goes into the shared buffer.
     meshlet_server::telemetry::log_capture::install();
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
@@ -93,7 +93,7 @@ async fn write(c: &Ctx, method: &str, uri: &str, body: Option<Value>) -> (Status
     call(c, method, uri, Some(&c.cookie), true, body).await
 }
 
-/// 抓取指标文本（管理面会话；端点是 Prometheus 纯文本，不做 JSON 解析）。
+/// Fetch the metrics text (admin-plane session; the endpoint is Prometheus plaintext, no JSON parsing).
 async fn metrics(c: &Ctx) -> String {
     let res = c
         .app
@@ -114,7 +114,7 @@ async fn metrics(c: &Ctx) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-/// 已捕获的结构化日志行（仅 `meshlet_server` 目标；依赖噪声已过滤）。
+/// Captured structured log lines (only the `meshlet_server` target; dependency noise filtered out).
 fn log_lines() -> Vec<Value> {
     meshlet_server::telemetry::log_capture::lines()
         .into_iter()
@@ -129,7 +129,7 @@ fn events_with_operation<'a>(lines: &'a [Value], operation: &str) -> Vec<&'a Val
         .collect()
 }
 
-/// 按操作 + 网络定位事件（测试并行跑，不用清空缓冲而是按内容唯一匹配）。
+/// Locate events by operation + network (tests run in parallel, so instead of clearing the buffer we match by unique content).
 fn find_event<'a>(lines: &'a [Value], operation: &str, network_id: &str) -> Option<&'a Value> {
     lines.iter().find(|l| {
         l["operation"].as_str() == Some(operation) && l["network_id"].as_str() == Some(network_id)
@@ -140,7 +140,7 @@ fn field<'a>(line: &'a Value, key: &str) -> &'a Value {
     line.get(key).unwrap_or(&Value::Null)
 }
 
-/// 每个已捕获的事件都必须带 §17.1 八字段（字段存在，值为空串也是齐全）。
+/// Every captured event must carry the §17.1 eight fields (presence is enough, empty string counts as complete).
 fn assert_eight_fields(line: &Value) {
     for key in [
         "time",
@@ -159,7 +159,7 @@ fn assert_eight_fields(line: &Value) {
     }
 }
 
-/// 指标端点是管理数据：未认证不得抓取。
+/// The metrics endpoint is admin data: unauthenticated callers must not fetch it.
 #[tokio::test]
 async fn metrics_endpoint_requires_authentication() {
     let c = ctx().await;
@@ -168,7 +168,7 @@ async fn metrics_endpoint_requires_authentication() {
     assert_eq!(body["error"]["code"], "unauthorized");
 }
 
-/// §17.2 控制面计数器：操作推进后指标真实出现（非静态零值）。
+/// §17.2 control-plane counters: metrics really appear after operations advance (not static zeros).
 #[tokio::test]
 async fn control_plane_counters_reflect_operations() {
     let c = ctx().await;
@@ -183,7 +183,7 @@ async fn control_plane_counters_reflect_operations() {
     assert_eq!(status, StatusCode::CREATED);
     let network_id = network["id"].as_str().unwrap();
 
-    // 配置应用：无数据面 backend → 确定性失败（计入 failed）。
+    // Config apply: no data-plane backend → deterministic failure (counted as failed).
     let (status, revisions) = call(
         &c,
         "GET",
@@ -207,7 +207,7 @@ async fn control_plane_counters_reflect_operations() {
     assert_eq!(status, StatusCode::OK);
 
     let text = metrics(&c).await;
-    // 指标 4/5：配置应用失败数（以状态机结论计数，不凭响应码）。
+    // Metrics 4/5: config-apply failure counts (counted by state-machine outcome, not by response code).
     assert!(
         text.contains("meshlet_config_apply_total{result=\"applied\"} 0"),
         "applied counter missing: {text}"
@@ -216,13 +216,13 @@ async fn control_plane_counters_reflect_operations() {
         text.contains("meshlet_config_apply_total{result=\"failed\"} 1"),
         "failed counter missing: {text}"
     );
-    // 成功率在有样本时给出（0/1 = 0）。
+    // The success ratio is reported when there are samples (0/1 = 0).
     assert!(
         text.contains("meshlet_config_apply_success_ratio 0.0000"),
         "success ratio missing: {text}"
     );
-    // 指标 8：服务端接口状态（HTTP 请求按路由模板计数；指标端点自身那次
-    // 请求在渲染之后才计入，断言用先前已完成的请求）。
+    // Metric 8: server-side interface status (HTTP requests counted by route template; the metrics
+    // endpoint's own request is only counted after rendering, so assertions use an earlier completed request).
     assert!(
         text.contains("meshlet_http_requests_total{method=\"POST\",route=\"/api/v1/networks\",status_class=\"2xx\"} 1"),
         "http requests counter missing: {text}"
@@ -236,12 +236,12 @@ async fn control_plane_counters_reflect_operations() {
         response_bytes > 0,
         "response bytes must be counted: {bytes_line}"
     );
-    // 控制面量规（无设备时全部为零，但必须出现）。
+    // Control-plane gauges (all zero with no devices, but they must appear).
     assert!(text.contains("meshlet_devices_online 0"));
     assert!(text.contains("meshlet_devices_active 0"));
     assert!(text.contains("meshlet_alias_apply_status 0"));
 
-    // §17.1 领域事件：create_network 携带 network_id + config_revision。
+    // §17.1 domain events: create_network carries network_id + config_revision.
     let lines = log_lines();
     let line =
         find_event(&lines, "create_network", network_id).expect("create_network event missing");
@@ -252,12 +252,12 @@ async fn control_plane_counters_reflect_operations() {
     assert_eq!(field(line, "error_category"), "none");
 }
 
-/// §17.1 访问日志：每个已路由请求一条，路由模板为 operation，状态派生结果。
+/// §17.1 access logs: one entry per routed request, route template as operation, status derives the result.
 #[tokio::test]
 async fn access_log_lines_carry_route_template_and_status() {
     let c = ctx().await;
 
-    // 一个 200 与一个 404（未认证的管理端点）都要留访问日志。
+    // Both a 200 and a 404 (unauthenticated admin endpoint) must leave access logs.
     let _ = call(&c, "GET", "/api/v1/audit", Some(&c.cookie), false, None).await;
     let _ = call(&c, "GET", "/api/v1/audit", None, false, None).await;
 
@@ -282,8 +282,8 @@ async fn access_log_lines_carry_route_template_and_status() {
     }
 }
 
-/// §17.2 数据面量规：设备加入 + 心跳（带握手读数）后，在线/活跃/握手指标
-/// 从 MeshState 现算——两条独立来源（控制面在册 vs 数据面握手）都出现。
+/// §17.2 data-plane gauges: after a device joins + heartbeats (carrying handshake readings), the online/active/handshake metrics
+/// are computed on the fly from MeshState, so both independent sources (control-plane roster vs data-plane handshake) show up.
 #[tokio::test]
 async fn data_plane_gauges_are_computed_from_state() {
     let c = ctx().await;
@@ -324,7 +324,7 @@ async fn data_plane_gauges_are_computed_from_state() {
     let device_id = enrolled["device_id"].as_str().unwrap();
     let agent_token = enrolled["agent_token"].as_str().unwrap();
 
-    // 心跳携带当前握手读数：隧道证据 + agent 证据同时新鲜。
+    // The heartbeat carries current handshake readings: tunnel evidence and agent evidence are both fresh.
     let now = meshlet_server::service::now();
     let mut req = Request::builder()
         .method("POST")
@@ -333,7 +333,7 @@ async fn data_plane_gauges_are_computed_from_state() {
         .header("content-type", "application/json")
         .body(Body::from(json!({ "last_handshake_at": now }).to_string()))
         .unwrap();
-    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    // §12: observe the direct-connect source address on heartbeat (ConnectInfo is assembled at the serve layer).
     req.extensions_mut().insert(axum::extract::ConnectInfo(
         "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
     ));
@@ -341,7 +341,7 @@ async fn data_plane_gauges_are_computed_from_state() {
     assert_eq!(res.status(), StatusCode::OK);
 
     let text = metrics(&c).await;
-    // 指标 1/2：在线设备数（agent 证据）与活跃 Peer 数（在册 Active）。
+    // Metrics 1/2: online device count (agent evidence) and active peer count (Active in the roster).
     assert!(
         text.contains("meshlet_devices_online 1"),
         "devices_online gauge missing: {text}"
@@ -350,7 +350,7 @@ async fn data_plane_gauges_are_computed_from_state() {
         text.contains("meshlet_devices_active 1"),
         "devices_active gauge missing: {text}"
     );
-    // 指标 3：最近握手时间（Unix 秒 > 0）与近期握手设备数（数据面证据）。
+    // Metric 3: last handshake time (Unix seconds > 0) and devices with recent handshakes (data-plane evidence).
     assert!(
         text.contains("meshlet_devices_with_recent_handshake 1"),
         "recent-handshake gauge missing: {text}"
@@ -364,13 +364,13 @@ async fn data_plane_gauges_are_computed_from_state() {
         ts > 0,
         "last handshake timestamp must be positive: {ts_line}"
     );
-    // 指标 7：接口状态（有近期握手证据即 1）。
+    // Metric 7: interface status (1 as soon as there is recent handshake evidence).
     assert!(
         text.contains("meshlet_interface_up 1"),
         "interface_up gauge missing: {text}"
     );
 
-    // §17.1 agent 事件：device 组件，device_id 齐全，network_id 适用时填。
+    // §17.1 agent events: device component, device_id populated, network_id filled when applicable.
     let lines = log_lines();
     let line = find_event(&lines, "heartbeat", network_id).expect("heartbeat event missing");
     assert_eight_fields(line);
@@ -379,7 +379,7 @@ async fn data_plane_gauges_are_computed_from_state() {
     assert_eq!(field(line, "result"), "ok");
 }
 
-/// §17.2 路由冲突数：只计「目的网段重叠」类冲突；设备未激活的 409 不计。
+/// §17.2 route conflict count: only "destination segment overlap" conflicts are counted; a 409 for an inactive device does not count.
 #[tokio::test]
 async fn route_conflict_counter_counts_only_conflicts() {
     let c = ctx().await;
@@ -419,7 +419,7 @@ async fn route_conflict_counter_counts_only_conflicts() {
     assert_eq!(status, StatusCode::CREATED);
     let device_id = enrolled["device_id"].as_str().unwrap();
 
-    // 正常路由创建：不算冲突。
+    // A normal route creation: not a conflict.
     let (status, _) = write(
         &c,
         "POST",
@@ -438,7 +438,7 @@ async fn route_conflict_counter_counts_only_conflicts() {
         "conflict counter must start at 0: {text}"
     );
 
-    // 与既有路由重叠：RouteConflict → 计数 1。
+    // Overlapping an existing route: RouteConflict → count 1.
     let (status, _) = write(
         &c,
         "POST",
@@ -457,7 +457,7 @@ async fn route_conflict_counter_counts_only_conflicts() {
         "conflict counter must be 1: {text}"
     );
 
-    // 撤销设备 → 网关未激活：仍是 409，但不是路由冲突，计数不动。
+    // Revoked device → inactive gateway: still a 409, but not a route conflict, so the counter stays put.
     let (status, _) = write(
         &c,
         "POST",
@@ -484,7 +484,7 @@ async fn route_conflict_counter_counts_only_conflicts() {
         "inactive-gateway 409 must not be counted as conflict: {text}"
     );
 
-    // 与 overlay 重叠：第二条冲突路径 → 计数 2。
+    // Overlapping the overlay: a second conflict path → count 2.
     let (status, invite2) = write(
         &c,
         "POST",
@@ -527,8 +527,8 @@ async fn route_conflict_counter_counts_only_conflicts() {
         "overlay-overlap conflict must be counted: {text}"
     );
 
-    // §17.1：三条拒绝路径（网段重叠 / 网关未激活 / 与 overlay 重叠）都留
-    // error 事件；其中只有「目的网段重叠」计入冲突指标（上文已断言）。
+    // §17.1: all three rejection paths (segment overlap / inactive gateway / overlay overlap)
+    // leave error events, but only "destination segment overlap" feeds the conflict metric (asserted above).
     let lines = log_lines();
     let conflicts = events_with_operation(&lines, "create_route")
         .into_iter()
@@ -541,7 +541,7 @@ async fn route_conflict_counter_counts_only_conflicts() {
     }
 }
 
-/// §17.1 登录成功/失败都留结构化日志；失败带 unauthorized 类别。
+/// §17.1 successful and failed logins both leave structured logs; failures carry the unauthorized category.
 #[tokio::test]
 async fn auth_events_are_structured() {
     let c = ctx().await;

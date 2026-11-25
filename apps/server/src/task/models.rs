@@ -1,71 +1,77 @@
-//! 任务服务端记录、请求契约与视图投影。
+//! Task server-side records, request contracts and view projections.
 
 use serde::{Deserialize, Serialize};
 
 use meshlet_domain::{NetworkId, Task};
 
-/// 一次任务执行的结果（exit code + 日志尾部）。
+/// The outcome of one task execution (exit code + tail of the log).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskResult {
-    /// 进程退出码（0 = 成功，非 0 = 失败）。
+    /// Process exit code (0 = success, non-zero = failure).
     pub exit_code: i32,
-    /// 命令输出尾部（捕获 stdout+stderr 的最后若干行）。
+    /// Tail of the command output (the last captured lines of stdout+stderr).
     pub log_tail: String,
 }
 
-/// 服务端任务记录：领域 [Task] + 网络归属 + 结果 + 时间戳。
+/// Server-side task record: the domain [Task] + network ownership + result + timestamps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
-    /// 领域任务（状态机 + 幂等键 + 负载）。
+    /// The domain task (state machine + idempotency key + payload).
     pub task: Task,
-    /// 归属网络。
+    /// Owning network.
     pub network_id: NetworkId,
-    /// 执行结果（终态后有值）。
+    /// Execution result (present once the task reaches a terminal state).
     pub result: Option<TaskResult>,
-    /// 用户确认完成时刻（RFC 3339）。确认是用户侧动作，agent 端点绝无
-    /// 确认能力（「agent 不得自判 done」）。
+    /// When the user confirmed completion (RFC 3339). Confirmation is a user-side
+    /// action; the agent endpoints have no way to confirm ("the agent must not decide
+    /// done on its own").
     pub confirmed_at: Option<String>,
-    /// 用户驳回重跑时刻（RFC 3339）。被驳回任务保留原记录。
+    /// When the user rejected it for a re-run (RFC 3339). Rejected tasks keep their
+    /// original record.
     pub rejected_at: Option<String>,
-    /// 被驳回时的父任务 id（重跑新代指向被驳回任务；首代任务为 `None`）。
+    /// The id of the parent task at rejection time (a re-run generation points at the
+    /// rejected task; first-generation tasks are `None`).
     pub parent_task_id: Option<String>,
-    /// 创建时间（RFC 3339）。
+    /// Creation time (RFC 3339).
     pub created_at: String,
-    /// 最近更新时间（RFC 3339）。
+    /// Last update time (RFC 3339).
     pub updated_at: String,
 }
 
 impl TaskRecord {
-    /// 结果引用：结果落在任务记录内，result_ref 即任务 id（console 据其取回）。
+    /// Result reference: the result lives inside the task record, so result_ref is the
+    /// task id (the console fetches the result by it).
     pub(crate) fn result_ref(&self) -> Option<String> {
         self.result.as_ref().map(|_| self.task.id.to_string())
     }
 }
 
-/// 控制台派发请求（`POST /api/v1/networks/{network_id}/tasks`）。
+/// Console dispatch request (`POST /api/v1/networks/{network_id}/tasks`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AssignTaskRequest {
-    /// 幂等键；缺省时服务端生成 `task-{seq}`。显式传已有 id 则幂等返回已有任务。
+    /// Idempotency key; when omitted the server generates `task-{seq}`. Passing an
+    /// existing id idempotently returns the existing task.
     pub id: Option<String>,
-    /// 目标设备（MT-005 标签路由）：`None`/空 = 按 `required_labels` 自动选点
-    /// （无标签要求 = 任意 Active 设备）；`Some` = 显式指定，须命中标签。
+    /// Target device (MT-005 label routing): `None`/empty = auto-select a point by
+    /// `required_labels` (no label requirement = any Active device); `Some` =
+    /// explicitly chosen, and labels must match.
     #[serde(default)]
     pub target_device_id: Option<String>,
-    /// 要执行的命令。
+    /// The command to execute.
     pub cmd: String,
-    /// 工作目录。
+    /// Working directory.
     pub workdir: Option<String>,
-    /// 超时（秒）。
+    /// Timeout (seconds).
     pub timeout_secs: Option<u64>,
-    /// 重试上限。
+    /// Retry limit.
     pub retry_limit: Option<u32>,
-    /// 标签路由要求（MT-005）：`(key, value)` 逐对命中目标节点标签才可派发；
-    /// 缺省 = 无标签约束。
+    /// Label routing requirement (MT-005): the target node's labels must match each
+    /// `(key, value)` pair before dispatch; default = no label constraint.
     #[serde(default)]
     pub required_labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// 控制台/结果视图（含状态与执行结果）。
+/// Console/result view (with state and execution result).
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskView {
     pub id: String,
@@ -109,11 +115,11 @@ impl From<&TaskRecord> for TaskView {
     }
 }
 
-/// agent 结果回执（`POST /api/v1/agent/tasks/{id}/result`）。
+/// Agent result report (`POST /api/v1/agent/tasks/{id}/result`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct TaskResultReport {
-    /// 进程退出码。
+    /// Process exit code.
     pub exit_code: i32,
-    /// 命令输出尾部。
+    /// Tail of the command output.
     pub log_tail: String,
 }

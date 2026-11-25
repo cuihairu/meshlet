@@ -11,7 +11,7 @@ fn network_id_of(id: &str) -> meshlet_domain::NetworkId {
     meshlet_domain::NetworkId(id.to_string())
 }
 
-/// `GET /api/v1/networks/{network_id}/config-revisions`：全部修订（升序）。
+/// `GET /api/v1/networks/{network_id}/config-revisions`: all revisions (ascending).
 pub async fn list_revisions_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(_user): AuthenticatedUser,
@@ -40,7 +40,7 @@ pub async fn list_revisions_handler(
     Ok(Json(views))
 }
 
-/// `GET /api/v1/networks/{network_id}/config-revisions/{revision}`：版本详情。
+/// `GET /api/v1/networks/{network_id}/config-revisions/{revision}`: revision detail.
 pub async fn get_revision_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(_user): AuthenticatedUser,
@@ -70,10 +70,11 @@ pub async fn get_revision_handler(
     Ok(Json(view))
 }
 
-/// `POST .../config-revisions/{revision}/apply`：把该修订应用到实际环境。
+/// `POST .../config-revisions/{revision}/apply`: apply that revision to the real environment.
 ///
-/// 返回该修订的当前视图——`apply_status` 是结论；backend 失败时同样 200，
-/// 但状态为 `failed` 且 `error_summary` 说明原因（失败可见，不伪装成功）。
+/// Returns the current view of the revision — `apply_status` is the verdict; a backend
+/// failure likewise returns 200, but with the state `failed` and an `error_summary`
+/// explaining why (failures stay visible, never disguised as success).
 pub fn apply_revision_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -150,8 +151,9 @@ async fn apply_revision_impl(
         }
         guard.ledger.restore_revision(applied.clone());
         let (settle, candidate) = {
-            // 结论收敛到每条期望项（§10.1 的路由/映射层镜像）：只有真下发到内核
-            // 的前缀才转 `applied`，agent 数据面据此取计划。
+            // The outcome converges onto each desired item (the route/mapping-layer mirror of §10.1):
+            // only prefixes actually pushed into the kernel transition to `applied`, and the
+            // agent data plane takes its plan from that.
             let success = applied.apply_status == meshlet_domain::ApplyStatus::Applied;
             let candidate = if success && should_apply && state.dataplane.enabled {
                 Some(
@@ -203,8 +205,9 @@ async fn apply_revision_impl(
             .deployments
             .insert(network_id.clone(), candidate);
     }
-    // 应用失败必留痕（§16.5）；结果以 apply_status 为准（`applied` 即成功，
-    // 其余一律按失败留痕），不凭响应码判断。
+    // An application failure must always leave a trace (§16.5); the verdict comes from
+    // apply_status (`applied` means success, everything else is recorded as a failure) —
+    // never from the response code.
     let mut view = to_revision_view(&applied);
     view.convergence = Some(
         serde_json::to_value(crate::convergence::status(&state, &network_id).await?)
@@ -234,7 +237,8 @@ async fn apply_revision_impl(
         Some(detail),
     )
     .await?;
-    // 指标（§17.2 配置应用成功率/失败数）：以状态机结论计数，不凭响应码。
+    // Metrics (§17.2 config apply success ratio / failure count): counted from the state-machine
+    // verdict, never from the response code.
     state.metrics.record_config_apply(applied_ok);
     if applied_ok {
         crate::op_log!(
@@ -262,8 +266,8 @@ async fn apply_revision_impl(
     Ok(Json(view))
 }
 
-/// `POST .../config-revisions/{revision}/rollback`：回滚一个 `Failed` 修订。
-/// 回滚只允许动 Meshlet 自有对象（ADR-007），不得清空系统路由（§10.3）。
+/// `POST .../config-revisions/{revision}/rollback`: roll back a `Failed` revision.
+/// Rollback may only touch Meshlet-owned objects (ADR-007) and must not clear system routes (§10.3).
 pub fn rollback_revision_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -353,8 +357,10 @@ async fn rollback_revision_impl(
         if rolled.apply_status == meshlet_domain::ApplyStatus::RolledBack && state.dataplane.enabled
         {
             if let Some(mut saved) = guard.deployments.get(&network_id).cloned() {
-                // 回滚回落到上一份已确认计划（可能早于最近的撤销），写回日志前
-                // 先过当前授权快照，否则被撤销的设备会随日志重新获得授权。
+                // Rollback falls back to the last confirmed plan (possibly older than the most recent
+                // revocation); filter it through the current authorization snapshot before writing
+                // it back to the log, otherwise revoked devices would regain authorization with
+                // the log.
                 enforce_authorization(&guard, &network_id, &mut saved);
                 guard
                     .lan_routes
@@ -368,8 +374,9 @@ async fn rollback_revision_impl(
                 guard.aliases.remove(&network_id);
             }
         }
-        // 回滚清理了 hub 侧对象 → 期望项不得继续显示 `applied`（§10.3）：
-        // 回滚确认即转 `failed`，未确认（rollback_pending）同样不算生效。
+        // Rollback cleared hub-side objects -> the desired items must not keep showing `applied`
+        // (§10.3): a confirmed rollback transitions them to `failed`, and an unconfirmed one
+        // (rollback_pending) likewise does not count as in effect.
         let settle = if rolled.apply_status == meshlet_domain::ApplyStatus::RolledBack
             && state.dataplane.enabled
         {
@@ -403,8 +410,9 @@ async fn rollback_revision_impl(
         );
         return Err(ServiceError::Internal(message));
     }
-    // 回滚失败同样留痕（§16.5）：无 backend 的回滚停在 `rollback_pending`
-    //（明确未完成）——除 `rolled_back` 外一律按失败留痕。
+    // A rollback failure is also recorded (§16.5): a rollback with no backend stays at
+    // `rollback_pending` (explicitly unfinished) — anything other than `rolled_back` is
+    // recorded as a failure.
     let mut view = to_revision_view(&rolled);
     if rolled.apply_status != meshlet_domain::ApplyStatus::RolledBack {
         view.convergence = Some(
@@ -436,7 +444,7 @@ async fn rollback_revision_impl(
         Some(detail),
     )
     .await?;
-    // 指标（§17.2 回滚结果）：`rolled_back` 计成功，`rollback_pending` 计未确认。
+    // Metrics (§17.2 rollback outcome): `rolled_back` counts as success, `rollback_pending` as unconfirmed.
     state.metrics.record_config_rollback(rolled_back);
     if rolled_back {
         crate::op_log!(

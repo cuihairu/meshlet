@@ -19,7 +19,7 @@ async fn corrupt_or_incomplete_backups_rejected_without_half_state() {
         (network_id, device_id) = net_with_device(&c).await;
         backup_path = PathBuf::from(do_backup(&c).await["path"].as_str().unwrap().to_string());
 
-        // 备份后继续变更（活动库与备份分叉）。
+        // Keep mutating after the backup (the live DB and the backup diverge).
         let (st, _) = json_post(
             &c,
             &format!("/api/v1/networks/{network_id}/routes"),
@@ -46,7 +46,7 @@ async fn corrupt_or_incomplete_backups_rejected_without_half_state() {
         c.pool.close().await;
     }
 
-    // (a) 垃圾文件：根本不是数据库。
+    // (a) A garbage file: not a database at all.
     let garbage = tmp_file("garbage", "db");
     std::fs::write(&garbage, "this is not a database at all").unwrap();
     let err = restore_err(&garbage, &db).await;
@@ -55,7 +55,7 @@ async fn corrupt_or_incomplete_backups_rejected_without_half_state() {
         "garbage file rejected: {err}"
     );
 
-    // (b) 截断的合法备份。
+    // (b) A truncated but otherwise valid backup.
     let truncated = tmp_file("truncated", "db");
     let bytes = std::fs::read(&backup_path).unwrap();
     std::fs::write(&truncated, &bytes[..bytes.len() / 2]).unwrap();
@@ -65,7 +65,7 @@ async fn corrupt_or_incomplete_backups_rejected_without_half_state() {
         "truncated backup rejected: {err}"
     );
 
-    // (c) 合法 SQLite 但缺表（不完整 schema）。
+    // (c) Valid SQLite but missing tables (an incomplete schema).
     let empty_schema = tmp_file("empty-schema", "db");
     {
         let options = sqlx::sqlite::SqliteConnectOptions::new()
@@ -84,7 +84,7 @@ async fn corrupt_or_incomplete_backups_rejected_without_half_state() {
         "incomplete schema rejected: {err}"
     );
 
-    // (d) 旁挂未合并 WAL 的备份：只拷主文件会丢已提交事务 → 拒绝。
+    // (d) A backup with an unmerged WAL sitting beside it: copying only the main file loses committed transactions -> rejected.
     let with_wal = tmp_file("unsettled-wal", "db");
     std::fs::copy(&backup_path, &with_wal).unwrap();
     std::fs::write(format!("{}-wal", with_wal.display()), b"stale wal bytes").unwrap();
@@ -95,7 +95,7 @@ async fn corrupt_or_incomplete_backups_rejected_without_half_state() {
     );
     cleanup(&with_wal);
 
-    // 三次拒绝后活动库逐字段未动（没有半恢复状态）。
+    // After the three rejections the live DB is untouched field by field (no half-restored state).
     let c = open_app(&db, None).await;
     assert_eq!(
         json_get(&c, &format!("/api/v1/networks/{network_id}/routes"))

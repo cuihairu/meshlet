@@ -1,12 +1,14 @@
-//! Alias 映射写路径（§12.6 / ADR-006，存档 §12「Alias 页面」）：
-//! - `POST /networks/{id}/aliases`：创建（绑定 alias 模式路由，target 服务端
-//!   推导，冲突拒绝发生在任何状态变更前）；
-//! - `GET /networks/{id}/aliases`、`GET …/{alias_id}`：列表/详情；
-//! - `DELETE /networks/{id}/aliases/{alias_id}`：删除 = 整单元清理（映射 +
-//!   绑定路由一个修订，内核侧 NAT 规则随修订 apply 交 backend，§10.3）。
+//! Write paths for Alias mappings (§12.6 / ADR-006, archive §12 "Alias page"):
+//! - `POST /networks/{id}/aliases`: create (binds an alias-mode route, target
+//!   derived server-side, a conflict rejection happens before any state change);
+//! - `GET /networks/{id}/aliases`, `GET …/{alias_id}`: list/detail;
+//! - `DELETE /networks/{id}/aliases/{alias_id}`: delete = whole-unit cleanup
+//!   (mapping + bound route in one revision, the kernel-side NAT rules are
+//!   handed to the backend as part of the revision apply, §10.3).
 //!
-//! 冲突指标（§17.2）：前缀重叠类拒绝计入 `meshlet_route_conflicts_total`。
-//! （数据面 NAT 执行待 ADR-007；本模块是控制面期望态。）
+//! Conflict metric (§17.2): prefix-overlap rejections count towards
+//! `meshlet_route_conflicts_total`. (Data-plane NAT execution awaits ADR-007;
+//! this module is the control-plane desired state.)
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -58,7 +60,8 @@ async fn create_alias_handler(
                 (view, alias, revision, route_seq, staged)
             }
             Err(e) => {
-                // 前缀重叠类冲突与路由冲突同指标（§17.2）；其它 409 不计。
+                // Prefix-overlap conflicts share the route conflict metric (§17.2);
+                // other 409s are not counted.
                 if matches!(e, crate::service::ServiceError::RouteConflict(_)) {
                     crate::record_route_conflict(&state);
                 }
@@ -134,7 +137,8 @@ async fn delete_alias_handler(
     let (route_id, revision, staged) = {
         let guard = state.mesh.lock().unwrap();
         let mut staged = guard.clone();
-        // 删除 = 整单元：返回值带上绑定路由 id，随同一修订清理。
+        // Delete = whole unit: the return value carries the bound route id,
+        // cleaned up under the same revision.
         let (_, route_id) = crate::service::delete_alias(&mut staged, &network_id, &alias_id)?;
         let revision = staged
             .ledger

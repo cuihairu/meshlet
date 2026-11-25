@@ -14,61 +14,77 @@ use crate::service::error::ServiceError;
 pub struct MeshState {
     pub(crate) deployments: HashMap<String, crate::revision::Deployment>,
     pub(crate) networks: HashMap<String, Network>,
-    /// 邀请按 Token 摘要索引（§11.3：兑换时以摘要定位，不暴露原始 Token）。
+    /// Invites are indexed by token digest (§11.3: redemption locates by digest, never exposing the raw token).
     pub(crate) invites: HashMap<String, Invite>,
     pub(crate) ipams: HashMap<String, Ipam>,
-    /// 设备注册表（`pub(crate)`：agent 心跳需读设备网络归属）。
+    /// Device registry (`pub(crate)`: the agent heartbeat needs to read a device's network membership).
     pub(crate) registry: DeviceRegistry,
-    /// LAN 路由（Phase 3 控制面：增删先落状态，应用待 backend，ADR-005）。
+    /// LAN routes (Phase 3 control plane: add/remove lands in state first, application awaits the backend, ADR-005).
     pub(crate) lan_routes: HashMap<String, Vec<LanRoute>>,
-    /// Alias 映射（Phase 4 控制面：等长前缀一对一，ADR-006；NAT 规则的
-    /// 所有权归属——删除即整单元清理（alias + 绑定路由），内核规则由修订
-    /// apply 交 backend 执行）。
+    /// Alias mappings (Phase 4 control plane: one-to-one equal-length prefixes,
+    /// ADR-006; ownership of the NAT rule — deletion cleans up the whole unit
+    /// (alias + bound route), while the kernel rule is executed by the backend
+    /// during a revision apply).
     pub(crate) aliases: HashMap<String, Vec<AliasMapping>>,
-    /// 服务发布对象（R-06：PortForward / HTTP 路由 / 探针 / DNS 记录，
-    /// 按网络索引）。计划构建时按设备过滤（`crate::publish`），设备撤销
-    /// 后不再生效。
+    /// Service publish objects (R-06: PortForward / HTTP route / probe / DNS
+    /// record, indexed by network). Filtered per device when building the plan
+    /// (`crate::publish`); they stop taking effect once the device is revoked.
     pub(crate) publishes: HashMap<String, crate::publish::PublishCatalog>,
     /// Segment trust groups (ADR-012), restored for startup validation and
     /// policy-plan work that follows.
     pub(crate) segments: HashMap<String, Vec<Segment>>,
     /// Directed segment grants (ADR-012), restored with segments.
     pub(crate) grants: HashMap<String, Vec<SegmentGrant>>,
-    /// 路由 id 序列（全局单调，删除不复用）。
+    /// Route id sequence (globally monotonic; deleted ids are never reused).
     pub(crate) route_seq: u64,
-    /// 发布对象 id 序列（`pf-` / `hr-` / `pb-` / `dn-` 共用一条单调序列，
-    /// 前缀不同故不冲突；持久化到 `mesh_meta.publish_seq`，已删 id 不复用）。
+    /// Publish object id sequence (`pf-` / `hr-` / `pb-` / `dn-` share one
+    /// monotonic sequence; the prefixes differ so they cannot collide;
+    /// persisted to `mesh_meta.publish_seq`, and deleted ids are never reused).
     publish_seq: u64,
-    /// 在线判定窗口（§12.4；默认值见 [meshlet_domain::PresenceThresholds]）。
-    /// `pub(crate)`：诊断 §12.7 第 4/8 项按同一窗口判握手/上报新鲜度。
+    /// Online determination window (§12.4; defaults in
+    /// [meshlet_domain::PresenceThresholds]). `pub(crate)`: the §12.7
+    /// diagnostics items 4/8 judge handshake/report freshness against the same
+    /// window.
     pub(crate) presence_thresholds: meshlet_domain::PresenceThresholds,
-    /// 期望配置修订簿记（ADR-009 状态机，§10）。
+    /// Desired-config revision bookkeeping (ADR-009 state machine, §10).
     pub(crate) ledger: meshlet_domain::ConfigLedger,
-    /// 自举码（按 Token 摘要索引；摘要索引纪律同邀请，§11.3）。
+    /// Bootstrap tokens (indexed by token digest; same digest-index discipline as invites, §11.3).
     pub(crate) bootstrap_tokens: std::collections::HashMap<String, meshlet_domain::BootstrapToken>,
-    /// 自举码序列（`bt-N`，持久化到 `mesh_meta`，已删 id 不复用）。
+    /// Bootstrap token sequence (`bt-N`, persisted to `mesh_meta`; deleted ids are never reused).
     pub(crate) bootstrap_seq: u64,
-    /// 注册申请序列（`dev-reg-N`，持久化到 `mesh_meta`，已删 id 不复用）。
-    /// 前缀与 `bt-` 不冲突，故二者各自单调即可——不用共享计数器。
-    /// 待审批申请本体在 `registry` 内（[DeviceRegistry]）。
+    /// Registration request sequence (`dev-reg-N`, persisted to `mesh_meta`;
+    /// deleted ids are never reused). Its prefix does not collide with `bt-`, so
+    /// each sequence being monotonic on its own is sufficient — no shared
+    /// counter. The pending requests themselves live inside `registry`
+    /// ([DeviceRegistry]).
     pub(crate) registration_seq: u64,
-    /// §12 P2P 直连候选（**内存态**，临时性咨询数据）：每轮心跳重报，故不落
-    /// 库——持久化只添陈旧风险（掉线后旧候选仍被对端当成有效）。观测源地址
-    /// 由连接 socket 取（公网候选），LAN 地址由 agent 心跳上报。用 `BTreeMap`
-    /// 与域层 `peer_endpoints_for` 一致（确定性排序）。
+    /// §12 P2P direct-connect candidates (**in-memory state**, transient
+    /// advisory data): re-reported on every heartbeat, so it is not persisted —
+    /// persisting would only add staleness risk (after a disconnect, an old
+    /// candidate would still be treated as valid by peers). The observed source
+    /// address comes from the connection socket (public candidate), and LAN
+    /// addresses are reported in the agent heartbeat. A `BTreeMap` is used to
+    /// stay consistent with the domain-layer `peer_endpoints_for` (deterministic
+    /// ordering).
     pub(crate) direct_states: BTreeMap<DeviceId, DeviceDirectState>,
-    /// 各节点真实主机名（**内存态**，同 `direct_states` 纪律）：agent 心跳
-    /// 上报，SSH alias 分发的默认 alias 来源（主机名 > peer name）；不落库
-    /// ——hub 重启后下一轮心跳即恢复。
+    /// Each node's real hostname (**in-memory state**, same discipline as
+    /// `direct_states`): reported in the agent heartbeat, and the default alias
+    /// source for SSH alias distribution (hostname > peer name); not persisted —
+    /// the next heartbeat after a hub restart restores it.
     pub(crate) device_hostnames: BTreeMap<DeviceId, String>,
-    /// R-DIAG 网络诊断三快照（**内存态**，同 `direct_states` 纪律）：每轮心跳
-    /// 重报，不落库——持久化只添陈旧风险。`None` 上报（采集失败）即移除。
+    /// R-DIAG network diagnostics three snapshots (**in-memory state**, same
+    /// discipline as `direct_states`): re-reported on every heartbeat and not
+    /// persisted — persisting would only add staleness risk. A `None` report
+    /// (collection failed) removes the entry.
     pub(crate) diagnostics: BTreeMap<DeviceId, NetworkDiagnostics>,
-    /// 任务（MT-002：派发→ack→运行→结果回执，id 为幂等键）。与配置修订同
-    /// 纪律落库（重启恢复任务队列，断线补派不丢、不重复）。
+    /// Tasks (MT-002: dispatch → ack → run → result receipt, with the id as the
+    /// idempotency key). Persisted under the same discipline as config revisions
+    /// (a restart recovers the task queue, so re-dispatch after a disconnect
+    /// loses nothing and duplicates nothing).
     pub(crate) tasks: HashMap<String, crate::task::TaskRecord>,
-    /// 任务 id 序列（`task-{seq}`，持久化到 `mesh_meta.task_seq`，已删 id
-    /// 不复用；显式幂等 id 不占序列）。
+    /// Task id sequence (`task-{seq}`, persisted to `mesh_meta.task_seq`;
+    /// deleted ids are never reused; an explicit idempotency id does not consume
+    /// the sequence).
     pub(crate) task_seq: u64,
 }
 
@@ -106,41 +122,43 @@ impl MeshState {
             .ok_or_else(|| ServiceError::NetworkNotFound(id.to_string()))
     }
 
-    // -- 持久化支撑（§17.3）---------------------------------------------------
-    // 写路径：handler 在锁内完成状态变更后，经这些只读访问器取出需要落库的
-    // 行（克隆），锁外写 SQLite。启动路径：`restore_*` 把 DB 行灌回状态。
+    // -- Persistence support (§17.3) -------------------------------------------
+    // Write path: after the handler finishes the state change inside the lock,
+    // these read-only accessors extract the rows that need persisting (cloned),
+    // and SQLite is written outside the lock. Startup path: `restore_*` pours
+    // the DB rows back into state.
 
-    /// 网络行（持久化/重建共用；不存在返回 `None`）。
+    /// Network row (shared by persistence/rebuild; returns `None` when absent).
     pub(crate) fn network_row(&self, id: &str) -> Option<&Network> {
         self.networks.get(id)
     }
 
-    /// 网络 hub 地址（IPAM 首地址；数据面接线用，不存在返回 `None`）。
+    /// Network hub address (the first IPAM address; used for dataplane wiring, returns `None` when absent).
     pub(crate) fn hub_address(&self, id: &str) -> Option<std::net::Ipv4Addr> {
         self.ipams.get(id).map(|ipam| ipam.hub_address())
     }
 
-    /// 邀请行（按 Token 摘要定位；enroll 兑换后据此回写 `used_count`）。
+    /// Invite row (located by token digest; enroll writes `used_count` back through it after redemption).
     pub(crate) fn invite_by_hash(&self, token_hash: &str) -> Option<&Invite> {
         self.invites.get(token_hash)
     }
 
-    /// 全部邀请（启动重建）。
+    /// All invites (startup rebuild).
     pub(crate) fn invites(&self) -> impl Iterator<Item = &Invite> {
         self.invites.values()
     }
 
-    /// 当前路由 id 序列（持久化到 `mesh_meta`，重启不归零、不重号）。
+    /// Current route id sequence (persisted to `mesh_meta`; never resets to zero and never reissues numbers across restarts).
     pub(crate) fn route_seq(&self) -> u64 {
         self.route_seq
     }
 
-    /// 当前发布对象 id 序列（持久化到 `mesh_meta`，重启不归零、不重号）。
+    /// Current publish object id sequence (persisted to `mesh_meta`; never resets to zero and never reissues numbers across restarts).
     pub(crate) fn publish_seq(&self) -> u64 {
         self.publish_seq
     }
 
-    /// 当前任务 id 序列（持久化到 `mesh_meta.task_seq`，重启不归零、不重号）。
+    /// Current task id sequence (persisted to `mesh_meta.task_seq`; never resets to zero and never reissues numbers across restarts).
     pub(crate) fn task_seq(&self) -> u64 {
         self.task_seq
     }
@@ -153,7 +171,7 @@ impl MeshState {
         self.publish_seq = seq;
     }
 
-    /// 当前自举码序列（持久化到 `mesh_meta`）。
+    /// Current bootstrap token sequence (persisted to `mesh_meta`).
     pub(crate) fn bootstrap_seq(&self) -> u64 {
         self.bootstrap_seq
     }
@@ -162,7 +180,7 @@ impl MeshState {
         self.bootstrap_seq = seq;
     }
 
-    /// 当前注册申请序列（持久化到 `mesh_meta`）。
+    /// Current registration request sequence (persisted to `mesh_meta`).
     pub(crate) fn registration_seq(&self) -> u64 {
         self.registration_seq
     }
@@ -197,7 +215,7 @@ impl MeshState {
         self.grants.values().map(Vec::len).sum()
     }
 
-    /// 启动重建：灌回一条待审批的注册申请（不进 IPAM、不进期望配置）。
+    /// Startup rebuild: pour back one pending registration request (it does not enter IPAM or the desired config).
     pub(crate) fn restore_registration(
         &mut self,
         r: DeviceRegistration,
@@ -207,8 +225,9 @@ impl MeshState {
             .map_err(ServiceError::from)
     }
 
-    /// 启动重建（§17.3）：灌回一个网络与其 IPAM（hub 重算，地址逐一保留——
-    /// 已撤销设备的虚拟 IP 同样占用，与运行期语义一致）。
+    /// Startup rebuild (§17.3): pour back one network and its IPAM (the hub is
+    /// recomputed and addresses are kept one by one — a revoked device's virtual
+    /// IP still occupies its slot, matching runtime semantics).
     pub(crate) fn restore_network(&mut self, network: Network) -> Result<(), ServiceError> {
         let hub = network
             .overlay_cidr
@@ -223,7 +242,7 @@ impl MeshState {
         Ok(())
     }
 
-    /// 启动重建：灌回一台设备（IPAM 保留其虚拟 IP，注册表查重如常）。
+    /// Startup rebuild: pour back one device (IPAM keeps its virtual IP; the registry dedupes as usual).
     pub(crate) fn restore_device(&mut self, device: Device) -> Result<(), ServiceError> {
         let segments = self
             .segments
@@ -251,7 +270,7 @@ impl MeshState {
         self.registry.add(device).map_err(ServiceError::from)
     }
 
-    /// 启动重建：灌回一条 LAN 路由。
+    /// Startup rebuild: pour back one LAN route.
     pub(crate) fn restore_route(&mut self, route: LanRoute) {
         self.lan_routes
             .entry(route.network_id.to_string())
@@ -259,7 +278,7 @@ impl MeshState {
             .push(route);
     }
 
-    /// 启动重建：灌回一条 Alias 映射。
+    /// Startup rebuild: pour back one Alias mapping.
     pub(crate) fn restore_alias(&mut self, alias: AliasMapping) {
         self.aliases
             .entry(alias.network_id.to_string())
@@ -309,17 +328,17 @@ impl MeshState {
         Ok(())
     }
 
-    /// 启动重建：灌回一份邀请（摘要索引；撤销/耗尽状态如常保留）。
+    /// Startup rebuild: pour back one invite (digest indexed; revoked/exhausted state is preserved as usual).
     pub(crate) fn restore_invite(&mut self, invite: Invite) {
         self.invites.insert(invite.token_hash.clone(), invite);
     }
 
-    /// 启动重建：恢复路由 id 序列（删除过的 id 不复用）。
+    /// Startup rebuild: restore the route id sequence (deleted ids are never reused).
     pub(crate) fn set_route_seq(&mut self, seq: u64) {
         self.route_seq = seq;
     }
 
-    // -- 启动摘要计数（BootState 日志/测试断言用） ----------------------------
+    // -- Startup summary counts (for BootState logging / test assertions) ------
 
     pub(crate) fn network_count(&self) -> usize {
         self.networks.len()
@@ -337,7 +356,7 @@ impl MeshState {
         self.aliases.values().map(Vec::len).sum()
     }
 
-    /// 启动重建用：全部在册路由 id（Alias 孤儿行判定）。
+    /// For startup rebuild: every registered route id (used to detect orphan Alias rows).
     pub(crate) fn bound_route_ids(&self) -> std::collections::HashSet<String> {
         self.lan_routes
             .values()
@@ -361,27 +380,34 @@ impl MeshState {
     }
 }
 
-/// 网络存在性校验（供其他模块复用；网络不存在 → 404）。
+/// Network existence check (for reuse by other modules; a missing network → 404).
 pub fn require_network(state: &MeshState, network_id: &str) -> Result<(), ServiceError> {
     state.network(network_id).map(|_| ())
 }
 
-/// 期望项状态收敛结果：状态**发生变化**的路由/映射 id 与新状态（供落库）。
+/// Result of settling desired-item status: the route/mapping ids whose status
+/// **changed**, together with the new status (for persistence).
 #[derive(Debug, Default, Clone)]
 pub struct DesiredStateSettle {
     pub routes: Vec<(String, DesiredStateStatus)>,
     pub aliases: Vec<(String, DesiredStateStatus)>,
 }
 
-/// 把一次 apply / rollback 的结论收敛到每条期望项的 `status`
-/// （§10.1「DB 写入 ≠ 显示生效」的路由/映射层镜像）。
+/// Converge the outcome of one apply / rollback into each desired item's
+/// `status` (the route/mapping layer mirror of §10.1's "writing to the DB is
+/// not the same as being in effect").
 ///
-/// - `applied = true`（backend 成功把配置下发到内核）：网关设备 Active 的路由
-///   转 `Applied`，其绑定 Alias 同步转 `Applied`——此时这些前缀才真的可被
-///   agent 数据面取用（[`meshlet_domain::peer_routes`] 只采纳 `Applied`）；
-/// - 网关设备非 Active（无对端可发）或 apply 失败 / 已回滚：转 `Failed`——
-///   失败可见，且 agent 计划随之撤下这些前缀，不会继续按未生效配置转发；
-/// - 状态未变的不上报（幂等重放不产生无谓落库）。
+/// - `applied = true` (the backend successfully pushed the config into the
+///   kernel): routes whose gateway device is Active move to `Applied`, and the
+///   aliases bound to them move to `Applied` in step — only now are these
+///   prefixes genuinely usable by the agent dataplane
+///   ([`meshlet_domain::peer_routes`] adopts only `Applied`);
+/// - The gateway device is not Active (no peer to send to), or the apply failed
+///   / was rolled back: move to `Failed` — the failure stays visible, and the
+///   agent plan drops these prefixes, so it does not keep forwarding under a
+///   config that never took effect;
+/// - Unchanged status is not reported (an idempotent replay produces no
+///   pointless writes to the DB).
 pub fn settle_desired_state(
     state: &mut MeshState,
     network_id: &str,
@@ -404,7 +430,7 @@ pub fn settle_desired_with_status(
     status: DesiredStateStatus,
 ) -> DesiredStateSettle {
     let mut settle = DesiredStateSettle::default();
-    // 先在不可变借用下算好每条路由的网关可用性与目标状态，再统一写回。
+    // First compute each route's gateway availability and target status under an immutable borrow, then write everything back in one pass.
     let wanted: Vec<(String, bool, DesiredStateStatus)> = state
         .lan_routes
         .get(network_id)
@@ -437,7 +463,7 @@ pub fn settle_desired_with_status(
             }
         }
     }
-    // Alias 随其绑定路由：路由已生效则映射生效，否则映射 `Failed`（翻译未下发）。
+    // An Alias follows its bound route: if the route is in effect the mapping is in effect, otherwise the mapping is `Failed` (the translation was never pushed).
     let route_status: HashMap<String, DesiredStateStatus> = state
         .lan_routes
         .get(network_id)

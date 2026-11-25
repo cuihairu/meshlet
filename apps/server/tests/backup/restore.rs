@@ -44,7 +44,7 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
         .1;
         backup_path = PathBuf::from(do_backup(&c).await["path"].as_str().unwrap().to_string());
 
-        // 备份后活动库继续演进：删掉 rt-1、再加第二台设备（修订号走远）。
+        // The live DB keeps evolving after the backup: delete rt-1 and add a second device (revision numbers drift far ahead).
         let (st, _) = call(
             &c,
             "DELETE",
@@ -75,8 +75,8 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
         c.pool.close().await;
     }
 
-    // 离线恢复（与 meshlet-server restore 子命令同一函数）。Windows 会短暂
-    // 延迟释放 SQLite/WAL 句柄，有限重试只吸收文件锁；业务结果仍强断言。
+    // Offline restore (the same function the meshlet-server restore subcommand uses). Windows briefly delays
+    // releasing SQLite/WAL handles, so the bounded retry only absorbs the file lock; business results stay hard-asserted.
     let mut report = None;
     for _ in 0..10 {
         match meshlet_server::persist::restore_from_backup(
@@ -105,7 +105,7 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
     assert_eq!(report.summary.revisions, 3);
     assert!(report.interrupted.is_empty());
 
-    // 恢复后逐字段一致（网络/设备/路由/修订序列与 desired_config_hash）。
+    // Field-by-field agreement after restore (networks / devices / routes / revision sequence and desired_config_hash).
     let c = open_app(&db, None).await;
     let (default_segment_id, default_segment_cidr): (String, String) =
         sqlx::query_as("SELECT id, cidr FROM segments WHERE network_id = ? AND name = 'default'")
@@ -159,7 +159,7 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
         .collect();
     assert_eq!(numbers, vec![1, 2, 3], "contiguous revision numbers");
 
-    // 审计留痕：system.restore（actor=None，离线命令）。
+    // Audit trail: system.restore (actor=None, an offline command).
     let (_, audit) = json_get(&c, "/api/v1/audit").await;
     assert!(
         audit["events"]
@@ -170,7 +170,7 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
         "system.restore audited"
     );
 
-    // route_seq 回到备份时刻：新路由接续 rt-2（与现存 rt-1 不重号）。
+    // route_seq returns to its value at backup time: a new route continues as rt-2 (no id clash with the surviving rt-1).
     let (st, route) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/routes"),
@@ -189,9 +189,9 @@ async fn restore_rebuilds_field_by_field_and_continues_numbering() {
     cleanup(&backup_path);
 }
 
-/// §17.4 验收 3：恢复的收敛语义与 §17.3 启动一致（不比现在更弱）——
-/// 备份里停在 `applying` 的修订恢复后落 `failed`，`rollback_pending`
-/// 原样保留可回滚，被取代修订回滚 409。
+/// §17.4 acceptance 3: the convergence semantics of a restore match those of the §17.3 boot path (no weaker than the status quo) -
+/// a revision stuck at `applying` in the backup lands at `failed` after restore, `rollback_pending` is preserved as-is and
+/// stays rollbackable, and rolling back a superseded revision returns 409.
 #[tokio::test]
 async fn restore_convergence_matches_boot_semantics() {
     let db = tmp_file("conv", "db");
@@ -205,8 +205,8 @@ async fn restore_convergence_matches_boot_semantics() {
         c.pool.close().await;
     }
 
-    // 模拟「崩溃现场被备份」：直接把备份文件里的修订改成中间态
-    // （rev1 rollback_pending / rev2 applying）。
+    // Simulate "a crash scene got backed up": rewrite the revisions inside the backup file to an intermediate state
+    // (rev1 rollback_pending / rev2 applying).
     {
         let pool = meshlet_server::store::connect(&format!("sqlite:{}", backup_path.display()))
             .await
@@ -227,8 +227,8 @@ async fn restore_convergence_matches_boot_semantics() {
         .execute(&pool)
         .await
         .unwrap();
-        // 备份文件的写入必须合并回主文件（WAL 未 checkpoint 的备份会被
-        // 恢复路径明确拒绝——正是「未合并 WAL 拒绝恢复」防线）。
+        // Writes to the backup file must be folded back into the main file (a backup whose WAL was never checkpointed
+        // is explicitly rejected by the restore path - this is exactly the "unsettled WAL refuses to restore" line of defense).
         sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&pool)
             .await
@@ -254,7 +254,7 @@ async fn restore_convergence_matches_boot_semantics() {
     assert_eq!(report.interrupted[0], (network_id.clone(), 2));
 
     let c = open_app(&db, None).await;
-    // applying → failed + 中断诊断（§10.3 不假装成功）。
+    // applying -> failed + an interruption diagnosis (§10.3 does not pretend success).
     let (st, rev2) = json_get(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/2"),
@@ -267,7 +267,7 @@ async fn restore_convergence_matches_boot_semantics() {
         .unwrap()
         .contains("interrupted"));
 
-    // rollback_pending 原样保留（诊断逐字回放，可区分）。
+    // rollback_pending is preserved as-is (the diagnosis is replayed verbatim and stays distinguishable).
     let (_, rev1) = json_get(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/1"),
@@ -276,7 +276,7 @@ async fn restore_convergence_matches_boot_semantics() {
     assert_eq!(rev1["apply_status"], "rollback_pending");
     assert_eq!(rev1["error_summary"], "apply boom");
 
-    // 当前修订（rev2, failed）可回滚（无 backend → 停在 rollback_pending）。
+    // The current revision (rev2, failed) can be rolled back (no backend -> it parks at rollback_pending).
     let (st, rolled) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/2/rollback"),
@@ -285,7 +285,7 @@ async fn restore_convergence_matches_boot_semantics() {
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(rolled["apply_status"], "rollback_pending");
-    // 被取代的 rev1 拒绝回滚（§10.4 交叉破坏防线跨恢复成立）。
+    // The superseded rev1 refuses a rollback (the §10.4 cross-corruption guard holds across a restore).
     let (st, _) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/1/rollback"),
@@ -294,7 +294,7 @@ async fn restore_convergence_matches_boot_semantics() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT);
 
-    // 恢复留痕。
+    // The restore leaves an audit trail.
     let (_, audit) = json_get(&c, "/api/v1/audit").await;
     assert!(audit["events"]
         .as_array()

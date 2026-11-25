@@ -1,5 +1,5 @@
-//! LAN 路由端点：建/列/查/删；路由冲突单独计数（§17.2，经根模块的
-//! `record_route_conflict`，alias.rs 同用）。
+//! LAN route endpoints: create / list / get / delete; route conflicts are counted separately (§17.2, via the root module's
+//! `record_route_conflict`, shared with alias.rs).
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::record_route_conflict;
@@ -40,7 +40,7 @@ pub(crate) async fn create_route_handler(
                 (view, route, revision, route_seq, staged)
             }
             Err(e) => {
-                // 路由冲突单独计数（§17.2「路由冲突数」）；错误类别随领域事件留痕。
+                // Route conflicts are counted separately (§17.2 "route conflict count"); the error category is traced with the domain event.
                 if matches!(e, service::ServiceError::RouteConflict(_)) {
                     record_route_conflict(&state);
                 }
@@ -111,7 +111,7 @@ pub(crate) async fn delete_route_handler(
         let guard = state.mesh.lock().unwrap();
         let mut staged = guard.clone();
         delete_route(&mut staged, &network_id, &route_id)?;
-        // 删除记录了新修订（当前最新）：取出以镜像落库。
+        // Deletion recorded a new revision (the current latest): take it out so it can be mirrored to the database.
         let revision = staged
             .ledger
             .current(&meshlet_domain::NetworkId(network_id.clone()))

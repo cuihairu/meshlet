@@ -1,4 +1,5 @@
-//! 发布对象的 SQL 落库与启动加载；对象、序列、修订和审计同事务提交。
+//! SQL persistence and startup loading for published objects; object, sequence,
+//! revision and audit are committed in one transaction.
 
 use super::models::{PublishDnsRecord, PublishForward, PublishHttpRoute, PublishProbe};
 use crate::persist::{insert_audit_tx, insert_revision_tx, save_seq_tx};
@@ -233,8 +234,8 @@ pub(crate) async fn commit_dns_record(
     Ok(())
 }
 
-/// 通用删除：单表 + 序列 + 修订 + 审计（探针删除另有连带清证据的
-/// [`commit_probe_delete`]）。
+/// Generic delete: single table + sequence + revision + audit (probe deletion
+/// additionally sweeps evidence via [`commit_probe_delete`]).
 pub(crate) async fn commit_delete(
     pool: &SqlitePool,
     table: &str,
@@ -243,7 +244,8 @@ pub(crate) async fn commit_delete(
     revision: &ConfigRevision,
     audit: &crate::persist::AuditDraft<'_>,
 ) -> Result<(), sqlx::Error> {
-    // 表名来自本模块调用点（白名单断言，杜绝拼接注入面）。
+    // The table name comes from a call site in this module (allowlist
+    // assertion, eliminating any concatenation injection surface).
     assert!(
         matches!(
             table,
@@ -286,8 +288,9 @@ pub(crate) async fn commit_probe_delete(
     Ok(())
 }
 
-/// 探针健康回报镜像：每探针一条最新证据（按主键 upsert），device_id
-/// 守卫保证 agent 只能写归自己设备的报告。
+/// Probe health report mirror: one latest evidence row per probe (upserted on
+/// the primary key); the device_id guard ensures an agent can only write
+/// reports belonging to its own device.
 pub(crate) async fn upsert_probe_reports(
     pool: &SqlitePool,
     device_id: &str,
@@ -327,8 +330,9 @@ pub(crate) async fn upsert_probe_reports(
     Ok(())
 }
 
-/// 启动重建：灌回全部发布对象 + `mesh_meta.publish_seq`。行级错误以
-/// `corrupt` 语义上抛（与 persist::load 其余部分一致，由调用方包装）。
+/// Startup restore: load back all published objects + `mesh_meta.publish_seq`.
+/// Row-level errors are raised with `corrupt` semantics (consistent with the
+/// rest of persist::load; wrapped by the caller).
 pub(crate) async fn load(
     pool: &SqlitePool,
     state: &mut crate::service::MeshState,
@@ -520,7 +524,8 @@ pub(crate) async fn load(
         });
     }
 
-    // 健康证据镜像回填（探针已删的孤儿证据不进内存）。
+    // Backfill the health evidence mirror (orphaned evidence whose probe is
+    // already deleted stays out of memory).
     let probe_ids: std::collections::HashSet<String> = state
         .publishes
         .values()

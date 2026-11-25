@@ -1,17 +1,24 @@
-//! 网络诊断（[存档 §12.7](../../docs/review/chatgpt-2026-10-13.md)）：13 项
-//! 检查，按故障层归类（隧道/路由/转发/Alias + 控制面），第一版只诊断不修复。
+//! Network diagnostics ([Archive §12.7](../../docs/review/chatgpt-2026-10-13.md)):
+//! 13 checks, grouped by failure layer (tunnel/routing/forwarding/Alias +
+//! control plane); the first version diagnoses but does not repair.
 //!
-//! 判读纪律（§17.2 组合判读 + 本单硬要求）：
-//! - **不假绿**：控制面观测不到的本机状态（WireGuard 接口、内核路由、IP
-//!   forwarding、防火墙、NAT 规则）如实报 `unavailable`——它不是「健康」，
-//!   并给出一句话可在目标机器上执行的检查命令；
-//! - **控制面在册 ≠ 隧道正常**：Peer 注册（`server_peer_configured`）与握手
-//!   新鲜（`recent_handshake`）是两项独立检查，前者 detail 必须点名这一点
-//!   （§12.4：握手只证明隧道连通，agent 上报才证明设备功能正常）；
-//! - 每一项 `fail`/`warning`/`unavailable` 都带可执行建议（`suggestion`）。
+//! Interpretation discipline (§17.2 combined interpretation + this spec's hard
+//! requirements):
+//! - **No fake green**: local-machine state the control plane cannot observe
+//!   (WireGuard interface, kernel routes, IP forwarding, firewall, NAT rules)
+//!   is reported honestly as `unavailable` — that is not "healthy" — together
+//!   with a one-line check command that can run on the target machine;
+//! - **Registered on the control plane ≠ tunnel working**: peer registration
+//!   (`server_peer_configured`) and a fresh handshake (`recent_handshake`) are
+//!   two independent checks, and the former's detail must call this out
+//!   (§12.4: a handshake only proves the tunnel connects, an agent report is
+//!   what proves the device works);
+//! - Every `fail`/`warning`/`unavailable` carries an actionable suggestion
+//!   (`suggestion`).
 //!
-//! 结果持久化（migration 006）：`POST` 计算并落一行快照，`GET` 返回最近
-//! 一次运行的报告；未运行过 → 404（[ServiceError::DiagnosticsNotRun]）。
+//! Result persistence (migration 006): `POST` computes and stores one snapshot
+//! row, `GET` returns the latest run's report; never run → 404
+//! ([ServiceError::DiagnosticsNotRun]).
 
 use axum::extract::{Path, State};
 use axum::routing::get;
@@ -26,10 +33,11 @@ use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service::{self, ServiceError};
 
 // ---------------------------------------------------------------------------
-// 报告结构
+// Report structure
 // ---------------------------------------------------------------------------
 
-/// 故障层（§12.7 验收：能区分隧道/路由/转发/Alias 故障层）。
+/// Failure layers (§12.7 acceptance: able to tell the tunnel/routing/
+/// forwarding/Alias failure layers apart).
 pub mod layer {
     pub const CONTROL_PLANE: &str = "control_plane";
     pub const TUNNEL: &str = "tunnel";
@@ -38,24 +46,28 @@ pub mod layer {
     pub const ALIAS: &str = "alias";
 }
 
-/// 单项检查结果（id/name/layer/status 是封闭词表，存 `String` 便于快照
-/// 反序列化；词表由下方构造函数与 `layer` 常量钉住）。
+/// One check's result (id/name/layer/status form closed vocabularies, stored as
+/// `String` for convenient snapshot deserialization; the vocabularies are pinned
+/// by the constructors below and the `layer` constants).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticCheck {
-    /// 稳定标识（契约字段，控制台据此排序/对位 §12.7 检查项）。
+    /// Stable identifier (contract field; the console sorts/aligns the §12.7
+    /// checks by it).
     pub id: String,
     pub name: String,
-    /// `control_plane` / `tunnel` / `routing` / `forwarding` / `alias`。
+    /// `control_plane` / `tunnel` / `routing` / `forwarding` / `alias`.
     pub layer: String,
-    /// `pass` / `fail` / `warning` / `unavailable` / `not_applicable`。
+    /// `pass` / `fail` / `warning` / `unavailable` / `not_applicable`.
     pub status: String,
-    /// 观测到的事实（含「为什么拿不到」——unavailable 的原因）。
+    /// Observed facts (including "why it could not be read" — the reason for
+    /// unavailable).
     pub detail: String,
-    /// 可执行建议；`pass` 为空串。
+    /// Actionable suggestion; an empty string when `pass`.
     pub suggestion: String,
 }
 
-/// 一次诊断运行的完整报告（`POST` 计算落库、`GET` 反序列化返回）。
+/// Full report of one diagnostics run (computed and stored by `POST`,
+/// returned deserialized by `GET`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticsReport {
     pub network_id: String,
@@ -63,8 +75,10 @@ pub struct DiagnosticsReport {
     pub checks: Vec<DiagnosticCheck>,
 }
 
-/// `unavailable` 的统一语义：控制面**观测不到**（本机状态需要本地特权读数），
-/// 不是「健康」。detail 说明缺什么，suggestion 给出目标机器上的检查命令。
+/// The unified semantics of `unavailable`: the control plane **cannot observe**
+/// it (local-machine state needs local privileged readings), which is not
+/// "healthy". detail says what is missing, suggestion gives the check command
+/// for the target machine.
 fn unavailable(
     id: &'static str,
     name: &'static str,
@@ -82,7 +96,8 @@ fn unavailable(
     }
 }
 
-/// `not_applicable`：本网络没有该检查的对象（如实区分于 pass）。
+/// `not_applicable`: this network has no object for the check (honestly
+/// distinguished from pass).
 fn not_applicable(
     id: &'static str,
     name: &'static str,
@@ -99,7 +114,7 @@ fn not_applicable(
     }
 }
 
-/// 构造一个任意状态的检查项（各 check_* 函数共用）。
+/// Build a check with an arbitrary status (shared by the check_* functions).
 fn check(
     id: &'static str,
     name: &'static str,
@@ -119,13 +134,14 @@ fn check(
 }
 
 // ---------------------------------------------------------------------------
-// 13 项检查（§12.7 顺序）
+// The 13 checks (§12.7 order)
 // ---------------------------------------------------------------------------
 
-/// 计算一个网络的 13 项检查。`now` 注入便于确定性测试；`aliases` 来自
-/// `alias_mappings` 表（§12.6 服务写路径产生；正常数据创建时已过同一套
-/// 冲突检查，此处兜底防脏库/手改库）；`tunnel_mtu` 来自 server 配置
-/// （§7.5，⑬ 的输入）。
+/// Compute a network's 13 checks. `now` is injected for deterministic testing;
+/// `aliases` come from the `alias_mappings` table (produced by the §12.6
+/// service write path; normal data creation already passes the same conflict
+/// checks, so this is a backstop against a dirty/hand-edited database);
+/// `tunnel_mtu` comes from the server config (§7.5, the input to ⑬).
 pub fn run_checks(
     mesh: &service::MeshState,
     network_id: &str,
@@ -175,7 +191,8 @@ pub fn run_checks(
     }
 }
 
-/// ① API 可达（控制面）：能读到本报告即证明诊断时刻管理 API 在服务。
+/// ① API reachable (control plane): being able to read this report proves the
+/// management API was serving at diagnosis time.
 fn check_api_reachable(now: &str) -> DiagnosticCheck {
     check(
         "api_reachable",
@@ -189,7 +206,8 @@ fn check_api_reachable(now: &str) -> DiagnosticCheck {
     )
 }
 
-/// ② WireGuard 接口存在（隧道）：本机状态，控制面不可观测。
+/// ② WireGuard interface exists (tunnel): local-machine state, unobservable
+/// from the control plane.
 fn check_wg_interface() -> DiagnosticCheck {
     unavailable(
         "wg_interface_exists",
@@ -200,8 +218,9 @@ fn check_wg_interface() -> DiagnosticCheck {
     )
 }
 
-/// ③ 服务端 Peer 已配置（隧道）：注册表里有公钥即已配置——但这只证明
-/// 「控制面在册」，不证明隧道可用（那是 ④ 的职责）。
+/// ③ Server peer configured (tunnel): a public key in the registry means
+/// configured — but that only proves "registered on the control plane", not
+/// that the tunnel works (that is ④'s job).
 fn check_server_peer(active: &[&Device]) -> DiagnosticCheck {
     if active.is_empty() {
         return not_applicable(
@@ -226,8 +245,9 @@ fn check_server_peer(active: &[&Device]) -> DiagnosticCheck {
     )
 }
 
-/// ④ 最近握手正常（隧道）：握手是唯一隧道层证据（§12.4）；新鲜窗口与
-/// presence 一致（`handshake_window`，默认 120s）。
+/// ④ Recent handshake healthy (tunnel): the handshake is the only tunnel-layer
+/// evidence (§12.4); the freshness window matches presence
+/// (`handshake_window`, default 120s).
 fn check_recent_handshake(
     active: &[&Device],
     now: &str,
@@ -285,7 +305,8 @@ fn check_recent_handshake(
     )
 }
 
-/// ⑤ Overlay IP 路由存在（路由）：内核路由表，控制面不可观测。
+/// ⑤ Overlay IP route present (routing): kernel routing table, unobservable
+/// from the control plane.
 fn check_overlay_route(overlay: &str) -> DiagnosticCheck {
     unavailable(
         "overlay_route_present",
@@ -300,7 +321,8 @@ fn check_overlay_route(overlay: &str) -> DiagnosticCheck {
     )
 }
 
-/// ⑥ IP Forwarding 开启（转发）：网关机 sysctl，控制面不可观测。
+/// ⑥ IP forwarding enabled (forwarding): gateway-machine sysctl, unobservable
+/// from the control plane.
 fn check_ip_forwarding() -> DiagnosticCheck {
     unavailable(
         "ip_forwarding_enabled",
@@ -311,7 +333,8 @@ fn check_ip_forwarding() -> DiagnosticCheck {
     )
 }
 
-/// ⑦ 防火墙允许必要转发（转发）：网关机防火墙规则，控制面不可观测。
+/// ⑦ Firewall allows the necessary forwarding (forwarding): gateway-machine
+/// firewall rules, unobservable from the control plane.
 fn check_firewall_forwarding() -> DiagnosticCheck {
     unavailable(
         "firewall_allows_forwarding",
@@ -322,8 +345,10 @@ fn check_firewall_forwarding() -> DiagnosticCheck {
     )
 }
 
-/// ⑧ LAN 网关 Agent 在线（路由）：网关的 agent 必须有**新鲜 agent 上报**
-/// （§12.4：仅握手新鲜 = tunnel_only，不能视为设备功能正常）。
+/// ⑧ LAN gateway agent online (routing): the gateway's agent must have a
+/// **fresh agent report**
+/// (§12.4: handshake freshness alone = tunnel_only, which cannot be treated as
+/// a working device).
 fn check_gateway_online(
     routes: &[&LanRoute],
     mesh: &service::MeshState,
@@ -424,8 +449,10 @@ fn check_gateway_online(
     }
 }
 
-/// ⑨ LAN Route 已发布（路由）：控制面口径 = 路由已记录 + 覆盖它的最新修订
-/// 已应用；**不**证明网关内核装了路由（那是 ⑤⑦ 的本机读数）。
+/// ⑨ LAN route published (routing): the control-plane criterion = the route is
+/// recorded + the latest revision covering it is applied; it does **not** prove
+/// the gateway's kernel has the route installed (that is the local-machine
+/// reading of ⑤⑦).
 fn check_route_published(routes: &[&LanRoute], latest: Option<&ConfigRevision>) -> DiagnosticCheck {
     if routes.is_empty() {
         return not_applicable(
@@ -492,8 +519,9 @@ fn check_route_published(routes: &[&LanRoute], latest: Option<&ConfigRevision>) 
     }
 }
 
-/// ⑩ Alias 前缀冲突（Alias）：对已存在的映射跑域层冲突检测
-/// （overlay 重叠 / alias 互叠 / 绑定路由网段不一致）。
+/// ⑩ Alias prefix conflict (Alias): runs the domain-layer conflict detection
+/// over the existing mappings
+/// (overlay overlap / alias-alias overlap / bound-route CIDR mismatch).
 fn check_alias_conflict(
     aliases: &[AliasMapping],
     routes: &[&LanRoute],
@@ -547,16 +575,18 @@ fn check_alias_conflict(
     )
 }
 
-/// ⑪ NAT 规则生效（Alias）：网关 agent 心跳回传的内核扫描（按所有权注释，
-/// §12.6）。没有任何网关上报证据时控制面如实「不可观测」——那部分不假装。
+/// ⑪ NAT rules effective (Alias): kernel scan returned by the gateway agent's
+/// heartbeat (ownership comment, §12.6). When no gateway has reported evidence
+/// the control plane honestly reports "unobservable" — no pretending there.
 fn check_nat_rules(routes: &[&LanRoute], mesh: &service::MeshState) -> DiagnosticCheck {
     let alias_routes: Vec<&LanRoute> = routes
         .iter()
         .copied()
         .filter(|r| r.route_mode == RouteMode::Alias && r.status == DesiredStateStatus::Applied)
         .collect();
-    // 只评判「上报了证据」的网关：证据缺失（agent 未运行 / 旧版本）不等于
-    // 规则不存在，也不等于存在（§12.2 判读纪律）。
+    // Only judge gateways that "reported evidence": missing evidence (agent not
+    // running / an old version) means neither that the rules are absent nor
+    // that they exist (§12.2 interpretation discipline).
     let mut reporting: Vec<(String, bool, Option<bool>)> = Vec::new();
     for route in &alias_routes {
         let Some(gateway) = mesh.registry.find_by_id(&route.gateway_device_id) else {
@@ -609,8 +639,10 @@ fn check_nat_rules(routes: &[&LanRoute], mesh: &service::MeshState) -> Diagnosti
         );
     }
     let names: Vec<String> = reporting.iter().map(|(name, _, _)| name.clone()).collect();
-    // SNAT 读数按内核实测分开表述：`dnat_only` 映射本就不下发 SNAT 规则
-    // （ADR-005 模式 A），规则在场 ≠ SNAT 在场，不混为一谈。
+    // SNAT readings are stated separately per what the kernel actually shows:
+    // `dnat_only` mappings by design never receive SNAT rules
+    // (ADR-005 mode A); rules being present ≠ SNAT being present, and the two
+    // must not be conflated.
     let snat_confirmed: Vec<String> = reporting
         .iter()
         .filter(|(_, _, snat)| *snat == Some(true))
@@ -652,8 +684,10 @@ fn check_nat_rules(routes: &[&LanRoute], mesh: &service::MeshState) -> Diagnosti
     )
 }
 
-/// ⑫ 配置版本一致（控制面）：最新未回滚修订的状态 = 期望配置与实际环境的
-/// 一致性结论（§10.1：DB 写入 ≠ 生效）。
+/// ⑫ Config revision consistent (control plane): the status of the latest
+/// non-rolled-back revision = the verdict on whether the desired config matches
+/// the actual environment (§10.1: a DB write is not the same as being in
+/// effect).
 fn check_revision_consistent(latest: Option<&ConfigRevision>) -> DiagnosticCheck {
     let Some(rev) = latest else {
         return not_applicable(
@@ -692,10 +726,13 @@ fn check_revision_consistent(latest: Option<&ConfigRevision>) -> DiagnosticCheck
     )
 }
 
-/// ⑬ 隧道 MTU（隧道）：计划值 + 设备侧实测证据（§7.5）。计划值来自 server
-/// 配置（未显式配置时按 WireGuard 默认 1420 解释黑洞风险）；实测来自 agent
-/// 心跳回传的接口 MTU 读数与大包探测（`ping -M do`）。没有设备上报证据时
-/// 只评计划——内核里是什么、路径是否承载，控制面不假装知道。
+/// ⑬ Tunnel MTU (tunnel): the planned value + device-side measured evidence
+/// (§7.5). The planned value comes from the server config (when not explicitly
+/// configured, the blackhole risk is interpreted against the WireGuard default
+/// of 1420); the measurements come from interface MTU readings and large-packet
+/// probes (`ping -M do`) returned by the agent heartbeat. With no device
+/// evidence only the plan is judged — what the kernel holds and whether the
+/// path carries it, the control plane does not pretend to know.
 fn check_mtu_planned(tunnel_mtu: Option<u32>, active: &[&Device]) -> DiagnosticCheck {
     if active.is_empty() {
         return not_applicable(
@@ -738,7 +775,8 @@ fn check_mtu_planned(tunnel_mtu: Option<u32>, active: &[&Device]) -> DiagnosticC
             ),
         };
     }
-    // 设备读数与计划不符 → fail（点名设备与读数；agent 会对漂移重放纠回）。
+    // A device reading that disagrees with the plan → fail (naming the device and
+    // the reading; the agent replays drift back to plan).
     let mismatched: Vec<String> = evidence
         .iter()
         .filter(|(_, e)| e.tunnel_mtu.is_some() && e.tunnel_mtu != Some(planned))
@@ -757,7 +795,8 @@ fn check_mtu_planned(tunnel_mtu: Option<u32>, active: &[&Device]) -> DiagnosticC
             "the agent replays the planned MTU on drift — if a reading stays off, check that device's agent is running and reconciling; alternatively adjust tunnel_mtu in the server config and record a new revision".into(),
         );
     }
-    // 读数一致但大包探测未证实（失败与未探测同形）→ warning，给出实测命令。
+    // Readings match but the large-packet probe is unconfirmed (a failed probe and
+    // a probe never sent look identical) → warning, with the measure command.
     let unverified: Vec<&str> = evidence
         .iter()
         .filter(|(_, e)| e.mtu_probe_payload.is_none())
@@ -815,7 +854,8 @@ fn desired_status(s: DesiredStateStatus) -> &'static str {
     }
 }
 
-/// 「多久之前」的人类可读时长（用于 detail；解析失败按 unknown，不猜）。
+/// Human-readable "how long ago" duration (used in detail; a value that fails
+/// to parse is reported as unknown, never guessed).
 fn ago(ts: &str, now: &str) -> String {
     match (
         chrono::DateTime::parse_from_rfc3339(ts),
@@ -836,10 +876,11 @@ fn ago(ts: &str, now: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 端点
+// Endpoints
 // ---------------------------------------------------------------------------
 
-/// 诊断路由（管理 API：GET 读快照，POST 触发新运行——写请求挂写权限 + CSRF）。
+/// Diagnostics routes (management API: GET reads the snapshot, POST triggers a
+/// new run — write requests require write permission + CSRF).
 pub fn routes() -> Router<SharedAppState> {
     Router::new().route(
         "/api/v1/networks/{network_id}/diagnostics",
@@ -847,8 +888,9 @@ pub fn routes() -> Router<SharedAppState> {
     )
 }
 
-/// `POST /api/v1/networks/{network_id}/diagnostics`：计算 13 项检查，落一行
-/// 快照并返回。留审计事件（显式操作者动作，便于事后追溯「谁在何时诊断过」）。
+/// `POST /api/v1/networks/{network_id}/diagnostics`: computes the 13 checks,
+/// stores one snapshot row and returns it. Leaves an audit event (an explicit
+/// operator action, so "who diagnosed what, when" can be traced afterwards).
 pub async fn run_diagnostics_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -857,7 +899,8 @@ pub async fn run_diagnostics_handler(
 ) -> Result<Json<DiagnosticsReport>, ServiceError> {
     let _persist = state.persist.lock().await;
     let now = service::now();
-    // alias 行（§12.7 第 10 项的输入）来自 DB（§12.6 服务写路径产生）。
+    // alias rows (the input to item 10 of §12.7) come from the DB (produced by
+    // the §12.6 service write path).
     let aliases = crate::persist::alias_rows(state.auth.pool(), &network_id)
         .await
         .map_err(crate::persist::internal)?;
@@ -897,8 +940,8 @@ pub async fn run_diagnostics_handler(
     Ok(Json(report))
 }
 
-/// `GET /api/v1/networks/{network_id}/diagnostics`：最近一次诊断运行。
-/// 从未运行过 → 404（消息点名 POST 触发方式）。
+/// `GET /api/v1/networks/{network_id}/diagnostics`: the latest diagnostics
+/// run. Never run → 404 (the message names POST as the way to trigger one).
 pub async fn get_diagnostics_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(_user): AuthenticatedUser,

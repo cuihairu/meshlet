@@ -1,6 +1,6 @@
-//! HTTP 路由 handler，按资源族分组（对外私有模块，公开 API 集中在 crate 根）。
-//! 各 handler 自带 `State`/`WriteUser`/`CsrfHeader` 等提取器与 `crate::persist`
-//! 互斥纪律（变更/落库同一互斥段，「不落库不放行」）。
+//! HTTP routing handlers, grouped by resource family (a private module; the public API is gathered at the crate root).
+//! Each handler carries its own `State`/`WriteUser`/`CsrfHeader` extractors and the `crate::persist` mutual-exclusion discipline (mutate + persist
+//! inside one critical section: no persist, no proceed).
 
 mod bootstrap_tokens;
 mod devices;

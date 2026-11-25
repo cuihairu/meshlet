@@ -1,4 +1,4 @@
-//! 集成测试：`GET /api/v1/system/status` 契约（api-contract.md）。
+//! Integration test: the `GET /api/v1/system/status` contract (api-contract.md).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

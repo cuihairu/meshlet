@@ -1,8 +1,8 @@
-//! 集成测试：撤销设备（外部 API 控制「peer 撤销」条目；完整链路 §11.5 的
-//! 控制面部分）。
+//! Integration tests: device revocation (the external API controls the "peer revoked" entry; the
+//! control-plane half of the full §11.5 chain).
 //!
-//! 撤销 = 设备状态转 `revoked`（离线）+ agent 凭证立即失效 + 期望配置
-//! 修订（被撤销设备不入配置哈希，ADR-009）。响应 202 携带 `RevisionRef`。
+//! Revocation = device state flips to `revoked` (offline) + agent credential invalidated immediately +
+//! a desired-config revision (the revoked device is excluded from the config hash, ADR-009). The response is 202 carrying `RevisionRef`.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -92,7 +92,7 @@ async fn json_get(c: &Ctx, uri: &str) -> (StatusCode, Value) {
     call(c, "GET", uri, Some(&c.cookie), false, None).await
 }
 
-/// 建网络 + 邀请 + 加入一台设备；返回 (network_id, device_id, agent_token)。
+/// Create a network + invite + join one device; returns (network_id, device_id, agent_token).
 async fn net_with_device(c: &Ctx, name: &str) -> (String, String, String) {
     let (st, network) = json_post(
         c,
@@ -138,12 +138,12 @@ async fn revoke_marks_device_offline_and_records_revision() {
     let (network_id, device_id, _agent) = net_with_device(&c, "home").await;
 
     let (st, rev) = json_post(&c, &revoke_uri(&network_id, &device_id), json!({})).await;
-    // 202：已受理；配置生效待 apply（ADR-009）。
+    // 202: accepted; config takes effect pending apply (ADR-009).
     assert_eq!(st, StatusCode::ACCEPTED);
     assert_eq!(rev["revision_id"], 3, "net=1 enroll=2 revoke=3");
     assert_eq!(rev["apply_status"], "pending");
 
-    // 设备状态转 revoked（下线）；虚拟 IP 等字段保留以便审计。
+    // Device state flips to revoked (offline); fields like the virtual IP are retained for auditing.
     let (_, devices) = json_get(&c, &format!("/api/v1/networks/{network_id}/devices")).await;
     let entry = devices
         .as_array()
@@ -169,7 +169,7 @@ async fn revoked_device_leaves_the_desired_config() {
     let (st, _) = json_post(&c, &revoke_uri(&network_id, &device_id), json!({})).await;
     assert_eq!(st, StatusCode::ACCEPTED);
 
-    // 新修订记录了不含被撤销设备的期望配置：哈希必须变化（§10.4 单调递增）。
+    // The new revision records the desired config without the revoked device: the hash must change (§10.4 monotonic increase).
     let (_, revisions) = json_get(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions"),
@@ -198,20 +198,20 @@ async fn revoked_device_agent_token_is_rejected_immediately() {
             .header("authorization", format!("Bearer {agent_token}"))
             .body(Body::from(json!({}).to_string()))
             .unwrap();
-        // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+        // §12: the heartbeat observes the direct-connection source address (ConnectInfo is wired in the serve layer).
         req.extensions_mut().insert(axum::extract::ConnectInfo(
             "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
         ));
         req
     };
-    // 撤销前心跳正常。
+    // Heartbeat is healthy before revocation.
     let res = c.app.clone().oneshot(hb(&c)).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
     let (st, _) = json_post(&c, &revoke_uri(&network_id, &device_id), json!({})).await;
     assert_eq!(st, StatusCode::ACCEPTED);
 
-    // 撤销后同一 agent token 立即失效（凭证边界与设备状态同步）。
+    // After revocation the same agent token is invalidated immediately (credential boundary in sync with device state).
     let res = c.app.clone().oneshot(hb(&c)).await.unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
@@ -245,7 +245,7 @@ async fn revoke_requires_write_credentials_and_csrf() {
     let c = ctx().await;
     let (network_id, device_id, _agent) = net_with_device(&c, "home").await;
 
-    // 无凭证 → 401。
+    // No credential → 401.
     let (st, _) = call(
         &c,
         "POST",
@@ -256,7 +256,7 @@ async fn revoke_requires_write_credentials_and_csrf() {
     )
     .await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
-    // Cookie 会话缺 CSRF 头 → 403。
+    // Cookie session without the CSRF header → 403.
     let (st, _) = call(
         &c,
         "POST",
@@ -271,12 +271,12 @@ async fn revoke_requires_write_credentials_and_csrf() {
 
 #[tokio::test]
 async fn revoke_removes_the_revoked_device_published_routes() {
-    // §11.5：撤销设备的已发布路由必须一并移除（不能给 AllowedIPs 推导留下
-    // 指向已撤销 Peer 的网段）；其他设备的路由不受影响。
+    // §11.5: routes published by a revoked device must be removed along with it (AllowedIPs
+    // derivation must be left no segment pointing at a revoked peer); other devices' routes are unaffected.
     let c = ctx().await;
     let (network_id, device_a, _agent_a) = net_with_device(&c, "home").await;
 
-    // 第二台设备（同一网络，独立邀请）。
+    // A second device (same network, separate invite).
     let (_, invite_b) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/invites"),
@@ -301,7 +301,7 @@ async fn revoke_removes_the_revoked_device_published_routes() {
     assert_eq!(st, StatusCode::CREATED);
     let device_b = device_b_resp["device_id"].as_str().unwrap().to_string();
 
-    // 各发布一条路由。
+    // Each device publishes one route.
     let routes_uri = format!("/api/v1/networks/{network_id}/routes");
     for (gateway, dst) in [(&device_a, "192.168.1.0/24"), (&device_b, "192.168.2.0/24")] {
         let (st, _) = json_post(
@@ -317,12 +317,12 @@ async fn revoke_removes_the_revoked_device_published_routes() {
         assert_eq!(st, StatusCode::CREATED, "gateway={gateway}");
     }
 
-    // 撤销设备 A。
+    // Revoke device A.
     let (st, rev) = json_post(&c, &revoke_uri(&network_id, &device_a), json!({})).await;
     assert_eq!(st, StatusCode::ACCEPTED);
     assert_eq!(rev["revision_id"], 6, "net=1, enroll×2, route×2 → revoke=6");
 
-    // A 的路由被移除；B 的路由原样保留。
+    // A's route is removed; B's route is left intact.
     let (_, list) = json_get(&c, &routes_uri).await;
     let routes = list.as_array().unwrap();
     assert_eq!(routes.len(), 1, "only the surviving route remains");

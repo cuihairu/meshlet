@@ -1,9 +1,9 @@
-//! 集成测试：Alias 映射增删（§12.6 所有权与清理 / ADR-006）。
+//! Integration test: Alias mapping create/delete (§12.6 ownership and cleanup / ADR-006).
 //!
-//! 端到端：alias 模式路由 → POST Alias（target 由绑定路由推导，客户端不可
-//! 指定；前缀等长；与 overlay/既有 Alias/既有路由目的网段不重叠）→ 列表/
-//! 详情 → 删除即整单元清理（Alias + 绑定路由，一个修订）→ 路由删除/设备
-//! 撤销级联清理 → 重启重建。写入的数据流入诊断第 10 项（§12.7）。
+//! End to end: alias-mode route → POST Alias (target is derived from the bound route, the client cannot
+//! specify it; prefix lengths must match; must not overlap the overlay, an existing Alias, or an existing route's destination) → list /
+//! detail → deletion cleans up the whole unit (Alias + bound route, one revision) → route deletion / device
+//! revocation cascade cleanup → rebuild after restart. The written data flows into diagnostics check 10 (§12.7).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -15,7 +15,7 @@ use tower::ServiceExt; // oneshot
 const OVERLAY: &str = "10.240.0.0/16";
 
 // ---------------------------------------------------------------------------
-// 助手（与 routes.rs 同构）
+// Helpers (same shape as routes.rs)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -135,7 +135,7 @@ async fn net_with_device(c: &Ctx, name: &str, overlay: &str) -> (String, String)
     )
 }
 
-/// 建一条 alias 模式路由（目的网段 = 真实 LAN 网段）。
+/// Create an alias-mode route (destination = the real LAN segment).
 async fn alias_route(c: &Ctx, network_id: &str, gateway: &str, destination: &str) -> String {
     let (st, route) = json_post(
         c,
@@ -166,8 +166,8 @@ async fn create_alias(
     .await
 }
 
-/// 建一个完整单元：网络 + 设备 + alias 路由（192.168.1.0/24）+ Alias
-/// （10.0.1.0/24）。返回 (network_id, device_id, route_id, alias_id)。
+/// Build a complete unit: network + device + alias route (192.168.1.0/24) + Alias
+/// (10.0.1.0/24). Returns (network_id, device_id, route_id, alias_id).
 async fn unit(c: &Ctx) -> (String, String, String, String) {
     let (network_id, device_id) = net_with_device(c, "home", OVERLAY).await;
     let route_id = alias_route(c, &network_id, &device_id, "192.168.1.0/24").await;
@@ -198,7 +198,7 @@ async fn revision_count(c: &Ctx, network_id: &str) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// 创建
+// Creation
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -206,7 +206,7 @@ async fn create_alias_derives_target_and_records_revision() {
     let c = ctx().await;
     let (network_id, _device_id, route_id, _) = unit(&c).await;
 
-    // net=1、enroll=2、路由=3、alias=4；target 由路由推导（192.168.1.0/24）。
+    // net=1, enroll=2, route=3, alias=4; the target is derived from the route (192.168.1.0/24).
     let list = alias_list(&c, &network_id).await;
     assert_eq!(list.len(), 1);
     let alias = &list[0];
@@ -215,13 +215,13 @@ async fn create_alias_derives_target_and_records_revision() {
     assert_eq!(alias["lan_route_id"], route_id.as_str());
     assert_eq!(alias["alias_cidr"], "10.0.1.0/24");
     assert_eq!(alias["target_cidr"], "192.168.1.0/24");
-    // translation_mode 缺省 dnat_snat（ADR-006）；DB 写入 ≠ 生效 → pending。
+    // translation_mode defaults to dnat_snat (ADR-006); a DB write is not an apply → pending.
     assert_eq!(alias["translation_mode"], "dnat_snat");
     assert_eq!(alias["status"], "pending");
     assert_eq!(alias["revision_id"], 4);
     assert_eq!(alias["apply_status"], "pending");
 
-    // 详情与列表一致；另一网络的列表为空（按网络隔离）。
+    // Detail matches the list; another network's list is empty (per-network isolation).
     let (st, detail) = json_get(&c, &format!("/api/v1/networks/{network_id}/aliases/al-2")).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(detail, *alias);
@@ -235,13 +235,13 @@ async fn prefix_length_must_equal_target_and_must_differ() {
     let (network_id, device_id) = net_with_device(&c, "home", OVERLAY).await;
     let route_id = alias_route(&c, &network_id, &device_id, "192.168.1.0/24").await;
 
-    // 等长要求（ADR-006）：/23 ≠ /24 → 400，消息点名两侧前缀长度。
+    // Equal-length requirement (ADR-006): /23 ≠ /24 → 400, the message names both prefix lengths.
     let (st, body) = create_alias(&c, &network_id, &route_id, "10.0.2.0/23").await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains("prefix length mismatch"), "{message}");
 
-    // 与 target 相同的网段没有翻译语义 → 400。
+    // A segment identical to the target has no translation semantics → 400.
     let (st, body) = create_alias(&c, &network_id, &route_id, "192.168.1.0/24").await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
     let message = body["error"]["message"].as_str().unwrap();
@@ -253,7 +253,7 @@ async fn alias_binds_only_alias_mode_routes_of_this_network() {
     let c = ctx().await;
     let (network_id, device_id) = net_with_device(&c, "home", OVERLAY).await;
 
-    // direct 模式路由不能被绑定（§5：alias 模式即「经虚拟前缀」）。
+    // A direct-mode route cannot be bound (§5: alias mode means "via a virtual prefix").
     let (st, route) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/routes"),
@@ -271,7 +271,7 @@ async fn alias_binds_only_alias_mode_routes_of_this_network() {
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains("route_mode"), "{message}");
 
-    // 未知路由 → 404；另一网络的路由同样 404。
+    // Unknown route → 404; a route from another network is also 404.
     let (st, _) = create_alias(&c, &network_id, "rt-999", "10.0.1.0/24").await;
     assert_eq!(st, StatusCode::NOT_FOUND);
     let (other_net, other_dev) = net_with_device(&c, "away", "10.241.0.0/16").await;
@@ -291,7 +291,7 @@ async fn overlapping_prefixes_are_conflicts_naming_the_counterpart() {
     let route1 = alias_route(&c, &network_id, &device_id, "192.168.1.0/24").await;
     let route2 = alias_route(&c, &network_id, &device_id, "192.168.2.0/24").await;
 
-    // ① 与 overlay 重叠 → 409。
+    // (1) Overlapping the overlay → 409.
     let (st, body) = create_alias(&c, &network_id, &route1, "10.240.5.0/24").await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
     assert!(body["error"]["message"]
@@ -299,7 +299,7 @@ async fn overlapping_prefixes_are_conflicts_naming_the_counterpart() {
         .unwrap()
         .contains("overlaps overlay"));
 
-    // ② 与既有路由目的网段重叠（虚拟前缀必须与真实 LAN 空间隔离）→ 409。
+    // (2) Overlapping an existing route's destination (the virtual prefix must stay disjoint from the real LAN space) → 409.
     let (st, body) = create_alias(&c, &network_id, &route1, "192.168.2.0/24").await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
     let message = body["error"]["message"].as_str().unwrap();
@@ -308,7 +308,7 @@ async fn overlapping_prefixes_are_conflicts_naming_the_counterpart() {
         "must name the conflicting route: {message}"
     );
 
-    // ③ 与既有 Alias 重叠 → 409，消息点名对端 Alias（等长约束下重叠即同段）。
+    // (3) Overlapping an existing Alias → 409, the message names the other Alias (under the equal-length constraint, overlap means the same segment).
     let (st, first) = create_alias(&c, &network_id, &route1, "10.0.1.0/24").await;
     assert_eq!(st, StatusCode::CREATED);
     let first_id = first["id"].as_str().unwrap().to_string();
@@ -320,7 +320,7 @@ async fn overlapping_prefixes_are_conflicts_naming_the_counterpart() {
         "must name the existing alias: {message}"
     );
 
-    // ④ 同一路由重复绑定 → 409（一对一单元，§12.6）。
+    // (4) Binding the same route twice → 409 (one-to-one unit, §12.6).
     let (st, body) = create_alias(&c, &network_id, &route1, "10.0.2.0/24").await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
     assert!(body["error"]["message"]
@@ -334,7 +334,7 @@ async fn rejected_create_leaves_no_trace() {
     let c = ctx().await;
     let (network_id, device_id, _route_id, _) = unit(&c).await;
 
-    // 重叠拒绝后：列表不变、不产生新修订（§8.3 拒绝先于任何状态变更）。
+    // After an overlap rejection: the list is unchanged and no new revision is created (§8.3 rejects before any state change).
     let other_route = alias_route(&c, &network_id, &device_id, "192.168.2.0/24").await;
     let before = revision_count(&c, &network_id).await;
     let (st, _) = create_alias(&c, &network_id, &other_route, "10.0.1.0/24").await;
@@ -349,7 +349,7 @@ async fn rejected_create_leaves_no_trace() {
 }
 
 // ---------------------------------------------------------------------------
-// 删除与级联（§12.6 所有权）
+// Deletion and cascade (§12.6 ownership)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -365,7 +365,7 @@ async fn delete_alias_removes_the_whole_unit_in_one_revision() {
     .await;
     assert_eq!(st, StatusCode::NO_CONTENT);
 
-    // 整单元：Alias 与绑定路由同时消失。
+    // The whole unit: Alias and bound route disappear together.
     assert!(alias_list(&c, &network_id).await.is_empty());
     let (st, _) = json_get(
         &c,
@@ -379,10 +379,10 @@ async fn delete_alias_removes_the_whole_unit_in_one_revision() {
     )
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
-    // 恰好一个新修订（删 Alias 与删路由不是两次变更）。
+    // Exactly one new revision (deleting the Alias and deleting the route are not two changes).
     assert_eq!(revision_count(&c, &network_id).await, before + 1);
 
-    // 再删 → 404；未知网络的 Alias → 404。
+    // Deleting again → 404; an Alias under an unknown network → 404.
     let (st, _) = json_delete(
         &c,
         &format!("/api/v1/networks/{network_id}/aliases/{alias_id}"),
@@ -405,7 +405,7 @@ async fn deleting_route_cascades_its_alias() {
     .await;
     assert_eq!(st, StatusCode::NO_CONTENT);
 
-    // 路由没了，绑定它的 Alias 不能留下孤儿。
+    // The route is gone, so the Alias bound to it must not be left orphaned.
     assert!(alias_list(&c, &network_id).await.is_empty());
     let (st, _) = json_get(
         &c,
@@ -428,7 +428,7 @@ async fn revoking_device_cascades_routes_and_aliases() {
     .await;
     assert_eq!(st, StatusCode::ACCEPTED);
 
-    // §11.5 + §12.6：撤销网关 = 其路由与绑定 Alias 一并清空。
+    // §11.5 + §12.6: revoking the gateway clears its routes and bound Aliases along with it.
     assert!(alias_list(&c, &network_id).await.is_empty());
     let (st, routes) = json_get(&c, &format!("/api/v1/networks/{network_id}/routes")).await;
     assert_eq!(st, StatusCode::OK);
@@ -436,7 +436,7 @@ async fn revoking_device_cascades_routes_and_aliases() {
 }
 
 // ---------------------------------------------------------------------------
-// 重启重建（§17.3）
+// Restart rebuild (§17.3)
 // ---------------------------------------------------------------------------
 
 static DB_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -455,7 +455,7 @@ fn cleanup_db(path: &std::path::Path) {
     }
 }
 
-/// 文件库 + 重启重建（recovery.rs 同构：boot → bootstrap 或 login）。
+/// File-backed db + restart rebuild (same shape as recovery.rs: boot → bootstrap or login).
 async fn open_app(db: &std::path::Path) -> Ctx {
     let url = format!("sqlite:{}", db.display());
     let pool = meshlet_server::store::connect(&url).await.unwrap();
@@ -475,7 +475,7 @@ async fn open_app(db: &std::path::Path) -> Ctx {
             json!({"email": "admin@test.local", "password": "bootstrap-password-123"}).to_string(),
         )
     };
-    // bootstrap（空库 201）或 login（重启后）——都从 Set-Cookie 取会话。
+    // bootstrap (201 on an empty db) or login (after restart) -- the session comes from Set-Cookie either way.
     let res = app
         .clone()
         .oneshot(
@@ -524,13 +524,13 @@ async fn restart_rebuilds_aliases_and_never_reuses_ids() {
     let before = alias_list(&c, &network_id).await;
     drop(c);
 
-    // 重启：Alias 逐字段重建。
+    // Restart: Aliases are rebuilt field by field.
     let c = open_app(&db).await;
     let after = alias_list(&c, &network_id).await;
     assert_eq!(after.len(), 1, "alias survives restart");
     assert_eq!(after[0], before[0], "field-by-field rebuild");
 
-    // 删除后重建：id 序列不回退（al-2 不复用；新路由 rt-3、新 Alias al-4）。
+    // Rebuild after deletion: the id sequence never rolls back (al-2 is not reused; new route rt-3, new Alias al-4).
     let (st, _) = json_delete(
         &c,
         &format!("/api/v1/networks/{network_id}/aliases/{alias_id}"),
@@ -553,7 +553,7 @@ async fn restart_rebuilds_aliases_and_never_reuses_ids() {
 }
 
 // ---------------------------------------------------------------------------
-// 诊断联动（§12.7 第 10 项）
+// Diagnostics integration (§12.7 item 10)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -561,7 +561,7 @@ async fn write_path_aliases_flow_into_diagnostics_check() {
     let c = ctx().await;
     let (network_id, _device_id, _route_id, _alias_id) = unit(&c).await;
 
-    // 写路径产生的干净 Alias：第 10 项逐条检查通过（不再 not_applicable）。
+    // Clean Aliases produced by the write path: item 10 passes the per-entry check (no longer not_applicable).
     let (st, report) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/diagnostics"),
@@ -586,7 +586,7 @@ async fn write_path_aliases_flow_into_diagnostics_check() {
 }
 
 // ---------------------------------------------------------------------------
-// 门禁
+// Gates
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -594,7 +594,7 @@ async fn alias_endpoints_require_auth_and_csrf() {
     let c = ctx().await;
     let (network_id, _device_id, _route_id, _) = unit(&c).await;
 
-    // 无会话 → 401；写缺 CSRF 头 → 403。
+    // No session → 401; a write missing the CSRF header → 403.
     let (st, _) = call(
         &c,
         "GET",

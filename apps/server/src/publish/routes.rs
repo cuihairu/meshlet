@@ -1,4 +1,4 @@
-//! 服务发布 HTTP 路由装配。
+//! HTTP route assembly for service publishing.
 
 use super::handlers::{
     create_dns_record_handler, create_forward_handler, create_http_route_handler,
@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::Router;
 
 pub(crate) fn routes() -> Router<SharedAppState> {
-    // 与 segments/aliases 同形：发布对象是网络范围内的期望配置。
+    // Same shape as segments/aliases: publishing objects are network-scoped desired configuration.
     Router::new()
         .route(
             "/api/v1/networks/{network_id}/publish/forwards",

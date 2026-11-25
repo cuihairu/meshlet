@@ -1,4 +1,4 @@
-//! API 视图、请求体与内存记录转换；读视图只回 token 条数。
+//! API views, request bodies, and conversions with in-memory records; read views return only token counts.
 
 use super::models::{PublishDnsRecord, PublishForward, PublishHttpRoute, PublishProbe};
 use crate::service::MeshState;
@@ -6,7 +6,7 @@ use meshlet_publish::health::{HealthState, ProbeTarget};
 use meshlet_publish::ForwardProtocol;
 
 // ---------------------------------------------------------------------------
-// 视图与请求（读视图只回 token 条数，永不回显 token 本身）
+// Views and requests (read views return only token counts, never the token itself)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -67,8 +67,8 @@ pub struct CreatePublishHttpRouteRequest {
     pub allowed_source_cidrs: Vec<String>,
     #[serde(default)]
     pub allowed_bearer_tokens: Vec<String>,
-    /// 旧名 `tls_termination` 仍被接受（M1 更名前的调用方不断）：它描述的
-    /// 从来都是直通而非终结。响应一律输出新名。
+    /// The old name `tls_termination` is still accepted (callers predating the M1 rename must not break): it always
+    /// described passthrough rather than termination. Responses always emit the new name.
     #[serde(default, alias = "tls_termination")]
     pub tls_passthrough: bool,
 }
@@ -92,8 +92,8 @@ pub struct PublishProbeView {
     pub revision_id: u64,
 }
 
-/// 平铺请求体（不走 serde 外部标签枚举）：`target_kind` ∈ `tcp` / `http`，
-/// http 探针必带 `path` + `expected_status`。
+/// Flat request body (no serde externally tagged enum): `target_kind` is `tcp` or `http`;
+/// http probes must carry `path` + `expected_status`.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreatePublishProbeRequest {

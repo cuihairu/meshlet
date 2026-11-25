@@ -1,4 +1,4 @@
-//! 任务 HTTP 路由：console 派发/确认/驳回与 agent 拉取/ack/result。
+//! Task HTTP routes: console dispatch/confirm/reject and agent pull/ack/result.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -13,8 +13,9 @@ use crate::service::{MeshState, ServiceError};
 use super::dispatch::{ack, assign, confirm, pending_for, record_result, retry};
 use super::models::{AssignTaskRequest, TaskResultReport, TaskView};
 
-/// 按网络列任务（创建时间稳定排序；同秒并列按 id 决胜——`created_at` 秒级
-/// 精度，`tasks` 又是 HashMap，无 id 决胜会退化为任意序）。
+/// List tasks per network (stable ordering by creation time; ties within the same second are broken by id —
+/// `created_at` has second-level precision and `tasks` is a HashMap, so without the id tiebreak the order would
+/// degenerate into an arbitrary one).
 pub(crate) fn list_network(state: &MeshState, network_id: &str) -> Vec<TaskView> {
     let mut out: Vec<TaskView> = state
         .tasks
@@ -30,7 +31,7 @@ pub(crate) fn list_network(state: &MeshState, network_id: &str) -> Vec<TaskView>
     out
 }
 
-/// 控制台路由（MT-002 派发；MT-003 列取/确认/驳回重跑）。
+/// Console routes (MT-002 dispatch; MT-003 list/fetch, confirm, reject-and-rerun).
 pub(crate) fn console_routes() -> axum::Router<SharedAppState> {
     axum::Router::new()
         .route(
@@ -47,7 +48,7 @@ pub(crate) fn console_routes() -> axum::Router<SharedAppState> {
         )
 }
 
-/// 控制台派发（`POST /api/v1/networks/{network_id}/tasks`）。
+/// Console dispatch (`POST /api/v1/networks/{network_id}/tasks`).
 pub(crate) async fn assign_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -83,7 +84,7 @@ pub(crate) async fn assign_handler(
     Ok((status, Json(view)))
 }
 
-/// 控制台列取网络任务（`GET /api/v1/networks/{network_id}/tasks`）。
+/// Console listing of a network's tasks (`GET /api/v1/networks/{network_id}/tasks`).
 pub(crate) async fn list_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(_user_id): AuthenticatedUser,
@@ -93,8 +94,9 @@ pub(crate) async fn list_handler(
     Ok(Json(list_network(&guard, &network_id)))
 }
 
-/// 控制台确认完成（`POST /api/v1/networks/{network_id}/tasks/{task_id}/confirm`）。
-/// 仅 done 可确认；重复确认幂等 200。非终态任务不可确认 → 409。
+/// Console confirmation of completion (`POST /api/v1/networks/{network_id}/tasks/{task_id}/confirm`).
+/// Only a done task can be confirmed; confirming again is an idempotent 200. A non-terminal task cannot be
+/// confirmed -> 409.
 pub(crate) async fn confirm_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -104,7 +106,7 @@ pub(crate) async fn confirm_handler(
     let _persist = state.persist.lock().await;
     let (record, newly) = {
         let mut guard = state.mesh.lock().unwrap();
-        // 任务必须属于该网络。
+        // The task must belong to that network.
         let rec = guard
             .tasks
             .get(&task_id)
@@ -144,8 +146,9 @@ pub(crate) async fn confirm_handler(
     ))
 }
 
-/// 控制台驳回重跑（`POST /api/v1/networks/{network_id}/tasks/{task_id}/retry`）。
-/// 原任务置 rejected_at 并派发新一代（201 返回新任务）。非终态 → 409。
+/// Console rejection with re-run (`POST /api/v1/networks/{network_id}/tasks/{task_id}/retry`).
+/// The original task gets rejected_at and a new generation is dispatched (201 returns the new task).
+/// Non-terminal -> 409.
 pub(crate) async fn retry_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -156,13 +159,14 @@ pub(crate) async fn retry_handler(
     let (record, new_seq, orig) = {
         let mut guard = state.mesh.lock().unwrap();
         let (record, new_seq) = retry(&mut guard, &network_id, &task_id)?;
-        // 被驳回的原任务此刻已置 rejected_at；取回供落库。
+        // The rejected original task has just been stamped with rejected_at; fetch it back for persistence.
         let orig = guard.tasks.get(&task_id).cloned();
         (record, new_seq, orig)
     };
-    // 原任务的 rejected_at 是新写入，不落库则重启后丢失「已驳回」事实
-    // （审核 MAJOR：只落新代会丢原记录）。先落原任务（拒绝事实先行），
-    // 再落新代。
+    // The original task's rejected_at is a fresh write; if it is not persisted, the "was
+    // rejected" fact is lost after a restart (review MAJOR: persisting only the new
+    // generation would lose the original record). Persist the original task first (the
+    // rejection fact comes first), then the new generation.
     let orig = orig.ok_or_else(|| ServiceError::Internal("retried task vanished".into()))?;
     let reject_audit = crate::persist::AuditDraft {
         actor_id: Some(&user_id.0),
@@ -193,7 +197,7 @@ pub(crate) async fn retry_handler(
     Ok((StatusCode::CREATED, Json(TaskView::from(&record))))
 }
 
-/// agent 拉取待办（`GET /api/v1/agent/tasks/pending`）。
+/// Agent pulls its pending work (`GET /api/v1/agent/tasks/pending`).
 pub(crate) async fn pending_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
@@ -202,7 +206,7 @@ pub(crate) async fn pending_handler(
     Ok(Json(pending_for(&guard, &device_id)))
 }
 
-/// agent 确认接收（`POST /api/v1/agent/tasks/{id}/ack`）。
+/// Agent acknowledges receipt (`POST /api/v1/agent/tasks/{id}/ack`).
 pub(crate) async fn ack_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
@@ -211,7 +215,7 @@ pub(crate) async fn ack_handler(
     let _persist = state.persist.lock().await;
     let (record, changed) = {
         let mut guard = state.mesh.lock().unwrap();
-        // 只能确认发给自己的任务。
+        // It can only acknowledge tasks addressed to itself.
         let rec = guard
             .tasks
             .get(&id)
@@ -223,7 +227,7 @@ pub(crate) async fn ack_handler(
         let changed = ack(&mut guard, &id).is_some();
         (guard.tasks.get(&id).cloned(), changed)
     };
-    // 幂等：已 acked / running / 终态时 ack 不再跃迁，也不重复落库 / 审计。
+    // Idempotent: once acked / running / terminal, acking no longer transitions and does not re-persist or re-audit.
     if let (Some(record), true) = (record, changed) {
         let audit = crate::persist::AuditDraft {
             actor_id: Some(&device_id.0),
@@ -239,7 +243,7 @@ pub(crate) async fn ack_handler(
     Ok(StatusCode::OK)
 }
 
-/// agent 回传结果（`POST /api/v1/agent/tasks/{id}/result`）。
+/// Agent returns the result (`POST /api/v1/agent/tasks/{id}/result`).
 pub(crate) async fn result_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
@@ -273,7 +277,7 @@ pub(crate) async fn result_handler(
     Ok(Json(TaskView::from(&record)))
 }
 
-/// 供诊断 / 控制台列取全部任务（MT-003 会加分列面板，此处只给稳定排序）。
+/// For diagnostics / console listing of all tasks (MT-003 will add a per-column panel; here only a stable order is provided).
 #[allow(dead_code)]
 pub(crate) fn list(state: &MeshState) -> Vec<TaskView> {
     let mut out: Vec<TaskView> = state.tasks.values().map(TaskView::from).collect();

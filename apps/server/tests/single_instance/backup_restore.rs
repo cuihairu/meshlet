@@ -27,7 +27,7 @@ async fn restoring_a_backup_reconverges_the_kernel() {
     converge_device(&sandbox, &boot, 1).await;
     assert!(reconnects(&sandbox.names[2], "192.168.60.5"));
 
-    // 备份时刻的内核证据：hub 路由与网关 NAT 都在场。
+    // Kernel evidence at backup time: both the hub routes and the gateway NAT are present.
     let hub_routes = sorted_lines(&sandbox, 0, &["ip", "-4", "route", "show", "dev", "wg0"]);
     let nat = meshlet_nat_lines(&sandbox, 1);
     assert!(
@@ -50,7 +50,7 @@ async fn restoring_a_backup_reconverges_the_kernel() {
         backup.path
     );
 
-    // 备份之后发生变更：删掉 LAN 路由并应用——内核随之失去这些受管对象。
+    // A change lands after the backup: delete the LAN route and apply — the kernel then loses those managed objects.
     let (status, body) = request(
         &boot.app,
         "DELETE",
@@ -102,7 +102,7 @@ async fn restoring_a_backup_reconverges_the_kernel() {
         "post-backup deletion must reach the gateway kernel"
     );
 
-    // 恢复：先关库（restore 要独占锁），再原子换回备份内容。
+    // Restore: close the DB first (restore needs the exclusive lock), then swap back the backup content atomically.
     boot.pool.close().await;
     let database = sandbox.dir.join("state.db");
     let report = meshlet_server::persist::restore_from_backup(
@@ -124,8 +124,8 @@ async fn restoring_a_backup_reconverges_the_kernel() {
         report.interrupted
     );
 
-    // 用恢复后的库重启服务。设备 token / 私钥都是备份内容的一部分，重启后
-    // 照旧有效，不需要重新入网；hub 重启沿用同一个私钥文件（ADR-010）。
+    // Restart the service on the restored DB. Device tokens / private keys are part of the backup,
+    // so they stay valid after restart with no re-enrollment; the hub restart keeps the same key file (ADR-010).
     let hub_key = std::fs::read_to_string(sandbox.dir.join("restore.key")).unwrap();
     let network = boot.network.clone();
     let tokens = boot.tokens.clone();
@@ -152,10 +152,10 @@ async fn restoring_a_backup_reconverges_the_kernel() {
         "the LAN route must be back in the control plane: {body}"
     );
 
-    // 「点一次 apply」并不能恢复内核：已 applied 的修订在账本里是幂等空操作
-    // （config_state.rs:230），而备份后新增的修订在恢复出的库里已不存在。
-    // 真正把内核带回备份时刻的是生产启动恢复（main.rs:98 start_recovery 的
-    // 同步形态）——它拿恢复出的期望计划比对内核，缺什么补什么。
+    // "Clicking apply once" does not restore the kernel: an already-applied revision is an idempotent
+    // no-op in the ledger (config_state.rs:230), and revisions added after the backup no longer exist
+    // in the restored DB. What actually brings the kernel back to backup time is the production startup
+    // recovery (the synchronous form of main.rs:98 start_recovery) — it diffs the restored desired plan against the kernel and fills whatever is missing.
     meshlet_server::convergence::recover_once(boot.state.clone())
         .await
         .unwrap();
@@ -165,7 +165,7 @@ async fn restoring_a_backup_reconverges_the_kernel() {
         "hub routes must reconverge to the backup-time plan"
     );
 
-    // 网关侧：恢复出的期望又带上了 NAT，设备按自己的期望计划重新收敛。
+    // Gateway side: the restored desired plan carries NAT again, and the device reconverges to its own desired plan.
     converge_device(&sandbox, &boot, 0).await;
     converge_device(&sandbox, &boot, 1).await;
     assert_eq!(

@@ -1,13 +1,13 @@
-//! 集成测试：设备自举注册（ZeroTier 式：自举码 → Pending → 控制中心审批/拒绝）。
+//! Integration test: device bootstrap registration (ZeroTier-style: bootstrap code -> Pending -> console approve/deny).
 //!
-//! 端到端路径：创建自举码（原始码仅此一次返回）→ 设备持码自举注册
-//! （落 Pending，**不分配虚拟 IP、不进期望配置**）→ Pending 期心跳证据落
-//! 注册申请 → 控制中心批准（此刻才分配 IP + 记修订，凭证不轮换）/ 拒绝
-//! （纯状态清理，无修订）。断言重点：
-//! - Pending 设备不进 `devices` 列表、desired 端点 404（migration 008 取舍）；
-//! - 名字唯一性跨 devices + registrations 两侧；
-//! - 自举码撤销/耗尽后注册 401；管理侧按 id 撤销 404（两条错误面分离）；
-//! - 批准沿用设备 id 与注册期凭证（desired 端点从 404 变为非 401/404）。
+//! End-to-end path: create a bootstrap code (the raw code is returned exactly once) -> the device registers
+//! with it (lands in Pending, **no virtual IP assigned, not added to the desired config**) -> heartbeat
+//! evidence during Pending lands on the registration request -> the console approves (only then is an IP
+//! allocated and a revision recorded; credentials are not rotated) or denies (pure state cleanup, no revision). Assertion focus:
+//! - Pending devices do not appear in `devices` and the desired endpoint returns 404 (migration 008 tradeoff);
+//! - name uniqueness spans both devices and registrations;
+//! - registering with a revoked/exhausted bootstrap code returns 401; revoking an unknown id admin-side returns 404;
+//! - approval keeps the device id and registration-time credential (the desired endpoint goes from 404 to non-401/404).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -17,7 +17,7 @@ use tower::ServiceExt; // oneshot
 
 const OVERLAY: &str = "10.240.0.0/16";
 
-/// 测试上下文：router + 管理会话 Cookie。Clone 后共享同一底层状态。
+/// Test context: router + admin session cookie. Clones share the same underlying state.
 #[derive(Clone)]
 struct Ctx {
     app: Router,
@@ -68,13 +68,13 @@ async fn app() -> Ctx {
 
 async fn res_body(res: axum::response::Response) -> serde_json::Value {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    // 提取器拒绝（如 deny_unknown_fields 的 422）是纯文本体：原样包成
-    // 字符串，保持断言消息可见。
+    // Extractor rejections (e.g. the 422 from deny_unknown_fields) come back as a plain-text
+    // body: wrap it verbatim as a string so assertion messages stay readable.
     serde_json::from_slice(&bytes)
         .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&bytes).to_string()))
 }
 
-/// 管理端写请求（Cookie + CSRF 头）。
+/// Admin-side write request (cookie + CSRF header).
 async fn admin_post(
     ctx: Ctx,
     uri: &str,
@@ -129,7 +129,7 @@ async fn admin_delete(ctx: Ctx, uri: &str) -> StatusCode {
     res.status()
 }
 
-/// 公开端点（自举注册）：设备凭自举码而来，无会话。
+/// Public endpoint (bootstrap registration): the device comes with a bootstrap code, no session.
 async fn register(ctx: Ctx, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
     let res = ctx
         .app
@@ -146,7 +146,7 @@ async fn register(ctx: Ctx, body: serde_json::Value) -> (StatusCode, serde_json:
     (res.status(), res_body(res).await)
 }
 
-/// 管理端无请求体的写请求（approve/deny）；`cookie = None` 走公开端点（enroll）。
+/// Admin-side write request with no body (approve/deny); `cookie = None` uses the public endpoint (enroll).
 async fn admin_post_empty(
     ctx: Ctx,
     uri: &str,
@@ -165,7 +165,7 @@ async fn admin_post_empty(
         .await
         .unwrap();
     let status = res.status();
-    // 204/3xx 无响应体：按 null 处理，避免把空体当 JSON 解析。
+    // 204/3xx has no body: treat it as null instead of parsing an empty body as JSON.
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let body = if bytes.is_empty() {
         serde_json::Value::Null
@@ -175,7 +175,7 @@ async fn admin_post_empty(
     (status, body)
 }
 
-/// Agent API（Bearer 凭证，无 CSRF）。
+/// Agent API (Bearer credential, no CSRF).
 async fn desired(ctx: Ctx, agent_token: &str) -> (StatusCode, serde_json::Value) {
     let res = ctx
         .app
@@ -206,7 +206,7 @@ async fn heartbeat(ctx: Ctx, agent_token: &str) -> (StatusCode, serde_json::Valu
             .to_string(),
         ))
         .unwrap();
-    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    // §12: heartbeat observes the direct-connection source address (ConnectInfo is wired up at the serve layer).
     req.extensions_mut().insert(axum::extract::ConnectInfo(
         "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
     ));
@@ -259,12 +259,12 @@ async fn bootstrap_token_shown_once_then_metadata_only() {
     let network_id = create_network(ctx.clone(), "mesh").await;
     let token = create_bootstrap_token(ctx.clone(), &network_id, Some(2)).await;
 
-    // 原始码仅此一次返回；id 序列从 bt-1 起。
+    // The raw code is returned exactly once; ids start at bt-1.
     assert_eq!(token["token_id"], "bt-1");
     assert!(token["token"].as_str().unwrap().len() >= 32);
     assert_eq!(token["max_uses"], 2);
 
-    // 列表只有元数据，绝无凭据材料。
+    // The listing carries metadata only, never credential material.
     let (status, list) = admin_get(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/bootstrap-tokens"),
@@ -276,7 +276,7 @@ async fn bootstrap_token_shown_once_then_metadata_only() {
     assert!(list[0].get("token").is_none(), "raw token must not list");
     assert!(list[0].get("token_hash").is_none(), "digest must not list");
 
-    // 撤销后再撤销 → 409；未知 id → 404（与设备出示无效码的 401 分离）。
+    // Revoking again -> 409; an unknown id -> 404 (separate from the 401 a device gets for a bad code).
     assert_eq!(
         admin_delete(
             ctx.clone(),
@@ -302,7 +302,7 @@ async fn bootstrap_token_shown_once_then_metadata_only() {
         StatusCode::NOT_FOUND
     );
 
-    // 撤销后的码注册 → 401。
+    // Registering with a revoked code -> 401.
     let (status, body) = register(
         ctx.clone(),
         reg_body(token["token"].as_str().unwrap(), "dev-a"),
@@ -331,7 +331,7 @@ async fn self_registration_lifecycle_approve() {
     let token = create_bootstrap_token(ctx.clone(), &network_id, None).await;
     let raw = token["token"].as_str().unwrap().to_string();
 
-    // 基线：建网时已记初始修订（§10.1），后续只断言相对增量。
+    // Baseline: network creation already recorded the initial revision (§10.1); assert only relative deltas from here.
     let (_, revisions) = admin_get(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/config-revisions"),
@@ -339,7 +339,7 @@ async fn self_registration_lifecycle_approve() {
     .await;
     let baseline = revisions.as_array().unwrap().len();
 
-    // 注册 → Pending（无虚拟 IP 字段，状态恒 pending）。
+    // Registration -> Pending (no virtual IP field, state always pending).
     let (status, reg) = register(ctx.clone(), reg_body(&raw, "edge-1")).await;
     assert_eq!(status, StatusCode::CREATED, "{reg}");
     assert_eq!(reg["status"], "pending");
@@ -350,7 +350,7 @@ async fn self_registration_lifecycle_approve() {
         "agent credential issued at registration"
     );
 
-    // 不进 devices 列表；进待审批列表。
+    // Absent from the devices list; present in the pending-approval list.
     let (_, devices) = admin_get(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/devices"),
@@ -373,7 +373,7 @@ async fn self_registration_lifecycle_approve() {
         "registration is the first report"
     );
 
-    // desired 端点：404 且点名 pending approval（批准前不进期望配置）。
+    // Desired endpoint: 404 that names pending approval (nothing enters the desired config before approval).
     let (status, body) = desired(ctx.clone(), &agent_token).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert!(
@@ -384,7 +384,7 @@ async fn self_registration_lifecycle_approve() {
         "{body}"
     );
 
-    // Pending 心跳：证据落注册申请，回执明确 pending。
+    // Heartbeat while Pending: evidence lands on the registration request, and the receipt says pending.
     let (status, hb) = heartbeat(ctx.clone(), &agent_token).await;
     assert_eq!(status, StatusCode::OK, "{hb}");
     assert_eq!(hb["online_state"], "pending");
@@ -396,11 +396,11 @@ async fn self_registration_lifecycle_approve() {
     assert!(regs[0]["last_report_at"].is_string());
     assert_eq!(regs[0]["dataplane_evidence"]["tunnel_mtu"], 1420);
 
-    // 名字冲突：与待审批申请重名 → 409（唯一性跨两侧）。
+    // Name conflict: same name as a pending request -> 409 (uniqueness spans both sides).
     let (status, body) = register(ctx.clone(), reg_body(&raw, "edge-1")).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
 
-    // 批准：分配 IP + 记修订；响应不含 agent_token（凭证不轮换）。
+    // Approval: allocate an IP and record a revision; the response omits agent_token (credentials are not rotated).
     let (status, approved) = admin_post(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/devices/dev-reg-1/approve"),
@@ -417,7 +417,7 @@ async fn self_registration_lifecycle_approve() {
     );
     assert!(approved["approved_at"].is_string());
 
-    // 转正后：devices 列表可见（active、无虚拟 IP 缺失），待审批列表清空。
+    // After promotion: visible in the devices list (active, virtual IP present), and the pending-approval list is empty.
     let (_, devices) = admin_get(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/devices"),
@@ -433,8 +433,8 @@ async fn self_registration_lifecycle_approve() {
     .await;
     assert_eq!(regs.as_array().unwrap().len(), 0);
 
-    // 注册期凭证继续有效：desired 从 404 变为非 401/404（默认数据面关闭 →
-    // 503 dataplane_not_configured；401/404 都意味着凭证或设备身份被破坏）。
+    // The registration-time credential still works: desired goes from 404 to non-401/404 (the dataplane
+    // is off by default -> 503 dataplane_not_configured; 401/404 would mean the credential or device identity broke).
     let (status, body) = desired(ctx.clone(), &agent_token).await;
     assert_eq!(
         status,
@@ -442,7 +442,7 @@ async fn self_registration_lifecycle_approve() {
         "token must survive approval, got: {body}"
     );
 
-    // 修订随批准产生：版本列表 +1（相对建网基线），pending 修订待 apply（§10.1）。
+    // The revision appears with approval: version list +1 relative to the creation baseline, pending apply (§10.1).
     let (_, revisions) = admin_get(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/config-revisions"),
@@ -465,7 +465,7 @@ async fn deny_registration_is_pure_cleanup() {
     let (_, reg) = register(ctx.clone(), reg_body(&raw, "stray")).await;
     let agent_token = reg["agent_token"].as_str().unwrap().to_string();
 
-    // 基线：建网时的初始修订。
+    // Baseline: the initial revision recorded at network creation.
     let (_, revisions) = admin_get(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/config-revisions"),
@@ -473,7 +473,7 @@ async fn deny_registration_is_pure_cleanup() {
     .await;
     let baseline = revisions.as_array().unwrap().len();
 
-    // 拒绝 → 申请与凭证一并清理。
+    // Deny -> the request and its credential are cleaned up together.
     let (status, _) = admin_post_empty(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/devices/dev-reg-1/deny"),
@@ -489,13 +489,13 @@ async fn deny_registration_is_pure_cleanup() {
     .await;
     assert_eq!(regs.as_array().unwrap().len(), 0);
 
-    // 凭证随拒绝作废 → 401；名字立即可复用。
+    // The credential is invalidated by the denial -> 401; the name is immediately reusable.
     let (status, _) = desired(ctx.clone(), &agent_token).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = register(ctx.clone(), reg_body(&raw, "stray")).await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // 拒绝产生过修订吗？没有——期望配置从未包含过 Pending 申请。
+    // Did the denial record a revision? No - the desired config never contained a Pending request.
     let (_, revisions) = admin_get(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/config-revisions"),
@@ -513,7 +513,7 @@ async fn name_conflict_against_enrolled_device() {
     let ctx = app().await;
     let network_id = create_network(ctx.clone(), "mesh").await;
 
-    // 邀请路径先占用名字。
+    // The invite path takes the name first.
     let (_, invite) = admin_post(
         ctx.clone(),
         &format!("/api/v1/networks/{network_id}/invites"),
@@ -533,7 +533,7 @@ async fn name_conflict_against_enrolled_device() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // 自举注册同名 → 409。
+    // Bootstrap registration with the same name -> 409.
     let token = create_bootstrap_token(ctx.clone(), &network_id, None).await;
     let (status, body) = register(
         ctx.clone(),
@@ -550,7 +550,7 @@ async fn invalid_input_is_rejected_before_token_use() {
     let token = create_bootstrap_token(ctx.clone(), &network_id, None).await;
     let raw = token["token"].as_str().unwrap().to_string();
 
-    // 不支持的平台 / 空名字 / 空公钥 → 400，且**不消耗**使用次数。
+    // Unsupported platform / blank name / empty public key -> 400, and **no** use count is consumed.
     for body in [
         serde_json::json!({ "bootstrap_token": raw, "device_name": "x", "public_key": "k", "platform": "macos" }),
         serde_json::json!({ "bootstrap_token": raw, "device_name": "  ", "public_key": "k", "platform": "linux" }),
@@ -560,8 +560,8 @@ async fn invalid_input_is_rejected_before_token_use() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{resp}");
     }
 
-    // 私钥字段在 API 边界即被拒（deny_unknown_fields → 422，与 enroll 同
-    // 纪律：私钥不出设备），同样不消耗使用次数。
+    // A private-key field is rejected right at the API boundary (deny_unknown_fields -> 422, same
+    // discipline as enroll: the private key never leaves the device), also without consuming a use.
     let (status, resp) = register(
         ctx.clone(),
         serde_json::json!({ "bootstrap_token": raw, "device_name": "x", "public_key": "k", "platform": "linux", "private_key": "priv" }),
@@ -569,7 +569,7 @@ async fn invalid_input_is_rejected_before_token_use() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{resp}");
 
-    // 有效注册仍成功（max_uses 未被无效请求消耗——不限次场景下断言 used_count）。
+    // A valid registration still succeeds (max_uses was not spent by the invalid requests - assert used_count in this unlimited-use case).
     let (status, _) = register(ctx.clone(), reg_body(&raw, "ok")).await;
     assert_eq!(status, StatusCode::CREATED);
     let (_, list) = admin_get(

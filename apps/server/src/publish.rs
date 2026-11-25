@@ -1,5 +1,5 @@
-//! 服务发布控制面（R-06）：四类发布对象（PortForward / HTTP 路由 / 探针 /
-//! DNS 记录）的 CRUD + agent 健康回报。
+//! Service publishing control plane (R-06): CRUD for the four publishing object kinds (PortForward / HTTP route / probe /
+//! DNS record) plus agent health reporting.
 
 mod auth;
 mod crud;

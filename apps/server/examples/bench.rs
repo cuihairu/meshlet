@@ -1,15 +1,15 @@
-//! 控制面基准驱动（性能方案条目，2026-10-14）。
+//! Control-plane benchmark driver (performance-plan entry, 2026-10-14).
 //!
-//! 进程内直连 Router（`oneshot`），不经 TCP/TLS——度量的是 handler +
-//! 序列化 + SQLite 读的完整成本，不含内核网络栈（吞吐数字偏低但可复现，
-//! 前后对照有效）。数据面（WireGuard 中继）基准命令见
-//! docs/architecture/routing-optimization.md。
+//! In-process direct Router connection (`oneshot`), not going through TCP/TLS - this measures the full cost of
+//! handlers + serialization + SQLite reads, excluding the kernel network stack (throughput numbers are low but
+//! reproducible, so before/after comparisons are valid). The dataplane (WireGuard relay) benchmark command lives
+//! in docs/architecture/routing-optimization.md.
 //!
-//! 用法：
+//! Usage:
 //! ```text
 //! cargo run --release -p meshlet-server --example bench -- [--db file|memory] [--secs 10] [--workers 64] [--target all|status|networks|tokens] [--sweep 1,8,64,256] [--footprint]
 //! ```
-//! `--footprint`：批量建 500 网络 + 500 token，报告 RSS 增量（实体内存占用）。
+//! `--footprint`: bulk-create 500 networks + 500 tokens and report the RSS delta (entity memory footprint).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -49,8 +49,8 @@ fn cpu_model() -> String {
     "unknown".into()
 }
 
-/// file 模式使用临时文件数据库（贴近生产：磁盘 + pool 行为）；
-/// memory 模式使用 `sqlite::memory:`（测试语义，连接池恒 1）。
+/// The file mode uses a temporary-file database (close to production: disk + pool behavior);
+/// the memory mode uses `sqlite::memory:` (test semantics, a connection pool of exactly 1).
 async fn build(db: &str) -> BenchApp {
     let url = match db {
         "memory" => "sqlite::memory:".to_string(),
@@ -132,7 +132,7 @@ struct RunResult {
     latencies_us: Vec<u64>,
 }
 
-/// `workers` 个并发任务，各自串行发请求直到时限；返回合并结果。
+/// `workers` concurrent tasks, each sending requests serially until the deadline; returns the merged results.
 async fn drive(app: &Router, cookie: &str, target: Target, workers: usize, secs: u64) -> RunResult {
     let deadline = Instant::now() + Duration::from_secs(secs);
     let per_worker = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
@@ -152,7 +152,7 @@ async fn drive(app: &Router, cookie: &str, target: Target, workers: usize, secs:
                 let t0 = Instant::now();
                 let ok = match app.clone().oneshot(req).await {
                     Ok(res) if res.status().is_success() => {
-                        // 读掉 body，避免未消费的响应体堆积。
+                        // Read the body out to avoid a buildup of unconsumed response bodies.
                         res.into_body().collect().await.is_ok()
                     }
                     _ => false,
@@ -240,7 +240,7 @@ async fn main() {
     }
 
     let bench = build(&db).await;
-    // 预热 1s（页面缓存、连接建立、首 JIT）。
+    // Warm up for 1s (page cache, connection establishment, first JIT).
     drive(&bench.app, &bench.cookie, Target::Networks, workers, 1).await;
 
     let targets: Vec<Target> = match target.as_str() {
@@ -268,8 +268,8 @@ async fn main() {
     );
 }
 
-/// 内存占用：批量建 500 网络（内存 MeshState）+ 500 API Token（SQLite），
-/// 报告 RSS 增量与均摊值。
+/// Memory footprint: bulk-create 500 networks (in-memory MeshState) + 500 API tokens (SQLite), and report the
+/// RSS delta and the per-entity amortized value.
 async fn footprint_run(db: &str) {
     let bench = build(db).await;
     let warm = drive(&bench.app, &bench.cookie, Target::Networks, 16, 1).await;
@@ -277,7 +277,7 @@ async fn footprint_run(db: &str) {
     let rss0 = rss_kib();
 
     for i in 0..500 {
-        // 500 个互不重叠的 /24（10.0.1.x / 10.0.2.x）。
+        // 500 non-overlapping /24 blocks (10.0.1.x / 10.0.2.x).
         let body = format!(
             r#"{{"name":"net-{i}","overlay_cidr":"10.{}.{}.0/24"}}"#,
             1 + i / 256,

@@ -1,4 +1,4 @@
-//! MT-005：卡死任务的超时回收与预算内重派。
+//! MT-005: timeout reclamation of stuck tasks and in-budget redispatch.
 
 use meshlet_domain::{Task, TaskEvent, TaskId, TaskOutcome, TaskState};
 
@@ -8,37 +8,44 @@ use crate::service::{self, MeshState};
 use super::dispatch::next_retry_seq;
 use super::models::{TaskRecord, TaskResult};
 
-// -- MT-005 超时回收重派 + 重试上限 ------------------------------------------
+// -- MT-005 timeout reclamation redispatch + retry cap ----------------------
 //
-// agent 侧 `run_task` 只保证「活着的 agent 会按时杀子进程并回执」；agent 死亡
-// /断线时任务会永远停在 assigned|acked（running 只在单次请求内瞬时存在，
-// 不持久）。回收语义：
-// - 超时窗口 = `max(payload.timeout_secs 或 DEFAULT_RECOVERY_TIMEOUT_SECS,
-//   MIN_RECOVERY_SECS)`；地板值防止把「agent 轮询周期慢但活着」误判成卡死
-//   （超短 timeout 的任务派给刚巧在下个轮询间隙的 agent 时不该立刻回收）；
-// - 回收 = 沿状态机合法路径推进到 failed（复用 record_result 的补完模式），
-//   落合成结果（exit 124 = GNU timeout 惯例）；
-// - 重派 = 复用 MT-003 代际机制 `{root}-r{n}`：换新 id（agent 账本按 id
-//   去重，沿用旧 id 死过的 agent 重启后只补报不重跑）；预算用尽
-//   （已产生的代数 ≥ retry_limit）只标记失败，不再派发。
+// The agent side's `run_task` only guarantees that "a live agent will kill the
+// child process on time and report back"; when the agent dies / disconnects the
+// task stays at assigned|acked forever (running exists only transiently within a
+// single request and is not persisted). Reclamation semantics:
+// - Timeout window = `max(payload.timeout_secs or DEFAULT_RECOVERY_TIMEOUT_SECS,
+//   MIN_RECOVERY_SECS)`; the floor prevents mistaking "the agent's polling
+//   period is slow but it is alive" for a stuck task (a task with a very short
+//   timeout dispatched to an agent that happens to sit in the next polling gap
+//   must not be reclaimed immediately);
+// - Reclaim = advance along a legal state-machine path to failed (reusing
+//   record_result's completion pattern), recording a synthetic result (exit 124
+//   = the GNU timeout convention);
+// - Redispatch = reuse the MT-003 generation mechanism `{root}-r{n}`: a new id
+//   (the agent ledger deduplicates by id, so reusing the old id would let an
+//   agent that died only back-report after restart instead of rerunning); once
+//   the budget is exhausted (generations already produced >= retry_limit) only
+//   the failure is marked and nothing is dispatched.
 
-/// 任务未显式指定超时时的回收窗口（与 agent `DEFAULT_TIMEOUT_SECS` 契约值
-/// 对齐：agent 会在 300s 杀子进程，超过 300s 未回执 = agent 已死）。
+/// Reclamation window when the task does not specify a timeout explicitly (aligned
+/// with the agent's `DEFAULT_TIMEOUT_SECS` contract value: the agent kills the
+/// child process at 300s, so no receipt beyond 300s means the agent is dead).
 const DEFAULT_RECOVERY_TIMEOUT_SECS: u64 = 300;
-/// 回收窗口地板（秒）：即使任务 timeout_secs 很小，也不在短于一个 agent
-/// 轮询周期前回收。
+/// Reclamation window floor (seconds): even when the task's timeout_secs is very
+/// small, never reclaim before one agent polling period.
 const MIN_RECOVERY_SECS: u64 = 60;
-/// 回收任务的合成退出码（GNU `timeout(1)` 惯例：124 = 超时）。
+/// Synthetic exit code for a reclaimed task (the GNU `timeout(1)` convention: 124 = timed out).
 const TIMEOUT_EXIT: i32 = 124;
-/// 回收任务的合成日志尾部（控制台可见，解释失败来源）。
+/// Synthetic log tail for a reclaimed task (visible in the console, explaining where the failure came from).
 const TIMEOUT_LOG: &str = "reclaimed: task timed out awaiting agent";
 
-/// 回收策略（窗口参数抽出来便于测试与配置化）。
+/// Reclamation policy (the window parameters are extracted to ease testing and configuration).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskRecoveryPolicy {
-    /// 任务未指定 `timeout_secs` 时的窗口。
+    /// The window used when the task does not specify `timeout_secs`.
     pub default_timeout_secs: u64,
-    /// 窗口地板（防误回收）。
+    /// Window floor (guards against wrongful reclamation).
     pub min_recovery_secs: u64,
 }
 
@@ -52,7 +59,7 @@ impl Default for TaskRecoveryPolicy {
 }
 
 impl TaskRecoveryPolicy {
-    /// 任务的有效回收窗口：显式超时与地板取大。
+    /// The task's effective reclamation window: the larger of the explicit timeout and the floor.
     fn window(&self, task: &Task) -> u64 {
         task.payload
             .timeout_secs
@@ -61,24 +68,26 @@ impl TaskRecoveryPolicy {
     }
 }
 
-/// 一次回收的结果（审计与测试断言用）。
+/// The outcome of one reclamation (used by audits and test assertions).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TaskRecovery {
-    /// 被回收（标记超时失败）的任务 id。
+    /// The id of the task that was reclaimed (marked as failed by timeout).
     pub reclaimed: String,
-    /// 重派的新代 id；`None` = retry 预算用尽，仅标记失败。
+    /// The new generation id from the redispatch; `None` = retry budget exhausted, only the failure is marked.
     pub redispatch: Option<String>,
 }
 
-/// 卡死判定（纯函数）：非终态任务进入当前状态已超过有效回收窗口。
-/// 终态（done|failed）永不回收；running 不持久存在，这里自然不命中。
+/// Stuck determination (pure function): a non-terminal task has been in its
+/// current state longer than the effective reclamation window. Terminal states
+/// (done|failed) are never reclaimed; running is not persisted, so it
+/// naturally does not match here.
 fn is_stuck(rec: &TaskRecord, age_secs: u64, policy: &TaskRecoveryPolicy) -> bool {
     matches!(rec.task.state, TaskState::Assigned | TaskState::Acked)
         && age_secs > policy.window(&rec.task)
 }
 
-/// `updated_at`（RFC3339）距今的秒数；解析失败返回 `None`（不回收——
-/// 坏数据不该触发回收动作）。
+/// Seconds since `updated_at` (RFC3339); returns `None` when parsing fails
+/// (no reclamation — corrupt data must not trigger a reclaim action).
 fn age_secs(updated_at: &str, now_unix: i64) -> Option<u64> {
     let ts = chrono::DateTime::parse_from_rfc3339(updated_at)
         .ok()?
@@ -86,14 +95,15 @@ fn age_secs(updated_at: &str, now_unix: i64) -> Option<u64> {
     Some((now_unix - ts).max(0) as u64)
 }
 
-/// 回收一轮卡死任务（MT-005 核心，纯状态变更，不碰 DB——落库由调用方做）。
-/// 返回本次回收清单（含重派新代 id）。
+/// Reclaim one round of stuck tasks (the MT-005 core; a pure state change that
+/// never touches the DB — persistence is the caller's job). Returns this
+/// round's reclamation list (including the redispatched new generation id).
 pub(crate) fn recover_stuck_tasks(
     state: &mut MeshState,
     now_unix: i64,
     policy: &TaskRecoveryPolicy,
 ) -> Vec<TaskRecovery> {
-    // 先收集再改：遍历中改 `state.tasks` 是借用错误。
+    // Collect first, then modify: mutating `state.tasks` while iterating would be a borrow error.
     let stuck: Vec<String> = state
         .tasks
         .iter()
@@ -105,11 +115,12 @@ pub(crate) fn recover_stuck_tasks(
     stuck.into_iter().map(|id| reclaim(state, &id)).collect()
 }
 
-/// 回收单个任务：沿状态机推进到 failed + 合成超时结果；预算内则派发
-/// `{root}-r{n}` 新代（负载/目标/上限继承，parent 指向本任务）。
+/// Reclaim a single task: advance it to failed along the state machine + a
+/// synthetic timeout result; within the budget, dispatch a `{root}-r{n}` new
+/// generation (payload/target/limit inherited, with parent pointing at this task).
 fn reclaim(state: &mut MeshState, id: &str) -> TaskRecovery {
     let mut rec = state.tasks.get(id).cloned().expect("reclaimed task exists");
-    // 补完缺失的前置跃迁（与 record_result 同模式），推进到 failed。
+    // Fill in the missing prerequisite transitions (same pattern as record_result), then advance to failed.
     if rec.task.state == TaskState::Assigned {
         let _ = rec.task.apply(TaskEvent::Ack);
     }
@@ -125,8 +136,11 @@ fn reclaim(state: &mut MeshState, id: &str) -> TaskRecovery {
     rec.updated_at = now.clone();
     state.tasks.insert(id.to_string(), rec.clone());
 
-    // 重派预算：重试链根（首代 = 自身 id，重跑代沿 parent 链回到根——逐代
-    // 回溯，第二代+不能只看立即父）已产生的代数 ≥ retry_limit 时不再派发。
+    // Redispatch budget: for the root of the retry chain (first generation = its
+    // own id; reruns walk back up the parent chain to the root — generation by
+    // generation, so second generation and beyond cannot look only at the
+    // immediate parent), once the generations already produced >= retry_limit,
+    // stop dispatching.
     let mut root = id.to_string();
     let mut parent = rec.parent_task_id.clone();
     while let Some(p) = parent {
@@ -167,8 +181,9 @@ fn reclaim(state: &mut MeshState, id: &str) -> TaskRecovery {
     }
 }
 
-/// MT-005：周期超时回收后台任务。独立于数据面收敛（任务回收不依赖
-/// `dataplane.enabled`——纯测试环境也应收起卡死任务）。
+/// MT-005: the periodic timeout-reclaim background task. Independent of dataplane
+/// convergence (task reclamation does not depend on `dataplane.enabled` — even
+/// a pure test environment should reap stuck tasks).
 pub fn start_task_recovery(state: SharedAppState, interval_secs: u64) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
@@ -181,9 +196,11 @@ pub fn start_task_recovery(state: SharedAppState, interval_secs: u64) {
     });
 }
 
-/// 集成测试用：跑一轮与 [`start_task_recovery`] 相同的回收（正常路
-/// 径是周期后台任务，无法从路由触发；`#[doc(hidden)]` 不进公共 API
-/// 文档）。落库复用 [`task_recovery_once`]，保证与生产路径一致。
+/// For integration tests: run one round of reclamation identical to
+/// [`start_task_recovery`] (the normal path is a periodic background task, not
+/// triggerable from a route; `#[doc(hidden)]` keeps it out of the public API
+/// docs). Persistence reuses [`task_recovery_once`], keeping it consistent with
+/// the production path.
 #[doc(hidden)]
 pub async fn task_recovery_for_test(state: SharedAppState) {
     task_recovery_once(state)
@@ -191,9 +208,10 @@ pub async fn task_recovery_for_test(state: SharedAppState) {
         .expect("test recovery sweep");
 }
 
-/// 集成测试用：把任务 `updated_at` 拨老 `age_secs` 秒，使回收窗口判定
-/// 命中（生产路径由 [`start_task_recovery`] 周期扫描，无法从路由触发；
-/// `#[doc(hidden)]` 不进公共 API 文档）。
+/// For integration tests: age a task's `updated_at` back by `age_secs` seconds
+/// so the reclamation-window judgment hits (the production path is the periodic
+/// scan by [`start_task_recovery`], not triggerable from a route;
+/// `#[doc(hidden)]` keeps it out of the public API docs).
 #[doc(hidden)]
 pub fn age_task_for_test(state: &mut MeshState, id: &str, age_secs: u64) {
     if let Some(rec) = state.tasks.get_mut(id) {
@@ -204,14 +222,16 @@ pub fn age_task_for_test(state: &mut MeshState, id: &str, age_secs: u64) {
     }
 }
 
-/// 集成测试用：读取任务记录（状态/结果/父链断言）。
+/// For integration tests: read a task record (for state/result/parent-chain assertions).
 #[doc(hidden)]
 pub fn task_for_test(state: &MeshState, id: &str) -> Option<TaskRecord> {
     state.tasks.get(id).cloned()
 }
 
-/// 集成测试用：把任务沿合法状态机推进到终态（模拟 agent 完成；生产路径
-/// 是 agent 回执，无法从路由直插终态）。`#[doc(hidden)]` 不进公共文档。
+/// For integration tests: advance a task along the legal state machine to a
+/// terminal state (simulating agent completion; the production path is the
+/// agent's report, so a terminal state cannot be inserted directly from a
+/// route). `#[doc(hidden)]` keeps it out of the public docs.
 #[doc(hidden)]
 pub fn complete_task_for_test(state: &mut MeshState, id: &str, success: bool) {
     if let Some(rec) = state.tasks.get_mut(id) {
@@ -225,13 +245,15 @@ pub fn complete_task_for_test(state: &mut MeshState, id: &str, success: bool) {
     }
 }
 
-/// 一次回收：持 persist 锁串行化全部任务写路径（assign/ack/result/confirm/
-/// retry 都先取 persist 锁），锁内改状态并收受影响记录，锁外落库。
+/// One reclamation round: hold the persist lock to serialize every task write
+/// path (assign/ack/result/confirm/retry all take the persist lock first);
+/// mutate state and collect the affected records inside the lock, and persist
+/// outside it.
 async fn task_recovery_once(state: SharedAppState) -> Result<(), String> {
     let _persist = state.persist.lock().await;
     let now = service::now_unix();
     let policy = TaskRecoveryPolicy::default();
-    // 锁内回收并收集受影响记录（被回收任务 + 重派新代）。
+    // Reclaim inside the lock and collect the affected records (the reclaimed task + the redispatched new generation).
     let to_persist: Vec<TaskRecord> = {
         let mut mesh = state.mesh.lock().unwrap();
         let events = recover_stuck_tasks(&mut mesh, now, &policy);
@@ -249,8 +271,9 @@ async fn task_recovery_once(state: SharedAppState) -> Result<(), String> {
         }
         records
     };
-    // 锁外落库（persist 仍持有：无并发写同一任务）。被回收任务落
-    // `task.reclaimed` 审计，重派新代落 `task.retried`。
+    // Persist outside the mesh lock (persist is still held: no concurrent writes
+    // to the same task). The reclaimed task is recorded as a `task.reclaimed`
+    // audit event, the redispatched new generation as `task.retried`.
     for record in to_persist {
         let is_reclaim = record.result.is_some();
         let audit = crate::persist::AuditDraft {
@@ -283,14 +306,14 @@ mod tests {
     use super::super::models::TaskRecord;
     use super::{recover_stuck_tasks, TaskRecovery, TaskRecoveryPolicy, TIMEOUT_EXIT};
 
-    /// `now_unix - age` 的 RFC3339 时间戳（回收窗口测试用）。
+    /// RFC3339 timestamp for `now_unix - age` (used by the reclamation-window tests).
     fn ts(now_unix: i64, age: u64) -> String {
         chrono::DateTime::from_timestamp(now_unix - age as i64, 0)
             .unwrap()
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     }
 
-    /// 直插一条任务记录（绕过 assign，直接测回收逻辑）。
+    /// Insert a task record directly (bypasses assign to exercise the reclaim logic directly).
     struct NewTask<'a> {
         id: &'a str,
         state: TaskState,
@@ -313,7 +336,7 @@ mod tests {
             spec.retry_limit,
         );
         let mut task = task;
-        // 直插到目标非终态：assigned 直接建；acked 则补一次 ack。
+        // Insert directly at the target non-terminal state: assigned is built as-is; acked gets one extra ack applied.
         if spec.state == TaskState::Acked {
             task.apply(TaskEvent::Ack).unwrap();
         }
@@ -365,13 +388,13 @@ mod tests {
                 redispatch: Some("task-1-r1".into()),
             }]
         );
-        // 原任务终态 failed + 合成超时结果。
+        // The original task ends terminal as failed + the synthetic timeout result.
         let rec = st.tasks.get("task-1").unwrap();
         assert_eq!(rec.task.state, TaskState::Failed);
         let r = rec.result.as_ref().unwrap();
         assert_eq!(r.exit_code, TIMEOUT_EXIT);
         assert!(r.log_tail.contains("timed out"));
-        // 新代 Assigned，parent 指向原任务，负载/上限继承。
+        // The new generation is Assigned, its parent points at the original task, payload/limit inherited.
         let gen = st.tasks.get("task-1-r1").unwrap();
         assert_eq!(gen.task.state, TaskState::Assigned);
         assert_eq!(gen.parent_task_id.as_deref(), Some("task-1"));
@@ -408,7 +431,7 @@ mod tests {
     fn retry_budget_exhausted_marks_failed_without_redispatch() {
         let now = 1_800_000_000;
         let mut st = state();
-        // retry_limit = 1 且已产生 r1 代：回收 r1 时代数=1 ≥ 上限 → 不再派发。
+        // retry_limit = 1 and an r1 generation already exists: when r1 is reclaimed the generation count = 1 >= the cap → nothing is dispatched.
         insert(
             &mut st,
             NewTask {
@@ -446,7 +469,7 @@ mod tests {
             TaskState::Failed
         );
         assert!(!st.tasks.contains_key("task-1-r2"));
-        // 预算内的原代（age=1，未卡）不受影响。
+        // The in-budget original generation (age=1, not stuck) is untouched.
         assert_eq!(
             st.tasks.get("task-1").unwrap().task.state,
             TaskState::Assigned
@@ -477,14 +500,16 @@ mod tests {
         );
     }
 
-    /// 审核发现：深链（第二代 r2）回收必须沿 parent 链回到根——r2 的
-    /// 立即父是 r1，只看一层会把 root 误判为 r1，数不到兄弟 r1，预算恒 0
-    /// → 无限重派。回收 r2（r1、r2 两代已存在，limit=2）不应再派 r3。
+    /// Review finding: reclaiming a deep chain (second generation r2) must walk
+    /// back to the root along the parent chain — r2's immediate parent is r1, and
+    /// looking only one level deep would mistake r1 for the root, never count the
+    /// sibling r1, and leave the budget at 0 → endless redispatch. Reclaiming r2
+    /// (both generations r1 and r2 already exist, limit=2) must not dispatch r3.
     #[test]
     fn deep_chain_reclaim_walks_to_root_and_respects_budget() {
         let now = 1_800_000_000;
         let mut st = state();
-        // 根（未卡）、r1（未卡）、r2（卡）：limit=2。
+        // Root (not stuck), r1 (not stuck), r2 (stuck): limit=2.
         insert(
             &mut st,
             NewTask {
@@ -532,13 +557,15 @@ mod tests {
         assert!(!st.tasks.contains_key("task-1-r3"));
     }
 
-    /// 审核发现：第二代 r2 驳回重跑（MT-003 retry）同样须沿 parent 链回到
-    /// 根——r2 被驳回后新代应接 `task-1-r3`（不是挂在 r1 下重复 r1 计数）。
+    /// Review finding: rerunning a rejected second generation r2 (MT-003 retry)
+    /// must likewise walk back to the root along the parent chain — after r2 is
+    /// rejected, the new generation should be `task-1-r3` (not hang under r1 and
+    /// double count r1).
     #[test]
     fn retry_deep_chain_walks_to_root() {
         let now = 1_800_000_000;
         let mut st = state();
-        // 根、r1、r2 全终态（可驳回），parent 链 task-1-r2 → r1 → root。
+        // Root, r1 and r2 are all terminal (retriable); the parent chain is task-1-r2 → r1 → root.
         for (id, parent) in [
             ("task-1", None),
             ("task-1-r1", Some("task-1")),
@@ -653,7 +680,7 @@ mod tests {
     fn small_timeout_respects_recovery_floor() {
         let now = 1_800_000_000;
         let mut st = state();
-        // timeout=1s：30s 龄 < 地板 60s → 不回收；70s 龄 > 60s → 回收。
+        // timeout=1s: a 30s age < the 60s floor → not reclaimed; a 70s age > 60s → reclaimed.
         insert(
             &mut st,
             NewTask {
@@ -696,7 +723,7 @@ mod tests {
     fn recovery_respects_explicit_timeout_window() {
         let now = 1_800_000_000;
         let mut st = state();
-        // timeout=600 → 窗口 600s：age 400 未卡，age 700 卡。
+        // timeout=600 → window 600s: age 400 is not stuck, age 700 is stuck.
         insert(
             &mut st,
             NewTask {

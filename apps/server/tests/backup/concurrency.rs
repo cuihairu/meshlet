@@ -97,8 +97,8 @@ async fn concurrent_backup_contains_only_complete_business_commits() {
     assert_eq!(revisions, 2);
     assert_eq!(max_revision, 2);
 
-    // Windows 会短暂延迟释放 SQLite/WAL 句柄（并发写刚刚停掉尤其明显），
-    // 有限重试只吸收文件锁；业务结果仍强断言（与 sibling 恢复用例一致）。
+    // Windows briefly delays releasing SQLite/WAL handles (especially right after concurrent writes stop);
+    // the bounded retry only absorbs file locks; business results are still asserted strictly (same as the sibling restore case).
     let mut report = None;
     for _ in 0..10 {
         match meshlet_server::persist::restore_from_backup(

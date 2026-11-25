@@ -125,7 +125,7 @@ pub fn create_network(
         overlay,
         ts.clone(),
     );
-    // IPAM：hub 取第一个可用地址（ADR-004），客户端从第二个起分配。
+    // IPAM: the hub takes the first usable address (ADR-004); clients are allocated from the second onward.
     let hub = overlay
         .iter_usable()
         .next()
@@ -141,7 +141,7 @@ pub fn create_network(
         status: meshlet_domain::SegmentStatus::Active,
         created_at: default_segment_ts,
     })?;
-    // 记录初始期望配置修订（§10.1：DB 写入 ≠ 生效，初始修订为 Pending）。
+    // Record the initial desired-config revision (§10.1: a DB write ≠ in effect; the initial revision is Pending).
     record_revision(state, &id)?;
     Ok(to_network_view(state, state.network(&id).unwrap()))
 }
@@ -159,7 +159,7 @@ pub fn create_invite(
     network_id: &str,
     req: CreateInviteRequest,
 ) -> Result<CreateInviteResponse, ServiceError> {
-    state.network(network_id)?; // 网络必须存在
+    state.network(network_id)?; // the network must exist
     let max_uses = req.max_uses.unwrap_or(1);
     if max_uses == 0 {
         return Err(ServiceError::InvalidInput(
@@ -181,7 +181,7 @@ pub fn create_invite(
         token: raw,
         expires_at: req.expires_at,
     };
-    // 只存摘要（§11.3）：索引键即 token_hash，原始 Token 不落地。
+    // Store only the summary (§11.3): the index key is token_hash; the raw Token is never persisted.
     state.invites.insert(invite.token_hash.clone(), invite);
     Ok(view)
 }
@@ -203,23 +203,23 @@ pub fn revoke_invite(
 }
 
 // ---------------------------------------------------------------------------
-// 设备自举注册（ZeroTier 式：自举码注册 → Pending → 控制中心审批/拒绝）
+// Device bootstrap registration (ZeroTier-style: bootstrap-code registration -> Pending -> control-center approval/rejection)
 // ---------------------------------------------------------------------------
 
-/// 创建自举码（控制中心侧）：长期、可复用的注册入口凭据。原始自举码
-/// **仅此一次**返回，服务端只存 SHA-256 摘要（§11.3，同邀请）。
+/// Create a bootstrap code (control-center side): a long-lived, reusable
+/// registration entry credential. The raw code is returned **exactly once**; the server stores only its SHA-256 summary (§11.3, as with invites).
 pub fn create_bootstrap_token(
     state: &mut MeshState,
     network_id: &str,
     req: CreateBootstrapTokenRequest,
 ) -> Result<CreateBootstrapTokenResponse, ServiceError> {
-    state.network(network_id)?; // 网络必须存在
+    state.network(network_id)?; // the network must exist
     if req.max_uses == Some(0) {
         return Err(ServiceError::InvalidInput(
             "max_uses must be at least 1, or unset for unlimited".into(),
         ));
     }
-    // 自举码序列（`bootstrap_seq`，持久化到 mesh_meta）：重启不重号、不复用。
+    // Bootstrap-code sequence (`bootstrap_seq`, persisted in mesh_meta): no renumbering and no reuse across restarts.
     let seq = state.bootstrap_seq() + 1;
     let raw = generate_token();
     let token = BootstrapToken {
@@ -236,7 +236,7 @@ pub fn create_bootstrap_token(
         token: raw,
         max_uses: req.max_uses,
     };
-    // 只存摘要（§11.3）：索引键即 token_hash，原始自举码不落地。
+    // Store only the summary (§11.3): the index key is token_hash; the raw bootstrap code is never persisted.
     state
         .bootstrap_tokens
         .insert(token.token_hash.clone(), token);
@@ -244,8 +244,8 @@ pub fn create_bootstrap_token(
     Ok(view)
 }
 
-/// 撤销自举码：之后任何用它发起的注册都被拒绝（已落地的 Pending 申请不受
-/// 影响——审批流程独立于入口凭据）。返回撤销时刻供 handler 落库。
+/// Revoke a bootstrap code: any registration attempt using it afterwards is rejected (already
+/// persisted Pending applications are unaffected — the approval flow is independent of the entry credential). Returns the revocation time so the handler can persist it.
 pub fn revoke_bootstrap_token(
     state: &mut MeshState,
     network_id: &str,
@@ -267,7 +267,7 @@ pub fn revoke_bootstrap_token(
     Ok(revoked_at)
 }
 
-/// 自举码列表（控制台展示用量；只含元数据，不含摘要以外的任何凭据材料）。
+/// Bootstrap-code list (console-facing usage display; metadata only — no credential material beyond the summary).
 pub fn list_bootstrap_tokens(
     state: &MeshState,
     network_id: &str,
@@ -286,14 +286,14 @@ pub fn list_bootstrap_tokens(
             revoked_at: t.revoked_at.clone(),
         })
         .collect();
-    // 稳定输出：按创建时刻排序（`bt-N` 文本序在位数不同时不等价于创建序）。
+    // Stable output: sort by creation time (`bt-N` text order is not equivalent to creation order once digit counts differ).
     views.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     Ok(views)
 }
 
-/// 设备自举注册（公开端点）：持自举码换取 agent 凭证，落 **Pending** 申请。
-/// 批准前不分配虚拟 IP、不进期望配置（`device_plan` 只读 `devices`），
-/// 数据面对 Pending 设备完全不可见（migration 008 头注释的三条理由）。
+/// Device bootstrap registration (public endpoint): exchange a bootstrap code for an agent credential, creating a **Pending** application.
+/// No virtual IP is assigned before approval and it is not part of the desired config (`device_plan` only reads `devices`),
+/// so the dataplane cannot see Pending devices at all (the three reasons given in the migration 008 header comment).
 pub fn register_device(
     state: &mut MeshState,
     req: RegisterDeviceRequest,
@@ -318,7 +318,7 @@ pub fn register_device(
         ));
     }
 
-    // 以摘要定位自举码并校验（持锁内原子完成，闭合并发竞态）。
+    // Locate the bootstrap code by summary and validate it (done atomically while holding the lock, closing the concurrency race).
     let token = state
         .bootstrap_tokens
         .get_mut(&token_hash(&req.bootstrap_token))
@@ -343,11 +343,11 @@ pub fn register_device(
         public_key: req.public_key.clone(),
         platform,
         requested_at: ts.clone(),
-        // 注册即首次上报（请求到达时刻）。
+        // Registration counts as the first report (at request arrival time).
         last_report_at: Some(ts.clone()),
         dataplane_evidence: None,
     };
-    // 名字唯一性跨 devices + registrations 两侧（域层 `add_registration`）。
+    // Name uniqueness spans both devices and registrations (domain-layer `add_registration`).
     state.registry.add_registration(registration.clone())?;
     state.set_registration_seq(seq);
 
@@ -355,17 +355,17 @@ pub fn register_device(
         device_id: registration.id.to_string(),
         network_id,
         status: "pending".to_string(),
-        agent_token: String::new(), // 由 handler 用 AgentTokenStore 签发后回填
+        agent_token: String::new(), // filled in by the handler after issuing from AgentTokenStore
         requested_at: ts,
     })
 }
 
-/// 批准注册申请：**沿用注册时分配的设备 id** 转入 `devices`（`agent_tokens`
-/// 等引用无需迁移），此刻才分配 overlay 地址（IPAM 顺序分配），并记录新
-/// 修订——期望配置随之把新设备纳入数据面（§10.1/ADR-009）。
+/// Approve a registration application: move it into `devices` while **keeping the device id assigned at registration** (references such as `agent_tokens`
+/// need no migration), assign the overlay address only now (sequential IPAM allocation), and record a new
+/// revision — the desired config thereby brings the new device into the dataplane (§10.1/ADR-009).
 ///
-/// **凭证不轮换**：注册期签发的 agent 凭证原样沿用（设备 id 不变，批准
-/// 动作对设备透明，审批者无需传递任何秘密）；拒绝路径才作废凭证。
+/// **Credentials are not rotated**: the agent credential issued during registration is reused as-is (the device id is unchanged, approval
+/// is transparent to the device, and the approver never has to hand over any secret); only the rejection path invalidates the credential.
 pub fn approve_registration(
     state: &mut MeshState,
     network_id: &str,
@@ -379,7 +379,7 @@ pub fn approve_registration(
         .cloned()
         .ok_or_else(|| ServiceError::DeviceNotFound(device_id.to_string()))?;
 
-    // 先摘除申请（名字唯一性检查跨两侧，摘除后同名转入 devices 才不撞自己）。
+    // Remove the application first (the name uniqueness check spans both sides, so moving it into devices under the same name no longer collides with itself).
     let registration = state
         .registry
         .remove_registration(&registration.id)
@@ -391,7 +391,7 @@ pub fn approve_registration(
         .ok_or_else(|| ServiceError::NetworkNotFound(network_id.to_string()))?;
     let virtual_ip = match ipam.allocate() {
         Ok(ip) => ip,
-        // IPAM 失败则把申请放回去：审批失败不得吞掉 Pending 申请。
+        // If IPAM fails, put the application back: a failed approval must not swallow a Pending application.
         Err(e) => {
             state.registry.add_registration(registration.clone())?;
             return Err(ServiceError::Conflict(e.to_string()));
@@ -407,12 +407,12 @@ pub fn approve_registration(
         public_key: registration.public_key.clone(),
         platform: registration.platform,
         status: meshlet_domain::DeviceStatus::Active,
-        // Pending 期的心跳证据直接带入：批准后 agent 无缝续报。
+        // Heartbeat evidence from the Pending period carries over directly: the agent keeps reporting seamlessly after approval.
         last_seen_at: registration.last_report_at.clone(),
         last_handshake_at: None,
         last_report_at: registration.last_report_at.clone(),
         dataplane_evidence: registration.dataplane_evidence.clone(),
-        // created_at = 申请时刻（Pending 起始），approved_at = 审批时刻。
+        // created_at = the application time (Pending start), approved_at = the approval time.
         created_at: registration.requested_at.clone(),
         approved_at: Some(ts.clone()),
         revoked_at: None,
@@ -422,21 +422,21 @@ pub fn approve_registration(
         labels: BTreeMap::new(),
     };
     if let Err(e) = state.registry.add(device.clone()) {
-        // 登记失败（例如 IPAM 分配到重复地址）则回收地址并把申请放回去。
+        // If registration fails (e.g. IPAM allocated a duplicate address), release the address and put the application back.
         if let Some(ipam) = state.ipams.get_mut(network_id) {
             ipam.release(virtual_ip);
         }
         state.registry.add_registration(registration.clone())?;
         return Err(e.into());
     }
-    // 新设备改变期望配置：记录新修订（版本号网络内递增，§10.4）。
+    // A new device changes the desired config: record a new revision (version numbers increase within the network, §10.4).
     let revision_id = record_revision(state, network_id)?;
     Ok((registration, device, revision_id))
 }
 
-/// 拒绝注册申请：摘除申请并返回（handler 据此清理 `device_registrations`
-/// 行与 Pending 凭证）。**不记修订**（期望配置从未包含过 Pending 申请，
-/// 拒绝是纯状态清理，§10.1「DB 写入 ≠ 生效」的反向：无生效即无修订）。
+/// Reject a registration application: remove the application and return it (the handler uses this to clean up the `device_registrations`
+/// row and the Pending credential). **No revision is recorded** (the desired config never contained Pending applications;
+/// rejection is pure state cleanup — the converse of §10.1's "DB write ≠ in effect": nothing takes effect, so no revision).
 pub fn deny_registration(
     state: &mut MeshState,
     network_id: &str,
@@ -455,8 +455,8 @@ pub fn deny_registration(
         .expect("just found"))
 }
 
-/// Pending 申请视图列表（控制台设备页「待审批」分区；`RegistrationView`
-/// 不含虚拟 IP——批准前本就未分配，避免占位假值）。
+/// Pending application views (the "awaiting approval" section of the console device page; `RegistrationView`
+/// carries no virtual IP — none is assigned before approval, so no placeholder fakes are shown).
 pub fn list_registrations(
     state: &MeshState,
     network_id: &str,
@@ -484,8 +484,8 @@ pub fn list_registrations(
         .collect())
 }
 
-/// 设备加入（§11.2 第 3-9 步的控制平面部分）。
-/// 私钥不出客户端：本函数只接收公钥；服务端登记公钥 + 指纹、分配虚拟 IP。
+/// Enroll a device (the control-plane part of steps 3-9 in §11.2).
+/// The private key never leaves the client: this function only receives the public key; the server registers the public key plus fingerprint and assigns a virtual IP.
 pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollResponse, ServiceError> {
     let platform = match req.platform.as_str() {
         "linux" => Platform::Linux,
@@ -507,7 +507,7 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         ));
     }
 
-    // 以摘要定位邀请并兑换（持锁原子完成，闭合并发竞态）。
+    // Locate the invite by summary and redeem it (done atomically while holding the lock, closing the concurrency race).
     let invite = state
         .invites
         .get_mut(&meshlet_domain::token_hash(&req.invite_token))
@@ -550,25 +550,25 @@ pub fn enroll(state: &mut MeshState, req: EnrollRequest) -> Result<EnrollRespons
         labels: BTreeMap::new(),
     };
     state.registry.add(device.clone())?;
-    // 新设备改变期望配置：记录新修订（版本号网络内递增，§10.4）。
+    // A new device changes the desired config: record a new revision (version numbers increase per network, §10.4).
     let revision_id = record_revision(state, &network_id)?;
 
-    // 指纹 = 公钥 SHA-256；服务端不存任何私钥侧材料。
+    // Fingerprint = SHA-256 of the public key; the server stores no private-side material.
     let fingerprint = fingerprint_of(&req.public_key);
     Ok(EnrollResponse {
         device_id: device.id.to_string(),
         network_id,
         virtual_ipv4: virtual_ip,
         fingerprint,
-        agent_token: String::new(), // 由 handler 用 AgentTokenStore 签发后回填
+        agent_token: String::new(), // filled in by the handler after issuing from AgentTokenStore
         revision_id,
         apply_status: meshlet_domain::ApplyStatus::Pending.as_str().to_string(),
     })
 }
 
-/// 记录一次 agent 心跳/上报（§14.1）：定位设备、更新 `last_report_at`（到达
-/// 时刻）、可选的 `last_handshake_at`（agent 本地 `wg show` 读数）与
-/// `last_seen_at`，返回当前在线判定（状态 + 数据来源）。
+/// Record one agent heartbeat/report (§14.1): locate the device, update
+/// `last_report_at` (arrival time), the optional `last_handshake_at` (the agent's local
+/// `wg show` reading) and `last_seen_at`, and return the current presence verdict (state + evidence source).
 pub fn record_agent_report(
     state: &mut MeshState,
     device_id: &DeviceId,
@@ -584,9 +584,9 @@ pub fn record_agent_report(
     Ok(evaluate_presence(device, &now, &state.presence_thresholds))
 }
 
-/// Pending 申请的 agent 心跳（§7.5：证据不因 Pending 而丢弃）：只更新
-/// `last_report_at` 与数据面证据。无隧道期握手读数无从谈起，`last_handshake_at`
-/// 对 Pending 申请不采集（批准后从零开始，与 `devices.last_handshake_at` 一致）。
+/// Agent heartbeat for a Pending application (§7.5: evidence is not dropped just because
+/// the application is Pending): only `last_report_at` and dataplane evidence are updated. With no tunnel there is no handshake reading to speak of, so
+/// `last_handshake_at` is not collected for Pending applications (it starts from zero after approval, matching `devices.last_handshake_at`).
 pub fn record_pending_agent_report(
     state: &mut MeshState,
     device_id: &DeviceId,
@@ -604,9 +604,9 @@ pub fn record_pending_agent_report(
     Ok(())
 }
 
-/// §12 P2P：记录一次直连候选上报（观测源地址 + agent 上报的 LAN 地址/端口）。
-/// 上报省略（`None`）即移除候选——候选是临时性咨询数据，掉线/关闭后不得
-/// 残留（对端据此决策直连路径，陈旧候选会误导）。
+/// §12 P2P: record one direct-connect candidate report (observed source address + the LAN address/port reported by the agent).
+/// An omitted report (`None`) removes the candidate — candidates are ephemeral advisory data and must not linger after a peer goes offline or shuts down
+/// (peers decide direct paths from them; stale candidates mislead).
 pub fn record_direct_state(
     state: &mut MeshState,
     device_id: &DeviceId,
@@ -631,8 +631,8 @@ pub fn record_direct_state(
     }
 }
 
-/// 记录设备上报的真实主机名（内存态，心跳重报即覆盖）。`None`/空白 = 本轮
-/// 未取到 → 保留旧值（主机名基本不变；重启后由下一轮心跳恢复）。
+/// Record the real hostname reported by the device (in-memory; overwritten by each heartbeat). `None`/blank means
+/// nothing was obtained this round -> keep the old value (hostnames barely change; a restart is repaired by the next heartbeat).
 pub fn record_device_hostname(
     state: &mut MeshState,
     device_id: &DeviceId,
@@ -646,8 +646,8 @@ pub fn record_device_hostname(
     }
 }
 
-/// R-DIAG：记录设备最新一轮网络诊断三快照（内存态，心跳重报即覆盖）。
-/// `None` = agent 采集失败/未上报 → 移除旧快照（证据缺失可见，不留陈旧读数）。
+/// R-DIAG: record the device's latest round of network diagnostics snapshots (in-memory; overwritten by each heartbeat).
+/// `None` = the agent failed to collect / did not report -> remove the old snapshot (missing evidence stays visible; no stale readings are kept).
 pub fn record_diagnostics(
     state: &mut MeshState,
     device_id: &DeviceId,
@@ -663,8 +663,8 @@ pub fn record_diagnostics(
     }
 }
 
-/// 把一次上报写到设备记录（内部共享）。证据与握手时间同一纪律：请求未携带
-/// 时保留上次读数（「最后已知读数」， staleness 由 last_report_at 承载）。
+/// Write a single report into the device record (internal helper shared by callers). Same discipline for evidence and handshake time: when
+/// the request omits them, keep the previous reading (a "last known reading"; staleness is carried by last_report_at).
 fn apply_agent_report(
     device: &mut Device,
     last_handshake_at: Option<String>,
@@ -681,7 +681,7 @@ fn apply_agent_report(
     device.last_seen_at = Some(now.clone());
 }
 
-/// 在线判定（域层纯函数；判定时刻 = 当前时间，阈值来自状态）。
+/// Presence verdict (a pure domain-layer function; verdict time = now, thresholds come from state).
 pub fn evaluate_presence(
     device: &Device,
     now: &Timestamp,
@@ -722,7 +722,7 @@ pub fn list_devices(state: &MeshState, network_id: &str) -> Result<Vec<DeviceVie
         .collect())
 }
 
-/// 单设备视图（MT-005 标签更新后回读；与 [list_devices] 同源渲染）。
+/// Single-device view (read back after an MT-005 label update; rendered from the same source as [list_devices]).
 pub fn device_view(
     state: &MeshState,
     network_id: &str,
@@ -750,12 +750,12 @@ pub fn device_view(
     ))
 }
 
-/// 数据面证据量规快照（§17.2 指标 1/2/3/7 的数据源）：抓取时从 `MeshState`
-/// **现算**，不存静态值。调用方持 mesh 锁；渲染（字符串拼接）在锁外做。
+/// Dataplane evidence gauge snapshot (data source for §17.2 metrics 1/2/3/7): computed
+/// **on the fly** from `MeshState` at collection time, no static values stored. The caller holds the mesh lock; rendering (string concatenation) happens outside the lock.
 ///
-/// 「近期握手」= 握手落在 `handshake_window` 内（隧道证据，与「在线」的
-/// agent 上报证据是两条独立来源——单看任一都会误判，见
-/// `docs/architecture/observability.md` 组合判读）。
+/// "Recent handshake" = a handshake within `handshake_window` (tunnel evidence, a separate
+/// source from the "online" agent report evidence — judging from either one alone misleads; see
+/// `docs/architecture/observability.md` for the combined reading).
 pub fn gauge_snapshot(state: &MeshState) -> crate::metrics::GaugeSnapshot {
     let now: Timestamp = now();
     let mut devices_online = 0u64;
@@ -785,17 +785,17 @@ pub fn gauge_snapshot(state: &MeshState) -> crate::metrics::GaugeSnapshot {
         devices_active,
         devices_with_recent_handshake,
         last_handshake_timestamp_seconds: last_handshake_ts,
-        // 接口状态（§17.2 第 7 项）：至少一台设备有近期握手证据即视为数据面
-        // 接口在；主机侧接口读数待数据面 backend 落地后并入（agent 侧证据
-        // 先到）。
+        // Interface status (§17.2 item 7): the dataplane interface is considered up as soon as
+        // at least one device has recent handshake evidence; host-side interface readings will be merged in once the dataplane backend lands (agent-side
+        // evidence arrives first).
         interface_up: u8::from(devices_with_recent_handshake > 0),
-        // Alias 应用状态（§17.2 第 8 项）：Phase 4 未落地，无 Alias 映射可
-        // 应用——恒 0 表示「无东西可应用」，**不是**「健康」。
+        // Alias application status (§17.2 item 8): Phase 4 is not landed, so no Alias mappings can
+        // be applied — a constant 0 means "nothing to apply", **not** "healthy".
         alias_apply_status: 0,
     }
 }
 
-/// 发布一条 LAN 路由（ADR-005）。路由属于期望配置：创建即记录新修订（§10.1）。
+/// Publish one LAN route (ADR-005). Routes belong to the desired config: creating one records a new revision (§10.1).
 pub fn create_route(
     state: &mut MeshState,
     network_id: &str,
@@ -822,20 +822,20 @@ pub fn create_route(
         ))
     })?;
 
-    // overlay 自身/其子网不是 LAN 目的（它们走 overlay 内部转发）。
+    // The overlay itself and its subnets are not LAN destinations (they are forwarded inside the overlay).
     let overlay = state.network(network_id)?.overlay_cidr;
     if destination.overlaps(&overlay) {
         return Err(ServiceError::RouteConflict(format!(
             "destination {destination} overlaps overlay {overlay}"
         )));
     }
-    // 同网络目的网段互斥（重叠即冲突，不做超集合并）。拒绝发生在任何状态
-    // 变更之前：既有路由绝不被覆盖（§8.3 不静默）。错误消息点名冲突对端
-    // （既有路由 id + 网段），控制台据此展示「跟哪条路由冲突」。
-    // 例外（ADR-006 旗舰场景）：新路由与既有路由**都是 Alias 模式**时允许
-    // 真实前缀重叠——两个站点各有一个 192.168.1.0/24，经各自 Alias 前缀区分
-    // 可达；对外可见的转发前缀是 Alias（唯一性由创建 Alias 时的
-    // `alias_alias_overlap` 拒绝保证），真实前缀不进任何隧道 AllowedIPs。
+    // Destination segments within one network are mutually exclusive (overlap is a conflict; no superset merging). Rejection happens before any state
+    // change: an existing route is never overwritten (§8.3, no silent behavior). The error message names the conflicting peer
+    // (existing route id + segment), so the console can show "which route this conflicts with".
+    // Exception (ADR-006 flagship scenario): when **both** the new and the existing route are in **Alias mode**, overlapping
+    // real prefixes are allowed — two sites each have a 192.168.1.0/24, and reachability is disambiguated through their respective Alias prefixes;
+    // the externally visible forwarding prefix is the Alias (uniqueness is guaranteed by the `alias_alias_overlap` rejection
+    // when creating an Alias), and real prefixes never enter any tunnel's AllowedIPs.
     if let Some(existing) = state
         .lan_routes
         .get(network_id)
@@ -855,7 +855,7 @@ pub fn create_route(
         }
     }
 
-    // 网关必须是本网络的 Active 设备。
+    // The gateway must be an Active device of this network.
     let gateway = DeviceId(req.gateway_device_id.clone());
     let device = state
         .registry
@@ -951,9 +951,9 @@ pub fn get_route(
     })
 }
 
-/// 删除一条 LAN 路由。删除也是期望配置变更：记录新修订。
-/// §12.6 所有权清理：绑定该路由的 Alias 一并移除（alias-路由是一对一单元，
-/// 留下孤儿 Alias 会让 AllowedIPs 推导引用不存在的翻译）。
+/// Delete one LAN route. Deletion is also a desired-config change: record a new revision.
+/// §12.6 ownership cleanup: remove the Aliases bound to that route together with it (an alias and a route are a one-to-one unit,
+/// and leaving an orphan Alias would make AllowedIPs derivation reference a translation that does not exist).
 pub fn delete_route(
     state: &mut MeshState,
     network_id: &str,
@@ -978,14 +978,14 @@ pub fn delete_route(
 }
 
 // ---------------------------------------------------------------------------
-// Alias 映射（ADR-006：等长前缀一对一；§12.6 所有权与清理）
+// Alias mappings (ADR-006: equal-length prefixes, one-to-one; §12.6 ownership and cleanup)
 // ---------------------------------------------------------------------------
 
-/// 创建 Alias 映射（§9.2 转换前检查的控制面部分）：绑定路由必须是本网络
-/// `alias` 模式路由、网关 Active、每路由一映射；前缀等长（域层校验）、
-/// 与 overlay / 既有 Alias / 既有路由目的网段互不重叠（§8.3/§9.2 不静默——
-/// 冲突消息点名对端）。target 由绑定路由推导，客户端不可指定。
-/// 拒绝发生在任何状态变更之前。
+/// Create an Alias mapping (the control-plane part of the §9.2 pre-translation checks): the bound route
+/// must be an `alias`-mode route of this network, its gateway Active, and at most one mapping per route; the prefixes
+/// must be equal in length (validated in the domain layer) and must not overlap the overlay, existing Aliases, or existing route destination segments (§8.3/§9.2, no silent behavior —
+/// conflict messages name the counterpart). The target is derived from the bound route; clients cannot specify it.
+/// Rejection happens before any state change.
 pub fn create_alias(
     state: &mut MeshState,
     network_id: &str,
@@ -1006,8 +1006,8 @@ pub fn create_alias(
         }
     };
 
-    // 绑定路由：本网络、alias 模式（§5：route_mode=alias 即「经虚拟前缀」，
-    // alias-路由是一对一单元）；网关 Active（§9.2「网关有效」）；每路由一映射。
+    // Bound route: belongs to this network and is in alias mode (§5: route_mode=alias means "via a virtual prefix",
+    // and an alias and a route are a one-to-one unit); the gateway must be Active (§9.2 "gateway valid"); one mapping per route.
     let routes = state.lan_routes.get(network_id).ok_or_else(|| {
         ServiceError::RouteNotFound(format!("{} in network {network_id}", req.lan_route_id))
     })?;
@@ -1107,10 +1107,10 @@ pub fn get_alias(
     Ok(to_alias_view(state, network_id, alias, revision_id))
 }
 
-/// 删除 Alias = 整单元清理（§12.6「删除 Alias 同步清理其路由和 NAT 规则」
-/// 的控制面部分）：移除映射与其绑定路由，记录**一个**修订。内核侧 NAT 规则
-/// 的移除随该修订的 apply 交 backend 执行（未接线时确定性失败可见，§10.3）。
-/// 返回 (alias_id, route_id) 供 handler 落库与审计。
+/// Deleting an Alias = whole-unit cleanup (the control-plane part of §12.6's "deleting an Alias also cleans up its route and NAT rules"):
+/// remove the mapping together with its bound route, recording **a single** revision. Removing the kernel-side NAT rules is handed to the backend
+/// as part of that revision's apply (when not wired up the deterministic failure is visible, §10.3).
+/// Returns (alias_id, route_id) so the handler can persist and audit it.
 pub fn delete_alias(
     state: &mut MeshState,
     network_id: &str,
@@ -1130,7 +1130,7 @@ pub fn delete_alias(
         })?;
     aliases.retain(|a| a.id.to_string() != alias_id);
     debug_assert_eq!(aliases.len(), before - 1);
-    // 绑定路由同删（一对一单元；孤儿 alias 模式路由没有翻译语义）。
+    // Delete the bound route along with it (a one-to-one unit; an orphan alias-mode route has no translation semantics).
     if let Some(routes) = state.lan_routes.get_mut(network_id) {
         routes.retain(|r| r.id.to_string() != route_id);
     }
@@ -1138,8 +1138,8 @@ pub fn delete_alias(
     Ok((alias_id.to_string(), route_id))
 }
 
-/// 创建非默认 Segment。默认段由建网事务固定，不能重复、替换或删除；
-/// 新段必须是 overlay 的严格子段，并与同网其它段前缀互斥。
+/// Create a non-default segment. The default segment is fixed by the network-creation transaction and cannot be duplicated, replaced, or deleted;
+/// a new segment must be a strict sub-segment of the overlay and must not overlap the prefixes of other segments in the same network.
 pub fn create_segment(
     state: &mut MeshState,
     network_id: &str,
@@ -1253,7 +1253,7 @@ fn segment_by_id<'a>(
         })
 }
 
-/// 新建授权为 Pending：只有显式 apply 后的单向信任才进入期望哈希。
+/// A newly created grant is Pending: only one-way trust that has been explicitly applied enters the desired hash.
 pub fn create_segment_grant(
     state: &mut MeshState,
     network_id: &str,
@@ -1317,7 +1317,7 @@ pub fn list_segment_grants(
         .collect())
 }
 
-/// 显式批准 Pending 授权：之后才进入计划编译与 desired_config_hash v4。
+/// Explicitly approve a Pending grant: only afterwards does it enter plan compilation and desired_config_hash v4.
 pub fn apply_segment_grant(
     state: &mut MeshState,
     network_id: &str,
@@ -1354,7 +1354,7 @@ pub fn apply_segment_grant(
     ))
 }
 
-/// 撤销单向信任；二次撤销是 409，不生成无变化修订。
+/// Revoke one-way trust; revoking twice is a 409 and produces no no-op revision.
 pub fn revoke_segment_grant(
     state: &mut MeshState,
     network_id: &str,
@@ -1406,10 +1406,10 @@ fn to_segment_grant_view(
     }
 }
 
-/// 创建单主机全端口转发：把「alias /32 → target /32」作为一个原子单元写入。
+/// Create a per-host all-port forward: write "alias /32 -> target /32" as a single atomic unit.
 ///
-/// Host Forward 不新增端口防火墙模型：`/32` 使 TCP/UDP/ICMP 的所有端口和
-/// 协议都经既有 LAN Route + Alias NETMAP 路径转发，删除路由/alias 单元即全删。
+/// Host Forward adds no new port/firewall model: `/32` makes every port of TCP/UDP/ICMP and
+/// every protocol go through the existing LAN Route + Alias NETMAP path; deleting the route/alias unit deletes everything.
 pub fn create_host_forward(
     state: &mut MeshState,
     network_id: &str,
@@ -1502,8 +1502,8 @@ pub fn create_host_forward(
     Ok(to_host_forward_view(state, network_id, &alias, revision_id))
 }
 
-/// Host Forward 列表 = 当前所有 /32 target 的 Alias 单元（真实 LAN 网段仍用
-/// 原有 Alias 页面展示，避免把两种语义混在同一张表）。
+/// Host Forward list = all current Alias units with a /32 target (real LAN segments are still shown
+/// on the existing Alias page, keeping the two semantics out of the same table).
 pub fn list_host_forwards(
     state: &MeshState,
     network_id: &str,
@@ -1550,7 +1550,7 @@ pub fn list_host_forwards(
     Ok(views)
 }
 
-/// 删除 Host Forward 的 alias id；绑定路由随既有 ownership 单元一并移除。
+/// Delete the alias id of a Host Forward; the bound route is removed together with it via the existing ownership unit.
 pub fn delete_host_forward(
     state: &mut MeshState,
     network_id: &str,
@@ -1606,8 +1606,8 @@ fn to_host_forward_view(
     }
 }
 
-/// 撤销设备（peer 撤销，§11.5 控制面部分）：状态转 `Revoked`（下线）并记录
-/// 新修订——被撤销设备不入期望配置哈希。agent 凭证失效由 handler 在锁外完成。
+/// Revoke a device (peer revocation, the control-plane part of §11.5): the status becomes `Revoked` (offline) and a
+/// new revision is recorded — a revoked device does not enter the desired-config hash. Invalidation of the agent credential is done by the handler outside the lock.
 pub fn revoke_device(
     state: &mut MeshState,
     network_id: &str,
@@ -1627,9 +1627,9 @@ pub fn revoke_device(
             .map_err(|e| ServiceError::Conflict(e.to_string()))?;
         device.id.clone()
     };
-    // §11.5：撤销必须移除该设备发布的 LAN 路由，避免期望配置里留下指向
-    // 已撤销 Peer 的路由（AllowedIPs 推导会把它当成远端网段继续下发）。
-    // §12.6 所有权清理：随之移除绑定这些路由的 Alias 映射（不留孤儿翻译）。
+    // §11.5: revocation must remove the LAN routes published by that device, so the desired config is not left with routes pointing
+    // at a revoked Peer (AllowedIPs derivation would keep treating it as a remote segment and keep distributing it).
+    // §12.6 ownership cleanup: remove the Alias mappings bound to those routes along with them (no orphan translations).
     let orphaned: Vec<String> = state
         .lan_routes
         .get(network_id)
@@ -1654,9 +1654,9 @@ pub fn revoke_device(
     })
 }
 
-/// 设置设备标签（MT-005）：整体替换（PUT 语义）。标签是路由元数据，
-/// 不进期望配置——不记修订、不触发 backend 应用；落库由调用方经
-/// [crate::persist::commit_device_labels] 完成。设备必须归属该网络。
+/// Set device labels (MT-005): full replacement (PUT semantics). Labels are routing metadata,
+/// not part of the desired config — no revision is recorded and no backend apply is triggered; persisting is done by the caller
+/// through [crate::persist::commit_device_labels]. The device must belong to that network.
 pub fn set_device_labels(
     state: &mut MeshState,
     network_id: &str,
@@ -1675,7 +1675,7 @@ pub fn set_device_labels(
     Ok(device.clone())
 }
 
-/// 网络当前修订引用（网络视图语义复用：无修订时 0/`none`）。
+/// The network's current revision reference (reuses the network-view semantics: 0/`none` when there is no revision).
 pub fn current_revision_ref(state: &MeshState, network_id: &str) -> (u64, String) {
     state
         .ledger
@@ -1705,7 +1705,7 @@ fn to_route_view(
 }
 
 // ---------------------------------------------------------------------------
-// 辅助
+// Helpers
 // ---------------------------------------------------------------------------
 
 pub fn fingerprint_of(public_key: &str) -> String {
@@ -1720,7 +1720,7 @@ pub fn fingerprint_of(public_key: &str) -> String {
 }
 
 fn to_network_view(state: &MeshState, n: &Network) -> NetworkView {
-    // 当前期望修订 = 最新一个未回滚的修订（ADR-009：显示以应用状态为准）。
+    // Current desired revision = the latest non-rolled-back revision (ADR-009: display follows application status).
     let current = state
         .ledger
         .current(&meshlet_domain::NetworkId(n.id.0.clone()));

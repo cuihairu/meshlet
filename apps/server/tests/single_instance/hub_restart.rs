@@ -4,14 +4,14 @@ use super::boot::*;
 use super::single_instance_support::*;
 use serde_json::json;
 
-/// 场景 1：Hub 重启后必须按**身份**重建受管状态，而不是只看条数。
+/// Scenario 1: after a hub restart, managed state must be rebuilt by **identity**, not merely by count.
 #[tokio::test(flavor = "multi_thread")]
 async fn hub_reboot_rebuilds_managed_kernel_state_by_identity() {
     let Some(sandbox) = setup() else {
         return;
     };
     let boot = boot_network(&sandbox, "reboot-hub.key").await;
-    // 造出 hub 侧路由 + 网关侧 NAT，让「受管状态」有可逐字段比对的实体。
+    // Create hub-side routes + gateway-side NAT so "managed state" has concrete things to compare field by field.
     admin(
         &boot.app,
         &boot.cookie,
@@ -34,7 +34,7 @@ async fn hub_reboot_rebuilds_managed_kernel_state_by_identity() {
     assert!(!routes.is_empty(), "hub must have managed routes");
     assert!(!nat.is_empty(), "the gateway must carry meshlet NAT");
 
-    // 重启：内核全丢，库还在。
+    // Restart: everything in the kernel is gone, but the database survives.
     net(&sandbox.names[0], &["ip", "link", "del", "wg0"]);
     assert!(
         !ns(&sandbox.names[0], &["wg", "show", "wg0"])
@@ -70,11 +70,11 @@ async fn hub_reboot_rebuilds_managed_kernel_state_by_identity() {
         nat,
         "the gateway NAT must be untouched by the hub reboot"
     );
-    // 重建后的 wg0 不带会话密钥：设备仍用旧会话（REJECT_AFTER_TIME 内有效）发
-    // keepalive，hub 无法解密也就学不到对端 endpoint，静默丢包是 WireGuard 的
-    // 标准行为，最多 180 秒后设备会话过期自动重握手。设备侧按自己的收敛步骤
-    // 重新应用期望计划（`wg set peer` 会重置会话）可立即恢复，这里用它验证
-    // 恢复后的数据面。
+    // The rebuilt wg0 has no session keys: devices keep sending keepalives on the old session (still valid within
+    // REJECT_AFTER_TIME), the hub cannot decrypt them, so it never learns the peer endpoint; silent packet loss is
+    // WireGuard's standard behavior, and at most 180 seconds later the device session expires and it re-handshakes.
+    // On the device side, re-applying the desired plan through its own convergence steps (`wg set peer` resets the
+    // session) recovers immediately — we use that here to verify the recovered data plane.
     for index in 0..2 {
         converge_device(&sandbox, &boot, index).await;
     }
@@ -82,8 +82,8 @@ async fn hub_reboot_rebuilds_managed_kernel_state_by_identity() {
     assert!(reconnects(&sandbox.names[2], "192.168.60.5"));
 }
 
-/// 场景 8：Hub 公钥轮换。轮换发生在密钥文件，Hub 重启后必须用新密钥重建隧道，
-/// 设备的期望与内核随之收敛，旧公钥不得残留。
+/// Scenario 8: hub public-key rotation. The rotation happens in the key file; after a hub restart the tunnel must be
+/// rebuilt with the new key, device plans/kernels converge along, and the old public key must not linger.
 #[tokio::test(flavor = "multi_thread")]
 async fn hub_key_rotation_converges_devices_after_restart() {
     let Some(sandbox) = setup() else {

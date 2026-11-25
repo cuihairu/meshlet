@@ -1,12 +1,15 @@
-//! 一致性备份端点（存档 §17.4）：`POST /api/v1/system/backup`。
+//! Consistent backup endpoint (archive §17.4): `POST /api/v1/system/backup`.
 //!
-//! - **本地快照，不是同步**：只写服务器上配置的备份目录
-//!   （`[backup] dir`），无任何外发/云上传/遥测；目录未配置 → `503`
-//!   `backup_not_configured`（默认部署不产生任何文件）；
-//! - 一致性由 SQLite `VACUUM INTO` 快照保证（独立可打开、自洽）；
-//! - 恢复不走 HTTP——活动库文件不能在被服务时替换：恢复是
-//!   `meshlet-server restore <backup.db>` 离线子命令（`main.rs`），
-//!   落 `system.restore` 审计事件后按 §17.3 语义重建。
+//! - **A local snapshot, not sync**: it writes only to the backup directory
+//!   configured on the server (`[backup] dir`), with no outbound transfer,
+//!   cloud upload or telemetry; directory not configured → `503`
+//!   `backup_not_configured` (a default deployment produces no files);
+//! - Consistency is guaranteed by an SQLite `VACUUM INTO` snapshot
+//!   (independently openable, self-contained);
+//! - Restore does not go over HTTP — the live database file cannot be replaced
+//!   while it is being served: restore is the offline
+//!   `meshlet-server restore <backup.db>` subcommand (`main.rs`), which
+//!   records a `system.restore` audit event and then rebuilds per §17.3 semantics.
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
@@ -19,7 +22,7 @@ use crate::auth::{CsrfHeader, SharedAppState, WriteUser};
 use crate::persist::BackupError;
 use crate::service;
 
-/// `POST /api/v1/system/backup` 响应。
+/// Response of `POST /api/v1/system/backup`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct BackupResponse {
     pub path: String,
@@ -47,7 +50,8 @@ impl From<crate::persist::BackupReport> for BackupResponse {
     }
 }
 
-/// 备份端点错误（默认部署未配置目录 → 503，明确而非静默失败）。
+/// Backup endpoint error (directory not configured in a default deployment →
+/// 503, an explicit failure rather than a silent one).
 #[derive(Debug)]
 pub enum BackupApiError {
     NotConfigured,
@@ -93,7 +97,8 @@ async fn backup_handler(
     WriteUser(user_id): WriteUser,
     CsrfHeader: CsrfHeader,
 ) -> Result<Json<BackupResponse>, BackupApiError> {
-    // 备份未配置即明确 503（「备份 ≠ 同步」：默认不写任何文件）。
+    // An unconfigured backup is an explicit 503 ("backup ≠ sync": by default no
+    // file is written at all).
     let dir = state
         .backup_dir
         .as_deref()

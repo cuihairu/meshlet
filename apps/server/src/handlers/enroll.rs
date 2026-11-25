@@ -1,5 +1,5 @@
-//! 邀请加入端点（公开，凭邀请 Token）：先变更+落库再签发 agent 凭证，
-//! 锁不跨 mesh 锁的 await（future 须 Send）。
+//! Invite-based enrollment endpoint (public, authenticated by an invite Token): mutate + persist first, then issue the agent credential;
+//! the persist lock never spans an await held across the mesh lock (the future must be Send).
 
 use crate::auth::SharedAppState;
 use crate::service;
@@ -12,8 +12,8 @@ pub(crate) async fn enroll_handler(
     State(state): State<SharedAppState>,
     Json(req): Json<service::EnrollRequest>,
 ) -> Result<(StatusCode, Json<service::EnrollResponse>), service::ServiceError> {
-    // 先完成加入（内存变更 + 落库同一互斥段），再签发 agent 凭证——锁不跨
-    // mesh 锁的 await（future 须 Send）。
+    // Complete the enrollment first (in-memory change + persist inside one critical section), then issue the agent credential — the lock
+    // never spans an await held across the mesh lock (the future must be Send).
     let _persist = state.persist.lock().await;
     let invite_token = req.invite_token.clone();
     let (mut resp, device, revision, invite, staged) = {

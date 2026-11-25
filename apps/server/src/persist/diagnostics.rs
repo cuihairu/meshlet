@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
-// 诊断运行快照（存档 §12.7，migration 006）
+// Diagnostics run snapshots (archival, §12.7, migration 006)
 // ---------------------------------------------------------------------------
 
-/// 落一行诊断快照（`POST /networks/{id}/diagnostics`）：报告以 JSON 存储，
-/// 按行号取「最近一次」。
+/// Store one diagnostics snapshot row (`POST /networks/{id}/diagnostics`): the report is kept as JSON,
+/// and the "most recent one" is taken by row order.
 pub async fn insert_diagnostics_run(
     pool: &SqlitePool,
     network_id: &str,
@@ -23,8 +23,8 @@ use super::shared::{corrupt, desired_status_parse};
 use meshlet_domain::{AliasMapping, ConfigRevision, LanRouteId, NetworkId, TranslationMode};
 use sqlx::SqlitePool;
 
-/// 最近一次诊断快照的 JSON（`GET /networks/{id}/diagnostics`）；从未运行
-/// 返回 `None`（端点据此 404，不现算、不假称有）。
+/// The JSON of the most recent diagnostics snapshot (`GET /networks/{id}/diagnostics`); returns `None`
+/// if it has never run (the endpoint 404s on that — nothing is computed on the fly, nothing is claimed).
 pub async fn latest_diagnostics_run(
     pool: &SqlitePool,
     network_id: &str,
@@ -148,8 +148,8 @@ pub(crate) async fn commit_rollback(
                 sqlx::query("INSERT INTO alias_mappings(id,network_id,lan_route_id,alias_cidr,target_cidr,translation_mode,status,created_at) VALUES(?,?,?,?,?,?,?,?)")
                     .bind(a.id.to_string()).bind(&network).bind(a.lan_route_id.to_string()).bind(a.alias_cidr.to_string()).bind(a.target_cidr.to_string()).bind(a.translation_mode.as_str()).bind("pending").bind(crate::service::now()).execute(&mut *tx).await?;
             }
-            // 已确认的 hub 计划同样回落到回滚结果（调用方已按当前授权快照
-            // 过滤），否则下次重启会从日志里读回更早的、含被撤销设备的计划。
+            // A confirmed hub plan also falls back to the rollback result (the caller has already filtered
+            // by the current authorization snapshot); otherwise the next restart would read back an older plan from the journal, one that still contains a revoked device.
             let json = serde_json::to_string(saved).map_err(|e| corrupt("hub deployment", e))?;
             sqlx::query("INSERT INTO hub_deployments(network_id,plan_json) VALUES(?,?) ON CONFLICT(network_id) DO UPDATE SET plan_json=excluded.plan_json,recovery_error=NULL")
                 .bind(&network).bind(json).execute(&mut *tx).await?;

@@ -1,28 +1,39 @@
-//! Mesh 状态持久化与启动重建（[存档 §17.3](../../docs/review/chatgpt-2026-10-13.md)）
-//! 与一致性备份/恢复（[存档 §17.4](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Mesh state persistence and startup rebuild ([archive §17.3](../../docs/review/chatgpt-2026-10-13.md))
+//! and consistent backup/restore ([archive §17.4](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 请求路径：`MeshState` 仍是唯一事实源（`service.rs`）；每次变更在锁内
-//! 完成后，由 handler 把**新行**镜像到 SQLite（本模块的 `insert_*`/
-//! `update_*`/`delete_*`）。落库失败 → 请求 500（「不落库不放行」，与审计
-//! 的「不留痕不放行」同纪律）；内存与 DB 的写序由 `AppState::persist` 互斥
-//! 串行化（变更 + 落库同临界区），任何并发交错都不会让旧行覆盖新行。
+//! Request path: `MeshState` remains the single source of truth (`service.rs`);
+//! after each change completes inside the lock, the handler mirrors the **new
+//! rows** into SQLite (this module's `insert_*`/`update_*`/`delete_*`). A
+//! persistence failure → the request gets a 500 ("no commit to DB, no
+//! pass-through", the same discipline as the audit's "no trail, no
+//! pass-through"); the write order between memory and DB is serialized by the
+//! `AppState::persist` mutex (change + persist in the same critical section),
+//! so no concurrent interleaving can let an old row overwrite a new one.
 //!
-//! 启动路径（[`load`]）：
-//! 1. 从 DB 装载 networks/devices/lan_routes/invitations/config_revisions/
-//!    `mesh_meta`（route_seq），重建 `MeshState`——IPAM 保留全部已分配地址
-//!    （含已撤销设备），修订序列与哈希逐字回放；
-//! 2. **中断收敛（§10.3）**：停在 `applying` 的修订结果不可知，一律落
-//!    `failed` + 中断诊断并回写 DB（不假装成功）；`rollback_pending` 保留
-//!    可重试；已 `applied` 不重放 backend；
-//! 3. presence 证据时间戳按 DB 原值恢复——重启**不虚构**在线（§12.4）：
-//!    判定发生在读取时刻，无新鲜证据即 `offline`/`tunnel_only`。
+//! Startup path ([`load`]):
+//! 1. Load networks/devices/lan_routes/invitations/config_revisions/`mesh_meta`
+//!    (route_seq) from the DB and rebuild `MeshState` — IPAM keeps every
+//!    allocated address (including revoked devices), and revision sequences and
+//!    hashes are replayed verbatim;
+//! 2. **Interrupt convergence (§10.3)**: a revision stuck at `applying` has an
+//!    unknowable result, so it always lands as `failed` plus interrupt
+//!    diagnostics, written back to the DB (never pretending to have succeeded);
+//!    `rollback_pending` stays retryable; already `applied` revisions do not
+//!    replay the backend;
+//! 3. presence evidence timestamps are restored to their original DB values —
+//!    a restart **never fabricates** being online (§12.4): the judgment happens
+//!    at read time, and without fresh evidence the state is
+//!    `offline`/`tunnel_only`.
 //!
-//! 备份/恢复（§17.4）：[`backup_to`] 以 `VACUUM INTO` 产生单一自洽的本地
-//! 快照（一致性由 SQLite 快照本身保证）；[`restore_from_backup`] 校验 →
-//! 原子换名 → 留痕 → 复用 [`load`] 重建，语义与正常启动一致。
+//! Backup/restore (§17.4): [`backup_to`] uses `VACUUM INTO` to produce a single
+//! self-consistent local snapshot (consistency is guaranteed by the SQLite
+//! snapshot itself); [`restore_from_backup`] validates → renames atomically →
+//! leaves a trail → reuses [`load`] to rebuild, with semantics identical to a
+//! normal startup.
 //!
-//! 客户端（agent）侧重启恢复随数据面 backend 落地（拉取期望配置重新应用），
-//! 本模块先把「服务端重启不丢期望状态」钉死。
+//! Client (agent) side restart recovery lands together with the dataplane
+//! backend (pull the desired config and reapply it); this module first pins
+//! down "a server restart does not lose desired state".
 
 use super::shared::MeshStatePersistedView;
 use super::tasks::load;
@@ -33,7 +44,7 @@ use std::str::FromStr as _;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// 一致性备份与恢复（存档 §17.4）
+// Consistent backup and restore (archive §17.4)
 // ---------------------------------------------------------------------------
 
 const LEGACY_REQUIRED_TABLES: [&str; 16] = [
@@ -55,18 +66,18 @@ const LEGACY_REQUIRED_TABLES: [&str; 16] = [
     "api_tokens",
 ];
 
-/// 备份/恢复错误（§17.4：明确拒绝，绝不留半恢复状态）。
+/// Backup/restore error (§17.4: reject explicitly, never leave a half-restored state).
 #[derive(Debug)]
 pub enum BackupError {
-    /// 备份目标文件已存在（不覆盖既有备份）。
+    /// The backup target file already exists (existing backups are never overwritten).
     TargetExists(String),
-    /// 源不是数据库或内容损坏（quick_check/打开失败）。
+    /// The source is not a database or its content is corrupt (quick_check/open failure).
     Corrupt(String),
-    /// 数据库合法但缺表（不完整备份，拒绝恢复）。
+    /// The database is valid but missing tables (incomplete backup, restore refused).
     IncompleteSchema {
         missing: Vec<String>,
     },
-    /// 活动库被占用（恢复前必须先停 meshlet-server）。
+    /// The live database is in use (meshlet-server must be stopped before restore).
     Locked(String),
     Io(std::io::Error),
     Db(sqlx::Error),
@@ -101,7 +112,7 @@ impl std::error::Error for BackupError {}
 impl From<sqlx::Error> for BackupError {
     fn from(e: sqlx::Error) -> Self {
         let text = e.to_string();
-        // SQLite「database is locked / busy」→ 提示先停服务再恢复。
+        // SQLite "database is locked / busy" → advise stopping the server before restoring.
         if text.contains("locked") || text.contains("busy") {
             return Self::Locked(text);
         }
@@ -115,8 +126,9 @@ impl From<std::io::Error> for BackupError {
     }
 }
 
-/// 一次备份的报告（路径 + 字节数 + **从备份文件本体读出的**内容摘要——
-/// 顺带证明备份文件可独立打开且 schema 完整）。
+/// Report of one backup (path + byte count + a content summary **read back from
+/// the backup file itself** — which incidentally proves the backup file opens
+/// standalone and has a complete schema).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupReport {
     pub path: String,
@@ -124,11 +136,14 @@ pub struct BackupReport {
     pub view: MeshStatePersistedView,
 }
 
-/// 校验备份文件：独立只读打开 + `quick_check` + 必需表齐全，返回内容摘要。
+/// Validate a backup file: open it standalone read-only + `quick_check` + all
+/// required tables present, returning the content summary.
 ///
-/// 任何一步失败都按 [`BackupError::Corrupt`] / [`BackupError::IncompleteSchema`]
-/// 拒绝——损坏/不完整的备份绝不进入恢复流程。只读连接必须按 RAII drop 释放
-/// （池式 close 对 SQLite 文件句柄的释放是惰性的；Windows 上会挡住恢复拷贝）。
+/// Any step that fails is rejected as [`BackupError::Corrupt`] /
+/// [`BackupError::IncompleteSchema`] — a corrupt or incomplete backup never
+/// enters the restore flow. The read-only connection must be released by RAII
+/// drop (a pool-style close releases SQLite file handles lazily, which on
+/// Windows would block the restore copy).
 pub async fn validate_backup(path: &Path) -> Result<MeshStatePersistedView, BackupError> {
     let mut connection =
         sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite:{}", path.display()))?
@@ -137,8 +152,9 @@ pub async fn validate_backup(path: &Path) -> Result<MeshStatePersistedView, Back
             .await
             .map_err(|e| BackupError::Corrupt(e.to_string()))?;
 
-    // 把校验结果先移出连接作用域，再显式 drop，确保 `copy`/`rename` 之前
-    // 没有文件句柄还挂在备份或 staging 文件上。
+    // Move the validation result out of the connection's scope first, then drop
+    // it explicitly, so no file handle is left on the backup or staging file
+    // before `copy`/`rename`.
     let result = validate_on(&mut connection).await.map_err(|e| match e {
         e @ BackupError::IncompleteSchema { .. } => e,
         e => BackupError::Corrupt(e.to_string()),
@@ -243,18 +259,23 @@ where
     Ok(usize::try_from(n).unwrap_or(0))
 }
 
-/// 生成备份目录下的唯一文件名（毫秒时间戳，排序即时间序）。
+/// Produce a unique filename under the backup directory (millisecond timestamp; sorting equals time order).
 fn backup_filename(now: chrono::DateTime<chrono::Utc>) -> String {
     format!("meshlet-backup-{}.db", now.format("%Y%m%dT%H%M%S%3fZ"))
 }
 
-/// 写一份一致性备份到 `dir`（SQLite `VACUUM INTO` 在线备份语义）。
+/// Write a consistent backup into `dir` (SQLite `VACUUM INTO` online backup
+/// semantics).
 ///
-/// - 备份是**单一自洽快照**（WAL 下由 SQLite 读事务保证），可独立打开；
-/// - 目标文件已存在则拒绝（不静默覆盖既有备份）；
-/// - 备份文件含口令哈希等敏感材料，落盘即收紧权限（0600）。
+/// - The backup is a **single self-consistent snapshot** (guaranteed by the
+///   SQLite read transaction under WAL) and can be opened standalone;
+/// - Refuse if the target file already exists (never silently overwrite an
+///   existing backup);
+/// - The backup file contains sensitive material such as password hashes, so
+///   permissions are tightened (0600) as soon as it hits disk.
 ///
-/// 一致性来自 SQLite 快照本身，与 `AppState::persist` 互斥无关。
+/// Consistency comes from the SQLite snapshot itself and is independent of the
+/// `AppState::persist` mutex.
 pub async fn backup_to(pool: &SqlitePool, dir: &Path) -> Result<BackupReport, BackupError> {
     tokio::fs::create_dir_all(dir).await?;
     let path = dir.join(backup_filename(chrono::Utc::now()));
@@ -275,7 +296,7 @@ pub async fn backup_to(pool: &SqlitePool, dir: &Path) -> Result<BackupReport, Ba
     })
 }
 
-/// 备份落盘即收紧权限（unix）；其它平台沿用系统默认。
+/// Tighten permissions as soon as the backup lands on disk (unix); other platforms keep the system default.
 fn restrict_permissions(path: &Path) {
     #[cfg(unix)]
     {
@@ -286,12 +307,14 @@ fn restrict_permissions(path: &Path) {
     let _ = path;
 }
 
-/// 恢复后的库应归属谁。
+/// Who the restored database should belong to.
 ///
-/// `restore` 子命令通常由 root 执行，而服务以非特权用户运行（随包单元
-/// `User=meshlet`）；不修复归属，恢复出的库是 root 所有，服务启动即
-/// `unable to open database file` 并 crash-loop。优先级：被替换的既有活动库
-/// （原地恢复，最常见），其次数据目录本身（空目录里的首次恢复）。
+/// The `restore` subcommand usually runs as root while the service runs as an
+/// unprivileged user (the shipped unit sets `User=meshlet`); without fixing
+/// ownership, the restored database is owned by root, and the service fails at
+/// startup with `unable to open database file` and crash-loops. Priority: the
+/// existing live database being replaced (in-place restore, the common case),
+/// then the data directory itself (the first restore into an empty directory).
 #[cfg(unix)]
 pub(super) fn resolve_restored_database_owner(
     database: &Path,
@@ -306,8 +329,10 @@ pub(super) fn resolve_restored_database_owner(
     })
 }
 
-/// 把恢复出的库设回服务用户的归属。必须在换名**之后**调用（换名前读到的
-/// 是旧库）；root 之外执行时 chown 必然 EPERM，而文件本就归当前用户，忽略。
+/// Set the restored database back to the service user's ownership. This must be
+/// called **after** the rename (before it, the file being read is still the old
+/// database); when not running as root, chown necessarily fails with EPERM, and
+/// the file already belongs to the current user, so it is ignored.
 #[cfg(unix)]
 fn apply_restored_database_owner(database: &Path, prior_owner: Option<(u32, u32)>) {
     if let Some((uid, gid)) = resolve_restored_database_owner(database, prior_owner) {
@@ -315,8 +340,10 @@ fn apply_restored_database_owner(database: &Path, prior_owner: Option<(u32, u32)
     }
 }
 
-/// 备份一次并留痕（`system.backup` 审计事件）。端点（actor=操作者）与
-/// 定时任务（actor=None）共用；审计失败即备份失败（与业务同库，§16.5）。
+/// Back up once and leave a trail (the `system.backup` audit event). Shared by
+/// the endpoint (actor = the operator) and the scheduled job (actor = None);
+/// an audit failure means the backup fails (the audit lives in the same database
+/// as the business data, §16.5).
 pub async fn backup_once(
     pool: &SqlitePool,
     dir: &Path,
@@ -342,37 +369,47 @@ pub async fn backup_once(
     Ok(report)
 }
 
-/// 一次恢复的报告。
+/// Report of one restore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreReport {
     pub source: String,
     pub database: String,
     pub summary: MeshStatePersistedView,
-    /// §10.3 中断收敛（applying → failed）的修订（network_id, revision）。
+    /// Revisions converged by §10.3 interrupt handling (applying → failed), as (network_id, revision).
     pub interrupted: Vec<(String, u64)>,
 }
 
-/// 从备份文件恢复活动库（存档 §17.4）。
+/// Restore the live database from a backup file (archive §17.4).
 ///
-/// 流程（任何一步失败都不触碰活动库——**不留半恢复状态**）：
-/// 1. 实例锁（[`crate::instance_lock`]）：meshlet-server 在跑则整体拒绝——
-///    WAL 下空闲服务不持写事务，第 4 步的 `BEGIN EXCLUSIVE` 拦不住「换名后
-///    旧 inode 继续吃写入」的丢数据路径（2026-10-24 验收实录）；
-/// 2. 校验备份（[`validate_backup`]：独立打开 + quick_check + 必需表齐全）；
-/// 3. 拒绝旁挂非空 WAL 的备份（只拷主文件会静默丢已提交事务）；
-/// 4. 活动库可独占加锁（否则提示先停 meshlet-server；advisory 锁之外的
-///    外来 SQLite 连接由这一步兜底）；
-/// 5. 备份 → 临时文件 → 再校验 → 原子换名；替换前清掉旧 `-wal`/`-shm`；
-/// 6. 打开恢复后的库，留痕 `system.restore` 审计事件；
-/// 7. 复用 §17.3 [`load`] 重建 + 收敛（applying → failed、rollback_pending
-///    保留、applied 不重放——与正常启动完全同一条路径，不比现在更弱）。
+/// Flow (any step that fails leaves the live database untouched — **never leave
+/// a half-restored state**):
+/// 1. Instance lock ([`crate::instance_lock`]): refuse outright if
+///    meshlet-server is running — under WAL an idle service holds no write
+///    transaction, so step 4's `BEGIN EXCLUSIVE` cannot stop the data-loss path
+///    where the old inode keeps accepting writes after the rename (a real case
+///    from the 2026-10-24 acceptance run);
+/// 2. Validate the backup ([`validate_backup`]: standalone open + quick_check +
+///    required tables present);
+/// 3. Refuse a backup with a sidecar non-empty WAL (copying only the main file
+///    would silently lose committed transactions);
+/// 4. The live database must be exclusively lockable (otherwise advise stopping
+///    meshlet-server first; foreign SQLite connections beyond the advisory lock
+///    are caught by this step);
+/// 5. Backup → temp file → revalidate → atomic rename; clear the stale
+///    `-wal`/`-shm` before replacing;
+/// 6. Open the restored database and leave a `system.restore` audit event;
+/// 7. Reuse §17.3 [`load`] to rebuild + converge (applying → failed,
+///    rollback_pending kept, applied not replayed — exactly the same path as a
+///    normal startup, no weaker than today).
 pub async fn restore_from_backup(
     backup: &Path,
     database: &Path,
     thresholds: meshlet_domain::PresenceThresholds,
 ) -> Result<RestoreReport, BackupError> {
-    // 实例锁守卫：拿不到（服务在跑）或打不开（无法证明没服务在跑）都拒绝。
-    // 锁持有到函数返回，恢复期间启动的服务会得到明确失败而不是半恢复。
+    // Instance lock guard: refuse both when it cannot be acquired (the server is
+    // running) and when it cannot be opened (we cannot prove no server is
+    // running). The lock is held until the function returns, so a server started
+    // during the restore gets a clear failure instead of a half-restore.
     let _instance_guard = match crate::instance_lock::try_acquire(database) {
         Ok(lock) => lock,
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -390,9 +427,11 @@ pub async fn restore_from_backup(
     };
     let view = validate_backup(backup).await?;
 
-    // 备份旁挂着**非空**的 WAL（有人对备份文件写过且未 checkpoint）——只拷贝
-    // 主文件会静默丢已提交事务，明确拒绝：重取备份或先 checkpoint。
-    // 零字节 WAL（TRUNCATE checkpoint 之后）不含任何帧，无害放行。
+    // The backup carries a sidecar **non-empty** WAL (someone wrote to the
+    // backup file and did not checkpoint) — copying only the main file would
+    // silently lose committed transactions, so refuse explicitly: re-take the
+    // backup or checkpoint first. A zero-byte WAL (after a TRUNCATE checkpoint)
+    // contains no frames and is harmless to let through.
     let wal = PathBuf::from(format!("{}-wal", backup.display()));
     if wal.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         return Err(BackupError::Corrupt(
@@ -401,8 +440,9 @@ pub async fn restore_from_backup(
         ));
     }
 
-    // 活动库存在则要求可独占加锁（best-effort 防呆：服务器在跑时 WAL 下
-    // 常规写大概率立刻可见）。
+    // If the live database exists, require that it can be exclusively locked
+    // (best-effort guard: with the server running, ordinary writes are most
+    // likely visible immediately under WAL).
     if database.exists() {
         let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!(
             "sqlite:{}",
@@ -422,8 +462,9 @@ pub async fn restore_from_backup(
         drop(connection);
     }
 
-    // 拷贝到临时文件并复验（拷贝本身损坏也拒绝），再原子换名。
-    // 先记下既有活动库归属：服务以独立用户运行，而恢复通常由 root 执行。
+    // Copy to a temp file and revalidate (a corrupt copy is refused too), then
+    // rename atomically. First note the existing live database's ownership: the
+    // service runs as a dedicated user while restore usually runs as root.
     #[cfg(unix)]
     let prior_owner = database.metadata().ok().map(|m| {
         use std::os::unix::fs::MetadataExt as _;
@@ -460,8 +501,10 @@ pub async fn restore_from_backup(
         .await?;
     pool.close().await;
     validate_backup(&tmp).await?;
-    // 换名前清掉两类旁挂：既有活动库的 `-wal`/`-shm`（旧库的），以及
-    // staging 文件自身的——pool 关闭后残留在库里即悬空垃圾。
+    // Clear two kinds of sidecar files before the rename: the existing live
+    // database's `-wal`/`-shm` (belonging to the old database) and the staging
+    // file's own — leftovers after the pool closes are dangling garbage in the
+    // database.
     for base in [tmp.as_path(), database] {
         for suffix in ["-wal", "-shm"] {
             let _ =
@@ -470,7 +513,7 @@ pub async fn restore_from_backup(
     }
     rename_with_windows_busy_retry(&tmp, database).await?;
     sync_parent_dir(database);
-    // 恢复通常由 root 执行，服务以独立用户运行：不归还归属，服务起来即打不开库。
+    // Restore usually runs as root while the service runs as a dedicated user: without giving ownership back, the service cannot open the database once it starts.
     #[cfg(unix)]
     apply_restored_database_owner(database, prior_owner);
 
@@ -482,7 +525,7 @@ pub async fn restore_from_backup(
     })
 }
 
-/// fsync 父目录（unix），换名落盘；失败忽略（best-effort）。
+/// fsync the parent directory (unix) so the rename reaches disk; failures are ignored (best-effort).
 fn sync_parent_dir(database: &Path) {
     #[cfg(unix)]
     {
@@ -496,8 +539,9 @@ fn sync_parent_dir(database: &Path) {
     let _ = database;
 }
 
-/// Windows 上 SQLite 句柄关闭后，OS 仍可能短暂挡住文件独占访问。
-/// 只重试「另一个进程正在使用文件」这一类瞬态失败，其它 IO 错误原样返回。
+/// On Windows, after SQLite closes its handles the OS may still briefly block
+/// exclusive file access. Retry only the transient "another process has the
+/// file in use" class of failure; other IO errors are returned as-is.
 async fn copy_with_windows_busy_retry(from: &Path, to: &Path) -> Result<(), BackupError> {
     let mut attempt = 1u32;
     loop {
@@ -512,7 +556,8 @@ async fn copy_with_windows_busy_retry(from: &Path, to: &Path) -> Result<(), Back
     }
 }
 
-/// 同上：原子换名也可能因 staging 文件句柄尚未释放而短暂失败。
+/// Same as above: the atomic rename can also fail briefly if the staging file
+/// handle has not been released yet.
 async fn rename_with_windows_busy_retry(from: &Path, to: &Path) -> Result<(), BackupError> {
     let mut attempt = 1u32;
     loop {

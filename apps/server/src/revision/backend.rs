@@ -11,10 +11,10 @@ use crate::auth::SharedAppState;
 use crate::service::{self, MeshState};
 
 // ---------------------------------------------------------------------------
-// Hub 数据面 backend（ADR-007 接线）
+// Hub data-plane backend (ADR-007 wiring)
 // ---------------------------------------------------------------------------
 
-/// 一次应用的 hub 侧期望快照（从 [MeshState] 对账翻译，§10.1）。
+/// Hub-side desired snapshot for one application (translated from [MeshState] during reconciliation, §10.1).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct HubPlan {
     tunnel: TunnelConfig,
@@ -45,29 +45,34 @@ pub(crate) fn deployment(
     })
 }
 
-/// hub 数据面 backend：把网络当前期望配置真实下发到本机内核。
+/// Hub data-plane backend: actually pushes the network's current desired config down into this host's kernel.
 ///
-/// - apply = `apply_tunnel`（接口/地址/私钥/端口/peer 对账）+ `apply_routes`
-///   （LAN/Alias 路由、ip_forward、FORWARD 放行），两步都成功才算成功（§10.3
-///   失败不报成功）；
-/// - rollback = Linux 后端的 Meshlet 自有对象清理（§10.3）；
-/// - 网关侧 NAT 不在此执行（ADR-006：转换在目标网关，随 agent 交付）。
+/// - apply = `apply_tunnel` (interface/address/private key/port/peer reconciliation) +
+///   `apply_routes` (LAN/alias routes, ip_forward, FORWARD accept); both steps must
+///   succeed for success (§10.3: never report success on failure);
+/// - rollback = cleanup of Meshlet-owned objects by the Linux backend (§10.3);
+/// - gateway-side NAT is not executed here (ADR-006: translation happens on the
+///   target gateway and ships with the agent).
 pub struct HubDataPlaneBackend {
     plan: Result<HubPlan, String>,
     interface: String,
     previous: Option<Deployment>,
     previous_error: Option<String>,
     private_key_file: Option<String>,
-    /// 后端构造（生产 `SystemBackend::new()`；netns 集成测试注入指定
-    /// netns 的后端，同一 hub 期望翻译跑进沙箱内核）。
+    /// Backend construction (production: `SystemBackend::new()`; netns integration
+    /// tests inject a backend bound to a given netns so the same hub desired
+    /// translation runs against a sandboxed kernel).
     make_backend: Arc<dyn Fn() -> SystemBackend + Send + Sync>,
 }
 
-/// 撤销集合优先于机械恢复：已保存的 hub 部署在下发内核或写回恢复日志前，
-/// 必须对当前授权快照重新过滤——安全语义优先于机械恢复。过滤顺序即优先级：
-/// 被撤销设备的 peer 先走，网关不再活跃的路由随之删除，失去所属路由的
-/// alias 再删，最后删掉失去 peer allowed-ips 依据的 hub 转发路由（网关侧
-/// NAT 随路由集合在 agent 侧收敛，无需单独过滤）。
+/// The revocation set outranks mechanical recovery: a saved hub deployment must be
+/// re-filtered against the current authorization snapshot before it is pushed into
+/// the kernel or written back into the recovery log — security semantics win over
+/// mechanical recovery. The filter order is the priority order: peers of revoked
+/// devices go first, then routes whose gateway is no longer active, then aliases
+/// whose owning route is gone, and finally hub forwarding routes that lost their
+/// peer allowed-ips basis (gateway-side NAT converges with the route set on the
+/// agent side and needs no separate filtering).
 pub(crate) fn enforce_authorization(mesh: &MeshState, network_id: &str, saved: &mut Deployment) {
     let active_keys: std::collections::HashSet<_> = mesh
         .registry
@@ -100,8 +105,10 @@ pub(crate) fn enforce_authorization(mesh: &MeshState, network_id: &str, saved: &
 }
 
 impl HubDataPlaneBackend {
-    /// 从期望状态快照构造（网络不存在/缺 IPAM 等构造错误延迟到 apply 报告，
-    /// 保持工厂不可失败的签名）；后端构造可注入（netns 集成测试用）。
+    /// Constructed from a desired-state snapshot (construction errors such as a missing
+    /// network or missing IPAM are deferred to the apply step so the factory keeps
+    /// its infallible signature); backend construction is injectable (for netns
+    /// integration tests).
     fn from_mesh_with(
         mesh: &MeshState,
         network_id: &str,
@@ -138,8 +145,10 @@ impl HubDataPlaneBackend {
         }
     }
 
-    /// hub 私钥：apply 时从文件读取（不落库，ADR-010）；未配置则保留接口
-    /// 现有私钥（幂等重应用；首装必须配置否则无法握手——错误如实报出）。
+    /// Hub private key: read from the file at apply time (never stored in the DB, ADR-010);
+    /// when unconfigured, keep the interface's existing private key (idempotent re-apply;
+    /// a first install must configure one or handshakes are impossible — the error is
+    /// reported as-is).
     fn read_private_key(&self) -> Result<Option<String>, String> {
         match &self.private_key_file {
             None => Ok(None),
@@ -315,12 +324,14 @@ pub fn network_dataplane(
     Ok(out)
 }
 
-/// 把指定网络的期望配置翻译为 hub 侧数据面计划。
+/// Translate a network's desired config into a hub-side data-plane plan.
 ///
-/// - peer = 全部 Active 设备；allowed-ips = 设备虚拟 IP `/32` + 经该设备
-///   转发的 LAN/Alias 前缀（cryptkey 路由必须覆盖 hub 加密下发目的地）；
-/// - 路由 = LAN 路由（`Direct` → 真实目的段；`Alias` → 绑定 Alias 前缀）经
-///   网关设备虚拟 IP；网关设备非 Active 的路由跳过（无对端可发）。
+/// - peer = every Active device; allowed-ips = the device's virtual IP `/32` plus
+///   the LAN/alias prefixes forwarded through that device (cryptkey routing must
+///   cover the destinations the hub encrypts down);
+/// - routes = LAN routes (`Direct` -> the real destination segment; `Alias` -> the
+///   bound alias prefix) via the gateway device's virtual IP; routes whose gateway
+///   device is not Active are skipped (there is no peer to send to).
 fn hub_plan(
     mesh: &MeshState,
     network_id: &str,
@@ -353,8 +364,9 @@ fn hub_plan(
         .map(Vec::as_slice)
         .unwrap_or(&[]);
 
-    // hub 侧转发路由：Direct 用真实目的段，Alias 用 Alias 前缀（§9.4：VPS 只
-    // 按前缀转发，转换在目标网关做）。
+    // Hub-side forwarding routes: Direct uses the real destination segment, Alias uses
+    // the alias prefix (§9.4: the VPS only forwards by prefix, translation happens on
+    // the target gateway).
     let mut routes = Vec::new();
     for route in routes_in {
         let Some(gateway) = devices.iter().find(|d| d.id == route.gateway_device_id) else {
@@ -379,7 +391,7 @@ fn hub_plan(
         }
     }
 
-    // peer allowed-ips：虚拟 IP /32 + 经该设备转发的全部前缀。
+    // Peer allowed-ips: the virtual IP /32 plus every prefix forwarded through that device.
     let mut peers = Vec::new();
     for device in &devices {
         let mut allowed_ips = vec![host_cidr(device.virtual_ipv4)];
@@ -424,19 +436,20 @@ pub(crate) fn recover_deployment(
     backend.reconcile()
 }
 
-/// `/32` 主机段（设备虚拟 IP 的 allowed-ips 单元）。
+/// A `/32` host segment (the allowed-ips unit for a device's virtual IP).
 fn host_cidr(addr: std::net::Ipv4Addr) -> Ipv4Cidr {
     Ipv4Cidr::new(addr, 32).expect("host cidr is always valid")
 }
 
-/// 数据面工厂（`[dataplane] enabled = true`）：apply/rollback 真实执行
-/// （生产路径：后端在本机 root namespace 构造）。
+/// Data-plane factory (`[dataplane] enabled = true`): apply/rollback execute for real
+/// (production path: the backend is built in this host's root namespace).
 pub fn hub_backend_factory(dataplane: DataPlaneConfig, tunnel_mtu: Option<u32>) -> BackendFactory {
     hub_backend_factory_with(dataplane, tunnel_mtu, SystemBackend::new)
 }
 
-/// 同 [`hub_backend_factory`]，后端构造可注入——netns 集成测试把 hub 数据面
-/// （同一份期望翻译）跑进沙箱 netns，验证 server→agent→内核全链路。
+/// Same as [`hub_backend_factory`], but backend construction is injectable — netns
+/// integration tests run the hub data plane (the same desired translation) inside a
+/// sandbox netns to validate the server -> agent -> kernel chain end to end.
 pub fn hub_backend_factory_with(
     dataplane: DataPlaneConfig,
     tunnel_mtu: Option<u32>,

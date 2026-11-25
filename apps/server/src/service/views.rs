@@ -14,10 +14,11 @@ pub struct NetworkView {
     pub overlay_cidr: String,
     pub status: String,
     pub created_at: String,
-    /// 当前期望修订号（ADR-009：配置修改类响应必须携带版本与应用状态）。
+    /// Current desired revision id (ADR-009: config-mutating responses must carry
+    /// the version and its apply status).
     pub revision_id: u64,
-    /// 当前修订的应用状态：`pending`/`applying`/`applied`/`failed`/
-    /// `rollback_pending`/`rolled_back`（ADR-009 状态机）。
+    /// Apply status of the current revision: `pending`/`applying`/`applied`/`failed`/
+    /// `rollback_pending`/`rolled_back` (ADR-009 state machine).
     pub apply_status: String,
 }
 
@@ -31,33 +32,45 @@ pub struct DeviceView {
     pub fingerprint: String,
     pub status: String,
     pub created_at: String,
-    /// 批准时刻：自举注册路径 = 审批时刻（created_at 是申请时刻）；邀请入会
-    /// 路径为 `None`（两时刻同值，无需重复展示）。控制台据此区分「刚批准」
-    /// 与「已运行一段时间」。
+    /// Approval time: bootstrap-registration path = the moment of approval
+    /// (created_at is the request time); the invitation path is `None` (the two
+    /// moments hold the same value, no need to show it twice). The console uses
+    /// this to tell "just approved" apart from "running for a while".
     pub approved_at: Option<String>,
-    /// 最后证据时间（加入/心跳/上报到达时刻）——控制台「最后在线时间」。
+    /// Time of the last evidence (join / heartbeat / report arrival) — the
+    /// console's "last seen" value.
     pub last_seen_at: Option<String>,
-    /// 在线状态判定：`online` / `tunnel_only` / `offline`（数据来源见下）。
+    /// Online-state verdict: `online` / `tunnel_only` / `offline` (data sources
+    /// below).
     pub online_state: String,
-    /// 状态的数据来源：`agent_report` / `handshake` / `enrollment` / `none`（§12.2）。
+    /// Data source of the state: `agent_report` / `handshake` / `enrollment` /
+    /// `none` (§12.2).
     pub presence_source: String,
-    /// 最近一次心跳回传的数据面实测证据（§7.5）；`None` = 尚无上报。
+    /// Dataplane measurement evidence from the latest heartbeat (§7.5); `None` =
+    /// nothing reported yet.
     pub dataplane_evidence: Option<DataplaneEvidence>,
-    /// §12.3 P2P 链路状态上报：本设备对各对端的直连链路（direct /
-    /// direct_pending）。空 = 全中继或未上报；控制台据此展示 P2P/中继。
+    /// §12.3 P2P link status report: this device's direct links to each peer
+    /// (direct / direct_pending). Empty = all-relay or nothing reported; the
+    /// console renders P2P vs relay from this.
     pub direct_links: Vec<DirectLinkStatus>,
-    /// P2P-⑤：hub 观测的源 endpoint，格式 `observed_ip:listen_port`（心跳源
-    /// 地址拼接 agent 上报的 wg 监听端口）。`None` = 未观测到心跳或 agent 未
-    /// 上报端口。不做私网过滤——这是原始观测。
+    /// P2P-⑤: source endpoint observed by the hub, format
+    /// `observed_ip:listen_port` (heartbeat source address joined with the wg
+    /// listen port reported by the agent). `None` = no heartbeat observed or the
+    /// agent reported no port. No private-range filtering — this is the raw
+    /// observation.
     pub observed_endpoint: Option<String>,
-    /// 公网候选 endpoint（观测地址非私网时才有；与 agent 拨号候选同源，
-    /// 拓扑图/节点下钻复用）。`None` = 无观测/未上报或 hub 与 agent 同内网
-    /// （观测地址非公网，标公网会误导打洞）。
+    /// Public candidate endpoint (only present when the observed address is not
+    /// private; same source as the agent's dial candidates, reused by the
+    /// topology graph / node drilldown). `None` = no observation / not reported,
+    /// or hub and agent share a LAN (the observed address is not public;
+    /// labeling it public would mislead hole punching).
     pub public_endpoint: Option<String>,
-    /// R-DIAG 网络诊断三快照（路由表/接口/wg 读数）；`None` = 尚无上报或
-    /// 采集失败。控制台诊断页据此展示。
+    /// R-DIAG network diagnostics three snapshots (route table / interfaces / wg
+    /// readings); `None` = nothing reported yet or collection failed. The console
+    /// diagnostics page renders from this.
     pub diagnostics: Option<NetworkDiagnostics>,
-    /// MT-005 节点标签（操作员分配；任务标签路由的匹配依据）。空 = 未打标。
+    /// MT-005 node labels (assigned by the operator; the matching key for
+    /// label-based task routing). Empty = unlabeled.
     pub labels: BTreeMap<String, String>,
 }
 
@@ -69,35 +82,40 @@ pub struct CreateNetworkRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateInviteRequest {
-    /// ISO-8601 过期时刻；缺省表示永不过期。
+    /// ISO-8601 expiry time; omitted means never expires.
     pub expires_at: Option<String>,
-    /// 使用次数上限；缺省 1（一次性邀请，ADR-010）。
+    /// Use-count cap; default 1 (one-time invitation, ADR-010).
     pub max_uses: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateInviteResponse {
     pub invite_id: String,
-    /// 原始 Token **仅此一次**返回；服务端只存 SHA-256 摘要（§11.3）。
+    /// The raw Token is returned **only this once**; the server stores only the
+    /// SHA-256 digest (§11.3).
     pub token: String,
     pub expires_at: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
-// 设备自举注册（ZeroTier 式：自举码注册 → Pending → 控制中心审批/拒绝）
+// Device bootstrap registration (ZeroTier style: bootstrap-token registration →
+// Pending → control-center approval/rejection)
 // ---------------------------------------------------------------------------
 
-/// 自举码（bootstrap token）：长期、可复用的注册入口凭据，区别于一次性邀请。
+/// Bootstrap token: a long-lived, reusable registration-entry credential,
+/// distinct from a one-time invitation.
 #[derive(Debug, Deserialize)]
 pub struct CreateBootstrapTokenRequest {
-    /// 使用次数上限；缺省不限次（自举码是长期入口，不是单次邀请）。
+    /// Use-count cap; default unlimited (a bootstrap token is a long-lived entry,
+    /// not a single-use invitation).
     pub max_uses: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateBootstrapTokenResponse {
     pub token_id: String,
-    /// 原始自举码 **仅此一次**返回；服务端只存 SHA-256 摘要（§11.3）。
+    /// The raw bootstrap token is returned **only this once**; the server stores
+    /// only the SHA-256 digest (§11.3).
     pub token: String,
     pub max_uses: Option<u32>,
 }
@@ -112,9 +130,10 @@ pub struct BootstrapTokenView {
     pub revoked_at: Option<String>,
 }
 
-/// 设备自举注册请求（`POST /device-registrations`，公开端点）。
-/// `deny_unknown_fields` 同 [EnrollRequest]：客户端尝试发送私钥即被 400 拒绝
-/// （私钥不出客户端，§11.2）。
+/// Device bootstrap registration request (`POST /device-registrations`, public
+/// endpoint).
+/// `deny_unknown_fields` like [EnrollRequest]: a client that tries to send a
+/// private key gets a 400 rejection (private keys never leave the client, §11.2).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegisterDeviceRequest {
@@ -128,15 +147,18 @@ pub struct RegisterDeviceRequest {
 pub struct RegisterDeviceResponse {
     pub device_id: String,
     pub network_id: String,
-    /// 恒为 `pending`（控制中心批准前不参与数据面）。
+    /// Always `pending` (does not join the dataplane before control-center
+    /// approval).
     pub status: String,
-    /// Agent API 凭证（Bearer）：**仅此一次**返回。Pending 期可心跳上报
-    /// （证明 agent 活着），但拉不到计划——批准前不进数据面。
+    /// Agent API credential (Bearer): returned **only this once**. While pending
+    /// it may send heartbeats (proof the agent is alive), but it cannot pull a
+    /// plan — it does not enter the dataplane before approval.
     pub agent_token: String,
     pub requested_at: String,
 }
 
-/// 待审批申请视图（控制台设备页与设备列表共用；`status = "pending"`）。
+/// Registration-request view pending approval (shared by the console device
+/// page and the device list; `status = "pending"`).
 #[derive(Debug, Clone, Serialize)]
 pub struct RegistrationView {
     pub id: String,
@@ -146,7 +168,8 @@ pub struct RegistrationView {
     pub public_key: String,
     pub requested_at: String,
     pub last_report_at: Option<String>,
-    /// agent 心跳回传的数据面证据（Pending 设备尚无 `devices` 行，证据只在这里）。
+    /// Dataplane evidence returned by the agent heartbeat (a pending device has no
+    /// `devices` row yet, so evidence lives only here).
     pub dataplane_evidence: Option<DataplaneEvidence>,
 }
 
@@ -154,19 +177,24 @@ pub struct RegistrationView {
 pub struct ApproveRegistrationResponse {
     pub device_id: String,
     pub network_id: String,
-    /// 批准时刻才分配的 overlay 地址（ADR-004 顺序分配）。
+    /// Overlay address assigned only at approval time (ADR-004 sequential
+    /// allocation).
     pub virtual_ipv4: Ipv4Addr,
-    /// 设备公钥指纹（SHA-256；服务端不存私钥侧材料）。
+    /// Device public-key fingerprint (SHA-256; the server stores no private-key
+    /// material).
     pub fingerprint: String,
-    /// **不含 agent 凭证**：注册时签发的凭证绑定设备 id（批准沿用同一 id），
-    /// 设备端继续使用原凭证拉计划；轮换只会让无人能送达的新凭证作废设备。
+    /// **No agent credential included**: the credential issued at registration is
+    /// bound to the device id (approval keeps the same id), and the device keeps
+    /// pulling plans with its original credential; rotation would only orphan a
+    /// credential nobody can deliver.
     pub revision_id: u64,
     pub apply_status: String,
     pub approved_at: String,
 }
 
-/// 加入请求：**不允许携带任何私钥字段**（`deny_unknown_fields` 强制，
-/// 客户端尝试发送私钥会被 400 拒绝——私钥不出客户端，§11.2）。
+/// Enrollment request: **must not carry any private-key field**
+/// (`deny_unknown_fields` enforces it; a client that tries to send a private key
+/// gets a 400 rejection — private keys never leave the client, §11.2).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollRequest {
@@ -176,11 +204,11 @@ pub struct EnrollRequest {
     pub platform: String,
 }
 
-/// MT-005 设备标签更新（操作员 PATCH/POST 语义：整体替换）。
+/// MT-005 device label update (operator PATCH/POST semantics: replace in full).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SetDeviceLabelsRequest {
-    /// 新标签集（空对象 = 清空全部标签）。
+    /// New label set (an empty object = clear all labels).
     pub labels: BTreeMap<String, String>,
 }
 
@@ -190,22 +218,24 @@ pub struct EnrollResponse {
     pub network_id: String,
     pub virtual_ipv4: Ipv4Addr,
     pub fingerprint: String,
-    /// Agent API 凭证（Bearer）：**仅此一次**返回，服务端只存 SHA-256 摘要。
+    /// Agent API credential (Bearer): returned **only this once**; the server
+    /// stores only the SHA-256 digest.
     pub agent_token: String,
-    /// 本次变更生成的期望配置修订号（ADR-009）。
+    /// Desired-config revision id produced by this change (ADR-009).
     pub revision_id: u64,
-    /// 该修订的应用状态（新修订恒为 `pending`——DB 写入 ≠ 生效）。
+    /// Apply status of that revision (a new revision is always `pending` — a DB
+    /// write is not the same as being in effect).
     pub apply_status: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateRouteRequest {
-    /// 网关设备（必须是本网络的 Active 设备，ADR-005）。
+    /// Gateway device (must be an Active device of this network, ADR-005).
     pub gateway_device_id: String,
     pub destination_cidr: String,
-    /// `direct`（缺省）或 `alias`。
+    /// `direct` (default) or `alias`.
     pub route_mode: Option<String>,
-    /// `dual_route` 或 `controlled_snat`（必选，ADR-005）。
+    /// `dual_route` or `controlled_snat` (required, ADR-005).
     pub return_path_mode: String,
 }
 
@@ -217,14 +247,15 @@ pub struct RouteView {
     pub destination_cidr: String,
     pub route_mode: String,
     pub return_path_mode: String,
-    /// `pending` / `applied` / `failed`（路由自身的期望态）。
+    /// `pending` / `applied` / `failed` (the route's own desired state).
     pub status: String,
-    /// 本次变更生成的期望配置修订号（ADR-009）。
+    /// Desired-config revision id produced by this change (ADR-009).
     pub revision_id: u64,
     pub apply_status: String,
 }
 
-/// 修订引用（撤销设备等操作返回；契约 `RevisionRef`）。
+/// Revision reference (returned by operations such as device revocation;
+/// contract `RevisionRef`).
 #[derive(Debug, Clone, Serialize)]
 pub struct RevisionRef {
     pub revision_id: u64,
@@ -233,22 +264,26 @@ pub struct RevisionRef {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateAliasRequest {
-    /// 绑定的 LAN Route（必须存在且 `route_mode = "alias"`，ADR-006 单元语义）。
+    /// The bound LAN Route (must exist and have `route_mode = "alias"`, ADR-006
+    /// unit semantics).
     pub lan_route_id: String,
     pub alias_cidr: String,
-    /// `dnat_snat`（缺省）或 `dnat_only`。
+    /// `dnat_snat` (default) or `dnat_only`.
     pub translation_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateHostForwardRequest {
-    /// 本网络 Active 网关设备：流量经它进入目标主机所在 LAN。
+    /// Active gateway device of this network: traffic enters the LAN of the
+    /// target host through it.
     pub gateway_device_id: String,
-    /// LAN 内真实主机地址（不是 CIDR；Host Forward 会在服务端转成 /32）。
+    /// Real host address inside the LAN (not a CIDR; Host Forward converts it
+    /// to a /32 on the server side).
     pub target_ipv4: Ipv4Addr,
-    /// 虚拟主机地址（必须是与 target 等长的 /32，且不落在 overlay）。
+    /// Virtual host address (must be a /32 of the same length as the target,
+    /// and must not fall inside the overlay).
     pub alias_ipv4: Ipv4Addr,
-    /// `dnat_snat`（缺省，兼容无返回路由的 LAN）或 `dnat_only`。
+    /// `dnat_snat` (default, for LANs without a return route) or `dnat_only`.
     pub translation_mode: Option<String>,
 }
 
@@ -271,12 +306,13 @@ pub struct AliasView {
     pub network_id: String,
     pub lan_route_id: String,
     pub alias_cidr: String,
-    /// 真实目标网段 = 绑定路由的目的网段（服务端推导，客户端不可指定）。
+    /// Real target CIDR = the destination CIDR of the bound route (derived on the
+    /// server; the client cannot specify it).
     pub target_cidr: String,
     pub translation_mode: String,
-    /// `pending` / `applied` / `failed`（映射自身的期望态）。
+    /// `pending` / `applied` / `failed` (the mapping's own desired state).
     pub status: String,
-    /// 本次变更生成的期望配置修订号（ADR-009）。
+    /// Desired-config revision id produced by this change (ADR-009).
     pub revision_id: u64,
     pub apply_status: String,
 }

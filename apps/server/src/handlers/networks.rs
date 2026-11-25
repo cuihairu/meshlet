@@ -1,4 +1,4 @@
-//! 网络端点：建网（变更 + 落库同一互斥段，§17.3）与列网。
+//! Network endpoints: network creation (mutate + persist inside one critical section, §17.3) and listing.
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service;
@@ -13,7 +13,7 @@ pub(crate) async fn create_network_handler(
     CsrfHeader: CsrfHeader,
     Json(req): Json<service::CreateNetworkRequest>,
 ) -> Result<(StatusCode, Json<service::NetworkView>), service::ServiceError> {
-    // 变更 + 落库同一互斥段（§17.3）：DB 镜像与内存变更序一致。
+    // Mutate + persist inside one critical section (§17.3): the DB mirror stays in the same order as the in-memory changes.
     let _persist = state.persist.lock().await;
     let (view, network, revision, staged) = {
         let guard = state.mesh.lock().unwrap();

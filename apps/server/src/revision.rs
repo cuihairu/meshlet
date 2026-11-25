@@ -1,28 +1,37 @@
-//! 配置版本与应用状态 API（[存档 §10](../../docs/review/chatgpt-2026-10-13.md)、
-//! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)）。
+//! Config revision and application-state API ([archive §10](../../docs/review/chatgpt-2026-10-13.md),
+//! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)).
 //!
-//! **DB 写入 ≠ 显示生效**（§10.1）：期望配置的每次变更只生成 `Pending` 修订；
-//! 只有 backend 成功把配置应用到实际网络环境后才转为 `Applied`。应用失败
-//! （**含结果不确定**）进入 `Failed` 并保留可诊断的 `error_summary`。
+//! **DB write != displayed effect** (§10.1): each change to the desired config only
+//! produces a `Pending` revision; it transitions to `Applied` only after the
+//! backend successfully applies the config to the actual network environment.
+//! An application failure (**including an indeterminate outcome**) goes to
+//! `Failed` and keeps a diagnostic `error_summary`.
 //!
-//! 数据面接线（ADR-007）：`[dataplane] enabled = true` 时 apply 走
-//! [`HubDataPlaneBackend`]——按当前期望配置快照在本机执行 WireGuard/路由
-//! （平台后端 [`meshlet_network::SystemBackend`]：Linux 真实内核执行；其他
-//! 平台每个操作显式 `Unsupported`，ADR-008 Windows 后端待接入）。默认（未配置或
-//! `enabled = false`）仍是 [`UnconfiguredBackend`] 显式失败：失败可见、状态
-//! 可区分，升级不悄悄接管内核。网关侧 NAT（ADR-006）在网关设备上执行，随
-//! agent 数据面交付（server 只下 hub 侧转发面）。
+//! Data-plane wiring (ADR-007): when `[dataplane] enabled = true`, apply goes
+//! through [`HubDataPlaneBackend`] — it executes WireGuard/routing on this host
+//! against the current desired-config snapshot (platform backend
+//! [`meshlet_network::SystemBackend`]: real kernel execution on Linux; every
+//! operation explicitly `Unsupported` on other platforms, the ADR-008 Windows
+//! backend is pending). The default (unconfigured or `enabled = false`) remains
+//! [`UnconfiguredBackend`] failing explicitly: failures stay visible, states stay
+//! distinguishable, and an upgrade never silently takes over the kernel.
+//! Gateway-side NAT (ADR-006) runs on the gateway device and ships with the
+//! agent data plane (the server only issues the hub-side forwarding plane).
 //!
-//! apply / rollback 的结论同时收敛到每条期望项的 `status`
-//! （[`service::settle_desired_state`]）：只有真下发到内核的路由与 Alias 映射
-//! 才转 `applied`，其余转 `failed`——agent 数据面据此取计划（§10.1）。
+//! The outcome of apply/rollback also converges into the `status` of each
+//! desired item ([`service::settle_desired_state`]): only routes and alias
+//! mappings actually pushed down to the kernel transition to `applied`, the rest
+//! go to `failed` — the agent data plane takes its plan from there (§10.1).
 //!
-//! 并发语义（§10.4）：修订版本号网络内单调递增，同一网络的配置修改由
-//! 「先记录修订、再应用修订」串行化；非法跃迁（如对失败修订原地重试）返回
-//! 409，重试路径是记录新修订。
+//! Concurrency semantics (§10.4): revision numbers increase monotonically within
+//! a network, and configuration changes for the same network are serialized by
+//! "record the revision first, then apply it"; illegal transitions (such as
+//! retrying in place against a failed revision) return 409 — the retry path is
+//! to record a new revision.
 
-// 按职责分档：Hub 数据面 backend（backend，ADR-007 接线）/ API 端点与实现
-// （handlers）；本文件保留视图转换、占位 backend、工厂类型与路由装配。
+// Split by responsibility: the Hub data-plane backend (backend, ADR-007 wiring) /
+// the API endpoints and their implementation (handlers); this file keeps the view
+// conversion, the placeholder backend, the factory type and the route assembly.
 mod backend;
 mod handlers;
 
@@ -43,19 +52,19 @@ use std::sync::Arc;
 use crate::auth::SharedAppState;
 use crate::service::MeshState;
 
-/// 配置版本视图（`GET /config-revisions`、版本详情、apply/rollback 响应）。
+/// Config revision view (`GET /config-revisions`, revision detail, apply/rollback responses).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RevisionView {
     pub network_id: String,
     pub revision: u64,
     pub desired_config_hash: String,
-    /// ADR-009 状态机：`pending`/`applying`/`applied`/`failed`/
-    /// `rollback_pending`/`rolled_back`。
+    /// ADR-009 state machine: `pending`/`applying`/`applied`/`failed`/
+    /// `rollback_pending`/`rolled_back`.
     pub apply_status: String,
     pub created_at: String,
-    /// 成功应用时刻；`Failed`/`Pending` 恒为 `null`（不声称已生效）。
+    /// When the apply succeeded; always `null` for `Failed`/`Pending` (no claim of being in effect).
     pub applied_at: Option<String>,
-    /// 失败诊断（§12.2：失败可见）；成功时为 `null`。
+    /// Failure diagnostics (§12.2: failures stay visible); `null` on success.
     pub error_summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub convergence: Option<serde_json::Value>,
@@ -74,9 +83,10 @@ pub fn to_revision_view(r: &ConfigRevision) -> RevisionView {
     }
 }
 
-/// 数据面未接入时的占位 backend：任何应用/回滚都**显式失败**（§10.3 不得假装
-/// 成功）。错误文本刻意写明「已记录但未应用」，让调用方一眼看出 DB 写入与
-/// 实际生效的差别。
+/// Placeholder backend used while the data plane is not wired up: every apply or
+/// rollback fails **explicitly** (§10.3 forbids pretending success). The error text
+/// deliberately says "recorded but not applied" so callers see at a glance the gap
+/// between the DB write and the actual effect.
 pub struct UnconfiguredBackend;
 
 impl ConfigApplyBackend for UnconfiguredBackend {
@@ -97,22 +107,26 @@ impl ConfigApplyBackend for UnconfiguredBackend {
     }
 }
 
-/// 构造一次应用/回滚 backend 的工厂：按指定网络的当前期望配置取快照。
+/// Factory that builds the backend for one apply/rollback: snapshots the current
+/// desired config of the given network.
 ///
-/// 每次请求构造独立实例（领域 trait 是 `&mut self`），但**必须在网络级互斥内
-/// 调用**——§10.4 的「同一网络的配置修改串行化」由此保证：并发 apply 不会拿到
-/// 各自的后端实例交叉改写 WireGuard Peer / 路由 / NAT。生产由 `[dataplane]`
-/// 配置决定 [`hub_backend_factory`] 或 [`unconfigured_backend_factory`]；集成
-/// 测试注入计数 backend，在 API 层验证幂等与回滚边界（§10.3 验收）。
+/// Each request constructs an independent instance (the domain trait takes
+/// `&mut self`), but it **must be called inside the per-network mutex** — this is
+/// what guarantees §10.4's "configuration changes for the same network are
+/// serialized": concurrent applies cannot each get their own backend instance and
+/// cross-overwrite WireGuard peers / routes / NAT. In production the `[dataplane]`
+/// config decides between [`hub_backend_factory`] and
+/// [`unconfigured_backend_factory`]; integration tests inject a counting backend
+/// and verify idempotency and rollback boundaries at the API layer (§10.3 acceptance).
 pub type BackendFactory =
     Arc<dyn Fn(&MeshState, &str) -> Box<dyn ConfigApplyBackend + Send> + Send + Sync>;
 
-/// 默认工厂：数据面未接入，显式失败。
+/// Default factory: data plane not wired up, fails explicitly.
 pub fn unconfigured_backend_factory() -> BackendFactory {
     Arc::new(|_, _| Box::new(UnconfiguredBackend))
 }
 
-/// 配置版本与应用状态路由（管理 API：会话认证 + 写请求 CSRF 头）。
+/// Config revision and application-state routes (management API: session auth + CSRF header on writes).
 pub fn routes() -> Router<SharedAppState> {
     Router::new()
         .route(

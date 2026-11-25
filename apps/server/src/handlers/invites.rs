@@ -1,4 +1,4 @@
-//! 邀请端点：签发（元数据留痕，原始 Token 不进审计 §16.5）与撤销。
+//! Invite endpoints: issuance (metadata recorded only; the raw Token is not audited, §16.5) and revocation.
 
 use crate::auth::{CsrfHeader, SharedAppState, WriteUser};
 use crate::service;
@@ -27,7 +27,7 @@ pub(crate) async fn create_invite_handler(
     crate::persist::save_invite(state.auth.pool(), &invite)
         .await
         .map_err(crate::persist::internal)?;
-    // 只留痕元数据（过期/次数上限）；原始邀请 Token 不进审计（§16.5）。
+    // Record only metadata (expiry / use limit); the raw invite Token is not audited (§16.5).
     crate::audit::record_or_fail(
         &state,
         Some(&user_id.0),
@@ -63,7 +63,7 @@ pub(crate) async fn revoke_invite_handler(
     let invite = {
         let mut guard = state.mesh.lock().unwrap();
         revoke_invite(&mut guard, &network_id, &invite_id)?;
-        // 撤销落在内存后取回整份邀请（摘要索引），回写撤销时刻。
+        // Once the revocation lands in memory, fetch the whole invite (by summary index) and write the revocation time back.
         let invite = guard
             .invites()
             .find(|i| i.id.to_string() == invite_id)

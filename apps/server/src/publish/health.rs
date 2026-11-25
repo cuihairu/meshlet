@@ -1,4 +1,4 @@
-//! Agent 发布健康回报入口。
+//! Entry point for agent publish health reporting.
 
 use crate::agent::{AgentApiError, AuthorizedAgent};
 use crate::auth::SharedAppState;
@@ -17,9 +17,9 @@ pub struct PublishHealthResponse {
     pub accepted: usize,
 }
 
-/// `POST /api/v1/agent/publish-health`：agent 批量上报探针结果。内存与 DB
-/// 镜像同事务更新；`publish_probe_reports` 按 probe 主键 upsert（每探针一条
-/// 最新证据），且只接受归本设备的探针。
+/// `POST /api/v1/agent/publish-health`: the agent reports probe results in bulk. The in-memory state and the DB
+/// mirror are updated in the same transaction; `publish_probe_reports` upserts by probe primary key (one
+/// latest evidence row per probe) and only accepts probes belonging to this device.
 pub(crate) async fn publish_health_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,

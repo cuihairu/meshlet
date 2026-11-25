@@ -1,12 +1,12 @@
 //! Shared process, topology, server, and packet helpers for cross-site e2e tests.
 //!
 //! ```text
-//!           ┌── HUB (server 数据面 wg0 = 10.240.0.1，underlay .10，listen 51830)
-//!  bridge ──┼── G1  (网关 10.240.0.2，underlay .20) ── LAN1 192.168.1.0/24 (L1 = .5)
-//!           ├── G2  (网关 10.240.0.3，underlay .30) ── LAN2 192.168.1.0/24 (L2 = .5)
-//!           ├── A   (客户端 10.240.0.4，underlay .40) ── LOCAL 192.168.1.0/24 (L0 = .5)
-//!           ├── H2  (net-B hub mlt2 = 10.242.0.1，underlay .50，listen 51830)
-//!           └── B   (net-B 客户端，underlay .60)             ↑ overlay 完全不相交
+//!           ┌── HUB (server dataplane wg0 = 10.240.0.1, underlay .10, listen 51830)
+//!  bridge ──┼── G1  (gateway 10.240.0.2, underlay .20) ── LAN1 192.168.1.0/24 (L1 = .5)
+//!           ├── G2  (gateway 10.240.0.3, underlay .30) ── LAN2 192.168.1.0/24 (L2 = .5)
+//!           ├── A   (client 10.240.0.4, underlay .40) ── LOCAL 192.168.1.0/24 (L0 = .5)
+//!           ├── H2  (net-B hub mlt2 = 10.242.0.1, underlay .50, listen 51830)
+//!           └── B   (net-B client, underlay .60)             ↑ overlays fully disjoint
 //! ```
 //!
 #![cfg(target_os = "linux")]
@@ -23,22 +23,22 @@ use serde_json::{json, Value};
 
 pub(crate) const PREFIX: &str = "mls";
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(40);
-pub(crate) const SERVER_BRIDGE_IP: &str = "10.99.0.250"; // host 侧桥地址：承载 HTTP
-pub(crate) const HUB_UNDERLAY_IP: &str = "10.99.0.10"; // hub wg endpoint（agent hub_endpoint）
+pub(crate) const SERVER_BRIDGE_IP: &str = "10.99.0.250"; // host-side bridge address: carries HTTP
+pub(crate) const HUB_UNDERLAY_IP: &str = "10.99.0.10"; // hub wg endpoint (agent hub_endpoint)
 pub(crate) const HUB_LISTEN_PORT: u16 = 51830;
 pub(crate) const OVERLAY: &str = "10.240.0.0/16";
-// 第二个网络（跨网络隔离验收，§18.2.12）：overlay 与 net-A 完全不相交，
-// 由第二个服务端实例接管 hub 数据面（同库同管理面，独立 hub 密钥与 netns）。
+// The second network (cross-network isolation acceptance, §18.2.12): its overlay is fully disjoint from net-A,
+// and a second server instance takes over its hub dataplane (same DB and management plane, separate hub key and netns).
 pub(crate) const OVERLAY_B: &str = "10.242.0.0/16";
 pub(crate) const HUB_B_UNDERLAY_IP: &str = "10.99.0.50";
-// net-B 的 hub overlay 地址 = 池内首个可用地址（IPAM 保留给 hub，ADR-004）。
+// The net-B hub overlay address = the first available address in the pool (IPAM reserves it for the hub, ADR-004).
 pub(crate) const HUB_B_VIP: &str = "10.242.0.1";
 
 pub(crate) fn tag() -> String {
     format!("{PREFIX}{}", std::process::id())
 }
 
-// ---------------------------------------------------------------- 进程辅助
+// ---------------------------------------------------------------- process helpers
 
 pub(crate) fn sudo(args: &[&str]) -> Output {
     Command::new("sudo")
@@ -68,7 +68,7 @@ pub(crate) fn require_ok(out: &Output, what: &str) {
     }
 }
 
-// ---------------------------------------------------------------- 前置条件
+// ---------------------------------------------------------------- prerequisites
 
 pub(crate) fn prerequisites() -> Option<()> {
     if !sudo_ok(&["true"]) {
@@ -123,7 +123,7 @@ pub(crate) fn prerequisites() -> Option<()> {
     Some(())
 }
 
-/// 清掉本前缀下历史残留（pid 后缀进程已死才删；并行测试的对象不动）。
+/// Clean up stale leftovers under this prefix (only delete when the pid-suffixed process is dead; never touch live parallel tests' objects).
 pub(crate) fn preflight_cleanup() {
     let text = String::from_utf8_lossy(&sudo(&["ip", "netns", "list"]).stdout).to_string();
     for line in text.lines() {
@@ -178,7 +178,7 @@ pub(crate) fn managed_iptables(ns: &str) -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------- 密钥
+// ---------------------------------------------------------------- keys
 
 pub(crate) fn wg_genkey() -> Option<String> {
     let out = Command::new("wg").arg("genkey").output().ok()?;
@@ -206,7 +206,7 @@ pub(crate) fn wg_pubkey(private: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-// ---------------------------------------------------------------- 拓扑
+// ---------------------------------------------------------------- topology
 
 pub(crate) struct Node {
     pub(crate) netns: String,
@@ -295,8 +295,8 @@ impl Topology {
             bridge: None,
         };
 
-        // HUB / G1 / G2 / A（net-A）+ H2 / B（net-B）：underlay 全在
-        // 10.99.0.0/24 桥上，overlay 互不相交。
+        // HUB / G1 / G2 / A (net-A) + H2 / B (net-B): all underlays sit on the
+        // 10.99.0.0/24 bridge, and the overlays are mutually disjoint.
         let defs = [
             ("H", "10.99.0.10"),
             ("1", "10.99.0.20"),
@@ -325,7 +325,7 @@ impl Topology {
             "bridge",
         );
         require_ok(&sudo(&["ip", "link", "set", &bridge, "up"]), "bridge up");
-        // host 侧桥地址：服务端 HTTP 绑这里，netns 内 agent 经真实 socket 到达。
+        // The host-side bridge address: the server's HTTP binds here, and agents inside netns reach it over a real socket.
         require_ok(
             &sudo(&[
                 "ip",
@@ -394,7 +394,7 @@ impl Topology {
             offload_off(&n.veth_ns);
         }
 
-        // 两个**真实前缀完全重叠**的站点 LAN（ADR-006 旗舰场景的前提）。
+        // Two site LANs whose **real prefixes fully overlap** (the premise of the ADR-006 flagship scenario).
         let [hub, g1, g2, a, hub2, b] = nodes.try_into().ok()?;
         let (lan1, lan2) = (format!("{tag}L1"), format!("{tag}L2"));
         for (lan_netns, gw, suffix) in [(lan1.clone(), &g1, "1"), (lan2.clone(), &g2, "2")] {
@@ -554,7 +554,7 @@ impl Topology {
     }
 }
 
-// ---------------------------------------------------------------- 服务端
+// ---------------------------------------------------------------- server
 
 pub(crate) fn start_stoppable_server(
     db: PathBuf,
@@ -605,7 +605,7 @@ pub(crate) fn start_stoppable_server(
                 .with_apply_backend(factory),
             );
             let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-            // §12：heartbeat 观测直连源地址（与 main.rs 的 serve 装配一致）。
+            // §12: heartbeat observes the direct-connection source address (consistent with the serve wiring in main.rs).
             let result = axum::serve(
                 listener,
                 meshlet_server::router(state)
@@ -645,7 +645,7 @@ impl ServerHandle {
     }
 }
 
-/// 等服务端开始应答（线程起来有一个窗口；任何 HTTP 状态都算「已应答」）。
+/// Wait until the server starts answering (there is a window while the thread comes up; any HTTP status counts as "answered").
 pub(crate) fn wait_server_up(base: &str) {
     let start = Instant::now();
     loop {
@@ -661,7 +661,7 @@ pub(crate) fn wait_server_up(base: &str) {
     }
 }
 
-/// 管理 API 的 HTTP 调用（会话 Cookie + CSRF 头，§13.2）。
+/// HTTP calls to the management API (session cookie + CSRF header, §13.2).
 pub(crate) fn http_json(
     method: &str,
     url: &str,
@@ -710,7 +710,7 @@ pub(crate) fn admin(
 
 // ---------------------------------------------------------------- echo
 
-/// UDP echo 服务端：应答 `{site} seen={客户端看到的源}`（alias_nat.rs 同款）。
+/// UDP echo server: replies `{site} seen={the source as the client sees it}` (same style as alias_nat.rs).
 pub(crate) const ECHO_PY: &str = "\
 import socket, sys
 port, site = int(sys.argv[1]), sys.argv[2]
@@ -750,7 +750,7 @@ print(s.recv(2048).decode())
 s.close()
 "#;
 
-/// UDP 发送端：带重试（等 echo 服务起），打印应答源与应答体。
+/// UDP sender: retries (waits for the echo server to start) and prints the reply source and reply body.
 pub(crate) const SEND_PY: &str = "\
 import socket, sys, time
 target, port = sys.argv[1], int(sys.argv[2])
@@ -768,7 +768,7 @@ print('no_reply')
 sys.exit(1)
 ";
 
-/// 客户端 A 打 `alias`，站点 netns 起一次性 echo；返回应答体。
+/// Client A probes `alias`; the site's netns spins up a throwaway echo; returns the reply body.
 pub(crate) fn udp_echo(
     topo: &Topology,
     script_dir: &Path,
@@ -987,9 +987,9 @@ pub(crate) fn capture_packet(
     output
 }
 
-/// 构造一个真实 socket 连服务端、netns 内下数据的 agent 并跑一轮 tick
-/// （拉计划 → 对账 → 应用 → 心跳）。`hub_endpoint` 为客户端侧 hub 端点
-/// 兜底（服务端计划不带端点）；hub 设备自身为 `None`。
+/// Build an agent that connects a real socket to the server and moves data inside netns, then run one tick
+/// (pull the plan -> reconcile -> apply -> heartbeat). `hub_endpoint` is the client-side hub endpoint fallback
+/// (server-side plans carry no endpoint); the hub device itself is `None`.
 pub(crate) fn tick_agent(
     dir: &std::path::Path,
     base: &str,
@@ -1032,7 +1032,7 @@ pub(crate) fn tick_agent(
         .unwrap_or_else(|e| panic!("agent {name} tick: {e}"));
 }
 
-/// 登录拿会话 Cookie（bootstrap 409 后的兜底路径）。
+/// Log in and obtain a session cookie (the fallback path after a bootstrap 409).
 pub(crate) fn login_cookie(base: &str) -> String {
     let res = ureq::post(&format!("{base}/api/v1/auth/login"))
         .set("content-type", "application/json")

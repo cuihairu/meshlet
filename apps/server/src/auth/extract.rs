@@ -8,7 +8,7 @@ use meshlet_domain::{Timestamp, UserId};
 use crate::service;
 
 // ---------------------------------------------------------------------------
-// Cookie / 请求头
+// Cookie / request headers
 // ---------------------------------------------------------------------------
 
 pub(super) fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -49,10 +49,11 @@ pub(super) fn clear_cookie_header(secure: bool) -> HeaderMap {
 }
 
 // ---------------------------------------------------------------------------
-// 提取器（只在匹配到的路由上运行；未知路径仍走 404 fallback）
+// Extractors (only run on matched routes; unknown paths still hit the 404 fallback)
 // ---------------------------------------------------------------------------
 
-/// 认证结果：浏览器会话（恒全部权限）或 API Token（携带 scope）。
+/// Authentication result: a browser session (always full permissions) or an
+/// API Token (carrying a scope).
 enum Credentials {
     Session(UserId),
     ApiToken(UserId, crate::api_token::TokenScope),
@@ -67,11 +68,13 @@ impl Credentials {
     }
 }
 
-/// 会话优先、Bearer 兜底的统一认证（仅供管理 API 提取器使用）。
+/// Unified authentication that prefers the session with Bearer as fallback
+/// (only for the admin API extractors).
 ///
-/// 会话头存在但无效 → 401（不回退到 Bearer，避免静默降级）；
-/// 无会话头 → 接受 `Authorization: Bearer mlt_…`（API Token 与 agent token 是
-/// 两个独立边界：agent token 不在 api_tokens 表中，反之亦然）。
+/// Session header present but invalid → 401 (no Bearer fallback, avoiding a
+/// silent downgrade); no session header → accept `Authorization: Bearer mlt_…`
+/// (API Token and agent token are two independent boundaries: agent tokens are
+/// not in the api_tokens table, and vice versa).
 async fn authenticate(
     state: &SharedAppState,
     parts: &mut Parts,
@@ -95,10 +98,12 @@ async fn authenticate(
     Err(AuthApiError::Unauthorized)
 }
 
-/// 管理 API 认证提取器：Cookie 会话或 API Token Bearer，无效一律 401。
+/// Admin API authentication extractor: cookie session or API Token Bearer;
+/// anything invalid is always a 401.
 ///
-/// 不用全局 middleware——middleware 会作用于 fallback，把未知路径变成 401；
-/// 提取器只在命中路由后求值，404 语义保持。
+/// No global middleware — middleware would also apply to the fallback, turning
+/// unknown paths into 401s; the extractor is only evaluated after a route is
+/// matched, preserving 404 semantics.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedUser(pub UserId);
 
@@ -115,7 +120,8 @@ impl FromRequestParts<SharedAppState> for AuthenticatedUser {
     }
 }
 
-/// 写端点提取器：会话恒放行；API Token 必须持 `write` scope，否则 403。
+/// Write-endpoint extractor: sessions always pass; an API Token must carry
+/// the `write` scope, otherwise 403.
 #[derive(Debug, Clone)]
 pub struct WriteUser(pub UserId);
 
@@ -139,8 +145,9 @@ impl FromRequestParts<SharedAppState> for WriteUser {
     }
 }
 
-/// CSRF 提取器：管理端写请求必须带 `X-Requested-With: XMLHttpRequest`
-/// （Console 前端约定），配合 SameSite=Strict 构成双重防线。
+/// CSRF extractor: admin write requests must carry `X-Requested-With: XMLHttpRequest`
+/// (a Console frontend convention), which together with SameSite=Strict forms
+/// a double line of defense.
 #[derive(Debug, Clone)]
 pub struct CsrfHeader;
 
@@ -164,8 +171,8 @@ impl FromRequestParts<SharedAppState> for CsrfHeader {
     }
 }
 
-/// 审计留痕（§16.5）：复用 [`crate::audit::record_or_fail`]，失败映射本模块
-/// 错误（不留痕不放行）。
+/// Audit trail (§16.5): reuses [`crate::audit::record_or_fail`], mapping
+/// failures to this module's error (no audit record, no pass-through).
 pub(super) async fn record_audit(
     state: &SharedAppState,
     actor: Option<&str>,

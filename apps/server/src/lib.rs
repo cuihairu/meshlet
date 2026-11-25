@@ -1,16 +1,16 @@
-//! meshlet-server 库入口：路由构建可供集成测试复用。
+//! meshlet-server library entry point: the router construction is reusable by integration tests.
 //!
-//! 控制平面路由（契约见 docs/architecture/api-contract.md）：
-//! 状态/网络/邀请/设备加入/控制台认证（[ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)）。
+//! Control-plane routes (contract: docs/architecture/api-contract.md):
+//! status / networks / invites / device enrollment / console authentication ([ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)).
 //!
-//! 路由分层：
-//! - 公开：`/system/status`、`/enroll`（自带邀请 Token 鉴权）、`/auth/bootstrap|login`；
-//! - 管理（`AuthenticatedUser`：Cookie 会话或 `mlt_` API Token；写请求另挂
-//!   `WriteUser` + `CsrfHeader`）：`/auth/tokens*`、`/networks*`、
-//!   `/networks/{id}/invites*`、`/networks/{id}/devices`、`/networks/{id}/revisions*`、
-//!   `/networks/{id}/routes*`、`/networks/{id}/aliases*`（§12.6，删除即整单元清理）、
-//!   `/networks/{id}/diagnostics`（§12.7 十三项，POST 触发、GET 读最近快照）、
-//!   `/system/backup`（§17.4，目录未配置时 503）。
+//! Route tiers:
+//! - Public: `/system/status`, `/enroll` (carries its own invite Token authentication), `/auth/bootstrap|login`;
+//! - Admin (`AuthenticatedUser`: a cookie session or an `mlt_` API Token; write requests additionally require
+//!   `WriteUser` + `CsrfHeader`): `/auth/tokens*`, `/networks*`,
+//!   `/networks/{id}/invites*`, `/networks/{id}/devices`, `/networks/{id}/revisions*`,
+//!   `/networks/{id}/routes*`, `/networks/{id}/aliases*` (§12.6, deletion cleans up the whole unit),
+//!   `/networks/{id}/diagnostics` (the thirteen §12.7 items, POST triggers and GET reads the latest snapshot),
+//!   `/system/backup` (§17.4, 503 when the directory is not configured).
 
 pub mod agent;
 pub mod alias;
@@ -34,7 +34,7 @@ pub mod store;
 pub mod task;
 pub mod telemetry;
 
-// HTTP handler 按资源族分组（private 子模块，公开 API 不变）。
+// HTTP handlers grouped by resource family (private submodule; the public API is unchanged).
 mod handlers;
 
 use crate::auth::SharedAppState;
@@ -46,7 +46,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
-/// `GET /api/v1/system/status` 响应（契约见 docs/architecture/api-contract.md）。
+/// Response of `GET /api/v1/system/status` (contract: docs/architecture/api-contract.md).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SystemStatus {
     pub status: String,
@@ -77,13 +77,13 @@ pub fn system_status() -> SystemStatus {
     }
 }
 
-/// 路由冲突拒绝（§17.2「路由冲突数」指标）：仅计「目的网段重叠」类冲突
-/// （`ServiceError::RouteConflict`）；设备未激活等其它 409 不计。
+/// Record a route-conflict rejection (the §17.2 "route conflict count" metric): only "destination segment overlap" conflicts
+/// (`ServiceError::RouteConflict`) are counted; other 409s such as an inactive device are not.
 pub(crate) fn record_route_conflict(state: &SharedAppState) {
     state.metrics.record_route_conflict();
 }
 
-/// 构建完整路由。
+/// Build the full route table.
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
         .merge(alias::routes())
@@ -200,7 +200,7 @@ pub fn router(state: SharedAppState) -> Router {
             "/api/v1/agent/device/peers/endpoints",
             get(agent::agent_peers_endpoints_handler),
         )
-        // MT-002 任务通道：agent 侧拉取/确认/回执（AuthorizedAgent 认证）。
+        // MT-002 task channel: agent-side pull/ack/receipt (AuthorizedAgent authentication).
         .route("/api/v1/agent/tasks/pending", get(task::pending_handler))
         .route("/api/v1/agent/tasks/{id}/ack", post(task::ack_handler))
         .route(
@@ -211,7 +211,7 @@ pub fn router(state: SharedAppState) -> Router {
             "/api/v1/networks/{network_id}/peers/endpoints",
             get(agent::peers_endpoints_handler),
         )
-        // 访问日志（§17.1）+ HTTP 指标计数（§17.2）：路由模板级，不跨静态回落。
+        // Access log (§17.1) + HTTP metric counting (§17.2): at route-template level, not crossing the static fallback.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             telemetry::request_log,
@@ -219,8 +219,9 @@ pub fn router(state: SharedAppState) -> Router {
         .with_state(state)
 }
 
-/// 构建带控制台静态托管的完整路由：`console_dir`（通常是 `console/dist`）
-/// 作为非 `/api` 路径的回落文件服务（`/api/v1/*` 路由优先级不受影响）。
+/// Build the full router with console static hosting: `console_dir`
+/// (usually `console/dist`) serves as the fallback file service for
+/// non-`/api` paths (`/api/v1/*` route priority is unaffected).
 pub fn router_with_console(state: SharedAppState, console_dir: &str) -> Router {
     router(state).fallback_service(tower_http::services::ServeDir::new(console_dir))
 }

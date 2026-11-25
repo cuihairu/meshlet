@@ -1,8 +1,8 @@
-//! 集成测试：LAN 路由增删（外部 API 控制「路由增删」条目，ADR-005）。
+//! Integration tests: LAN route create/delete (the external API controls "route add/remove" entries, ADR-005).
 //!
-//! 端到端：网络 + 已加入设备作网关 → POST 路由（返回路径模式必选）→
-//! 列表 / 详情 / 删除。路由属于期望配置：增删各记录一个修订（ADR-009），
-//! 响应携带 `revision_id` + `apply_status`——DB 写入 ≠ 生效，状态待显式 apply。
+//! End to end: network + enrolled device as gateway -> POST route (return path mode required) ->
+//! list / detail / delete. Routes belong to desired config: each create/delete records one revision (ADR-009),
+//! and the response carries `revision_id` + `apply_status` — a DB write is not an effect; status waits for an explicit apply.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -112,7 +112,7 @@ async fn create_network(c: &Ctx, name: &str, overlay: &str) -> String {
     body["id"].as_str().unwrap().to_string()
 }
 
-/// 建邀请 + 加入一台设备，返回 device_id（同一网络可重复调用）。
+/// Create an invite + enroll one device; returns device_id (safe to call repeatedly on the same network).
 async fn enroll(c: &Ctx, network_id: &str, name: &str, public_key: &str) -> String {
     let (st, invite) = json_post(
         c,
@@ -136,7 +136,7 @@ async fn enroll(c: &Ctx, network_id: &str, name: &str, public_key: &str) -> Stri
     device["device_id"].as_str().unwrap().to_string()
 }
 
-/// 建网络 + 邀请 + 加入一台设备，返回 (network_id, device_id)。
+/// Create a network + invite + enroll one device; returns (network_id, device_id).
 async fn net_with_device(c: &Ctx, name: &str, overlay: &str) -> (String, String) {
     let network_id = create_network(c, name, overlay).await;
     let device_id = enroll(
@@ -162,7 +162,7 @@ async fn create_route_records_pending_revision_and_carries_status() {
     let c = ctx().await;
     let (network_id, device_id) = net_with_device(&c, "home", OVERLAY).await;
 
-    // net=1、enroll=2，路由是第三次期望配置变更 → revision 3。
+    // net=1, enroll=2; the route is the third desired-config change -> revision 3.
     let (st, route) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/routes"),
@@ -174,10 +174,10 @@ async fn create_route_records_pending_revision_and_carries_status() {
     assert_eq!(route["network_id"], network_id.as_str());
     assert_eq!(route["gateway_device_id"], device_id.as_str());
     assert_eq!(route["destination_cidr"], "192.168.1.0/24");
-    // ADR-005：返回路径模式必须显式给定；route_mode 缺省 direct。
+    // ADR-005: the return path mode must be given explicitly; route_mode defaults to direct.
     assert_eq!(route["route_mode"], "direct");
     assert_eq!(route["return_path_mode"], "dual_route");
-    // DB 写入 ≠ 生效：新路由待显式 apply（ADR-009）。
+    // A DB write is not an effect: the new route waits for an explicit apply (ADR-009).
     assert_eq!(route["status"], "pending");
     assert_eq!(route["revision_id"], 3);
     assert_eq!(route["apply_status"], "pending");
@@ -189,11 +189,11 @@ async fn destination_must_parse_and_not_overlap_the_overlay() {
     let (network_id, device_id) = net_with_device(&c, "home", OVERLAY).await;
     let uri = format!("/api/v1/networks/{network_id}/routes");
 
-    // 非法 CIDR → 400。
+    // Invalid CIDR -> 400.
     let (st, body) = json_post(&c, &uri, route_body(&device_id, "banana")).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "validation_failed");
-    // 与 overlay 相同或为其子网 → 409（overlay 自己的路由不该进路由表）。
+    // Equal to the overlay or a subnet of it -> 409 (the overlay's own prefixes do not belong in the route table).
     for dst in [OVERLAY, "10.240.0.0/24"] {
         let (st, body) = json_post(&c, &uri, route_body(&device_id, dst)).await;
         assert_eq!(st, StatusCode::CONFLICT, "dst={dst}");
@@ -205,7 +205,7 @@ async fn destination_must_parse_and_not_overlap_the_overlay() {
 async fn gateway_must_be_an_active_device_of_the_same_network() {
     let c = ctx().await;
     let (network_id, _device_id) = net_with_device(&c, "home", OVERLAY).await;
-    // 另一个网络里的设备不是合法网关。
+    // A device from another network is not a valid gateway.
     let (other_net, other_dev) = net_with_device(&c, "away", "10.241.0.0/16").await;
 
     let uri = format!("/api/v1/networks/{network_id}/routes");
@@ -218,7 +218,7 @@ async fn gateway_must_be_an_active_device_of_the_same_network() {
         "device belongs to another network"
     );
 
-    // 已撤销设备不能当网关。
+    // A revoked device cannot act as a gateway.
     let (st, _) = json_post(
         &c,
         &format!("/api/v1/networks/{other_net}/devices/{other_dev}/revoke"),
@@ -245,7 +245,7 @@ async fn overlapping_destination_in_same_network_is_conflict() {
     assert_eq!(st, StatusCode::CREATED);
     let route_id = route["id"].as_str().unwrap().to_string();
 
-    // 同网段重复：409 且错误消息点名冲突对端（既有路由 id + 网段，§8.3）。
+    // Exact duplicate prefix: 409 and the error names the conflicting party (existing route id + prefix, §8.3).
     let (st, body) = json_post(&c, &uri, route_body(&device_id, "192.168.1.0/24")).await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert_eq!(body["error"]["code"], "conflict");
@@ -254,7 +254,7 @@ async fn overlapping_destination_in_same_network_is_conflict() {
         message.contains(&route_id) && message.contains("192.168.1.0/24"),
         "conflict message must name the existing route: {message}"
     );
-    // 子网重叠同样冲突。
+    // An overlapping subnet conflicts too.
     let (st, _) = json_post(&c, &uri, route_body(&device_id, "192.168.1.0/25")).await;
     assert_eq!(st, StatusCode::CONFLICT);
     // Unknown gateways retain their 404 contract. Valid gateways cannot publish
@@ -268,17 +268,17 @@ async fn overlapping_destination_in_same_network_is_conflict() {
     assert_eq!(st, StatusCode::CONFLICT);
 }
 
-/// ADR-006 旗舰场景：两个站点各有一个 192.168.1.0/24，经各自 Alias 同时可达。
-/// 两条 Alias 模式的同真实前缀路由必须都被接受——对外可见的转发前缀是 Alias
-///（唯一性由创建 Alias 时的 `alias_alias_overlap` 保证），真实前缀不进隧道路
-/// 转表面；但同前缀的 Direct 路由仍是冲突（真实前缀直连只有一个转发者）。
+/// ADR-006 flagship scenario: two sites each have a 192.168.1.0/24, both reachable via their own Alias.
+/// Two Alias-mode routes with the same real prefix must both be accepted — the externally visible forwarding
+/// prefix is the Alias (uniqueness guaranteed by `alias_alias_overlap` at alias creation), the real prefix never
+/// enters the tunnel forwarding surface; but a same-prefix Direct route still conflicts (only one direct forwarder).
 #[tokio::test]
 async fn dual_alias_routes_share_the_same_real_lan() {
     let c = ctx().await;
     let network_id = create_network(&c, "home", OVERLAY).await;
     let uri = format!("/api/v1/networks/{network_id}/routes");
 
-    // 两个网关设备：各自独立邀请（邀请单次使用）。
+    // Two gateway devices: each from its own invite (invites are single-use).
     let site1 = enroll(&c, &network_id, "site1-gw", "pub-key-site1").await;
     let site2 = enroll(&c, &network_id, "site2-gw", "pub-key-site2").await;
     let alias_body = |gateway: &str| {
@@ -300,7 +300,7 @@ async fn dual_alias_routes_share_the_same_real_lan() {
     );
     assert_ne!(r1["id"], r2["id"], "each site keeps its own route");
 
-    // 第三条同前缀路由若为 Direct → 409 点名冲突对端（真实前缀直连唯一转发者）。
+    // A third same-prefix route in Direct mode -> 409 naming the conflicting party (a direct real prefix has a single forwarder).
     let (st, body) = json_post(&c, &uri, route_body(&site2, "192.168.1.0/24")).await;
     assert_eq!(st, StatusCode::CONFLICT);
     let message = body["error"]["message"].as_str().unwrap();
@@ -310,8 +310,8 @@ async fn dual_alias_routes_share_the_same_real_lan() {
     );
 }
 
-/// §8.3「不覆盖已有路由」：被拒绝的创建不留下任何痕迹——路由列表不变、
-/// 不产生新修订（拒绝发生在任何状态变更之前）。
+/// §8.3 "never overwrite an existing route": a rejected create leaves no trace — the route list is unchanged and
+/// no new revision is produced (the rejection happens before any state change).
 #[tokio::test]
 async fn rejected_route_create_overwrites_nothing() {
     let c = ctx().await;
@@ -371,7 +371,7 @@ async fn list_and_detail_are_scoped_to_the_network() {
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(detail["id"], route_id.as_str());
-    // 路由不串网络。
+    // Routes do not leak across networks.
     let (st, _) = json_get(&c, &format!("/api/v1/networks/{other}/routes/{route_id}")).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
@@ -395,14 +395,14 @@ async fn delete_route_removes_it_and_records_a_revision() {
     let (_, list) = json_get(&c, &uri).await;
     assert_eq!(list.as_array().unwrap().len(), 0);
 
-    // 删除也是期望配置变更 → 新修订；再建路由版本继续递增。
+    // A delete is also a desired-config change -> a new revision; creating again keeps incrementing.
     let (st, route) = json_post(&c, &uri, route_body(&device_id, "192.168.2.0/24")).await;
     assert_eq!(st, StatusCode::CREATED);
     assert_eq!(
         route["revision_id"], 5,
         "net=1 enroll=2 create=3 delete=4 create=5"
     );
-    // 重复删除 → 404。
+    // Duplicate delete -> 404.
     let (st, _) = json_delete(
         &c,
         &format!("/api/v1/networks/{network_id}/routes/{route_id}"),
@@ -417,7 +417,7 @@ async fn route_writes_require_write_scope_and_csrf() {
     let (network_id, device_id) = net_with_device(&c, "home", OVERLAY).await;
     let uri = format!("/api/v1/networks/{network_id}/routes");
 
-    // 无凭证 → 401。
+    // No credentials -> 401.
     let (st, body) = call(
         &c,
         "POST",
@@ -431,7 +431,7 @@ async fn route_writes_require_write_scope_and_csrf() {
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "unauthorized");
 
-    // Cookie 会话但缺 CSRF 头 → 403（写请求防线不豁免）。
+    // Cookie session but missing CSRF header -> 403 (the write-request guard grants no exemption).
     let (st, body) = call(
         &c,
         "POST",
@@ -445,7 +445,7 @@ async fn route_writes_require_write_scope_and_csrf() {
     assert_eq!(st, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "forbidden");
 
-    // read token 不能写路由。
+    // A read token cannot create routes.
     let (st, created) = call(
         &c,
         "POST",
@@ -459,7 +459,7 @@ async fn route_writes_require_write_scope_and_csrf() {
     assert_eq!(st, StatusCode::CREATED);
     let token = created["token"].as_str().unwrap().to_string();
 
-    // read token 可以读，不能写路由（最小权限）。
+    // A read token can read but not write routes (least privilege).
     let (st, _) = call(&c, "GET", &uri, None, Some(&token), false, None).await;
     assert_eq!(st, StatusCode::OK);
     let (st, body) = call(
@@ -516,7 +516,7 @@ async fn host_forward_creates_and_removes_a_single_host_unit() {
     assert_eq!(view["apply_status"], "pending");
     let alias_id = view["id"].as_str().unwrap().to_string();
 
-    // Host Forward 是 /32：一个虚拟主机映射一个真实主机，协议/端口不裁剪。
+    // A Host Forward is a /32: one virtual host maps one real host, with no protocol/port trimming.
     let (routes_st, routes) = json_get(&c, &format!("/api/v1/networks/{network_id}/routes")).await;
     assert_eq!(routes_st, StatusCode::OK);
     let route = routes
@@ -529,7 +529,7 @@ async fn host_forward_creates_and_removes_a_single_host_unit() {
     assert_eq!(route["gateway_device_id"], device_id.as_str());
     let route_id = route["id"].as_str().unwrap().to_string();
 
-    // 冲突必须发生在状态变更前：同一 alias /32 再建 → 409，且不产生新修订。
+    // Conflicts must happen before any state change: recreating the same alias /32 -> 409, and no new revision.
     let revisions_before = revision_count(&c, &network_id).await;
     let (st, error) = json_post(&c, &uri, body).await;
     assert_eq!(st, StatusCode::CONFLICT, "{error}");
@@ -540,7 +540,7 @@ async fn host_forward_creates_and_removes_a_single_host_unit() {
     );
     assert_eq!(revision_count(&c, &network_id).await, revisions_before);
 
-    // 删除 Host Forward = 删除 alias + 绑定 route 一个修订。
+    // Deleting a Host Forward = one revision covering the alias + its bound route.
     let (st, _) = json_delete(
         &c,
         &format!("/api/v1/networks/{network_id}/host-forwards/{alias_id}"),

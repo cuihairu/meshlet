@@ -3,23 +3,24 @@ use meshlet_domain::{token_hash, Timestamp, UserId};
 use sqlx::SqlitePool;
 
 // ---------------------------------------------------------------------------
-// 存储
+// Storage
 // ---------------------------------------------------------------------------
 
-/// 用户/会话存储（SQLite，migrations 001/002）。
+/// User/session storage (SQLite, migrations 001/002).
 #[derive(Clone)]
 pub struct AuthStore {
     pool: SqlitePool,
 }
 
-/// 查询到的用户行（含哈希；仅在登录路径内部使用，不序列化出站）。
+/// A user row as fetched (carries the hash; used only inside the login path and
+/// never serialized out to the client).
 pub struct UserRecord {
     pub id: UserId,
     pub email: String,
     pub password_hash: String,
-    /// TOTP base32 密钥；`None` = 未发起绑定。
+    /// TOTP base32 secret; `None` = enrollment never started.
     pub totp_secret: Option<String>,
-    /// TOTP 已激活（登录需第二步校验）。
+    /// TOTP is active (login requires second-step verification).
     pub totp_enabled: bool,
 }
 
@@ -28,7 +29,7 @@ impl AuthStore {
         Self { pool }
     }
 
-    /// 池句柄（克隆后供审计存储与其他 store 共用同一库）。
+    /// Pool handle (clone it so the audit store and other stores share the same database).
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
@@ -97,7 +98,7 @@ impl AuthStore {
         ))
     }
 
-    /// 写入/清除 TOTP 密钥（`None` = 清除并关停）。
+    /// Write/clear the TOTP secret (`None` = clear it and turn the feature off).
     pub async fn set_totp_secret(
         &self,
         id: &UserId,
@@ -111,7 +112,7 @@ impl AuthStore {
         Ok(())
     }
 
-    /// 激活/关停 TOTP 登录第二步。
+    /// Enable/disable the TOTP second login step.
     pub async fn set_totp_enabled(&self, id: &UserId, enabled: bool) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE users SET totp_enabled = ? WHERE id = ?")
             .bind(if enabled { 1i64 } else { 0i64 })
@@ -135,7 +136,7 @@ impl AuthStore {
         Ok(())
     }
 
-    /// 校验会话：存在、未撤销、未过期 → 用户 ID。
+    /// Validate a session: present, not revoked, not expired → user ID.
     pub async fn validate_session(
         &self,
         raw_token: &str,

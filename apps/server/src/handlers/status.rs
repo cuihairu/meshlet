@@ -1,4 +1,4 @@
-//! 系统状态与更新清单端点：`/system/status`、`/update-manifest`。
+//! System status and update manifest endpoints: `/system/status`, `/update-manifest`.
 
 use crate::{system_status, update_manifest, SystemStatus, UpdateManifest};
 use axum::Json;

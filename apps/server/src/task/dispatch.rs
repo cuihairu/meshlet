@@ -1,4 +1,4 @@
-//! 任务派发、状态推进、用户确认与驳回重跑。
+//! Task dispatch, state advancement, user confirmation and rejection rerun.
 
 use meshlet_domain::{
     Device, DeviceId, NetworkId, Task, TaskAction, TaskEvent, TaskId, TaskOutcome, TaskPayload,
@@ -9,21 +9,27 @@ use crate::service::{self, MeshState, ServiceError};
 
 use super::models::{AssignTaskRequest, TaskRecord, TaskResult};
 
-/// 派发任务（assign）。显式 id 已存在且归属请求网络 → 幂等返回已有记录
-/// （`new_seq=None, created=false`）；归属其他网络 → 404；否则创建
-/// `task-{seq}`（或显式 id，自动 id 与已有任务冲突则递增序列）并置
-/// [TaskState::Assigned]。返回 `(记录, 新 task_seq, 是否新建)`。
+/// Dispatch a task (assign). An explicit id that already exists and belongs
+/// to the requested network -> return the existing record idempotently
+/// (`new_seq=None, created=false`); it belongs to another network -> 404;
+/// otherwise create `task-{seq}` (or the explicit id, bumping the sequence
+/// if the auto id collides with an existing task) and set
+/// [TaskState::Assigned]. Returns `(record, new task_seq, whether newly
+/// created)`.
 pub(crate) fn assign(
     state: &mut MeshState,
     network_id: &str,
     req: &AssignTaskRequest,
 ) -> Result<(TaskRecord, Option<u64>, bool), ServiceError> {
-    // 标签路由要求（MT-005）：缺省 = 无约束。
+    // Label routing requirement (MT-005): the default is unconstrained.
     let required = req.required_labels.clone().unwrap_or_default();
 
-    // 幂等键优先：同 id 已存在（无论状态）且归属请求网络 → 原样返回，
-    // 不重复建、不重置状态（重发同一派发请求不得因标签/设备状态漂移而
-    // 改判）；归属其他网络 → 404（与 confirm/retry 一致，不泄漏他网任务）。
+    // The idempotency key wins: the same id already exists (whatever its state)
+    // and belongs to the requested network -> return it as is, without creating
+    // a duplicate or resetting its state (re-sending the same dispatch request
+    // must not reach a different verdict because labels / device state drifted);
+    // it belongs to another network -> 404 (consistent with confirm/retry, and
+    // does not leak other networks' tasks).
     let (id, new_seq) = match &req.id {
         Some(id) => {
             if let Some(existing) = state.tasks.get(id) {
@@ -44,8 +50,9 @@ pub(crate) fn assign(
         }
     };
 
-    // 目标设备（MT-005 标签路由）：显式指定须命中标签要求；缺省按标签
-    // 自动选点（无标签要求 = 任意 Active 设备）。
+    // Target device (MT-005 label routing): an explicitly specified one must
+    // satisfy the label requirement; by default pick a device automatically by
+    // label (no label requirement = any Active device).
     let target_id = match req.target_device_id.as_deref() {
         Some(id) if !id.is_empty() => {
             let device = crate::publish::device_in_network(state, network_id, id)?;
@@ -101,7 +108,8 @@ pub(crate) fn assign(
     Ok((record, new_seq, true))
 }
 
-/// 目标设备的待办（assigned / acked，按 id 确定性排序）。
+/// The target device's outstanding work (assigned / acked, sorted by id
+/// deterministically).
 pub(crate) fn pending_for(state: &MeshState, device_id: &DeviceId) -> Vec<Task> {
     let mut out: Vec<Task> = state
         .tasks
@@ -114,8 +122,10 @@ pub(crate) fn pending_for(state: &MeshState, device_id: &DeviceId) -> Vec<Task> 
     out
 }
 
-/// ack：assigned→acked；已越过 assigned 视为幂等成功（补派重发 ack 不报错）。
-/// 返回是否发生了跃迁（`Some(action)`）或任务不存在（`None`）。
+/// ack: assigned -> acked; already past assigned is treated as an idempotent
+/// success (re-sending an ack to backfill a missed dispatch does not error).
+/// Returns whether a transition happened (`Some(action)`) or the task does
+/// not exist (`None`).
 pub(crate) fn ack(state: &mut MeshState, id: &str) -> Option<TaskAction> {
     let rec = state.tasks.get_mut(id)?;
     match rec.task.state {
@@ -124,13 +134,15 @@ pub(crate) fn ack(state: &mut MeshState, id: &str) -> Option<TaskAction> {
             rec.updated_at = service::now();
             Some(action)
         }
-        _ => None, // 幂等：已 acked / running / 终态不再跃迁
+        _ => None, // idempotent: already acked / running / terminal no longer transitions
     }
 }
 
-/// 记录结果：沿合法状态机路径推进到 done|failed（缺 ack/start 补完）；
-/// 已是终态则幂等忽略（不覆盖终态 result/state，重复回执只作废，防回收
-/// 与活 agent 竞争时旧回执改写合成超时结果），返回 `None`。
+/// Record a result: advance along a legal state-machine path to done|failed
+/// (filling in a missing ack/start); if already terminal, ignore idempotently
+/// (never overwrite the terminal result/state -- a duplicate receipt is merely
+/// discarded, so that when reaping races a live agent an old receipt cannot
+/// rewrite a synthetic timeout result), returning `None`.
 pub(crate) fn record_result(
     state: &mut MeshState,
     id: &str,
@@ -143,7 +155,8 @@ pub(crate) fn record_result(
     } else {
         TaskOutcome::Failure
     };
-    // 沿合法路径补完缺失的前置跃迁（断线丢 ack/start 时 result 自会补上）。
+    // Fill in the missing prerequisite transitions along the legal path (when a
+    // dropped connection lost ack/start, the result itself supplies them).
     if rec.task.state == TaskState::Assigned {
         let _ = rec.task.apply(TaskEvent::Ack);
     }
@@ -153,8 +166,10 @@ pub(crate) fn record_result(
     let action = if matches!(rec.task.state, TaskState::Running) {
         rec.task.apply(TaskEvent::Complete(outcome)).ok()
     } else {
-        // 已是终态（或乱序不可补）：幂等重复回执，不覆盖终态
-        // result/state（回收与活 agent 竞争时旧回执不得改写合成超时结果）。
+        // Already terminal (or out of order and unfillable): an idempotent duplicate
+        // receipt, without overwriting the terminal result/state (when reaping
+        // races a live agent, an old receipt must not rewrite a synthetic
+        // timeout result).
         return None;
     };
     rec.result = Some(TaskResult {
@@ -165,9 +180,11 @@ pub(crate) fn record_result(
     action
 }
 
-/// 确认完成（MT-003 用户侧动作）：仅 `done` 可确认，重复确认幂等。
-/// 返回 `None` = 任务不存在或非 done；`Some(false)` = 已确认过（幂等）；
-/// `Some(true)` = 本次新确认。
+/// Confirm completion (MT-003 user-side action): only `done` can be
+/// confirmed; confirming again is idempotent.
+/// Returns `None` = the task does not exist or is not done;
+/// `Some(false)` = already confirmed (idempotent);
+/// `Some(true)` = freshly confirmed this call.
 pub(crate) fn confirm(state: &mut MeshState, id: &str) -> Option<bool> {
     let rec = state.tasks.get_mut(id)?;
     if rec.task.state != TaskState::Done {
@@ -182,13 +199,15 @@ pub(crate) fn confirm(state: &mut MeshState, id: &str) -> Option<bool> {
     Some(true)
 }
 
-/// 驳回重跑（MT-003 用户侧动作）：原任务（done|failed）置 `rejected_at`，
-/// 并派发新一代任务——id 为 `{root}-r{n}`（root = 重试链的原始任务 id；
-/// 换新 id 是因为 agent 账本按 task id 去重，沿用旧 id 永远不会重跑），
-/// 负载/目标/重试上限原样继承。返回 `(新记录, 新 task_seq)`。
+/// Reject and rerun (MT-003 user-side action): stamp `rejected_at` on the
+/// original task (done|failed) and dispatch a new generation -- its id is
+/// `{root}-r{n}` (root = the original task id of the retry chain; a fresh id
+/// is used because the agent ledger deduplicates by task id, so reusing the
+/// old id would never rerun), inheriting payload / target / retry limit as
+/// is. Returns `(new record, new task_seq)`.
 ///
-/// `Err(ServiceError::Conflict)` = 任务不存在于该网络或非终态（运行中
-/// 不可驳回）。
+/// `Err(ServiceError::Conflict)` = the task does not exist in that network, or
+/// is not terminal (a running task cannot be rejected).
 pub(crate) fn retry(
     state: &mut MeshState,
     network_id: &str,
@@ -206,8 +225,9 @@ pub(crate) fn retry(
             orig.task.state.as_str()
         )));
     }
-    // 重入防护：该任务已驳回且仍有一个进行中的重跑子代（assigned/acked/
-    // running）→ 409，防双击/双 POST 重复下发同一条命令。
+    // Re-entrancy guard: this task is already rejected and still has a rerun
+    // child in flight (assigned/acked/running) -> 409, so a double click /
+    // double POST cannot issue the same command twice.
     let has_live_child = state.tasks.values().any(|rec| {
         rec.parent_task_id.as_deref() == Some(id)
             && !matches!(rec.task.state, TaskState::Done | TaskState::Failed)
@@ -226,9 +246,12 @@ pub(crate) fn retry(
         rec.clone()
     };
 
-    // 重试链的根：被驳回任务若是重跑代，则沿 parent 链回到根，代号续接
-    // （逐代回溯，第二代+任务不能只看立即父——`task-1-r2` 的立即父是
-    // `task-1-r1`，root 必须回溯到 `task-1` 才能数到兄弟 `task-1-r1`）。
+    // Root of the retry chain: if the rejected task is itself a rerun
+    // generation, walk the parent chain back to the root so the generation
+    // number continues from there (walk it generation by generation -- a
+    // second-or-later generation must not look only at its immediate parent:
+    // the immediate parent of `task-1-r2` is `task-1-r1`, and root has to go
+    // back to `task-1` in order to count its sibling `task-1-r1`).
     let mut root = id.to_string();
     let mut parent = rejected.parent_task_id.clone();
     while let Some(p) = parent {
@@ -262,7 +285,8 @@ pub(crate) fn retry(
     Ok((record, seq))
 }
 
-/// 重试链下一个代号：扫 `{root}-r{n}` 的最大 n + 1。
+/// The next generation number of the retry chain: the largest n in
+/// `{root}-r{n}` plus one.
 pub(crate) fn next_retry_seq(state: &MeshState, root: &str) -> u64 {
     let prefix = format!("{root}-r");
     state
@@ -289,7 +313,8 @@ mod tests {
     use super::super::models::AssignTaskRequest;
     use super::{assign, retry};
 
-    /// 建一个网络 + 两个 Active 设备，返回 (state, network_id, device_ids)。
+    /// Create a network plus two Active devices; returns
+    /// (state, network_id, device_ids).
     fn mesh_with_devices() -> (MeshState, String, Vec<String>) {
         let mut st = MeshState::new(Default::default());
         let net = create_network(
@@ -347,18 +372,18 @@ mod tests {
     #[test]
     fn assign_auto_id_skips_explicit_collision() {
         let (mut st, net, ids) = mesh_with_devices();
-        // 显式占掉 task-1。
+        // Occupy task-1 explicitly.
         let mut req = assign_req(Some(&ids[0]), BTreeMap::new());
         req.id = Some("task-1".into());
         let (rec, _, _) = assign(&mut st, &net, &req).unwrap();
         assert_eq!(rec.task.id.0, "task-1");
 
-        // 自动派发：不覆盖 task-1，取 task-2。
+        // Automatic dispatch: does not overwrite task-1, takes task-2.
         let (rec, seq, _) =
             assign(&mut st, &net, &assign_req(Some(&ids[0]), BTreeMap::new())).unwrap();
         assert_eq!(rec.task.id.0, "task-2");
         assert_eq!(seq, Some(2));
-        // 原 task-1 仍在（未被覆盖）。
+        // The original task-1 is still there (not overwritten).
         assert_eq!(st.tasks.get("task-1").unwrap().task.payload.cmd, "echo hi");
         assert_eq!(st.tasks.get("task-2").unwrap().task.payload.cmd, "echo hi");
     }
@@ -366,7 +391,7 @@ mod tests {
     #[test]
     fn assign_without_target_selects_device_matching_labels() {
         let (mut st, net, ids) = mesh_with_devices();
-        // dev-0 打 role=builder；dev-1 不打。
+        // Label dev-0 with role=builder; dev-1 gets none.
         crate::service::set_device_labels(&mut st, &net, &ids[0], labels(&[("role", "builder")]))
             .unwrap();
         let (rec, _seq, created) = assign(
@@ -376,7 +401,7 @@ mod tests {
         )
         .unwrap();
         assert!(created);
-        // 只可能命中 dev-0（唯一 role=builder）。
+        // Only dev-0 can match (the sole role=builder).
         assert_eq!(rec.task.target_node.to_string(), ids[0]);
         assert_eq!(rec.task.payload.required_labels["role"], "builder");
     }
@@ -422,7 +447,7 @@ mod tests {
     #[test]
     fn assign_without_target_and_no_matching_device_is_rejected() {
         let (mut st, net, _ids) = mesh_with_devices();
-        // 无人打 role=builder。
+        // Nobody carries role=builder.
         let err = assign(
             &mut st,
             &net,

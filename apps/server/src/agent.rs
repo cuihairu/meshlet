@@ -1,12 +1,15 @@
-//! Agent 心跳/状态上报（[存档 §14.1](../../docs/review/chatgpt-2026-10-13.md)、
-//! [§12.4](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Agent heartbeat/status reporting ([archive §14.1](../../docs/review/chatgpt-2026-10-13.md),
+//! [§12.4](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! - Agent 凭证（`agent_tokens` 表，migration 003）与邀请/会话同一纪律：
-//!   只存 SHA-256 摘要，原始 Token 仅在加入响应里出现一次；
-//! - 心跳端点 `POST /api/v1/agent/heartbeat` 是 **agent API**（Bearer 凭证），
-//!   与管理 API（Cookie 会话 + CSRF）认证边界清晰（§13.5）；
-//! - 心跳携带 agent 本地读到的 `wg show` 握手时间（`last_handshake_at`），
-//!   服务端据此 + 上报时间做在线判定（[presence] 域层）。
+//! - Agent credentials (`agent_tokens` table, migration 003) follow the same
+//!   discipline as invitations/sessions: only the SHA-256 digest is stored,
+//!   and the raw token appears exactly once, in the join response;
+//! - The heartbeat endpoint `POST /api/v1/agent/heartbeat` is the **agent
+//!   API** (Bearer credentials), with a clear authentication boundary from the
+//!   admin API (cookie sessions + CSRF) (§13.5);
+//! - Heartbeats carry the `wg show` handshake time read locally by the agent
+//!   (`last_handshake_at`); the server combines it with the report time for
+//!   online determination ([presence] domain layer).
 
 use axum::extract::{ConnectInfo, FromRequestParts, Path, State};
 use axum::http::request::Parts;
@@ -25,7 +28,7 @@ use std::net::SocketAddr;
 use crate::auth::SharedAppState;
 use crate::service;
 
-/// Agent 凭证存储（SQLite，migration 003）。
+/// Agent credential store (SQLite, migration 003).
 #[derive(Clone)]
 pub struct AgentTokenStore {
     pool: SqlitePool,
@@ -36,7 +39,7 @@ impl AgentTokenStore {
         Self { pool }
     }
 
-    /// 签发：返回 (`raw_token`, `token_hash`)。原始 Token 只在此出现一次。
+    /// Issue: returns (`raw_token`, `token_hash`). The raw token appears here only once.
     pub async fn issue(
         &self,
         device_id: &DeviceId,
@@ -56,7 +59,7 @@ impl AgentTokenStore {
         Ok((raw, hash))
     }
 
-    /// 校验：存在且未撤销 → 设备 ID。
+    /// Validate: exists and not revoked → device ID.
     pub async fn validate(&self, raw_token: &str) -> Result<Option<DeviceId>, sqlx::Error> {
         let row = sqlx::query_as::<_, (String, Option<String>)>(
             "SELECT device_id, revoked_at FROM agent_tokens WHERE token_hash = ?",
@@ -82,7 +85,7 @@ impl AgentTokenStore {
         Ok(())
     }
 
-    /// 撤销某设备的全部 agent 凭证（设备撤销链路，§11.5）：返回失效的凭证数。
+    /// Revoke every agent credential of a device (device revocation flow, §11.5): returns the number of invalidated credentials.
     pub async fn revoke_for_device(
         &self,
         device_id: &DeviceId,
@@ -99,7 +102,7 @@ impl AgentTokenStore {
     }
 }
 
-/// 解析 `Authorization: Bearer <token>`（scheme 大小写不敏感）。
+/// Parse `Authorization: Bearer <token>` (the scheme is case-insensitive).
 pub fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, value) = raw.split_once(' ')?;
@@ -109,19 +112,23 @@ pub fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
     Some(value.to_string())
 }
 
-/// §12 P2P：观测源地址 → 公网候选 IP。连接来自 IPv6（无 IPv4 地址）或
-/// 无地址时返回 `None`——meshlet 是 IPv4 overlay，v6 观测不构成 IPv4 公网候选。
+/// §12 P2P: observed source address → public candidate IP. Connections coming
+/// from IPv6 (no IPv4 address) or with no address at all return `None` —
+/// meshlet is an IPv4 overlay, so a v6 observation does not form an IPv4 public
+/// candidate.
 ///
-/// TODO-116 安全口径：仅当请求**直接来自可信反代**时才采信 `X-Forwarded-For`/
-/// `X-Real-IP`；不可信来源完全忽略头部（防伪造）。`X-Forwarded-For` 是
-/// 「客户端, 代理1, 代理2…」链，取**最右侧非可信代理**地址（从右往左跳过所有
-/// 可信代理地址，取第一个非可信地址——即真实客户端）。
+/// TODO-116 security policy: only trust `X-Forwarded-For`/`X-Real-IP` when the
+/// request comes **directly from a trusted reverse proxy**; sources that are
+/// not trusted have the headers ignored entirely (spoofing protection).
+/// `X-Forwarded-For` is a "client, proxy1, proxy2..." chain; take the
+/// **rightmost non-trusted proxy** address (skip every trusted proxy address
+/// from right to left and take the first non-trusted one — the real client).
 fn direct_observed_ip(
     addr: &SocketAddr,
     headers: &HeaderMap,
     trusted_proxies: &meshlet_config::TrustedProxyConfig,
 ) -> Option<std::net::Ipv4Addr> {
-    // 仅当请求来源（socket 直连对端）是可信代理时才采信头部。
+    // Trust the headers only when the request source (the socket peer) is a trusted proxy.
     if trusted_proxies.is_trusted(addr.ip()) {
         if let Some(ip) = forwarded_for_client(headers, trusted_proxies) {
             return Some(ip);
@@ -130,16 +137,17 @@ fn direct_observed_ip(
             return Some(ip);
         }
     }
-    // 回落 socket 地址。
+    // Fall back to the socket address.
     match addr.ip() {
         std::net::IpAddr::V4(ip) => Some(ip),
         std::net::IpAddr::V6(_) => None,
     }
 }
 
-/// `X-Forwarded-For` 取最右侧非可信代理地址。从右往左跳过所有属于可信代理
-/// 的条目；第一个非可信条目即真实客户端。若整条链都是可信代理（或空），
-/// 返回 `None`（无真实客户端可证，回落 socket）。
+/// `X-Forwarded-For` takes the rightmost non-trusted proxy address. Skip
+/// every entry belonging to a trusted proxy, right to left; the first
+/// non-trusted entry is the real client. If the whole chain is trusted proxies
+/// (or empty), return `None` (no provable real client, fall back to the socket).
 fn forwarded_for_client(
     headers: &HeaderMap,
     trusted_proxies: &meshlet_config::TrustedProxyConfig,
@@ -148,24 +156,26 @@ fn forwarded_for_client(
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())?;
     let mut parts = raw.split(',');
-    // 从右往左跳过可信代理地址。若整条链可被可信集合覆盖（含空链），None。
+    // Skip trusted proxy addresses right to left. If the trusted set covers the whole chain (including an empty one), None.
     while let Some(entry) = parts.next_back() {
         let ip = entry.trim().parse::<std::net::IpAddr>().ok()?;
-        // 最右侧非可信代理地址 = 真实客户端。
+        // Rightmost non-trusted proxy address = real client.
         if !trusted_proxies.is_trusted(ip) {
-            // IPv6 观测不构成 IPv4 公网候选（与 socket 回落同口径）。
+            // An IPv6 observation does not form an IPv4 public candidate (same rule as the socket fallback).
             return match ip {
                 std::net::IpAddr::V4(ip) => Some(ip),
                 std::net::IpAddr::V6(_) => None,
             };
         }
     }
-    // 链全部是可信代理（或空）：无法证明真实客户端，回落 socket。调用方
-    // 已把关「直接对端 ∈ 可信集合」，此处无需再校验。
+    // The whole chain is trusted proxies (or empty): no provable real client,
+    // fall back to the socket. The caller has already checked that the direct
+    // peer is in the trusted set, so no further validation is needed here.
     None
 }
 
-/// `X-Real-IP`：单地址头部，仅在可信代理来源下由调用方把关后使用。
+/// `X-Real-IP`: a single-address header, used only after the caller has
+/// checked that the source is a trusted proxy.
 fn real_ip_client(headers: &HeaderMap) -> Option<std::net::Ipv4Addr> {
     let ip = headers.get("x-real-ip")?.to_str().ok()?.parse().ok()?;
     match ip {
@@ -175,7 +185,7 @@ fn real_ip_client(headers: &HeaderMap) -> Option<std::net::Ipv4Addr> {
 }
 
 // ---------------------------------------------------------------------------
-// 错误
+// Errors
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -183,8 +193,9 @@ pub enum AgentApiError {
     Unauthorized,
     InvalidInput(String),
     NotFound(String),
-    /// 服务端 `[dataplane] enabled = false`：不向 agent 下发数据面计划
-    /// （503，可重试——管理员开启后计划即可用）。
+    /// Server-side `[dataplane] enabled = false`: no dataplane plan is handed
+    /// to agents (503, retryable — once the admin enables it, the plan is
+    /// available).
     DataplaneNotConfigured(String),
     Internal(String),
 }
@@ -215,10 +226,10 @@ impl IntoResponse for AgentApiError {
 }
 
 // ---------------------------------------------------------------------------
-// 提取器（只在命中路由上运行；未知路径保持 404）
+// Extractors (run only on matched routes; unknown paths stay 404)
 // ---------------------------------------------------------------------------
 
-/// Agent API 认证提取器：`Authorization: Bearer <agent_token>` 无效一律 401。
+/// Agent API authentication extractor: an invalid `Authorization: Bearer <agent_token>` always yields 401.
 #[derive(Debug, Clone)]
 pub struct AuthorizedAgent(pub DeviceId);
 
@@ -241,30 +252,39 @@ impl FromRequestParts<SharedAppState> for AuthorizedAgent {
 }
 
 // ---------------------------------------------------------------------------
-// 端点
+// Endpoints
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeartbeatRequest {
-    /// agent 本地 `wg show` 读到的最近握手时间（ISO-8601）；缺省表示未取到。
+    /// Most recent handshake time read locally by the agent via `wg show`
+    /// (ISO-8601); absent means it could not be obtained.
     pub last_handshake_at: Option<String>,
-    /// 设备侧数据面实测证据（内核读数 + 大包探测，§7.5）；缺省表示未上报。
+    /// Device-side dataplane measurement evidence (kernel readings + large
+    /// packet probes, §7.5); absent means not reported.
     #[serde(default)]
     pub dataplane: Option<DataplaneEvidence>,
-    /// §12 P2P 直连候选端点（监听端口 + LAN 地址）；缺省表示未上报/已关闭直连。
+    /// §12 P2P direct-connect candidate endpoints (listen port + LAN
+    /// addresses); absent means not reported / direct connect is off.
     #[serde(default)]
     pub direct: Option<DirectEndpointReport>,
-    /// §12.3 链路状态上报：本设备对各对端的直连链路（direct / direct_pending）。
-    /// 空缺省 = 全中继/旧版未上报；hub 仅存内存，供控制台展示 P2P/中继。
+    /// §12.3 link status report: this device's direct links to each peer
+    /// (direct / direct_pending). Empty default = all-relay / legacy version
+    /// that did not report; the hub keeps it in memory only, for the console
+    /// to display P2P/relay.
     #[serde(default)]
     pub direct_links: Vec<DirectLinkStatus>,
-    /// R-DIAG 网络诊断三快照（路由表/接口/wg 读数）；缺省表示未上报/采集失败。
-    /// 与 `direct_links` 同纪律：hub 仅存内存，控制台诊断页据此展示。
+    /// R-DIAG network diagnostics three snapshots (routing table / interfaces /
+    /// wg readings); absent means not reported / collection failed. Same
+    /// discipline as `direct_links`: the hub keeps it in memory only, and the
+    /// console diagnostics page renders from it.
     #[serde(default)]
     pub diagnostics: Option<meshlet_network::NetworkDiagnostics>,
-    /// 本机真实主机名（SSH alias 分发的默认 alias 来源）；缺省表示旧 agent
-    /// 未上报。与 `direct_links` 同纪律：hub 仅存内存，心跳重报即恢复。
+    /// The machine's real hostname (default alias source for SSH alias
+    /// distribution); absent means a legacy agent that did not report. Same
+    /// discipline as `direct_links`: the hub keeps it in memory only, and it
+    /// is restored by the next heartbeat report.
     #[serde(default)]
     pub hostname: Option<String>,
 }
@@ -276,12 +296,15 @@ pub struct HeartbeatResponse {
     pub last_seen_at: Option<String>,
 }
 
-/// `POST /api/v1/agent/heartbeat`：记录一次 agent 上报（+ 可选握手时间 +
-/// §12 P2P 直连候选端点），返回当前在线判定（状态 + 数据来源 + 最后证据时间）。
+/// `POST /api/v1/agent/heartbeat`: records one agent report (+ optional
+/// handshake time + §12 P2P direct-connect candidate endpoints) and returns
+/// the current online determination (state + data source + last evidence time).
 ///
-/// 观测源地址（公网候选）来自连接 socket（[ConnectInfo]，serve 侧装配；
-/// 测试经 `request.extensions_mut().insert(ConnectInfo(..))` 注入）；请求里
-/// 上报的 LAN 地址是 agent 自己枚举的。候选是临时性咨询数据，仅存内存。
+/// The observed source address (public candidate) comes from the connection
+/// socket ([ConnectInfo], wired up on the serve side; tests inject it via
+/// `request.extensions_mut().insert(ConnectInfo(..))`); the LAN addresses
+/// reported in the request are enumerated by the agent itself. Candidates are
+/// transient advisory data, kept in memory only.
 pub async fn heartbeat_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
@@ -297,9 +320,11 @@ pub async fn heartbeat_handler(
         }
     }
     let now: Timestamp = service::now();
-    // 心跳证据时间戳同样落库（§17.3）：重启后 presence 按原证据判定，
-    // 不虚构在线（§12.4）。Pending 注册申请的心跳走 `device_registrations`
-    // 证据通道（批准前无 devices 行，§7.5 证据不丢）。
+    // The heartbeat evidence timestamp is also persisted (§17.3): after a
+    // restart presence is judged from the original evidence and never
+    // fabricated as online (§12.4). Heartbeats from Pending registration
+    // applications go through the `device_registrations` evidence channel
+    // (there is no devices row before approval, §7.5 evidence is not lost).
     let _persist = state.persist.lock().await;
     let (presence, network_id, device) = {
         let mut guard = state.mesh.lock().unwrap();
@@ -317,7 +342,7 @@ pub async fn heartbeat_handler(
                     .expect("report just recorded")
                     .clone();
                 let network_id = device.network_id.to_string();
-                // §12：直连候选只对已注册设备记录（Pending 无隧道、不参与数据面）。
+                // §12: direct-connect candidates are recorded only for registered devices (Pending has no tunnel and does not join the dataplane).
                 service::record_direct_state(
                     &mut guard,
                     &device_id,
@@ -325,9 +350,9 @@ pub async fn heartbeat_handler(
                     req.direct.clone(),
                     req.direct_links.clone(),
                 );
-                // R-DIAG：网络诊断快照同纪律——只对已注册设备记录。
+                // R-DIAG: network diagnostics snapshots follow the same discipline — recorded only for registered devices.
                 service::record_diagnostics(&mut guard, &device_id, req.diagnostics.clone());
-                // SSH alias 分发的默认 alias 来源：本机真实主机名（内存态）。
+                // Default alias source for SSH alias distribution: the machine's real hostname (in-memory state).
                 service::record_device_hostname(&mut guard, &device_id, req.hostname.clone());
                 (Some(presence), network_id, Some(device))
             }
@@ -358,7 +383,7 @@ pub async fn heartbeat_handler(
             .await
             .map_err(|e| AgentApiError::Internal(e.to_string()))?;
     } else {
-        // Pending 申请：证据落 device_registrations（approval 前唯一证据通道）。
+        // Pending application: the evidence goes to device_registrations (the only evidence channel before approval).
         let evidence = req
             .dataplane
             .as_ref()
@@ -374,7 +399,7 @@ pub async fn heartbeat_handler(
         .await
         .map_err(|e| AgentApiError::Internal(e.to_string()))?;
     }
-    // 指标（§17.2 agent 心跳计数）+ 结构化日志（§17.1：device 组件事件）。
+    // Metrics (§17.2 agent heartbeat counter) + structured log (§17.1: device component event).
     state.metrics.record_agent_heartbeat();
     crate::op_log!(
         info,
@@ -386,8 +411,10 @@ pub async fn heartbeat_handler(
         crate::telemetry::ErrorCategory::None.as_str(),
         crate::telemetry::RESULT_OK
     );
-    // Pending 申请无隧道、不参与数据面：`pending` 明确区别于在线三态，
-    // agent 据此保持退避重试而不是当隧道故障。
+    // A Pending application has no tunnel and does not join the dataplane:
+    // `pending` is explicitly distinct from the three online states, so the
+    // agent keeps backing off and retrying instead of treating it as a tunnel
+    // fault.
     let (online_state, presence_source) = match presence {
         Some(presence) => (
             presence.state.as_str().to_string(),
@@ -402,28 +429,36 @@ pub async fn heartbeat_handler(
     }))
 }
 
-/// `GET /api/v1/agent/device/desired`：本设备的期望数据面计划。
+/// `GET /api/v1/agent/device/desired`: this device's desired dataplane plan.
 ///
-/// 返回 [`meshlet_network::DevicePlan`]——**结构化配置对象**（§16.4）：类型化
-/// 的隧道/路由/NAT 计划 + `desired_config_hash`。服务端**从不**下发 Shell
-/// 命令；agent 只消费类型化对象并按需重放本地后端。计划里的 `private_key` 恒为
-/// `null`（ADR-010：私钥不出设备，agent 本地注入）。
+/// Returns a [`meshlet_network::DevicePlan`] — a **structured configuration
+/// object** (§16.4): the typed tunnel/routing/NAT plan + `desired_config_hash`.
+/// The server **never** hands out Shell commands; the agent consumes typed
+/// objects only and replays its local backend as needed. `private_key` in the
+/// plan is always `null` (ADR-010: the private key never leaves the device;
+/// the agent injects it locally).
 ///
-/// 服务端 `[dataplane] enabled = false` 时返回 503（管理员开启后计划即可用，
-/// agent 可重试），不返回空计划——避免 agent 把「未配置」误当成「已生效」。
+/// When the server has `[dataplane] enabled = false` this returns 503 (the
+/// plan becomes available once the admin enables it, and the agent may retry);
+/// it never returns an empty plan — so the agent does not mistake "not
+/// configured" for "already in effect".
 pub async fn desired_device_plan_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
 ) -> Result<Json<meshlet_network::DevicePlan>, AgentApiError> {
     let _persist = state.persist.lock().await;
-    // 身份判定先于全局数据面开关：待审批的注册申请永远 404「pending approval」，
-    // 否则数据面关闭时该信号被 503 掩盖，agent 与管理员都读不到真实状态。
+    // Identity resolution comes before the global dataplane switch: a
+    // pending-approval registration always 404s with "pending approval",
+    // otherwise while the dataplane is off that signal would be masked by 503
+    // and neither agent nor admin could read the real state.
     let (plan, network_id) = {
         let guard = state.mesh.lock().unwrap();
         let Some(device) = guard.registry.find_by_id(&device_id) else {
-            // 待审批的注册申请（ZeroTier 式自举流）：404 语义同「计划不存在」
-            // ——批准前不进期望配置（migration 008 取舍），agent 退避重试，
-            // 批准后本端点即返回计划。
+            // A pending-approval registration (ZeroTier-style bootstrap flow):
+            // 404 semantics are the same as "plan does not exist" — before
+            // approval it does not enter the desired config (migration 008
+            // trade-off), the agent backs off and retries, and this endpoint
+            // returns the plan once approved.
             if guard.registry.find_registration(&device_id).is_some() {
                 return Err(AgentApiError::NotFound(format!(
                     "device {device_id} is pending approval: no desired plan until an operator \
@@ -486,14 +521,18 @@ pub async fn desired_device_plan_handler(
     Ok(Json(plan))
 }
 
-/// `GET /api/v1/networks/{network_id}/peers/endpoints`：本设备可直连的 peer
-/// 候选端点列表（§12 P2P）。
+/// `GET /api/v1/networks/{network_id}/peers/endpoints`: the list of peer
+/// candidate endpoints this device can connect to directly (§12 P2P).
 ///
-/// - 凭证：agent 设备 Bearer（与心跳/计划同一认证边界）；
-/// - 返回 [`meshlet_domain::peer_endpoints_for`] 结果：排除自身/非 Active/
-///   未上报候选/超出本设备可路由网段，按 device_id 确定性排序；
-/// - 与 peer AllowedIPs 同一段口径：分段网络取所属段前缀，单段网络取整个
-///   overlay（`device_plan::segment_for` 复用）。
+/// - Credential: agent device Bearer (the same authentication boundary as
+///   heartbeat/plan);
+/// - Returns the [`meshlet_domain::peer_endpoints_for`] result: excludes self,
+///   non-Active peers, peers that have not reported candidates, and peers
+///   outside this device's routable segment; deterministic ordering by
+///   device_id;
+/// - The same segment rule as peer AllowedIPs: a segmented network takes its
+///   own segment prefix, a single-segment network takes the whole overlay
+///   (`device_plan::segment_for` is reused).
 pub async fn peers_endpoints_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,
@@ -502,7 +541,7 @@ pub async fn peers_endpoints_handler(
     let _persist = state.persist.lock().await;
     let guard = state.mesh.lock().unwrap();
     let Some(device) = guard.registry.find_by_id(&device_id) else {
-        // 待审批注册申请：批准前无端点（无隧道、不参与数据面）。
+        // Pending-approval registration: no endpoints before approval (no tunnel, no dataplane).
         if guard.registry.find_registration(&device_id).is_some() {
             return Err(AgentApiError::NotFound(format!(
                 "device {device_id} is pending approval: no endpoints until approved"
@@ -536,12 +575,14 @@ pub async fn peers_endpoints_handler(
     Ok(Json(peers))
 }
 
-/// `GET /api/v1/agent/device/peers/endpoints`：本设备可直连的 peer 候选端点
-/// 列表（§12 P2P，agent 视角）。
+/// `GET /api/v1/agent/device/peers/endpoints`: the list of peer candidate
+/// endpoints this device can connect to directly (§12 P2P, agent view).
 ///
-/// 与 [`peers_endpoints_handler`] 同一聚合，但无需网络 ID 路径参数——agent
-/// 凭证本身即身份，网络从设备记录解析（与 `desired_device_plan_handler`
-/// 同一口径）。agent 因此无需知道网络 ID 就能拉取候选。
+/// The same aggregation as [`peers_endpoints_handler`], but without a network
+/// ID path parameter — the agent credential itself is the identity, and the
+/// network is resolved from the device record (the same rule as
+/// `desired_device_plan_handler`). The agent can therefore fetch candidates
+/// without knowing the network ID.
 pub async fn agent_peers_endpoints_handler(
     State(state): State<SharedAppState>,
     AuthorizedAgent(device_id): AuthorizedAgent,

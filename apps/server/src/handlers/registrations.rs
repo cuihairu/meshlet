@@ -1,5 +1,6 @@
-//! 设备自举注册（公开端点，凭自举码而来）：注册落 Pending → 控制中心
-//! 审批/拒绝；agent 凭证仅此一次返回（§11.3）。
+//! Device bootstrap registration (public endpoint, the device arrives holding a
+//! bootstrap token): the registration lands as Pending → the control center
+//! approves/denies it; agent credentials are returned exactly once (§11.3).
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service;
@@ -10,14 +11,16 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 
-/// 设备自举注册（公开端点，设备凭自举码而来，无用户会话）。落 Pending
-/// 申请并签发 agent 凭证——凭证**仅此一次**返回（§11.3）。
+/// Device bootstrap registration (public endpoint; the device arrives with a
+/// bootstrap token, no user session). Records a Pending request and issues the
+/// agent credentials — the credentials are returned **exactly once** (§11.3).
 pub(crate) async fn register_device_handler(
     State(state): State<SharedAppState>,
     Json(req): Json<service::RegisterDeviceRequest>,
 ) -> Result<(StatusCode, Json<service::RegisterDeviceResponse>), service::ServiceError> {
     let _persist = state.persist.lock().await;
-    // 摘要先行：req 被 service 消费后仍需定位刚被递增的自举码以落库。
+    // Hash the token up front: req is consumed by the service, but we still need
+    // to locate the just-incremented bootstrap token to persist it.
     let token_hash = meshlet_domain::token_hash(&req.bootstrap_token);
     let (mut resp, registration, seq, token, bootstrap_seq) = {
         let mut guard = state.mesh.lock().unwrap();
@@ -27,8 +30,9 @@ pub(crate) async fn register_device_handler(
             .find_registration(&meshlet_domain::DeviceId(resp.device_id.clone()))
             .expect("just registered")
             .clone();
-        // 使用次数随注册递增，同步落库——否则重启后计数回退，max_uses
-        // 限制可被重启绕过。
+        // The use count increments on registration and is persisted in the same step
+        // — otherwise the count would roll back after a restart and the max_uses
+        // limit could be bypassed by restarting.
         let token = guard
             .bootstrap_tokens
             .get(&token_hash)
@@ -55,7 +59,8 @@ pub(crate) async fn register_device_handler(
         .await
         .map_err(|e| service::ServiceError::Internal(e.to_string()))?;
     resp.agent_token = raw;
-    // 注册者凭自举码而来，无用户 actor；agent 凭证原始材料不进审计（§16.5）。
+    // The registrant arrives with a bootstrap token, so there is no user actor;
+    // raw agent credential material never enters the audit trail (§16.5).
     crate::audit::record_or_fail(
         &state,
         None,
@@ -90,8 +95,10 @@ pub(crate) async fn list_registrations_handler(
     Ok(Json(list_registrations(&guard, &network_id)?))
 }
 
-/// 批准注册：Pending 申请转正为设备（此刻才分配 overlay 地址），新修订
-/// 随期望配置下发；Pending 凭证作废并换发新凭证（仅此一次返回）。
+/// Approve a registration: the Pending request is promoted to a device (this is
+/// when the overlay address gets allocated), and a new revision is pushed along
+/// with the desired config; the Pending credential is voided and replaced with
+/// a fresh one (returned exactly once).
 pub(crate) async fn approve_registration_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -164,8 +171,9 @@ pub(crate) async fn approve_registration_handler(
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
-/// 拒绝注册：申请摘除、Pending 凭证作废。不记修订（期望配置从未包含过
-/// Pending 申请）。
+/// Deny a registration: the request is removed and the Pending credential is
+/// voided. No revision is recorded (the desired config has never included a
+/// Pending request).
 pub(crate) async fn deny_registration_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -177,7 +185,8 @@ pub(crate) async fn deny_registration_handler(
         let mut guard = state.mesh.lock().unwrap();
         deny_registration(&mut guard, &network_id, &device_id)?
     };
-    // 申请行 + Pending 凭证同一事务清理（persist::delete_registration_db）。
+    // The request row and the Pending credential are cleaned up in the same
+    // transaction (persist::delete_registration_db).
     crate::persist::delete_registration_db(state.auth.pool(), &registration.id)
         .await
         .map_err(crate::persist::internal)?;

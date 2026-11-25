@@ -1,21 +1,26 @@
-//! 控制台认证：会话存储 + 认证/CSRF 提取器 + 登录/引导端点
-//! （[存档 §11.4](../../docs/review/chatgpt-2026-10-13.md)、
-//! [ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)）。
+//! Console authentication: session store + auth/CSRF extractors + login/bootstrap
+//! endpoints ([Archive §11.4](../../docs/review/chatgpt-2026-10-13.md),
+//! [ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)).
 //!
-//! - 管理 API（网络/邀请/设备）handler 一律挂 `AuthenticatedUser`（Cookie 会话
-//!   或 `mlt_` API Token Bearer，见 api_token.rs）与写请求的 `CsrfHeader` +
-//!   `WriteUser`（会话恒放行；token 需 `write` scope）提取器；提取器只在命中
-//!   路由后求值，未知路径保持 404；
-//! - `/api/v1/enroll` 与 `/api/v1/system/status` 保持公开（enroll 自带邀请 Token 鉴权）；
-//! - Cookie：HttpOnly + SameSite=Strict + Max-Age=会话 TTL；`Secure` 由配置决定
-//!   （生产部署在 HTTPS 反代后置 true）；
-//! - CSRF：Cookie 认证的管理端「写」请求必须携带 `X-Requested-With: XMLHttpRequest`
-//!   （Console 前端约定），配合 SameSite=Strict 构成双重防线；
-//! - 登录限流：进程内固定窗口（按 email 维度），成功登录即清零；
-//! - **无默认管理员密码**：首个管理员只能经「空库 bootstrap」创建。
+//! - Management API (network/invitation/device) handlers always take the
+//!   `AuthenticatedUser` (Cookie session or `mlt_` API Token Bearer, see
+//!   api_token.rs) plus `CsrfHeader` + `WriteUser` (sessions always pass; tokens
+//!   need the `write` scope) extractors for write requests; extractors are only
+//!   evaluated after a route matches, so unknown paths stay 404;
+//! - `/api/v1/enroll` and `/api/v1/system/status` stay public (enroll carries its
+//!   own invitation Token auth);
+//! - Cookie: HttpOnly + SameSite=Strict + Max-Age = session TTL; `Secure` comes
+//!   from config (set true behind an HTTPS reverse proxy in production);
+//! - CSRF: Cookie-authenticated admin "write" requests must carry
+//!   `X-Requested-With: XMLHttpRequest` (Console front-end convention), which
+//!   together with SameSite=Strict forms a double defence;
+//! - Login rate limiting: in-process fixed window (per email), cleared on success;
+//! - **No default admin password**: the first admin can only be created via the
+//!   "empty-DB bootstrap".
 
-// 按职责分档：存储（store）/ 错误（error）/ Cookie·请求头·提取器·审计（extract）/
-// DTO·会话·端点（endpoints）；本文件保留限流常量与 AppState。
+// Split by responsibility: storage (store) / errors (error) / cookies · request
+// headers · extractors · audit (extract) / DTOs · sessions · endpoints
+// (endpoints); this file keeps the rate-limit constants and AppState.
 mod endpoints;
 mod error;
 mod extract;
@@ -38,53 +43,68 @@ use std::time::Duration;
 
 use crate::service;
 
-/// 登录限流参数：每 email 每窗口最多 5 次失败尝试，窗口 15 分钟。
+/// Login rate-limit parameters: at most 5 failed attempts per email per window,
+/// window of 15 minutes.
 pub const LOGIN_MAX_ATTEMPTS: u32 = 5;
 pub const LOGIN_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-/// Argon2 阻塞任务上限：限制 CPU 密集哈希/校验同时占满 worker。
+/// Argon2 blocking-task cap: keeps CPU-heavy hashing/verification from saturating
+/// the workers at the same time.
 pub const AUTH_BLOCKING_CONCURRENCY: usize = 4;
 
-/// 未知 email 的恒时校验目标（消除「用户不存在」的时间侧信道）。
-/// 内容为 Argon2id PHC 格式的无效哈希——校验必然失败，但耗时与真哈希一致。
+/// Constant-time verification target for an unknown email (removes the "user does
+/// not exist" timing side channel).
+/// It holds an invalid hash in Argon2id PHC format — verification always fails,
+/// but takes the same time as a real hash.
 const DUMMY_HASH: &str = "$argon2id$v=19$m=32768,t=2,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-/// 应用状态：内存 Mesh 状态 + SQLite 用户/会话/agent/API token + 登录限流器。
+/// Application state: in-memory Mesh state + SQLite users/sessions/agent/API
+/// tokens + the login rate limiter.
 #[derive(Clone)]
 pub struct AppState {
     pub mesh: service::SharedState,
     pub auth: AuthStore,
     pub agent_tokens: crate::agent::AgentTokenStore,
     pub api_tokens: crate::api_token::ApiTokenStore,
-    /// 审计日志（存档 §16.5）：与凭证同库。
+    /// Audit log (Archive §16.5): stored in the same database as the credentials.
     pub audit: crate::audit::AuditStore,
     pub login_limiter: Arc<RateLimiter>,
     pub cookie_secure: bool,
-    /// 配置应用/回滚 backend 工厂（§10.3 幂等、§10.4 回滚边界）；默认数据面
-    /// 未接入（显式失败），测试可注入计数 backend 验证幂等与串行化。
+    /// Config apply/rollback backend factory (§10.3 idempotency, §10.4 rollback
+    /// boundary); the dataplane is not wired up by default (explicit failure), and
+    /// tests can inject a counting backend to verify idempotency and serialization.
     pub apply_backend: crate::revision::BackendFactory,
-    /// 运行指标（§17.2）：进程内计数 + 抓取时现算量规；`GET /api/v1/system/metrics`。
+    /// Runtime metrics (§17.2): in-process counters + gauges computed at scrape
+    /// time; `GET /api/v1/system/metrics`.
     pub metrics: crate::metrics::Metrics,
-    /// Mesh 持久化互斥（§17.3）：变更 + 落库在同一个互斥段内完成，任何并发
-    /// 交错都不会让旧行快照覆盖新行（请求路径 DB 镜像的写序保证）。
+    /// Mesh persistence mutex (§17.3): the mutation plus the DB write finish inside
+    /// one mutex section, so no concurrent interleaving can let a stale row
+    /// snapshot overwrite a newer row (write-order guarantee for the request-path
+    /// DB mirror).
     pub persist: Arc<tokio::sync::Mutex<()>>,
-    /// 备份目录（§17.4）：`None` = 备份未配置（`POST /system/backup` 503）。
+    /// Backup directory (§17.4): `None` = backup not configured
+    /// (`POST /system/backup` returns 503).
     pub backup_dir: Option<std::path::PathBuf>,
-    /// 计划隧道 MTU（§7.5「MTU 可配置」）：`None` = 未显式配置，诊断按
-    /// WireGuard 默认 1420 解释大包/分片风险；诊断第 13 项据此判读。
+    /// Planned tunnel MTU (§7.5 "MTU configurable"): `None` = not explicitly
+    /// configured, so diagnostics interpret large-packet/fragmentation risk
+    /// against the WireGuard default of 1420; diagnostic check 13 reads from this.
     pub tunnel_mtu: Option<u32>,
-    /// 服务端 `[dataplane]` 配置（设备计划下发用：接口名/私钥文件）；
-    /// `enabled = false` 时 `GET /agent/device/desired` 返回 503。
+    /// Server `[dataplane]` config (used for device plan delivery: interface name /
+    /// private key file); when `enabled = false`,
+    /// `GET /agent/device/desired` returns 503.
     pub dataplane: meshlet_config::DataPlaneConfig,
-    /// SSH 别名分发段（生产来自 `[ssh_config]`）：`None` = hub 未开启，计划
-    /// 不带 `ssh_config` 段；`Some` = 计划携带全网 Active 节点别名表。
+    /// SSH alias distribution section (in production from `[ssh_config]`): `None` =
+    /// the hub side is not enabled, so the plan carries no `ssh_config` section;
+    /// `Some` = the plan carries the alias table of all Active nodes in the mesh.
     pub ssh_config: Option<meshlet_config::SshDistributeConfig>,
-    /// 同一网络的 apply/rollback 串行门（§10.4）；不同网络仍可并行执行。
+    /// Apply/rollback serialization gate per network (§10.4); other networks may
+    /// still run in parallel.
     pub revision_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-    /// 可信反代来源（TODO-116）：仅当请求直接来自可信代理时才采信
-    /// `X-Forwarded-For`/`X-Real-IP`；默认仅回环 127.0.0.1/::1。
+    /// Trusted reverse-proxy sources (TODO-116): `X-Forwarded-For`/`X-Real-IP` are
+    /// only trusted when the request comes directly from a trusted proxy; the
+    /// default is loopback 127.0.0.1/::1 only.
     pub trusted_proxies: meshlet_config::TrustedProxyConfig,
-    /// 密码哈希/校验阻塞任务并发上限（§11.4）。
+    /// Concurrency cap for password hashing/verification blocking tasks (§11.4).
     pub auth_blocking: Arc<tokio::sync::Semaphore>,
 }
 
@@ -98,7 +118,8 @@ impl AppState {
         api_tokens: crate::api_token::ApiTokenStore,
         cookie_secure: bool,
     ) -> Self {
-        // 审计与凭证同库；克隆池句柄而非共享借用（下方 auth 会被移动进 Self）。
+        // The audit log shares the credentials database; clone the pool handle rather
+        // than sharing a borrow (the `auth` below is moved into Self).
         let audit = crate::audit::AuditStore::new(auth.pool().clone());
         Self {
             mesh,
@@ -121,32 +142,36 @@ impl AppState {
         }
     }
 
-    /// 注入自定义配置应用 backend（数据面接入 / 集成测试）。
+    /// Inject a custom config-apply backend (dataplane wiring / integration tests).
     pub fn with_apply_backend(mut self, factory: crate::revision::BackendFactory) -> Self {
         self.apply_backend = factory;
         self
     }
 
-    /// 注入备份目录（§17.4；生产来自 `[backup] dir`，测试注入临时目录）。
+    /// Inject the backup directory (§17.4; in production from `[backup] dir`, tests
+    /// inject a temporary directory).
     pub fn with_backup_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
         self.backup_dir = dir;
         self
     }
 
-    /// 注入计划隧道 MTU（§7.5；生产来自 `tunnel_mtu`，测试注入以验证诊断分支）。
+    /// Inject the planned tunnel MTU (§7.5; in production from `tunnel_mtu`, tests
+    /// inject one to exercise the diagnostic branches).
     pub fn with_tunnel_mtu(mut self, mtu: Option<u32>) -> Self {
         self.tunnel_mtu = mtu;
         self
     }
 
-    /// 注入服务端 `[dataplane]` 配置（生产来自 `config.dataplane`；测试注入以
-    /// 验证设备计划下发与未配置分支）。
+    /// Inject the server `[dataplane]` config (in production from `config.dataplane`;
+    /// tests inject one to verify device plan delivery and the unconfigured
+    /// branch).
     pub fn with_dataplane(mut self, dataplane: meshlet_config::DataPlaneConfig) -> Self {
         self.dataplane = dataplane;
         self
     }
 
-    /// 注入 SSH 别名分发配置（生产来自 `[ssh_config]`；`None` = hub 未开启）。
+    /// Inject the SSH alias distribution config (in production from `[ssh_config]`;
+    /// `None` = the hub side is not enabled).
     pub fn with_ssh_config(
         mut self,
         ssh_config: Option<meshlet_config::SshDistributeConfig>,
@@ -155,8 +180,9 @@ impl AppState {
         self
     }
 
-    /// 注入可信反代来源（TODO-116；生产来自 `config.trusted_proxies`，测试注入
-    /// 验证「仅可信来源采信头部」安全口径）。
+    /// Inject the trusted reverse-proxy sources (TODO-116; in production from
+    /// `config.trusted_proxies`, tests inject one to verify the "only trusted
+    /// sources get their headers believed" security stance).
     pub fn with_trusted_proxies(
         mut self,
         trusted_proxies: meshlet_config::TrustedProxyConfig,
@@ -165,19 +191,22 @@ impl AppState {
         self
     }
 
-    /// 注入指标注册表（集成测试断言计数用；生产走 `AppState::new` 默认值）。
+    /// Inject the metrics registry (for integration tests to assert counters;
+    /// production uses the `AppState::new` defaults).
     pub fn with_metrics(mut self, metrics: crate::metrics::Metrics) -> Self {
         self.metrics = metrics;
         self
     }
 
-    /// 注入认证阻塞并发上限（生产保持默认，测试验证限并发）。
+    /// Inject the auth blocking concurrency cap (production keeps the default, tests
+    /// verify bounded concurrency).
     pub fn with_auth_blocking_concurrency(mut self, concurrency: usize) -> Self {
         self.auth_blocking = Arc::new(tokio::sync::Semaphore::new(concurrency));
         self
     }
 
-    /// 取某网络的 apply/rollback 串行门；其他网络不被这条配置操作阻塞。
+    /// Get the apply/rollback serialization gate for a network; other networks are
+    /// not blocked by this config operation.
     pub fn revision_lock(&self, network_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut guard = self.revision_locks.lock().unwrap();
         Arc::clone(

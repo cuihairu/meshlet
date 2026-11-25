@@ -1,6 +1,6 @@
-//! 设备自举码（ZeroTier 式自举注册的入口凭据）：签发/列/撤销。
-//! 摘要 + 序列落库（§17.3：重启后 `bt-N` 不重号）；原始自举码不进审计
-//! （§16.5，同邀请 Token 纪律）。
+//! Device bootstrap codes (the entry credential of ZeroTier-style bootstrap registration): issue / list / revoke.
+//! Summary + sequence are persisted (§17.3: `bt-N` does not renumber after a restart); the raw bootstrap code is not audited
+//! (§16.5, the same discipline as the invite Token).
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service;
@@ -27,11 +27,11 @@ pub(crate) async fn create_bootstrap_token_handler(
             .clone();
         (resp, token, guard.bootstrap_seq())
     };
-    // 摘要 + 序列落库（§17.3：重启后自举码继续可用，`bt-N` 不重号）。
+    // Persist the summary + sequence (§17.3: bootstrap codes keep working after a restart, `bt-N` does not renumber).
     crate::persist::save_bootstrap_token(state.auth.pool(), &token, seq)
         .await
         .map_err(crate::persist::internal)?;
-    // 原始自举码不进审计（§16.5，同邀请 Token 纪律）。
+    // The raw bootstrap code is not audited (§16.5, the same discipline as the invite Token).
     crate::audit::record_or_fail(
         &state,
         Some(&user_id.0),

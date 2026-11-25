@@ -1,13 +1,13 @@
-//! 集成测试：P2P 直连候选端点下发（§12 任务书 ①）。
+//! Integration tests: P2P direct-connect candidate endpoint delivery (§12 task book ①).
 //!
-//! 端到端路径：设备心跳携带 `direct`（监听端口 + LAN 地址，agent 自己枚举）→
-//! server 记录观测源地址（连接 socket）+ 上报 → `GET /api/v1/networks/{id}/
-//! peers/endpoints`（Bearer 凭证）返回可直连 peer 列表。断言重点：
-//! - 凭证缺失/伪造 → 401（agent API 认证边界，§13.5）；
-//! - 返回按 device_id 确定性排序、排除自身；
-//! - 同内网观测（源地址为私网）不伪造公网候选（打洞误导防护，域层口径）；
-//! - 公网观测源地址 → 附加公网候选；
-//! - 未上报 `direct` 的设备不在列表（不可直连，避免死载荷）。
+//! End-to-end path: the device heartbeat carries `direct` (listen port + LAN address, self-enumerated by the
+//! agent) → the server records the observed source address (the connection socket) + the report →
+//! `GET /api/v1/networks/{id}/peers/endpoints` (Bearer credential) returns the directly-reachable peer list. Key assertions:
+//! - missing/faked credential → 401 (agent API authentication boundary, §13.5);
+//! - results deterministically sorted by device_id, self excluded;
+//! - same-LAN observation (private source address) fabricates no public candidate (hole-punching misdirection guard, domain-layer rule);
+//! - public observation source address → an extra public candidate is added;
+//! - devices that never reported `direct` are absent from the list (not directly reachable, avoiding dead payload).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -37,7 +37,7 @@ impl meshlet_domain::ConfigApplyBackend for OkBackend {
     }
 }
 
-/// 构建 router（数据面默认关：本端点不依赖数据面开关）。
+/// Build the router (dataplane off by default: this endpoint does not depend on the dataplane switch).
 async fn app() -> Router {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
@@ -87,7 +87,7 @@ async fn admin(
     (res.status(), res_body(res).await)
 }
 
-/// 管理员 GET（`GET /api/v1/networks/{id}/devices` 等只读端点）。
+/// Admin GET (`GET /api/v1/networks/{id}/devices` and other read-only endpoints).
 async fn admin_get(app: &Router, cookie: &str, path: &str) -> serde_json::Value {
     let res = app
         .clone()
@@ -106,7 +106,7 @@ async fn admin_get(app: &Router, cookie: &str, path: &str) -> serde_json::Value 
     res_body(res).await
 }
 
-/// bootstrap → 建网络 → 建邀请 → 首台设备加入。返回 ctx 与首台设备 agent_token。
+/// bootstrap → create network → create invite → first device joins. Returns the ctx and the first device's agent_token.
 async fn bootstrap(name: &str, public_key: &str) -> (Ctx, String) {
     let app = app().await;
     let res = app
@@ -154,7 +154,7 @@ async fn bootstrap(name: &str, public_key: &str) -> (Ctx, String) {
     (ctx, token)
 }
 
-/// 用新邀请再入一台设备（返回 device_id、agent_token）。
+/// Enroll one more device with a fresh invite (returns device_id and agent_token).
 async fn enroll(ctx: &Ctx, name: &str, public_key: &str) -> (String, String) {
     let (st, invite) = admin(
         &ctx.app,
@@ -194,8 +194,8 @@ async fn enroll(ctx: &Ctx, name: &str, public_key: &str) -> (String, String) {
     )
 }
 
-/// `POST /api/v1/agent/heartbeat` 带直连候选（`lan` + `listen_port`），源地址
-/// `src` 模拟 hub 观测到的连接地址。
+/// `POST /api/v1/agent/heartbeat` carrying the direct candidates (`lan` + `listen_port`), with the source
+/// address `src` simulating the connection address the hub observed.
 async fn heartbeat(
     app: &Router,
     token: &str,
@@ -216,7 +216,7 @@ async fn heartbeat(
     .await
 }
 
-/// [heartbeat] + TODO-116 反代头注入（`X-Forwarded-For`/`X-Real-IP`）与链路状态。
+/// [heartbeat] + TODO-116 reverse-proxy header injection (`X-Forwarded-For`/`X-Real-IP`) and link status.
 #[allow(clippy::too_many_arguments)]
 async fn heartbeat_with_headers(
     app: &Router,
@@ -256,7 +256,7 @@ async fn heartbeat_with_headers(
     app.clone().oneshot(req).await.unwrap().status()
 }
 
-/// 同 [heartbeat]，另带 §12.3 链路状态上报（`direct_links`）。
+/// Same as [heartbeat], plus §12.3 link-status reporting (`direct_links`).
 async fn heartbeat_with_links(
     app: &Router,
     token: &str,
@@ -286,7 +286,7 @@ async fn heartbeat_with_links(
     app.clone().oneshot(req).await.unwrap().status()
 }
 
-/// `GET /api/v1/networks/{network_id}/peers/endpoints`（Bearer 凭证）。
+/// `GET /api/v1/networks/{network_id}/peers/endpoints` (Bearer credential).
 async fn peers(
     app: &Router,
     token: Option<&str>,
@@ -321,7 +321,7 @@ async fn peers_endpoints_returns_ordered_peers_excluding_self() {
     let (b_id, b_token) = enroll(&ctx, "peer-b", "pub-peer-b").await;
     let (c_id, c_token) = enroll(&ctx, "peer-c", "pub-peer-c").await;
 
-    // B、C 都上报直连候选（同内网观测：源地址为私网）。
+    // Both B and C report direct candidates (same-LAN observation: private source address).
     assert_eq!(
         heartbeat(
             &ctx.app,
@@ -348,7 +348,7 @@ async fn peers_endpoints_returns_ordered_peers_excluding_self() {
     let (st, body) = peers(&ctx.app, Some(&a_token), &ctx.network_id).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     let arr = body.as_array().unwrap();
-    // 自身被排除，只返回 B、C。
+    // Self is excluded; only B and C are returned.
     assert_eq!(arr.len(), 2, "{body}");
     let ids: Vec<&str> = arr
         .iter()
@@ -357,7 +357,7 @@ async fn peers_endpoints_returns_ordered_peers_excluding_self() {
     let mut sorted = vec![b_id.as_str(), c_id.as_str()];
     sorted.sort();
     assert_eq!(ids, sorted, "deterministic ordering: {body}");
-    // 每项带对端公钥与虚拟 IP。
+    // Every entry carries the peer's public key and virtual IP.
     for p in arr {
         assert!(p["public_key"].as_str().unwrap().len() >= 9, "{body}");
         assert!(
@@ -372,7 +372,7 @@ async fn peers_endpoints_returns_ordered_peers_excluding_self() {
 async fn same_lan_observation_never_fabricates_a_public_candidate() {
     let (ctx, a_token) = bootstrap("edge-same-lan", "pub-edge-same").await;
     let (b_id, b_token) = enroll(&ctx, "peer-same-lan", "pub-peer-same").await;
-    // B 同内网：hub 观测源地址为私网（192.168.1.11）——标成 public 只会误导打洞。
+    // B is same-LAN: the hub's observed source address is private (192.168.1.11) — labeling it public would only mislead hole-punching.
     assert_eq!(
         heartbeat(
             &ctx.app,
@@ -390,7 +390,7 @@ async fn same_lan_observation_never_fabricates_a_public_candidate() {
     assert_eq!(arr.len(), 1, "{body}");
     assert_eq!(arr[0]["device_id"], b_id, "{body}");
     let eps = arr[0]["endpoints"].as_array().unwrap();
-    // 只有 LAN 候选，无 public。
+    // Only LAN candidates, no public.
     assert_eq!(eps.len(), 1, "{body}");
     assert_eq!(eps[0]["ip"], "192.168.1.51");
     assert_eq!(eps[0]["port"], 51820);
@@ -401,7 +401,7 @@ async fn same_lan_observation_never_fabricates_a_public_candidate() {
 async fn public_observation_yields_public_candidate_after_lan() {
     let (ctx, a_token) = bootstrap("edge-pub", "pub-edge-pub").await;
     let (_, b_token) = enroll(&ctx, "peer-pub", "pub-peer-pub").await;
-    // B 公网：hub 观测源地址非私网 → LAN 候选之后附加 public 候选。
+    // B public: the hub's observed source address is non-private → a public candidate is appended after the LAN candidates.
     assert_eq!(
         heartbeat(
             &ctx.app,
@@ -427,7 +427,7 @@ async fn public_observation_yields_public_candidate_after_lan() {
 async fn device_list_exposes_observed_and_public_endpoints() {
     let (ctx, _a_token) = bootstrap("edge-endpoints", "pub-edge-endpoints").await;
     let (b_id, b_token) = enroll(&ctx, "peer-endpoints", "pub-peer-endpoints").await;
-    // B 公网观测：observed 与 public 都是 `观测ip:wg监听端口`（P2P-⑤）。
+    // B public observation: both observed and public are `observed-ip:wg-listen-port` (P2P-⑤).
     assert_eq!(
         heartbeat(
             &ctx.app,
@@ -459,7 +459,7 @@ async fn device_list_exposes_observed_and_public_endpoints() {
 async fn device_list_keeps_observed_endpoint_but_omits_public_when_private() {
     let (ctx, _a_token) = bootstrap("edge-endpoints-priv", "pub-edge-endpoints-priv").await;
     let (b_id, b_token) = enroll(&ctx, "peer-endpoints-priv", "pub-peer-endpoints-priv").await;
-    // B 同内网：observed（原始观测）保留，public 缺（与候选同口径不标公网）。
+    // B same-LAN: observed (the raw observation) is kept, public is absent (same rule as candidates: private stays unlabeled).
     assert_eq!(
         heartbeat(
             &ctx.app,
@@ -491,7 +491,7 @@ async fn device_list_keeps_observed_endpoint_but_omits_public_when_private() {
 async fn device_without_report_is_excluded() {
     let (ctx, a_token) = bootstrap("edge-noreport", "pub-edge-noreport").await;
     let (_, b_token) = enroll(&ctx, "peer-noreport", "pub-peer-noreport").await;
-    // B 已注册但从未上报 direct → 不可直连，从列表排除（避免死载荷）。
+    // B is registered but never reported `direct` → not directly reachable, excluded from the list (avoiding dead payload).
     let _ = b_token;
     let (st, body) = peers(&ctx.app, Some(&a_token), &ctx.network_id).await;
     assert_eq!(st, StatusCode::OK, "{body}");
@@ -506,7 +506,7 @@ async fn peers_endpoints_rejects_wrong_network() {
     assert_eq!(body["error"]["code"], "not_found");
 }
 
-/// `GET /api/v1/agent/device/peers/endpoints`：agent 凭证即身份，无需网络 ID。
+/// `GET /api/v1/agent/device/peers/endpoints`: the agent credential is the identity; no network ID needed.
 async fn agent_peers(app: &Router, token: Option<&str>) -> (StatusCode, serde_json::Value) {
     let mut builder = Request::builder().uri("/api/v1/agent/device/peers/endpoints");
     if let Some(token) = token {
@@ -525,11 +525,11 @@ async fn agent_scoped_endpoints_uses_the_tokens_device_without_a_network_path() 
     let (ctx, a_token) = bootstrap("edge-a", "pub-edge-a").await;
     let (_, b_token) = enroll(&ctx, "peer-b", "pub-peer-b").await;
 
-    // 无凭证 → 401（agent API 认证边界）。
+    // No credential → 401 (agent API authentication boundary).
     let (st, body) = agent_peers(&ctx.app, None).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "{body}");
 
-    // B 上报直连候选；A 用**自己的**凭证拉取，看到 B（A 自身被排除）。
+    // B reports direct candidates; A fetches with **its own** credential and sees B (A itself is excluded).
     assert_eq!(
         heartbeat(
             &ctx.app,
@@ -553,7 +553,7 @@ async fn agent_scoped_endpoints_uses_the_tokens_device_without_a_network_path() 
 #[tokio::test]
 async fn agent_scoped_endpoints_excludes_self_and_unreported() {
     let (ctx, a_token) = bootstrap("edge-a", "pub-edge-a").await;
-    // 仅 A 上报：A 拉取候选时自身被排除 → 空列表（没有其他可直连设备）。
+    // Only A reports: when A fetches its candidates it excludes itself → an empty list (no other directly reachable device).
     assert_eq!(
         heartbeat(
             &ctx.app,
@@ -576,8 +576,8 @@ async fn heartbeat_link_statuses_surface_in_the_devices_view() {
     let (b_id, _) = enroll(&ctx, "peer-links-b", "pub-peer-links-b").await;
     let (c_id, _) = enroll(&ctx, "peer-links-c", "pub-peer-links-c").await;
 
-    // A 心跳携带候选 + §12.3 链路状态：对 B 直连已建立（握手 12s 前，健康），
-    // 对 C 建立中（pending，尚无读数）。
+    // A's heartbeat carries candidates + §12.3 link status: direct connection to B is established
+    // (handshake 12s ago, healthy), for C it is still in progress (pending, no reading yet).
     let links = serde_json::json!([
         {
             "public_key": "pub-peer-links-b",
@@ -605,7 +605,7 @@ async fn heartbeat_link_statuses_surface_in_the_devices_view() {
         StatusCode::OK
     );
 
-    // 控制台读设备列表：A 行的 direct_links 原样可见（供 UI 展示 P2P/中继）。
+    // Console reads the device list: A's direct_links row is visible as-is (for the UI's P2P/relay display).
     let devices = admin_get(
         &ctx.app,
         &ctx.cookie,
@@ -623,7 +623,7 @@ async fn heartbeat_link_statuses_surface_in_the_devices_view() {
     assert_eq!(links_view[1]["public_key"], "pub-peer-links-c", "{devices}");
     assert_eq!(links_view[1]["link_state"], "direct_pending", "{devices}");
 
-    // 未上报链路的设备：direct_links 为空数组（UI 默认按「中继」呈现）。
+    // Devices that never reported link status: direct_links is an empty array (the UI defaults to rendering "relay").
     for id in [&b_id, &c_id] {
         let row = arr.iter().find(|d| d["id"] == id.as_str()).unwrap();
         assert_eq!(
@@ -635,10 +635,10 @@ async fn heartbeat_link_statuses_surface_in_the_devices_view() {
 }
 
 // ---------------------------------------------------------------------------
-// TODO-116：可信反代头解析三态（安全口径：仅可信代理来源采信头部）。
+// TODO-116: three-state parsing of trusted reverse-proxy headers (security rule: only trusted proxy sources' headers are honored).
 // ---------------------------------------------------------------------------
 
-/// 取设备行（管理端设备列表）中 B 设备的 observed/public endpoint。
+/// Fetch B device's observed/public endpoint from the device row (admin-side device list).
 async fn endpoint_of_device(
     app: &Router,
     cookie: &str,
@@ -666,9 +666,9 @@ async fn endpoint_of_device(
 async fn trusted_proxy_forwarded_for_is_honored() {
     let (ctx, _a_token) = bootstrap("edge-trust-xff", "pub-edge-trust-xff").await;
     let (b_id, b_token) = enroll(&ctx, "peer-trust-xff", "pub-peer-trust-xff").await;
-    // 请求直接来自可信反代（默认可信集合 = 回环 127.0.0.1/::1）。
-    // X-Forwarded-For = 「客户端, 代理」；最右是可信代理（127.0.0.1）被跳过，
-    // 取最右侧非可信地址 203.0.113.7 = 真实客户端 → 公网候选。
+    // The request comes directly from a trusted reverse proxy (default trusted set = loopback 127.0.0.1/::1).
+    // X-Forwarded-For = "client, proxy"; the rightmost entry is the trusted proxy (127.0.0.1) and is skipped,
+    // the rightmost non-trusted address 203.0.113.7 = the real client → public candidate.
     assert_eq!(
         heartbeat_with_headers(
             &ctx.app,
@@ -693,7 +693,7 @@ async fn trusted_proxy_forwarded_for_is_honored() {
 async fn trusted_proxy_real_ip_fallback_when_no_forwarded_for() {
     let (ctx, _a_token) = bootstrap("edge-trust-xri", "pub-edge-trust-xri").await;
     let (b_id, b_token) = enroll(&ctx, "peer-trust-xri", "pub-peer-trust-xri").await;
-    // X-Forwarded-For 缺失时回落 X-Real-IP（仅可信来源）。
+    // Falls back to X-Real-IP when X-Forwarded-For is missing (trusted sources only).
     assert_eq!(
         heartbeat_with_headers(
             &ctx.app,
@@ -718,9 +718,9 @@ async fn trusted_proxy_real_ip_fallback_when_no_forwarded_for() {
 async fn untrusted_source_ignores_forwarded_headers() {
     let (ctx, _a_token) = bootstrap("edge-untrusted", "pub-edge-untrusted").await;
     let (b_id, b_token) = enroll(&ctx, "peer-untrusted", "pub-peer-untrusted").await;
-    // 请求直接来自**不可信**来源（192.168.1.11 不在默认可信回环集合）：
-    // 即使带 X-Forwarded-For 伪造公网地址，也必须完全忽略头部 → 观测回落到
-    // socket 私网地址，不伪造公网候选。
+    // The request comes directly from an **untrusted** source (192.168.1.11 is not in the default trusted
+    // loopback set): even with X-Forwarded-For faking a public address, the header must be fully ignored →
+    // the observation falls back to the socket's private address, fabricating no public candidate.
     assert_eq!(
         heartbeat_with_headers(
             &ctx.app,
@@ -745,7 +745,7 @@ async fn untrusted_source_ignores_forwarded_headers() {
 async fn no_forwarded_header_falls_back_to_socket() {
     let (ctx, _a_token) = bootstrap("edge-no-headers", "pub-edge-no-headers").await;
     let (b_id, b_token) = enroll(&ctx, "peer-no-headers", "pub-peer-no-headers").await;
-    // 可信来源但无任何反代头：回落 socket（127.0.0.1 回环；不是公网候选）。
+    // Trusted source but no reverse-proxy headers at all: falls back to the socket (127.0.0.1 loopback; not a public candidate).
     assert_eq!(
         heartbeat_with_headers(
             &ctx.app,

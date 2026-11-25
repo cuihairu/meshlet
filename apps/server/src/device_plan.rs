@@ -1,16 +1,24 @@
-//! 设备数据面计划（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
+//! Device data-plane plan
+//! ([ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)).
 //!
-//! agent 只消费 [`meshlet_network::DevicePlan`]——**结构化配置对象**（§16.4）：
-//! 类型化的隧道/路由/NAT 计划 + 期望配置哈希，agent 据此对账并重放本地网络
-//! 后端。**服务端不向 agent 下发任何 Shell 命令**，agent 绝不执行下发的脚本。
+//! The agent consumes only [`meshlet_network::DevicePlan`] -- a **structured
+//! configuration object** (§16.4): a typed tunnel/route/NAT plan plus the
+//! desired-config hash; the agent reconciles against it and replays the local
+//! network backend. **The server never sends the agent any Shell command**,
+//! and the agent never executes a delivered script.
 //!
-//! - 隧道：本设备虚拟 IP + 到 hub 的单一 peer（AllowedIPs 与目标路由一致，
-//!   §7.2；自己发布的本地网段不回灌隧道，避免环路）；
-//! - 路由：他人已发布的 LAN/Alias 前缀经对应网关设备虚拟 IP；
-//! - NAT：本设备作为网关时应下发的规则（计划层渲染，所有权注释
-//!   `meshlet alias {id}`；映射删除即整单元清理，§12.6）；
-//! - 私钥不离开设备（ADR-010）：计划 `tunnel.private_key` 恒为 `None`，
-//!   agent 本地注入；hub 公钥由 `[dataplane] private_key_file` 现算（不落库）。
+//! - tunnel: this device's virtual IP + a single peer towards the hub
+//!   (AllowedIPs consistent with the destination routes, §7.2; locally
+//!   published LAN prefixes are not fed back into the tunnel, to avoid loops);
+//! - routes: LAN/Alias prefixes published by others via the corresponding
+//!   gateway device's virtual IP;
+//! - NAT: the rules to deliver when this device acts as a gateway (rendered
+//!   at the plan layer, with the ownership annotation `meshlet alias {id}`;
+//!   deleting a mapping cleans up the whole unit, §12.6);
+//! - the private key never leaves the device (ADR-010): the plan's
+//!   `tunnel.private_key` is always `None`, injected locally by the agent; the
+//!   hub public key is derived on the fly from `[dataplane] private_key_file`
+//!   (never persisted).
 
 use meshlet_config::DataPlaneConfig;
 use meshlet_domain::{
@@ -58,8 +66,9 @@ fn route_visible(
         })
 }
 
-/// hub 公钥：apply 时从 `[dataplane] private_key_file` 读取并经 `wg pubkey` 推导
-/// （不落库、不出站——ADR-010）。hub 侧首装必须配置该文件。
+/// Hub public key: read from `[dataplane] private_key_file` at apply time and
+/// derived via `wg pubkey` (never persisted, never sent out -- ADR-010). The
+/// hub's first installation must configure that file.
 pub fn hub_public_key(dataplane: &DataPlaneConfig) -> Result<String, String> {
     let path = dataplane
         .private_key_file
@@ -81,11 +90,14 @@ pub fn hub_public_key(dataplane: &DataPlaneConfig) -> Result<String, String> {
         .map_err(|e| format!("derive hub public key from private_key_file {path}: {e}"))
 }
 
-/// 把指定设备的期望配置翻译为 agent 可执行的数据面计划。
+/// Translate the desired configuration of a given device into the data-plane
+/// plan the agent can execute.
 ///
-/// 计划与 hub 侧计划共用同一推导源（§7.2 的 AllowedIPs 规则、§9.4 的网关侧
-/// NAT），因此两端不会漂移；`desired_config_hash` 与修订簿记用同一哈希，agent
-/// 可用它判断「有变更才重放」（§10.1）。
+/// The plan shares the same derivation source as the hub-side plan (§7.2's
+/// AllowedIPs rule, §9.4's gateway-side NAT), so the two sides cannot drift;
+/// `desired_config_hash` uses the same hash as the revision bookkeeping, and
+/// the agent can use it to decide "only replay when there is a change"
+/// (§10.1).
 pub fn build_device_plan(
     mesh: &MeshState,
     network_id: &str,
@@ -127,8 +139,10 @@ pub fn build_device_plan(
     planned_aliases.retain(|alias| route_ids.contains(&alias.lan_route_id));
     let routes_in = planned_routes.as_slice();
     let aliases = planned_aliases.as_slice();
-    // AllowedIPs 走域层唯一推导：Overlay + 他人已发布的 LAN/Alias（自己的本地
-    // 网段不回灌，避免环路）。路由与之一一映射：目标前缀经对应网关设备。
+    // AllowedIPs come from the single derivation at the domain layer: Overlay +
+    // LAN/Alias published by others (one's own local prefixes are not fed back,
+    // to avoid loops). Routes map one-to-one onto them: destination prefix via
+    // the corresponding gateway device.
     let allowed_ips =
         client_hub_peer_allowed_ips(source_segment.cidr, &device.id, routes_in, aliases);
     let mut routes = Vec::new();
@@ -156,7 +170,8 @@ pub fn build_device_plan(
         }
     }
 
-    // 本设备作为网关时的 NAT：Alias 模式按映射渲染；Direct 走真实 LAN，无需转换。
+    // NAT when this device acts as a gateway: Alias mode renders per mapping;
+    // Direct runs on the real LAN and needs no translation.
     let mut nat_rules = Vec::new();
     for route in routes_in {
         if route.gateway_device_id != device.id || route.status != DesiredStateStatus::Applied {
@@ -184,9 +199,11 @@ pub fn build_device_plan(
 
     for rule in &mut nat_rules {
         rule.source_cidr = Some(overlay);
-        // `-i` 只对 PREROUTING 生效（`NatRule::iptables_args` 同一口径）：
-        // 给 POSTROUTING 规则塞接口是惰性元数据，会渲染不出、也让指纹口径
-        // 在计划侧与内核侧之间对不上。
+        // `-i` only takes effect on PREROUTING (same criterion as
+        // `NatRule::iptables_args`): stuffing an interface onto a POSTROUTING
+        // rule is inert metadata -- it renders nothing, and it also makes the
+        // fingerprint criterion disagree between the plan side and the kernel
+        // side.
         if rule.chain == meshlet_network::nat::NatChain::Prerouting {
             rule.incoming_interface = Some(dataplane.interface.clone());
         }
@@ -226,8 +243,10 @@ pub fn build_device_plan(
             peers: vec![PeerConfig {
                 public_key: hub_public_key.to_string(),
                 allowed_ips,
-                // hub 入口地址由 agent 本地配置（`[dataplane] hub_endpoint`）提供；
-                // 服务端未配置 advertise_ip 时留空，agent 自行兜底。
+                // The hub entry address comes from the agent's local configuration
+                // (`[dataplane] hub_endpoint`); leave it empty when the server
+                // has not configured advertise_ip, and the agent falls back on
+                // its own.
                 endpoint: None,
                 persistent_keepalive_secs: Some(25),
             }],
@@ -236,10 +255,13 @@ pub fn build_device_plan(
         },
         routes,
         nat_rules,
-        // hub overlay 地址只作 agent 本地诊断目标（MTU 大包探测），不进内核。
+        // The hub's overlay address only serves as a local diagnostic target for the
+        // agent (MTU large-packet probing); it never enters the kernel.
         hub_address: Some(hub),
-        // 服务发布计划（R-06）：控制面 catalog 按本设备过滤后的期望发布态
-        // （`None` = 本设备无发布项）；计划层校验失败时整个计划构建失败可见。
+        // Service publication plan (R-06): the desired publication state of the
+        // control-plane catalog filtered to this device (`None` = this device
+        // has no publications); a plan-layer validation failure makes the whole
+        // plan build visibly fail.
         publish: crate::publish::device_publish_plan(mesh, network_id, &device_id.to_string())?,
         ssh_config: ssh_config_plan(mesh, network_id, ssh_distribute),
         desired_config_hash: String::new(),
@@ -254,10 +276,14 @@ pub fn build_device_plan(
     Ok(plan)
 }
 
-/// SSH alias 分发段（hub 显式开启才下发）：网络内全部 Active 节点的别名表。
-/// alias 三级解析共用 [`meshlet_network::ssh_alias::resolve_alias`]：hub 显式
-/// 覆写 > 节点真实主机名（心跳上报的内存态）> peer name。`None` 配置 = hub
-/// 未开启分发 → 计划不带该段（序列化也省略，旧计划哈希不变）。
+/// SSH alias distribution segment (delivered only when the hub explicitly
+/// turns it on): the alias table of every Active node in the network.
+/// Three-tier alias resolution, shared with
+/// [`meshlet_network::ssh_alias::resolve_alias`]: explicit hub override > the
+/// node's real hostname (in-memory state reported by heartbeats) > peer name.
+/// A `None` config = the hub has not enabled distribution -> the plan carries
+/// no such segment (it is omitted from serialization too, leaving the old
+/// plan hash unchanged).
 fn ssh_config_plan(
     mesh: &MeshState,
     network_id: &str,
@@ -285,7 +311,8 @@ fn ssh_config_plan(
             alias_source: Some(source.to_string()),
         });
     }
-    // 设备名序：fragment 确定性（同一网络任意顺序恢复，计划哈希一致）。
+    // Device-name order: fragment determinism (restoring the same network in any
+    // order yields the same plan hash).
     hosts.sort_by(|a, b| a.name.cmp(&b.name));
     Some(meshlet_network::SshConfigPlan { hosts })
 }
@@ -498,11 +525,12 @@ mod tests {
             "10.240.0.3".parse::<Ipv4Addr>().unwrap()
         );
         assert_eq!(plan.tunnel.address_prefix, 16);
-        assert_eq!(plan.tunnel.private_key, None); // 服务端永不携带私钥
+        assert_eq!(plan.tunnel.private_key, None); // the server never carries a private key
         assert_eq!(plan.tunnel.peers.len(), 1);
         assert_eq!(plan.tunnel.peers[0].public_key, "hub-pub");
 
-        // AllowedIPs = Overlay + 他人 LAN；自己发布的本地网段不回灌（§7.2）。
+        // AllowedIPs = Overlay + other devices' LANs; locally published prefixes
+        // are not fed back (§7.2).
         let allowed = plan.tunnel.peers[0]
             .allowed_ips
             .iter()
@@ -547,8 +575,8 @@ mod tests {
         )
         .unwrap();
 
-        // 本设备发布的 192.168.1.0/24 不进自己的 AllowedIPs（避免环路），
-        // 但他人发布的 192.168.2.0/24 进。
+        // The 192.168.1.0/24 this device publishes does not enter its own AllowedIPs
+        // (to avoid loops), but the 192.168.2.0/24 published by others does.
         let allowed = plan.tunnel.peers[0]
             .allowed_ips
             .iter()
@@ -558,7 +586,7 @@ mod tests {
         assert_eq!(plan.routes.len(), 1);
         assert_eq!(plan.routes[0].destination.to_string(), "192.168.2.0/24");
 
-        // DNAT + 受控 SNAT 两条，带所有权注释（§12.6）。
+        // Two rules, DNAT + controlled SNAT, with the ownership annotation (§12.6).
         assert_eq!(plan.nat_rules.len(), 2);
         assert!(plan
             .nat_rules
@@ -728,7 +756,8 @@ mod tests {
         assert_eq!(gw_row.alias, "My-Host");
         assert_eq!(gw_row.alias_source.as_deref(), Some("hostname"));
 
-        // 无 hostname 上报：peer name 兜底，来源如实标注。
+        // No hostname reported: fall back to the peer name, with the source labeled
+        // honestly.
         let mut mesh2 = mesh();
         add(
             &mut mesh2,
@@ -781,7 +810,8 @@ mod tests {
 
     #[test]
     fn hub_public_key_derives_from_a_real_private_key() {
-        // 真跑 `wg pubkey`（与本后端 apply 路径同一推导方式，ADR-010 不落库）。
+        // Actually run `wg pubkey` (the same derivation as this backend's apply
+        // path; ADR-010 means it is never persisted).
         if !wg_available() {
             return;
         }

@@ -1,4 +1,4 @@
-//! host-forward（域名→LAN 路由别名）端点：建/列/删；冲突计数与路由同口径。
+//! host-forward (domain -> LAN route alias) endpoints: create / list / delete; conflict counting follows the same rules as routes.
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::record_route_conflict;

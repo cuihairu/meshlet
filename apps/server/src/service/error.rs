@@ -17,24 +17,24 @@ pub enum ServiceError {
     RouteNotFound(String),
     #[error("alias {0} not found")]
     AliasNotFound(String),
-    /// 发布对象（PortForward / HTTP 路由 / 探针 / DNS 记录）不存在（R-06）。
+    /// The publishing object (PortForward / HTTP route / probe / DNS record) does not exist (R-06).
     #[error("publish object {0} not found")]
     PublishNotFound(String),
     #[error("segment {0} not found")]
     SegmentNotFound(String),
     #[error("segment grant {0} not found")]
     SegmentGrantNotFound(String),
-    /// 任务不存在（MT-003 确认/驳回/列取的资源缺失）。
+    /// The task does not exist (a resource missing from MT-003 confirm/reject/list).
     #[error("task {0} not found")]
     TaskNotFound(String),
-    /// 诊断从未运行过（§12.7：GET 返回最近一次运行，没有就是没有，不现算
-    /// 也不假称有）。消息点名 POST 触发方式。
+    /// Diagnostics have never run (§12.7: GET returns the most recent run; if there is none, there is none — nothing
+    /// is computed on the fly and nothing is claimed). The message names the POST trigger.
     #[error("{0}")]
     DiagnosticsNotRun(String),
     #[error("invalid invite token")]
     InvalidInviteToken,
-    /// 设备出示的自举码无效/已撤销/已耗尽（401：凭据问题，非资源缺失——
-    /// 管理侧按 id 撤销时才走 `BootstrapTokenNotFound` 404）。
+    /// The bootstrap code presented by the device is invalid/revoked/exhausted (401: a credential problem, not a missing resource —
+    /// the admin-side revoke-by-id path is what returns `BootstrapTokenNotFound` 404).
     #[error("invalid bootstrap token")]
     InvalidBootstrapToken,
     #[error("bootstrap token {0} not found")]
@@ -45,9 +45,9 @@ pub enum ServiceError {
     InvalidInput(String),
     #[error("{0}")]
     Conflict(String),
-    /// 路由冲突（§17.2「路由冲突数」指标口径）：仅「目的网段与 overlay 或
-    /// 既有 LAN 路由重叠」时使用——与设备未激活等其它 409 区分，保证指标
-    /// 不把非冲突的拒绝计进来。
+    /// Route conflict (the §17.2 "route conflict count" metric definition): used only when "the destination
+    /// segment overlaps the overlay or an existing LAN route" — kept distinct from other 409s such as an inactive device, so the metric
+    /// does not count non-conflict rejections.
     #[error("{0}")]
     RouteConflict(String),
     #[error("{0}")]
@@ -55,7 +55,7 @@ pub enum ServiceError {
 }
 
 impl ServiceError {
-    /// 转为统一错误响应（结构见 docs/architecture/api-contract.md）。
+    /// Convert into the unified error response (structure: docs/architecture/api-contract.md).
     pub fn into_response(self) -> ErrorResponse {
         match self {
             ServiceError::NetworkNotFound(_)
@@ -108,8 +108,8 @@ impl From<RegistryError> for ServiceError {
 }
 
 impl ServiceError {
-    /// 版本簿记错误 → API 错误（未知修订 404；非法跃迁与被取代的回滚 409，
-    /// §10.4 乐观并发）。
+    /// Version-ledger error -> API error (unknown revision 404; illegal transition and superseded rollback 409,
+    /// §10.4 optimistic concurrency).
     pub fn from_ledger(e: meshlet_domain::LedgerError) -> Self {
         match e {
             meshlet_domain::LedgerError::RevisionNotFound {

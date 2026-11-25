@@ -5,9 +5,9 @@ use super::single_instance_support::*;
 use axum::http::StatusCode;
 use serde_json::{json, Value};
 
-/// 场景 7：撤销一台在线设备后，它手里的旧计划重试不能重新获授权。三层都验：
-/// 凭证边界（token 立即失效）、修订/哈希边界（旧回执满足不了新修订）、
-/// 「再改一轮配置也不重授」；存活设备不受牵连。
+/// Scenario 7: after revoking an online device, its old plan on retry must not regain authorization. Three layers are
+/// verified: the credential boundary (the token is invalidated immediately), the revision/hash boundary (an old receipt
+/// cannot satisfy a new revision), and "yet another config change does not re-admit either"; a surviving device is untouched.
 #[tokio::test(flavor = "multi_thread")]
 async fn revoked_device_cannot_reauthorize_its_stale_plan() {
     let Some(sandbox) = setup() else {
@@ -15,7 +15,7 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
     };
     let boot = boot_network(&sandbox, "revoke-key.key").await;
 
-    // hub 上记住的 peer 身份（peer 列表是 CSV，按字符串比对公钥）。
+    // The peer identity remembered on the hub (the peer list is CSV; compare public keys as strings).
     let peers_of = |sandbox: &Sandbox| -> String {
         String::from_utf8_lossy(&ns(&sandbox.names[0], &["wg", "show", "wg0", "peers"]).stdout)
             .to_string()
@@ -28,8 +28,8 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
     );
     assert!(peers_of(&sandbox).contains(&live_key));
 
-    // 撤销前拿到的旧计划（peer 只有 hub：设备之间不互连，所以「重授」只能
-    // 从 hub 侧的 peer 列表验证——上面的内核证据就是那条基准）。
+    // The old plan fetched before the revoke (its only peer is the hub: devices are not interconnected with each other,
+    // so "re-admission" can only be verified from the hub's peer list — the kernel evidence above is that baseline).
     let stale = desired_plan(&boot.app, &boot.tokens[0]).await;
     assert_eq!(stale.tunnel.peers.len(), 1);
     assert_eq!(
@@ -66,8 +66,8 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
         .unwrap();
     assert!(latest_revision > stale.desired_revision, "{revisions}");
 
-    // 1) 凭证边界：同一个 token 立即失效——取不到计划，也交不进回执，
-    // 无论回执里写的是旧修订号还是当前修订号。
+    // 1) Credential boundary: the same token is invalidated immediately — no plan can be fetched and no receipt can be
+    // submitted, whether the receipt carries the old revision number or the current one.
     assert_eq!(
         request(
             &boot.app,
@@ -94,8 +94,8 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     }
 
-    // 2) 修订 / 哈希边界：换成存活设备的合法凭证，旧计划同样满足不了新修订
-    // ——旧修订号是「过期回执」，当前修订号配旧哈希是「哈希不符」。
+    // 2) Revision/hash boundary: with a valid credential from the surviving device, the old plan still cannot satisfy the new
+    // revision — the old revision number is a "stale receipt", and the current revision number with the old hash is a "hash mismatch".
     for revision in [stale.desired_revision, latest_revision] {
         let (status, body) = request(
             &boot.app,
@@ -109,7 +109,7 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     }
 
-    // 3) 存活设备的计划已不含被撤销 peer，期望哈希也变了。
+    // 3) The surviving device's plan no longer contains the revoked peer, and the desired hash changed too.
     let live = desired_plan(&boot.app, &boot.tokens[1]).await;
     assert_ne!(
         live.desired_config_hash, stale.desired_config_hash,
@@ -123,7 +123,7 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
         "the revoked peer must not be in the live device's plan"
     );
 
-    // 4) 内核侧已移除，且「再改一轮配置」也不会把它带回来。
+    // 4) Gone from the kernel side, and yet another config change does not bring it back either.
     assert!(
         !peers_of(&sandbox).contains(&revoked_key),
         "hub must drop the revoked peer"
@@ -149,8 +149,8 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
         "the revoked device must stay unreachable"
     );
 
-    // 存活设备必须毫发无损：hub 侧仍有它的握手与流量计数（peer 行的尾部
-    // 四列是 handshake / received / sent / keepalive）。
+    // The surviving device must be unharmed: the hub side still has its handshake and traffic counters (the trailing
+    // four peer-row columns are handshake / received / sent / keepalive).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let (live_handshaking, dump) = loop {
         let dump =
@@ -180,9 +180,9 @@ async fn revoked_device_cannot_reauthorize_its_stale_plan() {
     );
 }
 
-/// M4：回滚/重试不得重授已撤销权限。安全语义优先于机械恢复——撤销后诱导
-/// 一次失败应用再回滚，恢复出的 last_good_plan 必须先过当前授权快照，
-/// 被撤销设备的访问不得重新打开，恢复日志也不得再记它。
+/// M4: rollback/retry must not re-grant revoked rights. Security semantics outrank mechanical recovery — after revoking,
+/// induce a failed apply and then roll back: the restored last_good_plan must first pass through the current authorization
+/// snapshot, the revoked device's access must not reopen, and the recovery journal must not record it again.
 #[tokio::test]
 async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
     let Some(sandbox) = setup() else {
@@ -190,7 +190,7 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
     };
     let boot = boot_network(&sandbox, "revoke-rollback.key").await;
 
-    // hub 上记住的 peer 身份（peer 列表是 CSV，按字符串比对公钥）。
+    // The peer identity remembered on the hub (the peer list is CSV; compare public keys as strings).
     let peers_of = |sandbox: &Sandbox| -> String {
         String::from_utf8_lossy(&ns(&sandbox.names[0], &["wg", "show", "wg0", "peers"]).stdout)
             .to_string()
@@ -203,7 +203,7 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
     );
     assert!(peers_of(&sandbox).contains(&live_key));
 
-    // 外来路由占住目的段，后续 apply 的路由步必失败——失败应用可控。
+    // A foreign route occupies the destination segment, so the route step of the next apply must fail — a controllable failed apply.
     net(
         &sandbox.names[0],
         &["ip", "route", "add", "192.168.99.0/24", "dev", "lo"],
@@ -222,8 +222,8 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
     .await;
     let failed_route = apply(&boot.app, &boot.cookie, &boot.network).await;
     assert_eq!(failed_route["apply_status"], "failed", "{failed_route}");
-    // 失败修订不更新恢复日志：日志里还是最初那份已确认计划，含被撤销设备的
-    // peer——这正是回滚必须过滤的原因。
+    // A failed revision does not update the recovery journal: it still holds the original confirmed plan, including the
+    // revoked device's peer — which is exactly why the rollback must filter it out.
     assert!(
         journal_plan(&boot.pool, &boot.network)
             .await
@@ -232,8 +232,8 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
         "the journal still holds the last confirmed plan after a failed apply"
     );
 
-    // 撤销优先于机械恢复：同一坏路由仍在，撤销修订的 apply 依然失败，但
-    // 隧道步已经把被撤销设备移出 hub。
+    // Revocation outranks mechanical recovery: the same bad route is still there, so the revoke revision's apply still fails,
+    // but the tunnel step has already removed the revoked device from the hub.
     let revoked = admin(
         &boot.app,
         &boot.cookie,
@@ -257,8 +257,8 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
         "the revoked device must be unreachable"
     );
 
-    // 回滚失败修订 → 机械上该恢复上一份已确认计划（含被撤销设备）；授权快照
-    // 必须先行，被撤销设备不得随 last_good_plan 复活。
+    // Rolling back a failed revision -> mechanically, the previous confirmed plan (including the revoked device) should be
+    // restored; the authorization snapshot must be checked first, so the revoked device must not come back with the last_good_plan.
     let rolled = admin(
         &boot.app,
         &boot.cookie,
@@ -279,7 +279,7 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
         !ping(&sandbox.names[2], "10.240.0.2"),
         "rollback must not reopen access for the revoked device"
     );
-    // 网关侧 LAN 路由随回滚回落到上一份计划（那份计划里没有它），alias 无孤儿。
+    // The gateway-side LAN route falls back to the previous plan with the rollback (the plan did not have it), and the alias has no orphans.
     let (_, routes) = request(
         &boot.app,
         "GET",
@@ -291,8 +291,8 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
     .await;
     assert!(routes.as_array().unwrap().is_empty(), "{routes}");
 
-    // 恢复日志（持久化的 hub 部署）已按授权快照过滤：不含被撤销设备的 peer，
-    // 也没有指向已撤销网关的路由。
+    // The recovery journal (persisted hub deployment) has been filtered by the authorization snapshot: no peer of the
+    // revoked device, and no route pointing at the revoked gateway.
     let journal = journal_plan(&boot.pool, &boot.network).await;
     let peers: Vec<&Value> = journal["hub"]["tunnel"]["peers"]
         .as_array()
@@ -320,8 +320,8 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
         "{journal}"
     );
 
-    // 存活设备不受牵连：hub 侧握手与流量计数持续累加（peer 行尾部四列是
-    // handshake / received / sent / keepalive）。
+    // The surviving device is unaffected: hub-side handshake and traffic counters keep increasing (the trailing four
+    // peer-row columns are handshake / received / sent / keepalive).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let (live_handshaking, dump) = loop {
         let dump =
@@ -350,7 +350,7 @@ async fn rolling_back_a_failed_revoke_does_not_reopen_access() {
         "the surviving device must keep handshaking: {dump}"
     );
 
-    // 重启恢复：日志里没有被撤销设备，恢复路径因此不会把它带回来。
+    // Restart recovery: the journal has no record of the revoked device, so the recovery path cannot bring it back.
     let loaded = meshlet_server::persist::load(&boot.pool, Default::default())
         .await
         .unwrap();

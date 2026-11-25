@@ -1,7 +1,7 @@
-//! 任务通道组合模块：契约记录、派发状态机、超时回收与 HTTP 路由。
+//! Task channel composite module: contract records, dispatch state machine, timeout reclamation, and HTTP routes.
 //!
-//! 幂等语义和安全边界在实现模块内保留；对外仍沿用原有 `task::*`
-//! 符号，避免影响 server/agent 路由和集成测试调用方。
+//! Idempotency semantics and safety boundaries are kept inside the implementation modules; the public API still uses the original `task::*`
+//! symbols so that server/agent routing and integration-test callers are unaffected.
 pub(crate) mod dispatch;
 pub(crate) mod models;
 pub(crate) mod recovery;

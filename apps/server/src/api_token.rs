@@ -1,18 +1,23 @@
-//! 外部机器凭据：API Token（2026-10-14 用户需求）。
+//! External machine credential: API Token (2026-10-14 user request).
 //!
-//! - **长期凭证**：外部系统（如 cockpit）经 `Authorization: Bearer mlt_…`
-//!   调用管理 API，与浏览器 Cookie 会话并存（`AuthenticatedUser` 两种凭证
-//!   皆可；写端点走 `WriteUser`，见 auth.rs）；
-//! - **同一 Token 纪律**（§11.3）：服务端只存 SHA-256 摘要，原始 Token
-//!   仅在创建响应中出现一次；`mlt_` 前缀使其与 agent token / 邀请 token
-//!   在日志与泄漏排查中可一眼区分；
-//! - **最小权限**：`read` / `write` 两级 scope（write 隐含 read）；会话恒有
-//!   全部权限；
-//! - **可撤销 + 审计归属**：token 归属创建它的 `user_id`，`last_used_at`
-//!   节流记录使用时刻；撤销即失效；
-//! - **CSRF 防线不削弱**：Cookie 认证的写请求仍必须携带 `X-Requested-With`。
-//!   Bearer Token 不是浏览器会自动附带的凭据（跨站请求无法伪造），但为保持
-//!   「管理端写请求必须带 CSRF 头」的统一语义，对 token 调用方同样要求。
+//! - **Long-lived credential**: external systems (e.g. cockpit) call the
+//!   management API with `Authorization: Bearer mlt_...`, alongside browser
+//!   Cookie sessions (`AuthenticatedUser` accepts either credential; write
+//!   endpoints go through `WriteUser`, see auth.rs);
+//! - **same-token discipline** (§11.3): the server stores only the SHA-256
+//!   digest; the raw token appears exactly once, in the creation response;
+//!   the `mlt_` prefix makes it instantly distinguishable from agent tokens /
+//!   invite tokens in logs and leak investigations;
+//! - **least privilege**: two scope tiers, `read` / `write` (write implies
+//!   read); sessions always hold every permission;
+//! - **revocable + attributable in the audit trail**: a token belongs to the
+//!   `user_id` that created it, `last_used_at` records usage time in a
+//!   throttled fashion; revocation takes effect immediately;
+//! - **the CSRF defence is not weakened**: Cookie-authenticated write requests
+//!   must still carry `X-Requested-With`. A Bearer token is not a credential
+//!   a browser attaches automatically (cross-site requests cannot forge one),
+//!   but to keep the uniform meaning that "management-side write requests must
+//!   carry the CSRF header", the same requirement applies to token callers.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -25,17 +30,19 @@ use sqlx::SqlitePool;
 use crate::auth::{AuthApiError, AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service;
 
-/// API Token 原始形态前缀：`mlt_` + 64 hex（32 字节随机材料）。
+/// Raw form prefix of an API Token: `mlt_` + 64 hex (32 bytes of random
+/// material).
 pub const API_TOKEN_PREFIX: &str = "mlt_";
 
-/// `last_used_at` 刷新节流：审计归属可观测，又不给每个读请求加一次写放大。
+/// Throttle for refreshing `last_used_at`: keeps audit attribution observable
+/// without adding one write amplification per read request.
 const LAST_USED_REFRESH_SECS: i64 = 60;
 
 // ---------------------------------------------------------------------------
 // Scope
 // ---------------------------------------------------------------------------
 
-/// Token 权限范围：`read`（只读）或 `write`（读写）。
+/// Permission scope of a token: `read` (read-only) or `write` (read + write).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenScope {
     Read,
@@ -58,7 +65,7 @@ impl TokenScope {
         }
     }
 
-    /// `write` 隐含 `read`。
+    /// `write` implies `read`.
     pub fn allows(self, needed: Self) -> bool {
         matches!(
             (self, needed),
@@ -70,10 +77,10 @@ impl TokenScope {
 }
 
 // ---------------------------------------------------------------------------
-// 存储
+// Storage
 // ---------------------------------------------------------------------------
 
-/// 一条 API Token 记录（摘要之外不落地任何 Token 材料）。
+/// An API Token record (no token material is persisted beyond the digest).
 #[derive(Debug, Clone)]
 pub struct ApiTokenRecord {
     pub id: String,
@@ -86,7 +93,7 @@ pub struct ApiTokenRecord {
     pub revoked_at: Option<Timestamp>,
 }
 
-/// API Token 存储（SQLite，migration 004）。
+/// API Token storage (SQLite, migration 004).
 #[derive(Clone)]
 pub struct ApiTokenStore {
     pool: SqlitePool,
@@ -97,7 +104,8 @@ impl ApiTokenStore {
         Self { pool }
     }
 
-    /// 签发：返回 (`raw_token`, 记录)。原始 Token 只在此出现一次。
+    /// Issue: returns (`raw_token`, record). The raw token appears only here,
+    /// once.
     pub async fn issue(
         &self,
         user_id: &UserId,
@@ -132,7 +140,7 @@ impl ApiTokenStore {
         Ok((raw, record))
     }
 
-    /// 某用户的全部 token（创建时间序；不含摘要列）。
+    /// All of a user's tokens (creation-time order; the digest column excluded).
     pub async fn list_for_user(
         &self,
         user_id: &UserId,
@@ -159,7 +167,7 @@ impl ApiTokenStore {
             .map(
                 |(id, name, scopes, created_at, last_used_at, revoked_at)| ApiTokenRecord {
                     id,
-                    token_hash: String::new(), // 列表路径不取摘要
+                    token_hash: String::new(), // the list path does not read the digest
                     user_id: user_id.clone(),
                     name,
                     scopes: TokenScope::parse(&scopes).unwrap_or(TokenScope::Read),
@@ -171,7 +179,8 @@ impl ApiTokenStore {
             .collect())
     }
 
-    /// Bearer 校验：存在且未撤销 → (用户, scope)，并节流刷新 `last_used_at`。
+    /// Bearer validation: exists and not revoked → (user, scope), and
+    /// throttled-refreshes `last_used_at`.
     pub async fn validate(
         &self,
         raw_token: &str,
@@ -191,7 +200,7 @@ impl ApiTokenStore {
             return Ok(None);
         }
         let Some(scope) = TokenScope::parse(&scopes) else {
-            return Ok(None); // 损坏行按无效凭证处理
+            return Ok(None); // a corrupted row is treated as an invalid credential
         };
         if last_used_at_is_stale(last_used_at.as_deref(), now) {
             sqlx::query("UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ?")
@@ -203,7 +212,8 @@ impl ApiTokenStore {
         Ok(Some((UserId(user_id), scope)))
     }
 
-    /// 撤销（仅属主可撤）；返回是否确有此 token。
+    /// Revoke (only the owner can revoke); returns whether the token really
+    /// existed.
     pub async fn revoke(
         &self,
         user_id: &UserId,
@@ -228,27 +238,28 @@ fn last_used_at_is_stale(last_used_at: Option<&str>, now: &Timestamp) -> bool {
         (Some(used), Some(now)) => {
             now.signed_duration_since(used).num_seconds() >= LAST_USED_REFRESH_SECS
         }
-        _ => true, // 从未使用，或时间戳异常——直接刷新
+        _ => true, // never used, or an anomalous timestamp -- refresh right away
     }
 }
 
 // ---------------------------------------------------------------------------
-// 端点
+// Endpoints
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTokenRequest {
-    /// 便于人工识别的标签（如 `cockpit`、`ci-pipeline`）。
+    /// A label that makes the token recognizable to humans (e.g. `cockpit`,
+    /// `ci-pipeline`).
     pub name: String,
-    /// `read` 或 `write`（write 隐含 read）。
+    /// `read` or `write` (write implies read).
     pub scopes: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiTokenCreated {
     pub id: String,
-    /// 原始 Token **仅此一次**返回（`mlt_` + 64 hex）。
+    /// The raw token, returned **this once only** (`mlt_` + 64 hex).
     pub token: String,
     pub name: String,
     pub scopes: String,
@@ -276,7 +287,8 @@ fn to_view(r: &ApiTokenRecord) -> ApiTokenView {
     }
 }
 
-/// API Token 路由（管理 API：与其它管理端点同一认证 + CSRF 防线）。
+/// API Token routes (management API: the same authentication + CSRF defence
+/// as the other management endpoints).
 pub fn routes() -> Router<SharedAppState> {
     Router::new()
         .route(
@@ -289,7 +301,8 @@ pub fn routes() -> Router<SharedAppState> {
         )
 }
 
-/// `POST /api/v1/auth/tokens`：签发机器凭据（原始 Token 仅此一次返回）。
+/// `POST /api/v1/auth/tokens`: issue a machine credential (the raw token is
+/// returned this once only).
 pub async fn create_token_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -313,7 +326,8 @@ pub async fn create_token_handler(
         .issue(&user_id, &name, scopes, service::now())
         .await
         .map_err(|e| AuthApiError::Internal(e.to_string()))?;
-    // 只留痕元数据（id/名称/scope）；原始 Token 不进审计（§16.5）。
+    // Only metadata (id/name/scope) is traced; the raw token never enters the
+    // audit trail (§16.5).
     crate::audit::record_or_fail(
         &state,
         Some(&user_id.0),
@@ -336,7 +350,8 @@ pub async fn create_token_handler(
     ))
 }
 
-/// `GET /api/v1/auth/tokens`：当前用户的 token 列表（无任何 Token 材料）。
+/// `GET /api/v1/auth/tokens`: the current user's token list (no token
+/// material at all).
 pub async fn list_tokens_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(user_id): AuthenticatedUser,
@@ -349,7 +364,8 @@ pub async fn list_tokens_handler(
     Ok(Json(list.iter().map(to_view).collect()))
 }
 
-/// `DELETE /api/v1/auth/tokens/{token_id}`：撤销（即失效；仅属主可撤）。
+/// `DELETE /api/v1/auth/tokens/{token_id}`: revoke (takes effect at once;
+/// only the owner can revoke).
 pub async fn revoke_token_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,

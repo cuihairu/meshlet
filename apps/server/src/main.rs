@@ -1,27 +1,32 @@
-//! meshlet-server：控制平面服务。
+//! meshlet-server: the control-plane service.
 //!
-//! 暴露状态/网络/邀请/设备加入/控制台认证路由（契约见
-//! [api-contract.md](../../docs/architecture/api-contract.md)）。
-//! 状态：Mesh 数据运行期存于内存（`MeshState`），每次变更镜像 SQLite，
-//! 启动时从 DB 重建（§17.3 故障恢复）；用户/会话持久化 SQLite。
+//! Exposes status/network/invitation/device-enrollment/console-auth routes
+//! (contract in [api-contract.md](../../docs/architecture/api-contract.md)).
+//! State: Mesh data lives in memory at runtime (`MeshState`), every change is
+//! mirrored to SQLite, and startup rebuilds from the DB (§17.3 failure
+//! recovery); users/sessions persist in SQLite.
 //!
-//! 用法：
-//! - `meshlet-server [config.toml]`：常驻服务；
-//! - `meshlet-server restore <backup.db> [config.toml]`：从一致性备份离线
-//!   恢复活动库（§17.4；先停服务再恢复），留痕 `system.restore` 审计事件
-//!   并按 §17.3 语义收敛，随后正常启动即恢复到期望状态。
+//! Usage:
+//! - `meshlet-server [config.toml]`: the resident service;
+//! - `meshlet-server restore <backup.db> [config.toml]`: offline restore of the
+//!   live database from a consistent backup (§17.4; stop the service before
+//!   restoring), leaving a `system.restore` audit event and converging under
+//!   §17.3 semantics, after which a normal start reaches the desired state.
 //!
-//! 上述两条子命令互斥于同一个数据库文件：常驻进程全程持有活动库锁
-//! （[instance_lock](meshlet_server::instance_lock)），恢复命令拿不到锁即拒绝。
+//! The two subcommands are mutually exclusive over the same database file: the
+//! resident process holds the live database lock for its whole lifetime
+//! ([instance_lock](meshlet_server::instance_lock)), and the restore command
+//! refuses outright when it cannot get the lock.
 
 use meshlet_config::ServerConfig;
 use tracing::info;
 
 #[tokio::main]
 async fn main() {
-    // 结构化日志（§17.1）：JSON 行输出，八字段（time/component/operation/
-    // network_id/device_id/config_revision/error_category/result）为顶层键，
-    // 由 telemetry 模块的 op_log! 与 request_log 中间件统一发出。
+    // Structured logging (§17.1): JSON line output, with the eight fields
+    // (time/component/operation/network_id/device_id/config_revision/
+    // error_category/result) as top-level keys, emitted uniformly by the
+    // telemetry module's op_log! and the request_log middleware.
     tracing_subscriber::fmt()
         .json()
         .flatten_event(true)
@@ -31,10 +36,11 @@ async fn main() {
         )
         .init();
 
-    // 参数：`restore <backup.db> [config.toml]` 或 `[config.toml]`；
-    // `--version`/`--help` 必须先行处理——否则会被当成配置文件路径，
-    // `load_config` 读不到即 panic（真机验收 NIGHTLY-MSI-1 抓到：
-    // `meshlet-server --version` 曾 exit 101）。
+    // Arguments: `restore <backup.db> [config.toml]` or `[config.toml]`;
+    // `--version`/`--help` must be handled up front — otherwise they are treated
+    // as a config file path, and `load_config` panics when it cannot read it
+    // (caught by real-device acceptance NIGHTLY-MSI-1: `meshlet-server
+    // --version` once exited 101).
     let mut args = std::env::args().skip(1).peekable();
     if let Some(flag) = args.peek().map(String::as_str) {
         match flag {
@@ -76,9 +82,11 @@ async fn main() {
     } else {
         format!("sqlite:{}", config.database_path)
     };
-    // §17.4 恢复守卫：进程全程持有活动库锁。`restore` 子命令在动任何文件之前
-    // 拿同一把锁，拿不到就整体拒绝——运行中恢复会把写入送进脱链 inode（旧库
-    // 被换名覆盖），而 `systemctl` 全程显示 active。
+    // §17.4 restore guard: the process holds the live database lock throughout.
+    // The `restore` subcommand takes that same lock before touching any file, and
+    // refuses as a whole when it cannot get it — restoring while running would
+    // send writes into a unlinked inode (the old database is overwritten by the
+    // rename), while `systemctl` keeps showing active the whole time.
     let _instance_lock = match meshlet_server::instance_lock::try_acquire(std::path::Path::new(
         config.database_path.trim_start_matches("sqlite:"),
     )) {
@@ -97,8 +105,9 @@ async fn main() {
         agent_window: std::time::Duration::from_secs(config.presence_agent_window_secs),
         handshake_window: std::time::Duration::from_secs(config.presence_handshake_window_secs),
     };
-    // §17.3 故障恢复：启动从 DB 重建期望状态（网络/设备/路由/邀请/修订），
-    // 停在 applying 的修订收敛为 failed（§10.3 不假装成功）。
+    // §17.3 failure recovery: startup rebuilds the desired state from the DB
+    // (networks/devices/routes/invitations/revisions), and revisions stuck in
+    // `applying` converge to `failed` (§10.3 — never pretend success).
     let boot = match meshlet_server::persist::load(&pool, presence_thresholds).await {
         Ok(boot) => boot,
         Err(error) => startup_failure("mesh state rebuild", &config.database_path, error),
@@ -126,7 +135,7 @@ async fn main() {
         .with_ssh_config(config.ssh_config.clone())
         .with_trusted_proxies(config.trusted_proxies.clone())
         .with_apply_backend(if config.dataplane.enabled {
-            // ADR-007 接线：本机 WireGuard/路由真实执行（需 NET_ADMIN）。
+            // ADR-007 wiring: real local WireGuard/route execution (requires NET_ADMIN).
             meshlet_server::revision::hub_backend_factory(
                 config.dataplane.clone(),
                 config.tunnel_mtu,
@@ -136,22 +145,26 @@ async fn main() {
         }),
     );
     meshlet_server::convergence::start_recovery(state.clone());
-    // MT-005：周期回收卡死任务（assigned/acked 超窗未回执 → failed + 预算内
-    // 重派）。不依赖 dataplane.enabled——纯控制面环境也应收起。
+    // MT-005: periodically reclaim stuck tasks (assigned/acked past the window
+    // with no receipt → failed + redispatch within budget). Does not depend on
+    // dataplane.enabled — a pure control-plane deployment should reclaim too.
     meshlet_server::task::start_task_recovery(state.clone(), 30);
-    // 掉线可观测（P1，2026-11-12 实锤：imac 掉线成事实而 server 日志 0 条断连
-    // 记录）：presence 状态迁移落日志。不依赖 dataplane.enabled——纯控制面
-    // 环境也须看得见每台设备的掉线时间线。
+    // Disconnection observability (P1, nailed down on 2026-11-12: the imac went
+    // offline as a fact while the server log held 0 disconnect records): log
+    // presence state transitions. Does not depend on dataplane.enabled — a pure
+    // control-plane deployment must still show every device's offline timeline.
     meshlet_server::presence_watch::start(state.clone());
-    // 定时自动备份（§17.4）：显式 `[backup] auto = true` 才开启；只写本地
-    // `[backup] dir`，无任何外发。到期写一份 + 审计留痕，失败只记日志。
+    // Scheduled automatic backup (§17.4): enabled only with explicit
+    // `[backup] auto = true`; it writes to the local `[backup] dir` only,
+    // nothing is sent out. When due it writes a copy + leaves an audit trail;
+    // failures are only logged.
     if config.backup.auto {
         if let Some(dir) = config.backup.dir.clone() {
             let pool = pool.clone();
             let interval = std::time::Duration::from_secs(config.backup.interval_secs);
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(interval);
-                ticker.tick().await; // 首拍立即：启动即有一份备份。
+                ticker.tick().await; // First tick is immediate: a backup exists right at startup.
                 loop {
                     ticker.tick().await;
                     match meshlet_server::persist::backup_once(
@@ -183,7 +196,8 @@ async fn main() {
         }
         None => meshlet_server::router(state),
     };
-    // ConnectInfo<SocketAddr>：agent 心跳据此观测直连候选的源地址（§12）。
+    // ConnectInfo<SocketAddr>: agent heartbeats use this to observe the source
+    // address of direct-connect candidates (§12).
     if let Err(error) = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -210,11 +224,15 @@ fn load_config(path: Option<String>) -> ServerConfig {
     }
 }
 
-/// 启动期致命资源获取失败（bind/库锁/连接/重建/serve/读配置）的统一出口：
-/// 先记一条带资源与根因的 error（§17.1 JSON 面可达），再在 stderr 用同一
-/// 句话直陈，最后整体非零退出。不 panic——崩溃现场的 backtrace 对运维是
-/// 噪音；对 systemd Restart 两者同样生效，但 exit(1) 日志可 grep、退出码
-/// 语义干净。此前的半初始化面（库锁/连接池）随进程退出由内核回收。
+/// Single exit for fatal resource acquisition failures during startup
+/// (bind / database lock / connection / rebuild / serve / config read): first
+/// log one error carrying the resource and the root cause (§17.1 — the JSON
+/// surface is reachable), then state the same sentence plainly on stderr, and
+/// finally exit non-zero as a whole. No panic — a crash backtrace is noise for
+/// operators; both behave the same under systemd Restart, but an exit(1) log is
+/// grep-able and the exit code is semantically clean. The partially initialized
+/// surfaces from before (database lock / connection pool) are reclaimed by the
+/// kernel when the process exits.
 fn startup_failure(resource: &str, target: &str, error: impl std::fmt::Display) -> ! {
     let message = startup_failure_message(resource, target, &error.to_string());
     tracing::error!(resource, target, error = %error, "{message}");
@@ -222,13 +240,15 @@ fn startup_failure(resource: &str, target: &str, error: impl std::fmt::Display) 
     std::process::exit(1);
 }
 
-/// 纯函数（可测）：`{resource} {target}: {error}`——消息必含目标与根因。
+/// Pure function (testable): `{resource} {target}: {error}` — the message
+/// always carries the target and the root cause.
 fn startup_failure_message(resource: &str, target: &str, error: &str) -> String {
     format!("{resource} {target}: {error}")
 }
 
-/// §17.4 离线恢复：校验 → 原子换名 → 审计留痕 → §17.3 收敛；任何失败都
-/// 不触碰活动库。完成后正常启动服务即恢复到期望状态。
+/// §17.4 offline restore: verify → atomic rename → audit trail → §17.3
+/// convergence; any failure leaves the live database untouched. Afterwards a
+/// normal service start reaches the desired state.
 async fn restore_command(backup: &str, config: &ServerConfig) {
     let database = config.database_path.trim_start_matches("sqlite:");
     println!("restoring {backup} -> {database}");
@@ -270,7 +290,8 @@ async fn restore_command(backup: &str, config: &ServerConfig) {
 mod tests {
     use super::*;
 
-    /// 失败消息钉：必含资源、目标（地址/路径）与根因（os error）。
+    /// Failure message pin: must carry the resource, the target (address/path)
+    /// and the root cause (os error).
     #[test]
     fn startup_failure_message_carries_target_and_root_cause() {
         let message = startup_failure_message(
@@ -283,8 +304,10 @@ mod tests {
         assert!(message.contains("os error 98"), "{message}");
     }
 
-    /// 真端口占用（本机可跑）：占住具体端口后再绑同址必 Err，包装后的
-    /// 消息同时携带 bind 地址与 os error 根因；:0 临时端口正常成功。
+    /// Real port conflict (runs locally): after holding a concrete port, binding
+    /// the same address must Err, and the wrapped message carries both the bind
+    /// address and the os error root cause; the :0 ephemeral port succeeds
+    /// normally.
     #[tokio::test]
     async fn bind_conflict_message_carries_address_and_cause() {
         let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -326,10 +326,10 @@ pub async fn commit_revoke_device(
     Ok(())
 }
 // ---------------------------------------------------------------------------
-// 写路径（新行镜像）
+// Write path (mirror of new rows)
 // ---------------------------------------------------------------------------
 
-/// 落库一个网络行。
+/// Persist one network row.
 pub async fn insert_network(pool: &SqlitePool, n: &Network) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -358,14 +358,14 @@ pub async fn insert_network(pool: &SqlitePool, n: &Network) -> Result<(), sqlx::
     Ok(())
 }
 
-/// 数据面证据 → JSON 列值（`None` → NULL）。
+/// Dataplane evidence -> JSON column value (`None` -> NULL).
 fn evidence_json(d: &Device) -> Option<String> {
     d.dataplane_evidence
         .as_ref()
         .map(|e| serde_json::to_string(e).expect("DataplaneEvidence serialization cannot fail"))
 }
 
-/// 落库一台设备行（enroll）。
+/// Persist one device row (enroll).
 pub async fn insert_device(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO devices
@@ -393,7 +393,7 @@ pub async fn insert_device(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Er
     Ok(())
 }
 
-/// 回写设备状态（撤销：status/revoked_at）。
+/// Write back device status (revocation: status/revoked_at).
 pub async fn update_device_status(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE devices SET status = ?, revoked_at = ? WHERE id = ?")
         .bind(device_status_to_str(d.status))
@@ -404,8 +404,9 @@ pub async fn update_device_status(pool: &SqlitePool, d: &Device) -> Result<(), s
     Ok(())
 }
 
-/// 落库设备标签 + 审计（同一事务，「不留痕不放行」）。标签不记修订——
-/// 它是路由元数据，不是网络配置。
+/// Persist device labels + audit (same transaction; no trace, no passage).
+/// Labels do not count as a revision -- they are route metadata, not network
+/// configuration.
 pub async fn commit_device_labels(
     pool: &SqlitePool,
     device: &Device,
@@ -428,7 +429,8 @@ pub async fn commit_device_labels(
     Ok(())
 }
 
-/// 回写在线证据时间戳 + 数据面实测证据（心跳路径，§14.1/§7.5）。
+/// Write back liveness evidence timestamps + measured dataplane evidence
+/// (heartbeat path, §14.1/§7.5).
 pub async fn update_device_presence(pool: &SqlitePool, d: &Device) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE devices SET last_seen_at = ?, last_handshake_at = ?, last_report_at = ?, \
@@ -444,7 +446,7 @@ pub async fn update_device_presence(pool: &SqlitePool, d: &Device) -> Result<(),
     Ok(())
 }
 
-/// 落库一条 LAN 路由 + 当前路由 id 序列（同一事务）。
+/// Persist one LAN route + the current route id sequence (same transaction).
 #[allow(dead_code)]
 pub async fn insert_route(
     pool: &SqlitePool,
@@ -489,9 +491,11 @@ pub(crate) async fn save_seq_tx(
     Ok(())
 }
 
-/// 落库一条自举码（只存摘要，§11.3）+ 当前自举码序列（同一事务）。
-/// `bootstrap_seq` 驱动 `bt-N`；注册申请序列（`dev-reg-N`）另见
-/// [`insert_registration`]——前缀不冲突，故各自单调即可。
+/// Persist one bootstrap token (only the digest is stored, §11.3) + the
+/// current bootstrap sequence (same transaction).
+/// `bootstrap_seq` drives `bt-N`; the registration request sequence
+/// (`dev-reg-N`) lives in [`insert_registration`] -- the prefixes do not
+/// collide, so each only needs to be monotonic on its own.
 pub async fn save_bootstrap_token(
     pool: &SqlitePool,
     t: &BootstrapToken,
@@ -520,7 +524,8 @@ pub async fn save_bootstrap_token(
     Ok(())
 }
 
-/// 撤销自举码：只回写撤销时刻（整行 upsert，与 `save_invite` 同语义）。
+/// Revoke a bootstrap token: only write back the revocation time (whole-row
+/// upsert, same semantics as `save_invite`).
 pub async fn revoke_bootstrap_token_db(
     pool: &SqlitePool,
     id: &BootstrapTokenId,
@@ -534,7 +539,8 @@ pub async fn revoke_bootstrap_token_db(
     Ok(())
 }
 
-/// 登记一条设备注册申请（Pending）+ 当前注册序列（同一事务）。
+/// Register one device registration request (Pending) + the current
+/// registration sequence (same transaction).
 pub async fn insert_registration(
     pool: &SqlitePool,
     r: &DeviceRegistration,
@@ -559,8 +565,10 @@ pub async fn insert_registration(
     Ok(())
 }
 
-/// 删除一条注册申请（批准/拒绝），并连带清掉它签发的 agent 凭证。
-/// Pending 申请不在 `devices` 表，故无需回滚设备行/路由。
+/// Delete one registration request (approve/reject), also clearing the agent
+/// credential it issued.
+/// A Pending request has no `devices` row, so there is no device row / route
+/// to roll back.
 pub async fn delete_registration_db(pool: &SqlitePool, id: &DeviceId) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM device_registrations WHERE id = ?")
@@ -575,20 +583,26 @@ pub async fn delete_registration_db(pool: &SqlitePool, id: &DeviceId) -> Result<
     Ok(())
 }
 
-/// 批准：把注册申请（不改 id）转成 `devices` 行并释放申请记录（同一事务）。
-/// `virtual_ipv4` 是批准时刻刚从 IPAM 分配的真实地址（不再用占位值）。
+/// Approve: turn the registration request (keeping its id) into a `devices`
+/// row and release the request record (same transaction).
+/// `virtual_ipv4` is the real address just allocated from IPAM at approval
+/// time (no longer a placeholder value).
 ///
-/// **不轮换 agent 凭证**：凭证绑定的是设备 id（注册时即分配、批准沿用），
-/// 设备身份未变；轮换会把原始凭证只塞进批准响应、设备端永远拿不到（批准后
-/// 401）。Pending 期签发的凭证继续有效，撤销走 `revoke_device` 既有路径。
+/// **The agent credential is not rotated**: the credential binds to the device
+/// id (allocated at registration, carried over at approval), and the device
+/// identity is unchanged; rotating it would put the raw credential only in the
+/// approval response, unreachable by the device side forever (401 after
+/// approval). The credential issued during the Pending period stays valid;
+/// revocation goes through the existing `revoke_device` path.
 pub async fn promote_registration(
     pool: &SqlitePool,
     r: &DeviceRegistration,
     device: &Device,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    // 列集与 insert_device 一致 + approved_at：Pending 期心跳证据直接带入
-    // （批准后 presence 连续，§7.5 证据不因转正而清零）。
+    // Same column set as insert_device plus approved_at: heartbeat evidence from
+    // the Pending period is carried over directly (presence stays continuous
+    // after approval; §7.5 evidence is not zeroed out by promotion).
     sqlx::query(
         "INSERT INTO devices
             (id, network_id, name, virtual_ipv4, public_key, platform, status, segment_id,
@@ -621,7 +635,8 @@ pub async fn promote_registration(
     Ok(())
 }
 
-/// Pending 设备无 `devices` 行，心跳证据只落注册申请表（§7.5/§12.4）。
+/// A Pending device has no `devices` row, so heartbeat evidence lands only in
+/// the registration table (§7.5/§12.4).
 pub async fn update_registration_report(
     pool: &SqlitePool,
     id: &DeviceId,
@@ -639,8 +654,10 @@ pub async fn update_registration_report(
     Ok(())
 }
 
-/// 落库一条 Alias 映射（§12.6）。alias id 与路由共用 `route_seq` 序列
-/// （`al-N` / `rt-N` 同源单调，已删 id 不复用），同一事务保存序列。
+/// Persist one Alias mapping (§12.6). Alias ids share the `route_seq`
+/// sequence with routes (`al-N` / `rt-N` are monotonic from the same source,
+/// and deleted ids are never reused); the sequence is saved in the same
+/// transaction.
 pub async fn insert_alias(
     pool: &SqlitePool,
     a: &AliasMapping,
@@ -668,10 +685,12 @@ pub async fn insert_alias(
     Ok(())
 }
 
-/// 事务性落库 Host Forward 的两条镜像（LAN Route + Alias）。
+/// Transactionally persist the two Host Forward mirror rows (LAN Route +
+/// Alias).
 ///
-/// 内存路径已保证“创建即整单元”；这里把同一原子边界带到 SQLite：任一行
-/// 写入失败时路由序列和另一行一起回滚。
+/// The in-memory path already guarantees "creation is a whole unit"; this
+/// brings the same atomic boundary to SQLite: if writing either row fails, the
+/// route sequence and the other row roll back together.
 pub async fn insert_host_forward(
     pool: &SqlitePool,
     route: &LanRoute,
@@ -716,8 +735,10 @@ pub async fn insert_host_forward(
     Ok(())
 }
 
-/// 删除一条 LAN 路由及其绑定 Alias（§12.6 所有权清理：alias-路由是一对一
-/// 单元；FK 约束下必须先删子行）。路由 id 序列不回退，已删 id 不复用。
+/// Delete one LAN route together with its bound Alias (§12.6 ownership
+/// cleanup: an alias-route pair is a one-to-one unit; under the FK constraint
+/// the child row must be deleted first). The route id sequence never steps
+/// back, and deleted ids are not reused.
 pub async fn delete_route(pool: &SqlitePool, route_id: &str) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM alias_mappings WHERE lan_route_id = ?")
@@ -732,7 +753,8 @@ pub async fn delete_route(pool: &SqlitePool, route_id: &str) -> Result<(), sqlx:
     Ok(())
 }
 
-/// 撤销设备时移除其发布的全部路由与绑定 Alias（§11.5 + §12.6 级联清理）。
+/// When a device is revoked, remove every route it published along with the
+/// bound Aliases (§11.5 + §12.6 cascading cleanup).
 pub async fn delete_routes_of_device(
     pool: &SqlitePool,
     gateway_device_id: &str,
@@ -753,11 +775,13 @@ pub async fn delete_routes_of_device(
     Ok(())
 }
 
-/// 回写收敛后的期望项状态（apply / rollback 结论，§10.1）。
+/// Write back the settled desired-item statuses (apply / rollback verdict,
+/// §10.1).
 ///
-/// 与 [`update_revision_status`] 同一条纪律：修订结论落库后，路由/映射的
-/// `status` 也必须落库——重启后 [`load`] 重建的账本不得把「已生效」说成
-/// `pending`，也不得让「已回滚」继续显示为 `applied`。
+/// The same discipline as [`update_revision_status`]: once the revision
+/// verdict is persisted, the routes'/mappings' `status` must be persisted
+/// too -- the ledger rebuilt by [`load`] after a restart must not call
+/// "effective" `pending`, nor keep showing "rolled back" as `applied`.
 pub async fn update_desired_status(
     pool: &SqlitePool,
     settle: &crate::service::DesiredStateSettle,
@@ -784,7 +808,7 @@ pub async fn update_desired_status(
     Ok(())
 }
 
-/// 落库一个新修订（`record` 产生，恒 `pending`）。
+/// Persist a new revision (produced by `record`, always `pending`).
 pub async fn insert_revision(pool: &SqlitePool, r: &ConfigRevision) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO config_revisions
@@ -804,7 +828,8 @@ pub async fn insert_revision(pool: &SqlitePool, r: &ConfigRevision) -> Result<()
     Ok(())
 }
 
-/// 回写修订的应用状态（apply/rollback/中断收敛）。
+/// Write back a revision's application status (apply/rollback/interrupted
+/// settling).
 pub async fn update_revision_status(
     pool: &SqlitePool,
     r: &ConfigRevision,
@@ -824,7 +849,8 @@ pub async fn update_revision_status(
     Ok(())
 }
 
-/// 落库/回写一份邀请（创建、兑换递增 `used_count`、撤销）。
+/// Persist/write back an invite (creation, redemption incrementing
+/// `used_count`, revocation).
 pub async fn save_invite(pool: &SqlitePool, i: &Invite) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO invitations

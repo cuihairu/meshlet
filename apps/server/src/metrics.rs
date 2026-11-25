@@ -1,19 +1,24 @@
-//! 运行指标（[存档 §17.2](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Runtime metrics ([archive §17.2](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 第一版八项指标，**按数据来源分两类**（§17.2 明令「不要依赖单个指标判断
-//! 端到端网络健康」）：
+//! The first version of eight metrics, **split into two classes by data source**
+//! (§17.2 explicitly commands "do not rely on a single metric to judge end-to-end
+//! network health"):
 //!
-//! - **控制面事件计数器**（进程内累加，随请求推进）：HTTP 请求/响应字节、
-//!   配置应用成败、回滚成败、路由冲突拒绝、agent 心跳；
-//! - **数据面证据量规**（抓取时从 `MeshState` 现算）：在线设备数、活跃 Peer
-//!   数、最近握手时间、近期握手设备数（接口证据）、Alias 应用状态。
+//! - **Control-plane event counters** (accumulated in-process, advanced by requests):
+//!   HTTP request/response bytes, config apply outcomes, rollback outcomes, route
+//!   conflict rejections, agent heartbeats;
+//! - **Data-plane evidence gauges** (computed live from `MeshState` at scrape
+//!   time): online device count, active peer count, most recent handshake time,
+//!   recently-handedshaking device count (interface evidence), alias apply status.
 //!
-//! 组合判读规则写死在 [`render`](Metrics::render) 的 HELP 文本与
-//! `docs/architecture/observability.md`：控制面「在线」与数据面「握手」必须
-//! 交叉看——单看任一指标都会把「控制面在册但隧道已断」或「隧道在但控制面
-//! 未登记」误判为健康。
+//! The combined interpretation rules are hard-coded in the HELP text of
+//! [`render`](Metrics::render) and in `docs/architecture/observability.md`:
+//! the control-plane "online" and the data-plane "handshake" must be read
+//! crosswise — reading either metric alone will misjudge "registered on the control
+//! plane but the tunnel is down" or "the tunnel is up but not registered with the
+//! control plane" as healthy.
 //!
-//! 输出为 Prometheus 文本格式（`GET /api/v1/system/metrics`，管理面认证）。
+//! Emitted in Prometheus text format (`GET /api/v1/system/metrics`, management-plane auth).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,7 +33,7 @@ use axum::Router;
 use crate::auth::{AuthenticatedUser, SharedAppState};
 use crate::service;
 
-/// 指标注册表（进程内；Clone 共享同一底层计数）。
+/// Metrics registry (in-process; Clone shares the same underlying counters).
 #[derive(Clone)]
 pub struct Metrics {
     inner: Arc<Inner>,
@@ -36,7 +41,7 @@ pub struct Metrics {
 
 #[derive(Default)]
 struct Inner {
-    /// key = `method|route|status_class`（route 是 axum 路由模板，基数有界）。
+    /// key = `method|route|status_class` (route is the axum route template, so cardinality is bounded).
     http_requests: Mutex<BTreeMap<String, u64>>,
     http_response_bytes: AtomicU64,
     config_apply_applied: AtomicU64,
@@ -47,20 +52,20 @@ struct Inner {
     agent_heartbeats: AtomicU64,
 }
 
-/// 抓取时从控制面状态现算的数据面证据量规。
+/// Data-plane evidence gauges, computed live from control-plane state at scrape time.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GaugeSnapshot {
-    /// 在线设备数（presence 判定 `online`）。
+    /// Online device count (judged `online` by presence).
     pub devices_online: u64,
-    /// 活跃 Peer 数（设备状态 `Active`）。
+    /// Active peer count (device state `Active`).
     pub devices_active: u64,
-    /// 近期握手设备数（握手在窗口内——数据面隧道证据）。
+    /// Devices with a recent handshake (the handshake fell inside the window — data-plane tunnel evidence).
     pub devices_with_recent_handshake: u64,
-    /// 最近一次握手时刻（Unix 秒；0 = 从未观测到）。
+    /// Time of the most recent handshake (Unix seconds; 0 = never observed).
     pub last_handshake_timestamp_seconds: i64,
-    /// 接口状态（1 = 至少一台设备有近期握手证据；0 = 无数据面证据）。
+    /// Interface state (1 = at least one device shows recent handshake evidence; 0 = no data-plane evidence).
     pub interface_up: u8,
-    /// Alias 应用状态（Phase 4 未落地：恒 0 = 无 Alias 映射可应用）。
+    /// Alias apply status (Phase 4 not landed: always 0 = no alias mappings to apply).
     pub alias_apply_status: u64,
 }
 
@@ -71,7 +76,7 @@ impl Metrics {
         }
     }
 
-    /// HTTP 请求计数（中间件对每个已路由请求调用一次）。
+    /// HTTP request counting (the middleware calls this once per routed request).
     pub fn record_http(&self, method: &str, route: &str, status: StatusCode) {
         let class = match status.as_u16() {
             100..=199 => "1xx",
@@ -117,7 +122,7 @@ impl Metrics {
         self.inner.agent_heartbeats.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// 渲染 Prometheus 文本格式（含 HELP/TYPE；量规来自 `gauges` 快照）。
+    /// Render Prometheus text format (with HELP/TYPE; gauges come from the `gauges` snapshot).
     pub fn render(&self, gauges: &GaugeSnapshot) -> String {
         let applied = self.inner.config_apply_applied.load(Ordering::Relaxed);
         let failed = self.inner.config_apply_failed.load(Ordering::Relaxed);
@@ -167,7 +172,7 @@ impl Metrics {
         out.push_str(&format!(
             "meshlet_config_apply_total{{result=\"failed\"}} {failed}\n"
         ));
-        // 成功率：仅在有样本时给出（无样本时省略，避免把「没数据」读成 100%）。
+        // Success ratio: reported only when samples exist (omitted otherwise, to avoid reading "no data" as 100%).
         if applied + failed > 0 {
             let ratio = applied as f64 / (applied + failed) as f64;
             out.push_str("# HELP meshlet_config_apply_success_ratio applied / (applied + failed); absent until the first apply.\n");
@@ -232,7 +237,7 @@ impl Default for Metrics {
     }
 }
 
-/// Prometheus 标签值转义（`\`、`"`、换行）。
+/// Escape Prometheus label values (`\`, `"`, newline).
 fn escape_label(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
@@ -246,8 +251,9 @@ fn escape_label(value: &str) -> String {
     out
 }
 
-/// `GET /api/v1/system/metrics`：Prometheus 文本格式（管理面认证：会话或读
-/// scope 的 API Token——外部监控以读 Token 抓取，见 `docs/guide/external-caller.md`）。
+/// `GET /api/v1/system/metrics`: Prometheus text format (management-plane auth: session
+/// or a read-scope API Token — external monitoring scrapes with a read token, see
+/// `docs/guide/external-caller.md`).
 pub async fn metrics_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(_user): AuthenticatedUser,
@@ -303,7 +309,7 @@ mod tests {
 
     #[test]
     fn success_ratio_is_absent_until_the_first_apply() {
-        // 无样本 ≠ 100% 健康：没有应用记录时不输出比率。
+        // No samples != 100% healthy: no ratio is emitted when there are no apply records.
         let m = Metrics::new();
         let text = m.render(&GaugeSnapshot::default());
         assert!(!text.contains("meshlet_config_apply_success_ratio"));
@@ -332,7 +338,7 @@ mod tests {
         assert!(text.contains("meshlet_last_handshake_timestamp_seconds 1760000000"));
         assert!(text.contains("meshlet_interface_up 1"));
         assert!(text.contains("meshlet_alias_apply_status 0"));
-        // 组合判读写进 HELP：不依赖单一指标（§17.2）。
+        // The combined interpretation rule is written into the HELP text: never rely on a single metric (§17.2).
         assert!(text.contains("never alone"));
     }
 

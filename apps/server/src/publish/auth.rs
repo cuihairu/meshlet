@@ -1,9 +1,9 @@
-//! 发布对象共享入口校验与授权策略解析。
+//! Shared entry validation and authorization policy parsing for publishing objects.
 
 use crate::service::{MeshState, ServiceError};
 use meshlet_publish::AuthorizationPolicy;
 
-/// 设备校验与 create_route 同口径：属于本网络且 Active。
+/// Device validation follows the same rules as create_route: it must belong to this network and be Active.
 pub(crate) fn device_in_network(
     state: &MeshState,
     network_id: &str,
@@ -58,7 +58,7 @@ pub(crate) fn parse_policy(
     })
 }
 
-/// 计划对象校验入口：错误转 [`ServiceError`]（400）。
+/// Entry point for plan-object validation: converts errors to [`ServiceError`] (400).
 pub(crate) fn plan_error(e: meshlet_publish::PublishError) -> ServiceError {
     ServiceError::InvalidInput(e.to_string())
 }

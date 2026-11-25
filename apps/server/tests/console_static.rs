@@ -1,14 +1,14 @@
-//! 集成测试：`console_dir` 静态托管（控制台单页应用由 server 直接分发）。
+//! Integration test: static hosting of `console_dir` (the console SPA is served directly by the server).
 //!
-//! 契约：设置 `console_dir` 后，非 `/api` 路径回落到静态文件服务；
-//! `/api/v1/*` 路由优先级不变；缺失文件返回 404。
+//! Contract: once `console_dir` is set, non-`/api` paths fall back to static file serving;
+//! `/api/v1/*` route precedence is unchanged; a missing file returns 404.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt; // oneshot
 
-/// 建一个一次性控制台目录：index.html + assets/app.js，返回路径。
+/// Create a throwaway console directory: index.html + assets/app.js, returning its path.
 fn write_console_dir(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("meshlet-console-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(dir.join("assets")).unwrap();
@@ -70,13 +70,13 @@ async fn api_routes_win_over_console_fallback() {
     let dir = write_console_dir("api");
     let app = console_router(&dir).await;
 
-    // /api 命中真实路由：status 公开可用。
+    // `/api` hits a real route: status is publicly available.
     let (status, _) = get(app, "/api/v1/system/status").await;
     assert_eq!(status, StatusCode::OK);
 
     let dir2 = write_console_dir("api-auth");
     let app2 = console_router(&dir2).await;
-    // /api 未命中路由：既不是 index.html 也不是 200（SPA 回退只覆盖非 /api 前缀语义）。
+    // `/api` misses every route: neither index.html nor 200 (the SPA fallback only applies outside the /api prefix).
     let (status, body) = get(app2, "/api/v1/definitely-not-here").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_ne!(body, "<html>meshlet console</html>");

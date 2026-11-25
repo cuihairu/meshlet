@@ -1,11 +1,11 @@
-//! 设备发布计划投影：过滤设备对象并复用发布计划层校验。
+//! Per-device publish plan projection: filter the device's objects and reuse the publish plan-layer validation.
 
 use crate::service::MeshState;
 use meshlet_publish::{
     DnsPlan, HttpRoute, HttpRouteSet, PortForwardConfig, ProbeSchedule, PublishPlan,
 };
-/// 指定设备的发布计划：过滤本设备对象 → 复用计划层校验 → DNS 聚合为
-/// 至多一个 [`DnsPlan`]。`Err(String)` = 计划层校验拒绝（配置互相矛盾）。
+/// Publish plan for a given device: filter that device's objects -> reuse the plan-layer validation ->
+/// aggregate DNS into at most one [`DnsPlan`]. `Err(String)` = rejected by plan-layer validation (mutually contradictory configuration).
 pub fn device_publish_plan(
     mesh: &MeshState,
     network_id: &str,

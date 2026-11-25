@@ -1,8 +1,8 @@
-//! 集成测试：外部机器凭据 API Token（2026-10-14 用户需求）。
+//! Integration tests: API Tokens for external machine credentials (2026-10-14 user request).
 //!
-//! 验收：外部系统可长期调用（Bearer `mlt_…`）；token 可撤销、最小权限
-//! （`read` / `write`）、审计归属明确；与既有 Cookie 会话并存且**不削弱
-//! CSRF 防护**。
+//! Acceptance: external systems can call long-term (Bearer `mlt_…`); tokens are revocable, least-privilege
+//! (`read` / `write`), with clear audit attribution; they coexist with existing Cookie sessions and **do not
+//! weaken CSRF protection**.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -140,7 +140,7 @@ async fn write_token_can_read_and_write_the_management_api() {
     let (status, created) = create_token(&c, "cockpit", "write").await;
     assert_eq!(status, StatusCode::CREATED);
     let token = created["token"].as_str().unwrap();
-    // 可辨认的前缀（区分 agent token 与邀请 token）+ 32 字节随机材料。
+    // A recognizable prefix (distinguishes agent tokens from invite tokens) + 32 bytes of random material.
     assert!(token.starts_with("mlt_"), "token must be prefixed: {token}");
     assert_eq!(token.len(), 68, "mlt_ + 64 hex");
 
@@ -168,7 +168,7 @@ async fn write_token_can_read_and_write_the_management_api() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    // ADR-009：配置修改类响应携带 revision_id 与 apply_status（对 token 调用方同样成立）。
+    // ADR-009: config-mutating responses carry revision_id and apply_status (the same holds for token callers).
     assert_eq!(body["revision_id"], 1);
     assert_eq!(body["apply_status"], "pending");
 }
@@ -204,7 +204,7 @@ async fn read_token_cannot_write() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "forbidden");
 
-    // 最小权限不得影响会话管理员。
+    // Least privilege must not affect a session admin.
     let (status, _) = call(
         &c,
         "POST",
@@ -224,7 +224,7 @@ async fn csrf_guard_still_applies_to_token_writes() {
     let (_, created) = create_token(&c, "cockpit", "write").await;
     let token = created["token"].as_str().unwrap().to_string();
 
-    // 缺 X-Requested-With → 403（与 Cookie 会话完全同一防线，不削弱）。
+    // Missing X-Requested-With -> 403 (exactly the same defense line as Cookie sessions, not weakened).
     let (status, body) = call(
         &c,
         "POST",
@@ -292,7 +292,7 @@ async fn raw_token_is_returned_once_and_never_listed() {
     assert_eq!(entry["name"], "cockpit");
     assert_eq!(entry["scopes"], "write");
     assert!(entry["created_at"].is_string());
-    // 列表绝不回传原始 Token 或摘要（只存摘要，日志可安全打印列表）。
+    // The listing never returns the raw token or its digest (only the digest is stored, so lists are safe to log).
     assert!(entry.get("token").is_none());
     assert!(entry.get("token_hash").is_none());
 
@@ -310,7 +310,7 @@ async fn raw_token_is_returned_once_and_never_listed() {
 async fn token_management_requires_authentication_and_validation() {
     let c = ctx().await;
 
-    // 无凭证创建 token → 401。
+    // Create a token without credentials -> 401.
     let (status, body) = call(
         &c,
         "POST",
@@ -324,16 +324,16 @@ async fn token_management_requires_authentication_and_validation() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "unauthorized");
 
-    // 未知 scope → 400。
+    // Unknown scope -> 400.
     let (status, body) = create_token(&c, "x", "admin").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "validation_failed");
 
-    // 空名称 → 400。
+    // Empty name -> 400.
     let (status, _) = create_token(&c, "   ", "read").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 撤销不存在的 token → 404。
+    // Revoking a nonexistent token -> 404.
     let (status, _) = revoke_token(&c, "tok-does-not-exist").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -373,7 +373,7 @@ async fn api_tokens_and_agent_tokens_are_separate_boundaries() {
     let (_, created) = create_token(&c, "cockpit", "write").await;
     let token = created["token"].as_str().unwrap();
 
-    // 管理 token 不是 agent 凭证：agent 端点仍要求 agent_token（§13.7）。
+    // A management token is not an agent credential: agent endpoints still require an agent_token (§13.7).
     let (status, body) = call(
         &c,
         "POST",
@@ -387,7 +387,7 @@ async fn api_tokens_and_agent_tokens_are_separate_boundaries() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "unauthorized");
 
-    // Cookie 会话仍是完整的管理员通道（token 存在不改变会话语义）。
+    // The Cookie session is still a full admin channel (the token's existence does not change session semantics).
     let (status, body) = call(
         &c,
         "GET",

@@ -1,4 +1,4 @@
-//! 网络范围内四类发布对象的 HTTP handlers。
+//! HTTP handlers for the four publishing object kinds, scoped to one network.
 
 use super::crud::{
     create_dns_record, create_forward, create_http_route, create_probe, delete_dns_record,
@@ -394,7 +394,7 @@ pub(super) async fn delete_probe_handler(
         target_id: &probe_id,
         detail: Some(serde_json::json!({ "network_id": network_id })),
     };
-    // 探针删除连带清掉它的健康证据（证据不是配置，不悬挂）。
+    // Deleting a probe also clears its health evidence (evidence is not config; nothing is left dangling).
     super::persist::commit_probe_delete(
         state.auth.pool(),
         &probe_id,

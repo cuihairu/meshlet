@@ -1,9 +1,9 @@
-//! 集成测试：配置状态机（[存档 §10](../docs/review/chatgpt-2026-10-13.md)、
-//! [ADR-009](../docs/decisions/adr-009-config-revision-rollback.md)）。
+//! Integration tests: the config state machine ([archive §10](../docs/review/chatgpt-2026-10-13.md),
+//! [ADR-009](../docs/decisions/adr-009-config-revision-rollback.md)).
 //!
-//! 验收口径：**DB 写入 ≠ 显示生效**——期望配置变更只生成 `Pending` 修订；
-//! 只有 backend 成功应用后才 `Applied`；**失败可见**（`failed` +
-//! `error_summary`）；**状态可区分**（pending / failed / rollback_pending …）。
+//! Acceptance rule: **DB write ≠ shown as effective** — a desired-config change only creates a `Pending` revision;
+//! only a successful backend apply marks it `Applied`; **failures are visible** (`failed` +
+//! `error_summary`); **states are distinguishable** (pending / failed / rollback_pending ...).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -20,7 +20,7 @@ use std::time::Duration;
 
 const OVERLAY: &str = "10.240.0.0/16";
 
-/// 测试上下文：router + 管理会话 Cookie（空库 bootstrap 首个管理员）。
+/// Test context: router + management session Cookie (bootstrap the first administrator on an empty DB).
 #[derive(Clone)]
 struct Ctx {
     app: Router,
@@ -31,7 +31,7 @@ async fn ctx() -> Ctx {
     ctx_with_backend(revision::unconfigured_backend_factory()).await
 }
 
-/// 注入自定义 backend 的上下文（§10.3 幂等 / §10.4 回滚边界的 API 层验证）。
+/// Context with an injected custom backend (API-level verification of §10.3 idempotency / §10.4 rollback boundaries).
 async fn ctx_with_backend(backend: revision::BackendFactory) -> Ctx {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
@@ -80,7 +80,7 @@ async fn ctx_with_backend(backend: revision::BackendFactory) -> Ctx {
     Ctx { app, cookie }
 }
 
-/// 统一的请求构造：可选会话 Cookie 与 CSRF 头（管理写请求必须两者齐备）。
+/// Unified request builder: optional session Cookie and CSRF header (management writes must carry both).
 async fn call(
     c: &Ctx,
     method: &str,
@@ -141,10 +141,10 @@ async fn enroll_device(c: &Ctx, network_id: &str, name: &str, public_key: &str) 
     enroll_with_token(c, &token, name, public_key).await
 }
 
-/// 用已签发的邀请 Token 加入（并发加入测试需要预先批量签发邀请）。
+/// Join with an already-issued invite Token (concurrent-join tests need invites pre-issued in bulk).
 ///
-/// 邀请本身**不改期望配置**（不改 Peer/路由/NAT），因此不记修订；只有设备真正
-/// 加入才记录一个版本（§10.1）。
+/// Issuing an invite itself **does not change the desired config** (no Peer/route/NAT change), so it records
+/// no revision; only an actual device join records one version (§10.1).
 async fn enroll_with_token(c: &Ctx, token: &str, name: &str, public_key: &str) -> Value {
     let (status, body) = call(
         c,
@@ -207,7 +207,7 @@ async fn create_network_records_pending_revision_and_never_claims_effective() {
     let c = ctx().await;
     let created = create_network(&c).await;
 
-    // ADR-009：配置修改类响应必须携带 revision_id 与 apply_status。
+    // ADR-009: config-modification responses must carry revision_id and apply_status.
     assert_eq!(created["revision_id"], 1);
     assert_eq!(created["apply_status"], "pending");
 
@@ -216,7 +216,7 @@ async fn create_network_records_pending_revision_and_never_claims_effective() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["revision"], 1);
     assert_eq!(entries[0]["apply_status"], "pending");
-    // DB 写入 ≠ 生效：从未成功应用的修订不得有 applied_at。
+    // DB write ≠ effective: a revision never successfully applied must not get applied_at.
     assert!(entries[0]["applied_at"].is_null());
     assert!(entries[0]["error_summary"].is_null());
     let hash = entries[0]["desired_config_hash"].as_str().unwrap();
@@ -226,7 +226,7 @@ async fn create_network_records_pending_revision_and_never_claims_effective() {
         "desired_config_hash must be sha256 hex: {hash}"
     );
 
-    // 网络列表同样以应用状态为准，不以 DB 写入为准。
+    // The network list also reflects apply status, not DB writes.
     let (status, body) = call(&c, "GET", "/api/v1/networks", Some(&c.cookie), false, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap()[0]["apply_status"], "pending");
@@ -245,7 +245,7 @@ async fn enroll_records_next_revision_with_changed_desired_hash() {
         .to_string();
 
     let enroll = enroll_device(&c, &network_id, "laptop", "pub-laptop-0001").await;
-    // 加入改变期望配置：新版本号 + 新哈希，仍是 pending。
+    // Joining changes the desired config: new version number + new hash, still pending.
     assert_eq!(enroll["revision_id"], 2);
     assert_eq!(enroll["apply_status"], "pending");
 
@@ -271,7 +271,7 @@ async fn apply_without_backend_fails_visibly_everywhere() {
     let created = create_network(&c).await;
     let network_id = created["id"].as_str().unwrap().to_string();
 
-    // 本进程无数据面 backend（WireGuard 应用需要 CAP_NET_ADMIN）→ 显式失败。
+    // No dataplane backend in this process (WireGuard apply needs CAP_NET_ADMIN) → an explicit failure.
     let (status, body) = apply(&c, &network_id, 1).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["revision"], 1);
@@ -285,7 +285,7 @@ async fn apply_without_backend_fails_visibly_everywhere() {
         "failed apply must not claim applied_at"
     );
 
-    // 失败在详情与列表里都可见（不是只在调用返回值里）。
+    // The failure is visible in both detail and list views (not only in the call's return value).
     let (status, detail) = call(
         &c,
         "GET",
@@ -314,7 +314,7 @@ async fn reapplying_a_failed_revision_is_a_conflict() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(first["apply_status"], "failed");
 
-    // 原地重试被状态机拒绝（§10.4）：重试路径是记录新修订。
+    // In-place retry is rejected by the state machine (§10.4): the retry path records a new revision.
     let (status, body) = apply(&c, &network_id, 1).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["error"]["code"], "conflict");
@@ -329,7 +329,7 @@ async fn rollback_without_backend_stays_unconfirmed_with_diagnostics() {
     apply(&c, &network_id, 1).await; // -> failed
     let (status, body) = rollback(&c, &network_id, 1).await;
     assert_eq!(status, StatusCode::OK);
-    // 回滚未能确认：明确留在 rollback_pending，且诊断合并（应用失败 + 回滚失败）。
+    // Rollback unconfirmed: explicitly left in rollback_pending, with diagnostics merged (apply failure + rollback failure).
     assert_eq!(body["apply_status"], "rollback_pending");
     let summary = body["error_summary"].as_str().unwrap();
     assert!(summary.contains("apply failed") || summary.contains("no network backend configured"));
@@ -342,7 +342,7 @@ async fn apply_and_rollback_require_session_and_csrf() {
     let created = create_network(&c).await;
     let network_id = created["id"].as_str().unwrap().to_string();
 
-    // 无会话 → 401。
+    // No session → 401.
     let (status, _) = call(
         &c,
         "POST",
@@ -354,7 +354,7 @@ async fn apply_and_rollback_require_session_and_csrf() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // 有会话但缺 CSRF 头 → 403（与既有写端点同一防线）。
+    // Session present but CSRF header missing → 403 (same line of defense as existing write endpoints).
     let (status, body) = call(
         &c,
         "POST",
@@ -367,7 +367,7 @@ async fn apply_and_rollback_require_session_and_csrf() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["error"]["code"], "forbidden");
 
-    // 认证失败不得污染修订状态。
+    // An auth failure must not pollute revision state.
     assert_eq!(
         revisions(&c, &network_id).await.as_array().unwrap()[0]["apply_status"],
         "pending"
@@ -398,15 +398,15 @@ async fn unknown_network_and_unknown_revision_are_404() {
 }
 
 // ---------------------------------------------------------------------------
-// #62 应用幂等与回滚安全（§10.3）
+// #62 apply idempotency and rollback safety (§10.3)
 // ---------------------------------------------------------------------------
 
-/// 记录 backend 收到的调用（修订身份 + 时序），用于断言幂等与回滚边界。
+/// Records the calls the backend received (revision identity + ordering), used to assert idempotency and rollback boundaries.
 #[derive(Default, Clone)]
 struct Calls {
     applied: Vec<u64>,
     rolled_back: Vec<u64>,
-    /// apply/rollback 是否被并发进入（用于 §10.4 串行化断言）。
+    /// Whether apply/rollback was entered concurrently (for the §10.4 serialization assertions).
     max_in_flight: usize,
     in_flight: usize,
 }
@@ -609,8 +609,8 @@ async fn slow_kernel_apply_across_networks_runs_in_parallel() {
 
 #[tokio::test]
 async fn reapplying_an_applied_revision_is_idempotent_at_the_api() {
-    // §10.3「重复执行同一个版本不得破坏网络」：第二次 apply 直接幂等返回，
-    // backend 只被调用一次，响应逐字节一致，也不新增修订。
+    // §10.3 "re-applying the same version must not break the network": the second apply returns idempotently,
+    // the backend is called only once, responses are byte-identical, and no new revision appears.
     let (calls, factory) = spy();
     let c = ctx_with_backend(factory).await;
     let created = create_network(&c).await;
@@ -623,7 +623,7 @@ async fn reapplying_an_applied_revision_is_idempotent_at_the_api() {
 
     let (status, second) = apply(&c, &network_id, 1).await;
     assert_eq!(status, StatusCode::OK);
-    // 幂等：响应完全一致（applied_at 保持第一次的时刻）。
+    // Idempotent: responses fully identical (applied_at keeps the first attempt's timestamp).
     assert_eq!(first, second);
 
     {
@@ -641,7 +641,7 @@ async fn reapplying_an_applied_revision_is_idempotent_at_the_api() {
     );
 }
 
-/// backend 失败时用：让 apply 落 `failed`，从而进入可回滚状态。
+/// For backend-failure cases: makes apply land in `failed`, thereby entering a rollback-able state.
 struct FailingApply;
 
 impl ConfigApplyBackend for FailingApply {
@@ -689,15 +689,15 @@ impl ConfigApplyBackend for FailingApplySpy {
 
 #[tokio::test]
 async fn rollback_touches_only_the_failed_revision_it_is_given() {
-    // §10.3「不得通过删除所有系统路由来回滚」+「修改限定在自有对象内」：
-    // backend 只收到那一个失败修订的身份——ledger 层没有任何「清空全部」的
-    // 指令通道，API 层同样不得多传一个对象。
+    // §10.3 "no rollback by deleting all system routes" + "changes stay within owned objects":
+    // the backend receives only that one failed revision's identity — the ledger layer has no
+    // "wipe everything" command channel, and the API layer must likewise pass no extra object.
     let (calls, factory) = failing_factory();
     let c = ctx_with_backend(factory).await;
     let created = create_network(&c).await;
     let network_id = created["id"].as_str().unwrap().to_string();
 
-    // 再加一个设备（产生修订 2）并让两个修订都应用失败。
+    // Add another device (yielding revision 2) and make both revisions fail to apply.
     assert_eq!(apply(&c, &network_id, 1).await.1["apply_status"], "failed");
     enroll_device(&c, &network_id, "laptop", "pub-laptop-0001").await;
     assert_eq!(apply(&c, &network_id, 2).await.1["apply_status"], "failed");
@@ -707,21 +707,21 @@ async fn rollback_touches_only_the_failed_revision_it_is_given() {
     assert_eq!(body["apply_status"], "rolled_back");
 
     let calls = calls.lock().unwrap();
-    // 恰好一次回滚，目标是失败修订本身：不是 rev1、不是「全部」。
+    // Exactly one rollback, targeting the failed revision itself: not rev1, not "everything".
     assert_eq!(calls.rolled_back, vec![2]);
 }
 
 #[tokio::test]
 async fn rolling_back_a_superseded_revision_is_refused_and_backend_is_untouched() {
-    // §10.4 交叉破坏防线：被更新修订取代的失败修订从未生效，按其意图回滚会触碰
-    // 更新修订拥有的对象 → 409，且**绝不调用 backend**。
+    // §10.4 cross-damage guard: a failed revision superseded by a newer one never took effect; rolling it
+    // back per its intent would touch objects owned by the newer revision → 409, and the backend is **never called**.
     let (calls, factory) = failing_factory();
     let c = ctx_with_backend(factory).await;
     let created = create_network(&c).await;
     let network_id = created["id"].as_str().unwrap().to_string();
 
     apply(&c, &network_id, 1).await; // rev1 -> failed
-    enroll_device(&c, &network_id, "laptop", "pub-laptop-0001").await; // rev2 取代 rev1
+    enroll_device(&c, &network_id, "laptop", "pub-laptop-0001").await; // rev2 supersedes rev1
     apply(&c, &network_id, 2).await; // rev2 -> failed
 
     let (status, body) = rollback(&c, &network_id, 1).await;
@@ -742,7 +742,7 @@ async fn rolling_back_a_superseded_revision_is_refused_and_backend_is_untouched(
             calls.rolled_back
         );
     }
-    // 被拒的回滚不改变任何修订状态。
+    // The rejected rollback changes no revision state.
     assert_eq!(
         revisions(&c, &network_id).await.as_array().unwrap()[0]["apply_status"],
         "failed"
@@ -750,20 +750,20 @@ async fn rolling_back_a_superseded_revision_is_refused_and_backend_is_untouched(
 }
 
 // ---------------------------------------------------------------------------
-// #63 并发版本顺序（§10.4）
+// #63 concurrent version ordering (§10.4)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn concurrent_mutations_get_unique_contiguous_revision_numbers() {
-    // §10.4「同一个 Network 的配置修改必须具有版本顺序」：并发写请求经网络级
-    // 互斥串行化，版本号唯一、连续、严格递增——不交叉、不丢号、不重号。
+    // §10.4 "config changes within the same Network must be version-ordered": concurrent writes are
+    // serialized by a per-network mutex; version numbers are unique, contiguous, strictly increasing — no interleaving, no gaps, no duplicates.
     const CONCURRENCY: usize = 12;
     let c = ctx().await;
     let created = create_network(&c).await;
     let network_id = created["id"].as_str().unwrap().to_string();
 
-    // 邀请不改期望配置，预先批量签发；随后并发加入——每次加入都改 Peer 配置，
-    // 各记一个版本（§10.1）。
+    // Invites don't change the desired config, so pre-issue them in bulk; then join concurrently —
+    // each join changes the Peer config and records one version (§10.1).
     let mut tokens = Vec::new();
     for _ in 0..CONCURRENCY {
         tokens.push(issue_invite(&c, &network_id).await);
@@ -782,11 +782,11 @@ async fn concurrent_mutations_get_unique_contiguous_revision_numbers() {
         ids.push(body["revision_id"].as_u64().unwrap());
     }
     ids.sort_unstable();
-    // 每个并发请求拿到的版本号互不相同（无重号）。
+    // Every concurrent request gets a distinct version number (no duplicates).
     ids.dedup();
     assert_eq!(ids.len(), CONCURRENCY, "revision ids must be unique");
 
-    // 修订 1 = 建网，其余每个并发加入各记一个修订。
+    // Revision 1 = network creation; each concurrent join thereafter records one revision.
     let list = revisions(&c, &network_id).await;
     let numbers: Vec<u64> = list
         .as_array()
@@ -800,8 +800,8 @@ async fn concurrent_mutations_get_unique_contiguous_revision_numbers() {
 
 #[tokio::test]
 async fn concurrent_applies_are_serialized_per_network() {
-    // §10.4 不交叉破坏 Peer/路由/NAT：同一网络的 apply 串行进入 backend，
-    // 任意时刻只有一个在飞；且每个修订至多被应用一次（幂等 + 串行共同保证）。
+    // §10.4 no cross-damage to Peers/routes/NAT: applies of the same network enter the backend
+    // serialized, only one in flight at any moment; and each revision is applied at most once (idempotency + serialization combined).
     let (calls, factory) = spy();
     let c = ctx_with_backend(factory).await;
     let created = create_network(&c).await;
@@ -834,7 +834,7 @@ async fn concurrent_applies_are_serialized_per_network() {
 
 #[tokio::test]
 async fn revision_numbering_is_independent_across_networks() {
-    // §10.4 版本顺序按网络隔离：并发修改不同网络不会互相挤占版本号。
+    // §10.4 version ordering is per-network: concurrent changes to different networks don't steal each other's version numbers.
     let c = ctx().await;
     let (status, home) = call(
         &c,
@@ -859,7 +859,7 @@ async fn revision_numbering_is_independent_across_networks() {
     assert_eq!(home["revision_id"], 1);
     assert_eq!(office["revision_id"], 1, "per-network numbering");
 
-    // 两个网络各自再变更一次，仍各自是版本 2。
+    // Both networks change once more; each is still at its own version 2.
     enroll_device(&c, home["id"].as_str().unwrap(), "laptop", "pub-laptop-1").await;
     enroll_device(
         &c,

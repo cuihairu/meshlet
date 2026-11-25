@@ -1,13 +1,13 @@
-//! 集成测试：网络诊断 13 项检查（[存档 §12.7](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Integration test: the 13 network diagnostics checks ([archive §12.7](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 1. 端点门禁：GET 需会话，POST 需会话 + CSRF；未知网络 404；
-//! 2. 十三项齐全、顺序固定、按故障层归类（隧道/路由/转发/Alias + 控制面）；
-//! 3. **不假绿**：控制面观测不到的本机检查（WireGuard 接口/内核路由/IP
-//!    forwarding/防火墙/NAT）恒 `unavailable` 并带可执行建议；
-//! 4. **控制面在册 ≠ 隧道正常**：设备已注册（③ pass）同时握手缺失（④ fail）
-//!    必须共存；心跳上报新鲜后 ④ 转 pass；
-//! 5. ⑧⑨⑫ 跟随网关 presence 与修订状态机（pending→warning、applied→pass、
-//!    failed→fail）；结果持久化（GET 读最近快照）；Alias 冲突用域层检测。
+//! 1. Endpoint gates: GET needs a session, POST needs a session + CSRF; unknown network 404;
+//! 2. All thirteen checks present, fixed order, grouped by fault layer (tunnel/routing/forwarding/Alias + control plane);
+//! 3. **No fake green**: local-machine checks the control plane cannot observe (WireGuard interface/kernel routes/IP
+//!    forwarding/firewall/NAT) are always `unavailable` and carry an actionable suggestion;
+//! 4. **Registered in the control plane ≠ a healthy tunnel**: device enrolled (③ pass) while handshake is missing (④ fail)
+//!    must hold simultaneously; once the heartbeat report is fresh, ④ flips to pass;
+//! 5. ⑧⑨⑫ follow gateway presence and the revision state machine (pending→warning, applied→pass,
+//!    failed→fail); results are persisted (GET reads the latest snapshot); Alias conflicts use domain-layer detection.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -23,7 +23,7 @@ const EMAIL: &str = "admin@test.local";
 const PASSWORD: &str = "bootstrap-password-123";
 const OVERLAY: &str = "10.240.0.0/16";
 
-/// §12.7 十三项的固定顺序与故障层。
+/// The fixed order and fault layers of the §12.7 thirteen checks.
 const EXPECTED: [(&str, &str); 13] = [
     ("api_reachable", "control_plane"),
     ("wg_interface_exists", "tunnel"),
@@ -40,7 +40,7 @@ const EXPECTED: [(&str, &str); 13] = [
     ("mtu_planned", "tunnel"),
 ];
 
-/// 控制面观测不到的本机检查（§12.7 ②⑤⑥⑦⑪）：恒 unavailable。
+/// Local-machine checks the control plane cannot observe (§12.7 ②⑤⑥⑦⑪): always unavailable.
 const LOCAL_MACHINE: [&str; 5] = [
     "wg_interface_exists",
     "overlay_route_present",
@@ -49,7 +49,7 @@ const LOCAL_MACHINE: [&str; 5] = [
     "nat_rules_effective",
 ];
 
-/// 无数据面的占位 backend：apply/rollback 恒成功（⑨⑫ pass 路径用）。
+/// A placeholder backend with no data plane: apply/rollback always succeed (for the ⑨⑫ pass paths).
 struct OkBackend;
 
 impl ConfigApplyBackend for OkBackend {
@@ -80,7 +80,7 @@ async fn ctx_with_backend(backend: revision::BackendFactory) -> Ctx {
     ctx_from(state, pool).await
 }
 
-/// 带计划隧道 MTU（§7.5，⑬ 的输入）的 ctx。
+/// A ctx with a planned tunnel MTU (§7.5, the input to ⑬).
 async fn ctx_with_mtu(mtu: Option<u32>) -> Ctx {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
@@ -89,7 +89,7 @@ async fn ctx_with_mtu(mtu: Option<u32>) -> Ctx {
     ctx_from(state, pool).await
 }
 
-/// 带可 apply 的修订 backend + 计划隧道 MTU（证据驱动的 ⑪⑬ 用）。
+/// A revision backend that can apply + a planned tunnel MTU (for the evidence-driven ⑪⑬).
 async fn ctx_with_backend_and_mtu(backend: revision::BackendFactory, mtu: Option<u32>) -> Ctx {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
@@ -100,7 +100,7 @@ async fn ctx_with_backend_and_mtu(backend: revision::BackendFactory, mtu: Option
     ctx_from(state, pool).await
 }
 
-/// 共享同一池的完整 AppState（审计与凭证同库，见 auth.rs）。
+/// A full AppState sharing one pool (audit and credentials in the same db, see auth.rs).
 fn build_state(pool: &sqlx::SqlitePool) -> meshlet_server::auth::AppState {
     meshlet_server::auth::AppState::new(
         Arc::new(std::sync::Mutex::new(
@@ -113,7 +113,7 @@ fn build_state(pool: &sqlx::SqlitePool) -> meshlet_server::auth::AppState {
     )
 }
 
-/// 组 router + bootstrap 管理员，返回登录态 ctx。
+/// Assemble the router + bootstrap the admin, returning a logged-in ctx.
 async fn ctx_from(state: meshlet_server::auth::AppState, pool: sqlx::SqlitePool) -> Ctx {
     let app = meshlet_server::router(Arc::new(state));
     let res = app
@@ -166,7 +166,7 @@ async fn json_get(c: &Ctx, uri: &str) -> (StatusCode, Value) {
     call(c, "GET", uri, None).await
 }
 
-/// 无认证/无 CSRF 的裸请求（门禁用例）。
+/// A bare request without auth/CSRF (gate cases).
 async fn raw(app: Router, method: &str, uri: &str, cookie: Option<&str>, csrf: bool) -> StatusCode {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(cookie) = cookie {
@@ -187,7 +187,7 @@ async fn raw(app: Router, method: &str, uri: &str, cookie: Option<&str>, csrf: b
     res.status()
 }
 
-/// 建网 + 邀请 + 加入一台设备，返回 (network_id, device_id, agent_token)。
+/// Create a network + invite + enroll one device, returning (network_id, device_id, agent_token).
 async fn net_with_device(c: &Ctx) -> (String, String, String) {
     let (st, net) = json_post(
         c,
@@ -223,12 +223,12 @@ async fn net_with_device(c: &Ctx) -> (String, String, String) {
     )
 }
 
-/// agent 心跳（Bearer 凭证 + 本地握手读数）。
+/// Agent heartbeat (Bearer credential + local handshake reading).
 async fn heartbeat(c: &Ctx, agent_token: &str, handshake_at: &str) -> Value {
     heartbeat_with_evidence(c, agent_token, handshake_at, serde_json::Value::Null).await
 }
 
-/// agent 心跳 + 数据面实测证据（§7.5：内核读数 + 大包探测）。
+/// Agent heartbeat + measured data-plane evidence (§7.5: kernel readings + large-packet probe).
 async fn heartbeat_with_evidence(
     c: &Ctx,
     agent_token: &str,
@@ -248,7 +248,7 @@ async fn heartbeat_with_evidence(
             .to_string(),
         ))
         .unwrap();
-    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    // §12: observe the direct-connect source address on heartbeat (ConnectInfo is assembled at the serve layer).
     req.extensions_mut().insert(axum::extract::ConnectInfo(
         "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
     ));
@@ -258,7 +258,7 @@ async fn heartbeat_with_evidence(
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// 触发诊断，断言 200 并返回报告。
+/// Trigger diagnostics, asserting 200 and returning the report.
 async fn run(c: &Ctx, network_id: &str) -> Value {
     let (st, body) = json_post(
         c,
@@ -284,13 +284,13 @@ fn now_stamp() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 门禁与 404
+// Gates and 404
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn diagnostics_endpoints_require_auth_and_csrf() {
     let c = ctx().await;
-    // 无会话：GET/POST 都 401（认证在路径解析之前，未知网络同样先撞认证）。
+    // No session: both GET/POST get 401 (auth runs before path resolution, so an unknown network hits auth first too).
     assert_eq!(
         raw(
             c.app.clone(),
@@ -313,7 +313,7 @@ async fn diagnostics_endpoints_require_auth_and_csrf() {
         .await,
         StatusCode::UNAUTHORIZED
     );
-    // 有会话无 CSRF 头：写请求 403。
+    // Session without the CSRF header: write requests get 403.
     assert_eq!(
         raw(
             c.app.clone(),
@@ -361,7 +361,7 @@ async fn get_before_any_run_is_404_and_names_post() {
     let (st, body) = json_get(&c, &format!("/api/v1/networks/{network_id}/diagnostics")).await;
     assert_eq!(st, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"]["code"], "not_found");
-    // 消息点名触发方式——不假称「有结果」。
+    // The message names the trigger -- it must not pretend results exist.
     assert!(
         body["error"]["message"].as_str().unwrap().contains("POST"),
         "{body}"
@@ -369,7 +369,7 @@ async fn get_before_any_run_is_404_and_names_post() {
 }
 
 // ---------------------------------------------------------------------------
-// 十三项结构与不假绿
+// Thirteen-check structure and no fake green
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -388,7 +388,7 @@ async fn run_reports_thirteen_checks_in_order_with_layers() {
     assert_eq!(report["network_id"], network_id);
     assert!(report["checked_at"].as_str().is_some_and(|s| !s.is_empty()));
 
-    // 十三项、顺序与层固定（§12.7 列表 + 隧道/路由/转发/Alias + 控制面）。
+    // Thirteen checks with fixed order and layers (§12.7 list + tunnel/routing/forwarding/Alias + control plane).
     let checks = report["checks"].as_array().unwrap();
     assert_eq!(checks.len(), 13, "{checks:?}");
     for (i, (id, layer)) in EXPECTED.iter().enumerate() {
@@ -398,7 +398,7 @@ async fn run_reports_thirteen_checks_in_order_with_layers() {
         assert!(checks[i]["detail"].as_str().is_some_and(|s| !s.is_empty()));
     }
 
-    // 不假绿：本机检查恒 unavailable（不是 pass），且建议非空。
+    // No fake green: local-machine checks are always unavailable (not pass), and the suggestion is non-empty.
     for id in LOCAL_MACHINE {
         let item = check_of(&report, id);
         assert_eq!(item["status"], "unavailable", "{item}");
@@ -412,10 +412,10 @@ async fn run_reports_thirteen_checks_in_order_with_layers() {
         );
     }
 
-    // ① 恒 pass（能读到报告即证明 API 在服务）。
+    // ① is always pass (being able to read the report proves the API is serving).
     assert_eq!(check_of(&report, "api_reachable")["status"], "pass");
 
-    // GET 读到的是**同一份**快照（不是现算的新报告）。
+    // GET reads the **same** snapshot (not a freshly computed report).
     let (st, again) = json_get(&c, &format!("/api/v1/networks/{network_id}/diagnostics")).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(again["checked_at"], report["checked_at"]);
@@ -435,7 +435,7 @@ async fn empty_network_honestly_reports_not_applicable() {
     let network_id = net["id"].as_str().unwrap().to_string();
 
     let report = run(&c, &network_id).await;
-    // 无设备：注册/握手如实 not_applicable（不是 pass）。
+    // No devices: registration/handshake honestly not_applicable (not pass).
     assert_eq!(
         check_of(&report, "server_peer_configured")["status"],
         "not_applicable"
@@ -444,7 +444,7 @@ async fn empty_network_honestly_reports_not_applicable() {
         check_of(&report, "recent_handshake")["status"],
         "not_applicable"
     );
-    // 无路由：网关/发布 not_applicable。
+    // No routes: gateway/publication not_applicable.
     assert_eq!(
         check_of(&report, "lan_gateway_agent_online")["status"],
         "not_applicable"
@@ -453,27 +453,27 @@ async fn empty_network_honestly_reports_not_applicable() {
         check_of(&report, "lan_route_published")["status"],
         "not_applicable"
     );
-    // 无 Alias 映射：not_applicable（Phase 4 无写路径，表为空）。
+    // No Alias mappings: not_applicable (Phase 4 has no write path, the table is empty).
     assert_eq!(
         check_of(&report, "alias_prefix_conflict")["status"],
         "not_applicable"
     );
-    // 无设备：无隧道可定尺寸，⑬ 也 not_applicable（不是 pass）。
+    // No devices: no tunnel to size, ⑬ is also not_applicable (not pass).
     assert_eq!(check_of(&report, "mtu_planned")["status"], "not_applicable");
-    // 建网已记录修订 #1（pending）：配置一致性是 warning——期望配置未确认应用。
+    // Creating the network already recorded revision #1 (pending): config consistency is warning -- the desired config is not confirmed applied.
     let revision_check = check_of(&report, "config_revision_consistent");
     assert_eq!(revision_check["status"], "warning", "{revision_check}");
     assert!(revision_check["detail"].as_str().unwrap().contains("#1"));
 }
 
 // ---------------------------------------------------------------------------
-// ⑬ 计划隧道 MTU 跟随 server 配置（§7.5）
+// ⑬ planned tunnel MTU follows server config (§7.5)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn mtu_check_follows_server_config() {
-    // 未显式配置（默认 ctx）：有设备时 warning——默认 1420 在 PPPoE/4G 底层
-    // 上有大包黑洞风险，建议必须给出可执行的 ping -M do 实测命令。
+    // Not explicitly configured (default ctx): warning when devices exist -- the default 1420 risks
+    // large-packet blackholing over PPPoE/4G underlays, so the suggestion must give an actionable ping -M do probe command.
     let c = ctx().await;
     let (network_id, _device_id, _token) = net_with_device(&c).await;
     let report = run(&c, &network_id).await;
@@ -482,7 +482,7 @@ async fn mtu_check_follows_server_config() {
     assert!(item["detail"].as_str().unwrap().contains("1420"));
     assert!(item["suggestion"].as_str().unwrap().contains("ping -M do"));
 
-    // 显式配置：pass，detail 点名计划值；pass ⇒ 无需建议。
+    // Explicitly configured: pass, the detail names the planned value; pass ⇒ no suggestion needed.
     let c = ctx_with_mtu(Some(1380)).await;
     let (network_id, _device_id, _token) = net_with_device(&c).await;
     let report = run(&c, &network_id).await;
@@ -493,7 +493,7 @@ async fn mtu_check_follows_server_config() {
 }
 
 // ---------------------------------------------------------------------------
-// 设备侧实测证据驱动 ⑪⑬（§7.5/§12.4：心跳回传内核读数）
+// Device-side measured evidence drives ⑪⑬ (§7.5/§12.4: heartbeat carries kernel readings back)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -505,7 +505,7 @@ async fn device_evidence_drives_nat_and_mtu_checks() {
     .await;
     let (network_id, device_id, token) = net_with_device(&c).await;
 
-    // alias 路由 + 映射 + apply：⑪ 有了评判对象（Applied 的 Alias 路由）。
+    // Alias route + mapping + apply: ⑪ now has something to judge (an Applied Alias route).
     let (st, route) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/routes"),
@@ -540,15 +540,15 @@ async fn device_evidence_drives_nat_and_mtu_checks() {
     .await;
     assert_eq!(st, StatusCode::OK, "{applied}");
 
-    // 无证据：⑪ 恒 unavailable（控制面不可观测），⑬ 只评计划（pass）。
+    // No evidence: ⑪ stays unavailable (not observable from the control plane), ⑬ only evaluates the plan (pass).
     let report = run(&c, &network_id).await;
     let nat = check_of(&report, "nat_rules_effective");
     assert_eq!(nat["status"], "unavailable", "{nat}");
     assert!(nat["detail"].as_str().unwrap().contains("cannot"));
     assert_eq!(check_of(&report, "mtu_planned")["status"], "pass");
 
-    // 网关证据「内核里没有 Meshlet NAT 规则」→ ⑪ fail（如实点出）；
-    // 接口读数 1300 ≠ 计划 1380 → ⑬ fail。证据同时落在设备视图上。
+    // Gateway evidence "no meshlet NAT rules in the kernel" → ⑪ fail (reported honestly);
+    // Interface reading 1300 ≠ planned 1380 → ⑬ fail. The evidence also lands on the device view.
     heartbeat_with_evidence(
         &c,
         &token,
@@ -573,7 +573,7 @@ async fn device_evidence_drives_nat_and_mtu_checks() {
         "reading must be named: {mtu}"
     );
 
-    // 健康证据：规则在内核 + 读数与计划一致 + 大包探测通过 → ⑪⑬ pass。
+    // Healthy evidence: rules in the kernel + reading matches the plan + large-packet probe passes → ⑪⑬ pass.
     heartbeat_with_evidence(
         &c,
         &token,
@@ -587,7 +587,7 @@ async fn device_evidence_drives_nat_and_mtu_checks() {
     assert_eq!(mtu["status"], "pass", "{mtu}");
     assert!(mtu["detail"].as_str().unwrap().contains("1352"), "{mtu}");
 
-    // 读数一致但大包探测未证实 → ⑬ warning（路径未验证，给实测命令）。
+    // Reading matches but the large-packet probe is unverified → ⑬ warning (path unverified, give the probe command).
     heartbeat_with_evidence(
         &c,
         &token,
@@ -603,7 +603,7 @@ async fn device_evidence_drives_nat_and_mtu_checks() {
         "{mtu}"
     );
 
-    // 设备视图带出最近一次证据（控制台/诊断同源）。
+    // The device view surfaces the latest evidence (console and diagnostics share the source).
     let (st, devices) = json_get(&c, &format!("/api/v1/networks/{network_id}/devices")).await;
     assert_eq!(st, StatusCode::OK);
     let view = devices
@@ -618,7 +618,7 @@ async fn device_evidence_drives_nat_and_mtu_checks() {
 
 #[tokio::test]
 async fn heartbeat_without_evidence_keeps_previous_readings() {
-    // 证据与握手时间同一纪律：请求未携带时保留上次读数（最后已知读数）。
+    // Evidence follows the same discipline as the handshake time: when the request omits it, the previous reading is kept (last known reading).
     let c = ctx_with_mtu(Some(1380)).await;
     let (network_id, _device_id, token) = net_with_device(&c).await;
     heartbeat_with_evidence(
@@ -628,7 +628,7 @@ async fn heartbeat_without_evidence_keeps_previous_readings() {
         json!({"tunnel_mtu": 1380, "mtu_probe_payload": 1352}),
     )
     .await;
-    heartbeat(&c, &token, &now_stamp()).await; // 不带 dataplane 字段
+    heartbeat(&c, &token, &now_stamp()).await; // without dataplane fields
     let (st, devices) = json_get(&c, &format!("/api/v1/networks/{network_id}/devices")).await;
     assert_eq!(st, StatusCode::OK);
     let view = devices.as_array().unwrap().first().unwrap();
@@ -637,7 +637,7 @@ async fn heartbeat_without_evidence_keeps_previous_readings() {
 }
 
 // ---------------------------------------------------------------------------
-// 控制面在册 ≠ 隧道正常（§12.4 判读纪律）
+// Registered in the control plane ≠ a healthy tunnel (§12.4 reading discipline)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -646,7 +646,7 @@ async fn registration_without_handshake_is_not_a_healthy_tunnel() {
     let (network_id, _device_id, _token) = net_with_device(&c).await;
 
     let report = run(&c, &network_id).await;
-    // ③ 已注册（pass）——但 detail 必须点名「只是控制面在册」。
+    // ③ registered (pass) -- but the detail must state it is "registration only".
     let peer = check_of(&report, "server_peer_configured");
     assert_eq!(peer["status"], "pass", "{peer}");
     assert!(
@@ -656,7 +656,7 @@ async fn registration_without_handshake_is_not_a_healthy_tunnel() {
             .contains("registration only"),
         "③ must not claim tunnel health: {peer}"
     );
-    // ④ 从未观测到握手（fail）——两项检查同时成立，注册不给隧道背书。
+    // ④ handshake never observed (fail) -- both checks hold at once; registration does not vouch for the tunnel.
     let handshake = check_of(&report, "recent_handshake");
     assert_eq!(handshake["status"], "fail", "{handshake}");
     assert!(
@@ -671,7 +671,7 @@ async fn fresh_handshake_and_agent_report_flip_the_checks() {
     let c = ctx().await;
     let (network_id, _device_id, token) = net_with_device(&c).await;
 
-    // 心跳携带本地握手读数：agent 上报新鲜 → 设备 online；握手在窗口内 → ④ pass。
+    // The heartbeat carries the local handshake reading: fresh agent report → device online; handshake within the window → ④ pass.
     let hb = heartbeat(&c, &token, &now_stamp()).await;
     assert_eq!(hb["online_state"], "online");
 
@@ -682,7 +682,7 @@ async fn fresh_handshake_and_agent_report_flip_the_checks() {
 }
 
 // ---------------------------------------------------------------------------
-// 网关 presence 与修订状态机驱动 ⑧⑨⑫
+// Gateway presence and the revision state machine drive ⑧⑨⑫
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -692,7 +692,7 @@ async fn gateway_online_and_revision_state_drive_route_checks() {
     }))
     .await;
     let (network_id, _device_id, token) = net_with_device(&c).await;
-    heartbeat(&c, &token, &now_stamp()).await; // 网关 agent 上报新鲜 → online
+    heartbeat(&c, &token, &now_stamp()).await; // gateway agent report fresh → online
     let (st, route) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/routes"),
@@ -705,7 +705,7 @@ async fn gateway_online_and_revision_state_drive_route_checks() {
     .await;
     assert_eq!(st, StatusCode::CREATED, "{route}");
 
-    // 修订 #3（建路由）尚未 apply：⑧ pass（网关在线）、⑨ warning、⑫ warning。
+    // Revision #3 (route creation) not yet applied: ⑧ pass (gateway online), ⑨ warning, ⑫ warning.
     let report = run(&c, &network_id).await;
     assert_eq!(
         check_of(&report, "lan_gateway_agent_online")["status"],
@@ -720,7 +720,7 @@ async fn gateway_online_and_revision_state_drive_route_checks() {
         "warning"
     );
 
-    // apply 成功（OkBackend）：⑨ pass、⑫ pass——detail 仍注明这只是控制面口径。
+    // Apply succeeds (OkBackend): ⑨ pass, ⑫ pass -- the detail still notes this is the control-plane view only.
     let (st, applied) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/3/apply"),
@@ -748,7 +748,7 @@ async fn gateway_online_and_revision_state_drive_route_checks() {
 
 #[tokio::test]
 async fn failed_apply_flags_route_and_revision_checks() {
-    let c = ctx().await; // 默认占位 backend：apply 确定性失败
+    let c = ctx().await; // default placeholder backend: apply fails deterministically
     let (network_id, _device_id, token) = net_with_device(&c).await;
     heartbeat(&c, &token, &now_stamp()).await;
     let (st, _route) = json_post(
@@ -772,10 +772,10 @@ async fn failed_apply_flags_route_and_revision_checks() {
     assert_eq!(applied["apply_status"], "failed");
 
     let report = run(&c, &network_id).await;
-    // ⑨：路由已记录但 apply 失败——fail（记录 ≠ 发布）。
+    // ⑨: route recorded but apply failed -- fail (recorded ≠ published).
     let published = check_of(&report, "lan_route_published");
     assert_eq!(published["status"], "fail", "{published}");
-    // ⑫：失败修订带 error_summary（失败可见，§10.3）。
+    // ⑫: the failed revision carries an error_summary (failure is visible, §10.3).
     let revision_check = check_of(&report, "config_revision_consistent");
     assert_eq!(revision_check["status"], "fail", "{revision_check}");
     assert!(
@@ -788,7 +788,7 @@ async fn failed_apply_flags_route_and_revision_checks() {
 }
 
 // ---------------------------------------------------------------------------
-// 快照持久化
+// Snapshot persistence
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -796,31 +796,31 @@ async fn runs_are_persisted_get_returns_the_latest() {
     let c = ctx().await;
     let (network_id, _device_id, token) = net_with_device(&c).await;
 
-    // 第一跑：设备已注册但从未握手——④ fail。
+    // First run: device registered but handshake never observed -- ④ fail.
     let first = run(&c, &network_id).await;
     assert_eq!(check_of(&first, "recent_handshake")["status"], "fail");
 
-    // 心跳上报新鲜握手后第二跑：④ 翻 pass——两份快照内容可区分
-    // （不用时刻区分：库内时间戳是秒精度，同秒内两跑时刻相同）。
+    // Second run after the heartbeat reports a fresh handshake: ④ flips to pass -- the two snapshots differ in content
+    // (not in time: db timestamps are second-precision, two runs within the same second share a timestamp).
     heartbeat(&c, &token, &now_stamp()).await;
     let second = run(&c, &network_id).await;
     assert_eq!(check_of(&second, "recent_handshake")["status"], "pass");
     assert_ne!(second["checks"], first["checks"]);
 
-    // GET 取**最近**一份（④ pass 的那份，不是第一跑的 fail 快照）。
+    // GET returns the **latest** one (the ④ pass snapshot, not the first run's fail snapshot).
     let (st, latest) = json_get(&c, &format!("/api/v1/networks/{network_id}/diagnostics")).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(check_of(&latest, "recent_handshake")["status"], "pass");
     assert_eq!(latest["checks"], second["checks"]);
 
-    // GET 是读快照：连读两次结果一致（不隐式重算）。
+    // GET reads the snapshot: two consecutive reads agree (no implicit recompute).
     let (st, again) = json_get(&c, &format!("/api/v1/networks/{network_id}/diagnostics")).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(again, latest);
 }
 
 // ---------------------------------------------------------------------------
-// Alias 冲突（§12.7 第 10 项，域层检测）
+// Alias conflicts (§12.7 item 10, domain-layer detection)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -840,9 +840,9 @@ async fn alias_conflicts_detected_when_mappings_exist() {
     assert_eq!(st, StatusCode::CREATED);
     let route_id = route["id"].as_str().unwrap().to_string();
 
-    // 直接落两行 alias 映射（模拟脏库/手改库——服务写路径在创建时已拒绝
-    // 这类重叠，正常 API 到不了这里；FK 指向刚建的路由），
-    // 造一个「alias 与 overlay 重叠 + alias 互叠」的坏配置。
+    // Insert two alias mapping rows directly (simulating a dirty/hand-edited db -- the service write path
+    // already rejects such overlaps at creation, the normal API cannot reach this state; the FK points at the just-created route),
+    // building a bad config of "alias overlapping the overlay + aliases overlapping each other".
     for (id, alias_cidr) in [("al-1", "10.240.1.0/24"), ("al-2", "10.240.1.0/24")] {
         sqlx::query(
             "INSERT INTO alias_mappings (id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode, status, created_at)
@@ -861,7 +861,7 @@ async fn alias_conflicts_detected_when_mappings_exist() {
     let alias_check = check_of(&report, "alias_prefix_conflict");
     assert_eq!(alias_check["status"], "fail", "{alias_check}");
     let detail = alias_check["detail"].as_str().unwrap();
-    // 域层冲突明细点名对端（ADR-004/§8.3 不静默）。
+    // The domain-layer conflict detail names the counterpart (ADR-004/§8.3, no silence).
     assert!(detail.contains("overlaps overlay"), "{detail}");
     assert!(detail.contains("overlaps alias"), "{detail}");
 }

@@ -1,7 +1,7 @@
-//! Segment 与单向 SegmentGrant 管理（ADR-012）。
+//! Segment and one-way SegmentGrant management (ADR-012).
 //!
-//! 授权先以 Pending 写入，只有显式 apply 后进入计划编译和期望哈希；
-//! 未知段、重复对、同段授权、二次撤销均在任何状态变更前拒绝。
+//! Grants are written as Pending first and only enter plan compilation and the desired hash after an explicit apply;
+//! unknown segments, duplicate pairs, same-segment grants, and double revocation are all rejected before any state change.
 
 use axum::extract::State;
 use axum::http::StatusCode;

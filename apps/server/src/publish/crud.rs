@@ -1,4 +1,4 @@
-//! 四类发布对象的领域规则与 staged 状态变更。
+//! Domain rules and staged state changes for the four publish object types.
 
 use super::auth::plan_error;
 use super::models::{PublishDnsRecord, PublishForward, PublishHttpRoute, PublishProbe};
@@ -11,8 +11,8 @@ use crate::service::{MeshState, ServiceError};
 use meshlet_publish::health::ProbeTarget;
 use meshlet_publish::{ForwardProtocol, HttpRoute, HttpRouteSet, PortForwardConfig, ProbeSchedule};
 
-/// 端口冲突按设备判定：每台设备是独立主机，同设备上同 `(protocol,
-/// listener 地址:端口)` 只能绑一次。
+/// Port conflicts are judged per device: each device is its own host, so the same
+/// `(protocol, listener address:port)` can be bound only once per device.
 fn check_forward_port_free(
     state: &MeshState,
     network_id: &str,
@@ -133,7 +133,7 @@ pub(crate) fn get_forward(
     Ok(super::views::to_forward_view(state, network_id, forward))
 }
 
-/// 删除返回 `(forward_id)` 供落库与审计。
+/// Deletion returns the `(forward_id)` for persistence and auditing.
 pub(crate) fn delete_forward(
     state: &mut MeshState,
     network_id: &str,
@@ -155,11 +155,11 @@ pub(crate) fn delete_forward(
 }
 
 // ---------------------------------------------------------------------------
-// HTTP 路由的域函数
+// Domain functions for HTTP routes
 // ---------------------------------------------------------------------------
 
-/// 同网络内 `(hostname, path_prefix)` 唯一（大小写不敏感），与计划层
-/// `HttpRouteSet` 的查重口径一致。
+/// `(hostname, path_prefix)` is unique within a network (case-insensitive), matching
+/// the deduplication criteria of the plan-layer `HttpRouteSet`.
 fn check_http_route_free(
     state: &MeshState,
     network_id: &str,
@@ -181,9 +181,10 @@ fn check_http_route_free(
     Ok(())
 }
 
-/// 一台设备只绑定一个 HTTP 监听口、只用一种终止模式：计划里只有
-/// `http_listener` 和 `tls_passthrough` 两个位置，其余值会被静默丢弃
-/// （第二个监听口不绑定；混入 TLS 路由会让整台设备切成 SNI 嗅探）。
+/// A device binds only one HTTP listening socket and uses only one termination mode:
+/// the plan has just two slots, `http_listener` and `tls_passthrough`, and any other
+/// values are silently dropped (a second listener is not bound; mixing in TLS routes
+/// would flip the whole device into SNI sniffing).
 fn check_http_socket_consistent(
     state: &MeshState,
     network_id: &str,
@@ -216,16 +217,18 @@ fn check_http_socket_consistent(
     Ok(())
 }
 
-/// TLS passthrough 是 SNI 嗅探 + 原始字节直通：meshlet 没有证书、不解密。
-/// 因此下面两项能力在该模式上根本不存在，静默忽略等于冒充，创建期一律 409
-/// （与「混合终止模式 409」同口径扩展）：
-/// - `allowed_bearer_tokens`：路由器看不到 HTTP 头（TLS 对它不透明），
-///   token 永远不会被校验；
-/// - `path_prefix` 非 `/`：嗅探只按 SNI 主机名选路（恒以 `/` 匹配），
-///   路径前缀永不参与匹配。
+/// TLS passthrough is SNI sniffing + raw byte pass-through: meshlet holds no
+/// certificate and does not decrypt. The two capabilities below therefore simply do
+/// not exist in this mode; silently ignoring them would be misrepresentation, so
+/// creation returns 409 unconditionally (extending the same criterion as "mixed
+/// termination mode is 409"):
+/// - `allowed_bearer_tokens`: the router cannot see HTTP headers (TLS is opaque to
+///   it), so tokens are never checked;
+/// - `path_prefix` other than `/`: sniffing selects the route by SNI host name only
+///   (always matching `/`), so a path prefix never takes part in matching.
 ///
-/// 要这两项能力就用 plain HTTP 路由；真正的 TLS 终结当前不支持，
-/// 直接拒绝而不是假装支持。
+/// To get these two capabilities, use a plain HTTP route; real TLS termination is
+/// not currently supported, so it is refused outright rather than pretended.
 fn check_publish_mode_supported(
     tls_passthrough: bool,
     path_prefix: &str,
@@ -381,7 +384,7 @@ pub(crate) fn delete_http_route(
 }
 
 // ---------------------------------------------------------------------------
-// 探针的域函数
+// Domain functions for probes
 // ---------------------------------------------------------------------------
 
 fn probe_target_from_parts(
@@ -526,7 +529,7 @@ pub(crate) fn delete_probe(
     Ok(probe_id.to_string())
 }
 
-/// agent 健康回报（内存侧）：只更新归该设备的探针的 `last_*`。
+/// Agent health report (in-memory side): only updates the `last_*` fields of probes belonging to that device.
 pub(crate) fn record_probe_health(
     state: &mut MeshState,
     network_id: &str,
@@ -553,11 +556,12 @@ pub(crate) fn record_probe_health(
 }
 
 // ---------------------------------------------------------------------------
-// DNS 记录的域函数
+// Domain functions for DNS records
 // ---------------------------------------------------------------------------
 
-/// 每设备至多一个 `(bind_address, internal_suffix)` 套接字：新记录必须与该
-/// 设备既有记录的套接字一致——保证计划聚合时一台设备只产出 `Some(DnsPlan)`。
+/// Each device has at most one `(bind_address, internal_suffix)` socket: a new record
+/// must agree with that device's existing records on the socket — this guarantees a
+/// device yields only `Some(DnsPlan)` when plans are aggregated.
 fn check_dns_socket_consistent(
     state: &MeshState,
     network_id: &str,

@@ -1,11 +1,11 @@
-//! 集成测试：MT-002 任务下发与回执（断线补派幂等）。
+//! Integration test: MT-002 task dispatch and receipts (idempotent redispatch after disconnect).
 //!
-//! 端到端路径：控制台派发（`POST /api/v1/networks/{id}/tasks`，Cookie+CSRF）
-//! → agent 拉待办（Bearer）→ ack → result 回执。断言重点：
-//! - 派发成功 201 / 重复派发同 id 幂等 200（不重置状态、不重建）；
-//! - 终态任务不再出现在 pending（agent 不会再次拿到 → 不会重跑）；
-//! - ack / result 对已越过该步的状态幂等成功（补派重发不报错）；
-//! - 越界目标（他网设备 / 未激活设备 / 不存在设备）拒绝。
+//! End-to-end path: console dispatch (`POST /api/v1/networks/{id}/tasks`, cookie + CSRF)
+//! -> the agent pulls pending work (Bearer) -> ack -> result receipt. Assertion focus:
+//! - a successful dispatch returns 201 / redispatching the same id is idempotent with 200 (state is not reset, nothing is rebuilt);
+//! - tasks in a terminal state no longer appear in pending (the agent never receives them again -> no rerun);
+//! - ack / result succeed idempotently for states that already passed that step (redispatch resends do not error);
+//! - out-of-bounds targets (another network's device / an inactive device / a nonexistent device) are rejected.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -36,7 +36,7 @@ impl meshlet_domain::ConfigApplyBackend for OkBackend {
     }
 }
 
-/// 构建 router（数据面默认关：任务通道不依赖数据面开关）。
+/// Build the router (the dataplane is off by default: the task channel does not depend on the dataplane switch).
 async fn app() -> (Router, SharedAppState) {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
@@ -87,7 +87,7 @@ async fn admin(
     (res.status(), res_body(res).await)
 }
 
-/// bootstrap → 建网络 → 邀请首台设备入网。返回 (ctx, device_id, agent_token)。
+/// bootstrap -> create network -> enroll the first device. Returns (ctx, device_id, agent_token).
 async fn bootstrap(name: &str, public_key: &str) -> (Ctx, String, String, SharedAppState) {
     let (app, state) = app().await;
     let res = app
@@ -135,7 +135,7 @@ async fn bootstrap(name: &str, public_key: &str) -> (Ctx, String, String, Shared
     (ctx, device_id, token, state)
 }
 
-/// 在同一 server 实例上追加第二个网络（跨网络幂等/隔离测试用）。
+/// Add a second network on the same server instance (used by cross-network idempotency/isolation tests).
 async fn add_network(ctx: &Ctx) -> Ctx {
     let (st, net) = admin(
         &ctx.app,
@@ -157,7 +157,7 @@ async fn add_network(ctx: &Ctx) -> Ctx {
     }
 }
 
-/// 邀请 + 入网一台设备（返回 device_id、agent_token）。
+/// Invite and enroll one device (returns device_id and agent_token).
 async fn enroll(ctx: &Ctx, name: &str, public_key: &str) -> (String, String) {
     let (st, invite) = admin(
         &ctx.app,
@@ -197,7 +197,7 @@ async fn enroll(ctx: &Ctx, name: &str, public_key: &str) -> (String, String) {
     )
 }
 
-/// 控制台派发任务。
+/// Dispatch a task from the console.
 async fn assign(
     ctx: &Ctx,
     target: &str,
@@ -220,7 +220,7 @@ async fn assign(
     .await
 }
 
-/// agent 拉待办。
+/// The agent pulls pending tasks.
 async fn pending(app: &Router, token: &str) -> serde_json::Value {
     let res = app
         .clone()
@@ -238,7 +238,7 @@ async fn pending(app: &Router, token: &str) -> serde_json::Value {
     res_body(res).await
 }
 
-/// agent 确认接收（幂等）。
+/// The agent acknowledges receipt (idempotent).
 async fn ack(app: &Router, token: &str, id: &str) -> StatusCode {
     let res = app
         .clone()
@@ -255,7 +255,7 @@ async fn ack(app: &Router, token: &str, id: &str) -> StatusCode {
     res.status()
 }
 
-/// agent 回传结果。
+/// The agent reports its result.
 async fn result(
     app: &Router,
     token: &str,
@@ -281,7 +281,7 @@ async fn result(
     (res.status(), res_body(res).await)
 }
 
-/// 控制台列取网络任务。
+/// The console lists the network's tasks.
 async fn task_list(ctx: &Ctx) -> (StatusCode, serde_json::Value) {
     let res = ctx
         .app
@@ -300,7 +300,7 @@ async fn task_list(ctx: &Ctx) -> (StatusCode, serde_json::Value) {
     (res.status(), res_body(res).await)
 }
 
-/// 控制台确认完成（`POST .../tasks/{id}/confirm`）。
+/// The console confirms completion (`POST .../tasks/{id}/confirm`).
 async fn confirm(ctx: &Ctx, id: &str) -> (StatusCode, serde_json::Value) {
     admin(
         &ctx.app,
@@ -311,7 +311,7 @@ async fn confirm(ctx: &Ctx, id: &str) -> (StatusCode, serde_json::Value) {
     .await
 }
 
-/// 控制台驳回重跑（`POST .../tasks/{id}/retry`）。
+/// The console rejects and reruns (`POST .../tasks/{id}/retry`).
 async fn retry(ctx: &Ctx, id: &str) -> (StatusCode, serde_json::Value) {
     admin(
         &ctx.app,
@@ -322,7 +322,7 @@ async fn retry(ctx: &Ctx, id: &str) -> (StatusCode, serde_json::Value) {
     .await
 }
 
-/// 把任务 updated_at 拨老（集成测试复用生产回收扫描）。
+/// Age a task's updated_at (the integration test reuses the production recovery scan).
 fn age_task(state: &SharedAppState, id: &str, age_secs: u64) {
     meshlet_server::task::age_task_for_test(&mut state.mesh.lock().unwrap(), id, age_secs);
 }
@@ -331,24 +331,24 @@ fn age_task(state: &SharedAppState, id: &str, age_secs: u64) {
 async fn dispatch_lifecycle_and_redispatch_idempotency() {
     let (ctx, device_id, token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
-    // 1. 派发：201，初始 assigned，自动生成 task-1。
+    // 1. Dispatch: 201, initially assigned, task-1 is generated automatically.
     let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
     assert_eq!(st, StatusCode::CREATED, "{task}");
     let id = task["id"].as_str().unwrap().to_string();
     assert_eq!(task["state"], "assigned");
     assert_eq!(task["cmd"], "echo hi");
 
-    // 2. agent 拉到待办（assigned 在列）。
+    // 2. The agent pulls pending tasks (assigned is listed).
     let pend = pending(&ctx.app, &token).await;
     assert_eq!(pend.as_array().unwrap().len(), 1);
     assert_eq!(pend[0]["id"], id);
 
-    // 3. ack → acked，仍 pending（未终态）。
+    // 3. ack -> acked, still pending (not terminal).
     assert_eq!(ack(&ctx.app, &token, &id).await, StatusCode::OK);
     let pend = pending(&ctx.app, &token).await;
     assert_eq!(pend.as_array().unwrap().len(), 1);
 
-    // 4. result → done（exit_code 落库），pending 清空（终态不再下发）。
+    // 4. result -> done (exit_code persisted), pending is cleared (terminal tasks are no longer dispatched).
     let (st, done) = result(&ctx.app, &token, &id, 0).await;
     assert_eq!(st, StatusCode::OK, "{done}");
     assert_eq!(done["state"], "done");
@@ -356,7 +356,7 @@ async fn dispatch_lifecycle_and_redispatch_idempotency() {
     assert_eq!(done["log_tail"], "hello-task");
     assert_eq!(pending(&ctx.app, &token).await.as_array().unwrap().len(), 0);
 
-    // 5. 断线补派同 id：200（幂等），状态不重置、结果保留。
+    // 5. Redispatch after a disconnect with the same id: 200 (idempotent), state not reset, result preserved.
     let (st, re) = assign(&ctx, &device_id, "echo hi", Some(&id)).await;
     assert_eq!(st, StatusCode::OK, "{re}");
     assert_eq!(re["id"], id);
@@ -366,10 +366,10 @@ async fn dispatch_lifecycle_and_redispatch_idempotency() {
     );
     assert_eq!(re["exit_code"], 0);
 
-    // 6. 补派后 agent 再拉：仍为空（不会拿到终态任务 → 不会重跑）。
+    // 6. After redispatch the agent pulls again: still empty (it never receives a terminal task -> no rerun).
     assert_eq!(pending(&ctx.app, &token).await.as_array().unwrap().len(), 0);
 
-    // 7. 重复 ack / 重复回执：幂等 200，状态仍是 done。
+    // 7. Duplicate ack / duplicate receipt: idempotent 200, state still done.
     assert_eq!(ack(&ctx.app, &token, &id).await, StatusCode::OK);
     let (st, again) = result(&ctx.app, &token, &id, 0).await;
     assert_eq!(st, StatusCode::OK, "{again}");
@@ -381,15 +381,15 @@ async fn dispatch_lifecycle_and_redispatch_idempotency() {
 async fn dispatch_rejects_unknown_or_inactive_target() {
     let (ctx, device_id, _token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
-    // 不存在的设备 → 404。
+    // A nonexistent device -> 404.
     let (st, body) = assign(&ctx, "no-such-device", "echo hi", None).await;
     assert_eq!(st, StatusCode::NOT_FOUND, "{body}");
 
-    // 第二台在网激活设备（供 agent 端点 404 检查用其未撤销凭证）。
+    // A second enrolled, active device (its unrevoked credential feeds the agent endpoint 404 check).
     let (edge2_id, token2) = enroll(&ctx, "edge-2", "pub-edge-aaaa-0002").await;
     assert_ne!(edge2_id, device_id);
 
-    // 已撤销设备：注册表保留但未激活 → 409（与 agent token 失效同步）。
+    // A revoked device: kept in the registry but inactive -> 409 (in step with agent token invalidation).
     let (st, _) = admin(
         &ctx.app,
         &ctx.cookie,
@@ -404,7 +404,7 @@ async fn dispatch_rejects_unknown_or_inactive_target() {
     let (st, body) = assign(&ctx, &device_id, "echo hi", None).await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
 
-    // 网内待审批设备（bootstrap-token 注册，未激活）→ 409。
+    // An in-network pending-approval device (registered via bootstrap token, not activated) -> 409.
     let (st, bt) = admin(
         &ctx.app,
         &ctx.cookie,
@@ -437,11 +437,11 @@ async fn dispatch_rejects_unknown_or_inactive_target() {
     assert_eq!(res.status(), StatusCode::CREATED);
     let pending_device = res_body(res).await;
     let pending_id = pending_device["device_id"].as_str().unwrap().to_string();
-    // 待审批设备尚未进入数据面注册表 → 404（批准前不可派发）。
+    // The pending device has not entered the dataplane registry yet -> 404 (nothing can be dispatched before approval).
     let (st, body) = assign(&ctx, &pending_id, "echo hi", None).await;
     assert_eq!(st, StatusCode::NOT_FOUND, "{body}");
 
-    // 凭证有效但任务不存在 → agent 端点 404。
+    // A valid credential but no such task -> 404 on the agent endpoint.
     let res = ctx
         .app
         .clone()
@@ -458,14 +458,14 @@ async fn dispatch_rejects_unknown_or_inactive_target() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
-/// MT-003 用户确认交互：确认是用户侧动作（agent 端点无确认能力），
-/// 确认仅 done 可做且幂等；驳回重跑置 rejected_at 并派发新一代
-/// `{root}-r{n}`（新 id 才能触发 agent 重跑），运行中不可驳回。
+/// MT-003 user confirmation flow: confirming is a user-side action (agent endpoints have no confirm capability),
+/// confirmation is only possible while done and is idempotent; rejecting for a rerun sets rejected_at and dispatches a
+/// new generation `{root}-r{n}` (only a new id triggers an agent rerun), and a running task cannot be rejected.
 #[tokio::test]
 async fn user_confirm_and_retry_lifecycle() {
     let (ctx, device_id, token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
-    // 1. 派发 → agent 全程 → done。
+    // 1. Dispatch -> the full agent flow -> done.
     let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
     assert_eq!(st, StatusCode::CREATED, "{task}");
     let id = task["id"].as_str().unwrap().to_string();
@@ -474,27 +474,27 @@ async fn user_confirm_and_retry_lifecycle() {
     assert_eq!(st, StatusCode::OK, "{done}");
     assert_eq!(done["state"], "done");
 
-    // 2. 运行中不可确认：新派任务（assigned）→ confirm 409。
+    // 2. A running task cannot be confirmed: a freshly dispatched task (assigned) -> confirm 409.
     let (st, running) = assign(&ctx, &device_id, "echo again", None).await;
     assert_eq!(st, StatusCode::CREATED, "{running}");
     let running_id = running["id"].as_str().unwrap().to_string();
     let (st, body) = confirm(&ctx, &running_id).await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
 
-    // 3. 确认完成：200，confirmed_at 落，状态仍 done（确认不改执行状态）。
+    // 3. Confirm completion: 200, confirmed_at is set, state stays done (confirmation does not change execution state).
     let (st, confirmed) = confirm(&ctx, &id).await;
     assert_eq!(st, StatusCode::OK, "{confirmed}");
     assert_eq!(confirmed["state"], "done");
     assert!(confirmed["confirmed_at"].as_str().is_some());
     assert!(confirmed["rejected_at"].is_null());
 
-    // 4. 重复确认幂等：200，confirmed_at 不变。
+    // 4. Duplicate confirmation is idempotent: 200, confirmed_at unchanged.
     let (st, again) = confirm(&ctx, &id).await;
     assert_eq!(st, StatusCode::OK, "{again}");
     assert_eq!(again["confirmed_at"], confirmed["confirmed_at"]);
 
-    // 5. 驳回重跑：201 新代 `{root}-r1`，原任务置 rejected_at，
-    //    新任务 assigned（agent 会重新拉到 → 重跑）。
+    // 5. Reject for a rerun: 201 with a new generation `{root}-r1`, the original task gets rejected_at,
+    //    and the new task is assigned (the agent will pull it again -> rerun).
     let (st, rerun) = retry(&ctx, &id).await;
     assert_eq!(st, StatusCode::CREATED, "{rerun}");
     let r1 = rerun["id"].as_str().unwrap().to_string();
@@ -502,16 +502,16 @@ async fn user_confirm_and_retry_lifecycle() {
     assert_eq!(rerun["state"], "assigned");
     assert_eq!(rerun["parent_task_id"], id);
     assert_eq!(rerun["cmd"], "echo hi");
-    let (st, rejected) = confirm(&ctx, &id).await; // 原任务仍未 done 确认态变化不影响
+    let (st, rejected) = confirm(&ctx, &id).await; // the original task is still not done; the confirmation-state change does not affect it
     assert_eq!(st, StatusCode::OK, "{rejected}");
     assert!(rejected["rejected_at"].as_str().is_some());
 
-    // 5b. 重入防护：r1 在途（assigned）时再驳回原任务 → 409（防双击重复下发）。
+    // 5b. Re-entry guard: rejecting the original task again while r1 is in flight (assigned) -> 409 (prevents double-click duplicate dispatch).
     let (st, dup) = retry(&ctx, &id).await;
     assert_eq!(st, StatusCode::CONFLICT, "{dup}");
 
-    // 6. agent 拉到新代（重跑真实下发，与未确认的运行中任务同列）；
-    //    完成后可再次驳回 → `-r2`。
+    // 6. The agent pulls the new generation (the rerun is genuinely dispatched, listed alongside the unconfirmed running task);
+    //    once it completes, reject again -> `-r2`.
     let pend = pending(&ctx.app, &token).await;
     let pend_ids: Vec<&str> = pend
         .as_array()
@@ -529,7 +529,7 @@ async fn user_confirm_and_retry_lifecycle() {
     assert_eq!(rerun2["id"], format!("{id}-r2"));
     assert_eq!(rerun2["parent_task_id"], r1);
 
-    // 7. 列取：4 条（原任务 + 运行中 + r1 + r2），含确认/驳回/父链字段。
+    // 7. Listing: 4 entries (original + running + r1 + r2), with confirmation/rejection/parent-chain fields.
     let (st, list) = task_list(&ctx).await;
     assert_eq!(st, StatusCode::OK, "{list}");
     let arr = list.as_array().unwrap();
@@ -546,7 +546,7 @@ async fn user_confirm_and_retry_lifecycle() {
     assert!(r2["rejected_at"].is_null());
 }
 
-/// 列取需认证（未登录 401）。
+/// Listing requires auth (401 when not logged in).
 #[tokio::test]
 async fn task_list_requires_authentication() {
     let (ctx, device_id, _token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
@@ -571,7 +571,7 @@ async fn task_list_requires_authentication() {
 async fn agent_endpoints_require_valid_token() {
     let (ctx, _, _, _) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
-    // 无凭证 / 伪造凭证 → 401（agent API 认证边界）。
+    // No credential / a forged credential -> 401 (agent API auth boundary).
     let res = ctx
         .app
         .clone()
@@ -602,14 +602,14 @@ async fn agent_endpoints_require_valid_token() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// MT-005 标签路由（端到端）：操作员给设备打标 → 按标签自动选点派单 →
-/// 显式目标与标签不符拒绝 → 无匹配设备拒绝。
+/// MT-005 label routing (end to end): the operator tags a device -> label-based automatic target selection dispatches ->
+/// an explicit target that conflicts with the labels is rejected -> no matching device is rejected.
 #[tokio::test]
 async fn label_routed_dispatch_and_labels_endpoint() {
     let (ctx, worker_id, worker_token, _state) = bootstrap("worker", "pub-edge-aaaa-0001").await;
     let (builder_id, builder_token) = enroll(&ctx, "builder", "pub-edge-aaaa-0002").await;
 
-    // 操作员打标：worker → role=builder；builder → 无标。
+    // Operator tagging: worker -> role=builder; builder -> no labels.
     let (st, body) = admin(
         &ctx.app,
         &ctx.cookie,
@@ -624,12 +624,12 @@ async fn label_routed_dispatch_and_labels_endpoint() {
     assert_eq!(body["labels"]["role"], "builder");
     assert_eq!(body["labels"]["cap"], "gpu");
 
-    // 按标签自动选点（无 target）：命中唯一 role=builder 的 worker。
+    // Automatic target selection by label (no target given): picks the only worker with role=builder.
     let (st, task) = assign_labeled(&ctx, None, "echo build", None, builder_lbl()).await;
     assert_eq!(st, StatusCode::CREATED, "{task}");
     assert_eq!(task["target_device_id"], worker_id);
 
-    // 显式指定 builder（无标）却要求 role=builder → 409。
+    // Explicitly naming builder (unlabeled) while requiring role=builder -> 409.
     let (st, body) = assign_labeled(
         &ctx,
         Some(&builder_id),
@@ -640,7 +640,7 @@ async fn label_routed_dispatch_and_labels_endpoint() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
 
-    // 无匹配设备（要求 role=worker，没人打）→ 409。
+    // No matching device (requires role=worker, which nobody carries) -> 409.
     let (st, body) = assign_labeled(
         &ctx,
         None,
@@ -651,7 +651,7 @@ async fn label_routed_dispatch_and_labels_endpoint() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
 
-    // worker 的 agent 能拉到自动选点的任务。
+    // The worker's agent can pull the label-selected task.
     let pend = pending(&ctx.app, &worker_token).await;
     let ids: Vec<&str> = pend
         .as_array()
@@ -661,7 +661,7 @@ async fn label_routed_dispatch_and_labels_endpoint() {
         .collect();
     assert!(ids.contains(&"task-1"), "{pend:?}");
 
-    // builder（无标）的 agent 拉不到任何任务。
+    // The builder's agent (unlabeled) pulls no tasks at all.
     let pend_builder = pending(&ctx.app, &builder_token).await;
     assert!(
         pend_builder.as_array().unwrap().is_empty(),
@@ -673,7 +673,7 @@ fn builder_lbl() -> serde_json::Value {
     serde_json::json!({ "role": "builder" })
 }
 
-/// 带标签要求的派单：`target` None = 省略 target_device_id（自动选点）。
+/// Dispatch with label requirements: `target` None means target_device_id is omitted (automatic selection).
 async fn assign_labeled(
     ctx: &Ctx,
     target: Option<&str>,
@@ -700,36 +700,36 @@ async fn assign_labeled(
     .await
 }
 
-/// 跨网络幂等 assign：网络 B 的 console 用户 POST /networks/B/tasks 传
-/// 网络 A 已有 id → 404（不泄漏 A 任务），与 confirm/retry 一致。
+/// Cross-network idempotent assign: a console user of network B posts /networks/B/tasks with
+/// an id already existing in network A -> 404 (no leakage of A's task), consistent with confirm/retry.
 #[tokio::test]
 async fn assign_foreign_network_id_is_not_found() {
     let (ctx, device_id, _token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
     let other = add_network(&ctx).await;
 
-    // 网络 A 建任务。
+    // Create the task in network A.
     let (st, task) = assign(&ctx, &device_id, "echo hi", Some("task-cross")).await;
     assert_eq!(st, StatusCode::CREATED, "{task}");
 
-    // 网络 B 用同 id：404，不返回 A 的任务（防 cmd/log 泄漏）。
+    // Network B uses the same id: 404, and A's task is not returned (guards against cmd/log leakage).
     let (st, body) = assign(&other, &device_id, "echo hi", Some("task-cross")).await;
     assert_eq!(st, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"]["code"], "not_found");
     assert_eq!(body["error"]["message"], "task task-cross not found");
 }
 
-/// 自动 id 与显式 id 碰撞：用户显式传过 `id="task-1"` 后，自动序列
-/// 不得静默覆盖——生成时跳过已占用的 `task-{seq}` 并递增。
+/// Collision between auto ids and explicit ids: once the user has supplied `id="task-1"` explicitly, the automatic
+/// sequence must not silently overwrite it - generation skips an occupied `task-{seq}` and increments.
 #[tokio::test]
 async fn auto_id_skips_collision_with_explicit_id() {
     let (ctx, device_id, _token, _state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
-    // 用户显式占掉 task-1。
+    // The user takes task-1 explicitly.
     let (st, explicit) = assign(&ctx, &device_id, "echo explicit", Some("task-1")).await;
     assert_eq!(st, StatusCode::CREATED, "{explicit}");
     assert_eq!(explicit["cmd"], "echo explicit");
 
-    // 下一次自动派发：不得覆盖 task-1 → 取 task-2，原任务保留。
+    // The next automatic dispatch: task-1 must not be overwritten -> task-2 is taken, the original task survives.
     let (st, auto) = assign(&ctx, &device_id, "echo auto", None).await;
     assert_eq!(st, StatusCode::CREATED, "{auto}");
     assert_eq!(auto["id"], "task-2");
@@ -747,18 +747,18 @@ async fn auto_id_skips_collision_with_explicit_id() {
     assert_eq!(orig["state"], "assigned");
 }
 
-/// 深链（第二代 r2）重派预算：reclaim 必须沿 parent 链回到根，否则
-/// `task-1-r2` 的 root 误判为 `task-1-r1` 而数不到兄弟 `task-1-r1`，
-/// 预算恒 0 → 无限重派。回收 `-r2`（已产生 r1、r2 两代，limit=2）应
-/// 不再派发。
+/// Redispatch budget for a deep chain (second generation r2): reclaim must walk the parent chain back to the root,
+/// otherwise the root of `task-1-r2` is misread as `task-1-r1` and its sibling `task-1-r1` is never counted,
+/// leaving the budget at 0 forever -> unbounded redispatch. Reclaiming `-r2` (with r1 and r2 already generated, limit=2)
+/// must not dispatch anything more.
 #[tokio::test]
 async fn deep_chain_redispatch_respects_budget() {
     let (ctx, device_id, _token, state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
-    // 首代 → r1 → r2（limit=2）。
+    // First generation -> r1 -> r2 (limit=2).
     let (st, orig) = assign(&ctx, &device_id, "echo hi", Some("task-deep")).await;
     assert_eq!(st, StatusCode::CREATED, "{orig}");
-    // 首代须终态才可驳回。
+    // The first generation must be terminal before it can be rejected.
     {
         let mut guard = state.mesh.lock().unwrap();
         meshlet_server::task::complete_task_for_test(&mut guard, "task-deep", true);
@@ -769,7 +769,7 @@ async fn deep_chain_redispatch_respects_budget() {
         assert_eq!(st, StatusCode::CREATED, "{task}");
         r1 = task;
     }
-    // r1 完成后再驳回 r1 → r2。
+    // Once r1 completes, reject r1 -> r2.
     let r1_id = r1["id"].as_str().unwrap().to_string();
     {
         let mut guard = state.mesh.lock().unwrap();
@@ -780,8 +780,8 @@ async fn deep_chain_redispatch_respects_budget() {
     let r2 = task;
     assert_eq!(r2["id"], "task-deep-r2");
 
-    // 把 r2 拨老（超窗）→ 回收扫描。r2 已存在且 r1 也在（root=task-deep），
-    // next_retry_seq(task-deep) = 3，used = 2 ≥ limit=2 → 不再派发 r3。
+    // Age r2 past the window -> the recovery scan runs. r2 already exists and so does r1 (root=task-deep),
+    // next_retry_seq(task-deep) = 3, used = 2 >= limit=2 -> r3 must not be dispatched.
     age_task(&state, "task-deep-r2", 400);
     meshlet_server::task::task_recovery_for_test(state.clone()).await;
 
@@ -800,19 +800,19 @@ async fn deep_chain_redispatch_respects_budget() {
     );
 }
 
-/// 回收与活 agent 竞争：server 先回收（failed+exit124），agent 随后回执
-/// 旧结果——`record_result` 对终态任务不得覆盖 result/state。
+/// Reclamation racing a live agent: the server reclaims first (failed + exit 124), then the agent reports its
+/// stale result - `record_result` must not overwrite result/state on a task already in a terminal state.
 #[tokio::test]
 async fn stale_result_does_not_overwrite_terminal_state() {
     let (ctx, device_id, token, state) = bootstrap("edge-1", "pub-edge-aaaa-0001").await;
 
-    // 派发任务，agent 拉到并 ack（ack 后 server 才可回收）。
+    // Dispatch the task; the agent pulls and acks it (the server may only reclaim after the ack).
     let (st, task) = assign(&ctx, &device_id, "echo hi", None).await;
     assert_eq!(st, StatusCode::CREATED, "{task}");
     let id = task["id"].as_str().unwrap().to_string();
     assert_eq!(ack(&ctx.app, &token, &id).await, StatusCode::OK);
 
-    // 拨老触发回收：failed + 合成超时结果。
+    // Age it to trigger reclamation: failed + a synthetic timeout result.
     age_task(&state, &id, 400);
     meshlet_server::task::task_recovery_for_test(state.clone()).await;
 
@@ -823,7 +823,7 @@ async fn stale_result_does_not_overwrite_terminal_state() {
         assert_eq!(rec.result.as_ref().unwrap().exit_code, 124);
     }
 
-    // agent 旧回执（真实 exit 0）：200，但终态不被覆盖（仍 failed+124）。
+    // The agent's stale receipt (a real exit 0): 200, but the terminal state is not overwritten (still failed + 124).
     let (st, body) = result(&ctx.app, &token, &id, 0).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "failed");

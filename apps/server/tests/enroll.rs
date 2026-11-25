@@ -1,9 +1,9 @@
-//! 集成测试：设备加入邀请流程（存档 §11.2、ADR-010）。
+//! Integration tests: the device-join invite flow (archive §11.2, ADR-010).
 //!
-//! 端到端路径：创建网络 → 生成邀请（一次性 Token，只存摘要）→
-//! 设备用公钥加入（私钥不出客户端）→ 分配虚拟 IP → 设备列表可见。
-//! 每个测试持有独立 router 实例（独立内存状态 + 独立 SQLite），请求间状态共享。
-//! 管理端点经 bootstrap 会话 Cookie + CSRF 头访问（§11.4）；/enroll 保持公开。
+//! End-to-end path: create network → generate invite (one-time Token, only its digest is stored) →
+//! device joins with its public key (the private key never leaves the client) → virtual IP assigned → the device shows up in the device list.
+//! Each test owns its own router instance (independent in-memory state + independent SQLite), with state shared across requests within a test.
+//! Management endpoints are accessed with a bootstrap session Cookie + CSRF header (§11.4); /enroll stays public.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -13,7 +13,7 @@ use tower::ServiceExt; // oneshot
 
 const OVERLAY: &str = "10.240.0.0/16";
 
-/// 测试上下文：router + 管理会话 Cookie。Clone 后共享同一底层状态。
+/// Test context: router + management session Cookie. Clones share the same underlying state.
 #[derive(Clone)]
 struct Ctx {
     app: Router,
@@ -33,7 +33,7 @@ async fn app() -> Ctx {
     ));
     let app = meshlet_server::router(state);
 
-    // 空库 bootstrap 首个管理员，取会话 Cookie。
+    // Bootstrap the first administrator on an empty DB and take the session Cookie.
     let res = app
         .clone()
         .oneshot(
@@ -171,7 +171,7 @@ async fn enroll_end_to_end_allocates_virtual_ip() {
     assert_eq!(st, StatusCode::CREATED);
     let token = invite["token"].as_str().unwrap().to_string();
     assert_eq!(token.len(), 64, "token must be 64 hex chars");
-    // 原始 Token 只出现在创建响应里；摘要之外不落地。
+    // The raw Token appears only in the create response; nothing lands on disk beyond the digest.
     assert!(invite.get("token_hash").is_none());
 
     let (st, device) = enroll(app.clone(), &token, "laptop", "pub-key-1", "linux").await;
@@ -182,13 +182,13 @@ async fn enroll_end_to_end_allocates_virtual_ip() {
         "10.240.0.2",
         "first client gets second usable address (hub = .1)"
     );
-    // 指纹 = 公钥 SHA-256。
+    // The fingerprint is the SHA-256 of the public key.
     assert_eq!(
         device["fingerprint"].as_str().unwrap(),
         "68112dd75f2b1c7c3861359a6a801ebe43de201375b5d14e0ff978a5c0e08a93"
     );
 
-    // 设备在列表中可见，且只含公钥侧材料。
+    // The device is visible in the list and carries only public-key-side material.
     let (st, devices) = json_get(app, &format!("/api/v1/networks/{network_id}/devices")).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(devices.as_array().unwrap().len(), 1);
@@ -207,7 +207,7 @@ async fn single_use_invite_rejects_second_enroll() {
     let (_, d1) = enroll(app.clone(), &token, "phone", "pub-a", "windows").await;
     assert_eq!(d1["virtual_ipv4"].as_str().unwrap(), "10.240.0.2");
 
-    // 同一 Token 第二次使用：一次性语义拒绝（次数上限 1）。
+    // A second use of the same Token: rejected by one-time semantics (usage cap of 1).
     let (st, err) = enroll(app, &token, "phone-2", "pub-b", "windows").await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert!(err["error"]["message"]
@@ -244,7 +244,7 @@ async fn enroll_with_unknown_token_is_404_without_does_not_leak_it() {
     let (st, err) = enroll(app, "wrong-token-abc", "ghost", "pub-x", "linux").await;
     assert_eq!(st, StatusCode::NOT_FOUND);
     assert_eq!(err["error"]["code"], "not_found");
-    // 不存在的 Token 与无效 Token 不可区分（不泄露存在性）。
+    // A nonexistent Token is indistinguishable from an invalid one (no existence leak).
     let body = serde_json::to_string(&err).unwrap();
     assert!(!body.contains("wrong-token-abc"));
 }
@@ -298,7 +298,7 @@ async fn enroll_revoked_invite_is_rejected() {
 
 #[tokio::test]
 async fn enroll_rejects_private_key_field() {
-    // 私钥不出客户端：API 边界用 deny_unknown_fields 拒绝任何额外字段。
+    // The private key never leaves the client: the API boundary rejects any extra field via deny_unknown_fields.
     let app = app().await;
     let (_, network) = create_network(app.clone(), "nopriv").await;
     let network_id = network["id"].as_str().unwrap();
@@ -327,7 +327,7 @@ async fn enroll_rejects_private_key_field() {
         )
         .await
         .unwrap();
-    // axum 对 JSON 反序列化失败（含 deny_unknown_fields）统一返回 422。
+    // axum answers a uniform 422 for JSON deserialization failures (including deny_unknown_fields).
     assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
@@ -341,7 +341,7 @@ async fn enroll_never_persists_private_key_material() {
 
     enroll(app.clone(), &token, "audited", "pub-only", "linux").await;
 
-    // 设备列表只含公钥 + 指纹；全响应无任何私钥侧字段。
+    // The device list carries only the public key + fingerprint; no private-key-side field anywhere in the response.
     let (st, devices) = json_get(app, &format!("/api/v1/networks/{network_id}/devices")).await;
     assert_eq!(st, StatusCode::OK);
     let raw = devices.to_string();
@@ -355,7 +355,7 @@ async fn create_network_validates_cidr_and_duplicates() {
     let (st, _) = create_network(app.clone(), "net-a").await;
     assert_eq!(st, StatusCode::CREATED);
 
-    // 主机位非零的非法 CIDR 被拒。
+    // An invalid CIDR with nonzero host bits is rejected.
     let (st, _) = json_post(
         app.clone(),
         "/api/v1/networks",
@@ -364,7 +364,7 @@ async fn create_network_validates_cidr_and_duplicates() {
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
 
-    // 完全无法解析的 CIDR 被拒。
+    // A CIDR that cannot be parsed at all is rejected.
     let (st, _) = json_post(
         app.clone(),
         "/api/v1/networks",
@@ -373,7 +373,7 @@ async fn create_network_validates_cidr_and_duplicates() {
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
 
-    // 同一 Overlay 网段不可重复创建。
+    // The same overlay range cannot be created twice.
     let (st, _) = json_post(
         app,
         "/api/v1/networks",
@@ -437,7 +437,7 @@ async fn create_invite_rejects_zero_max_uses() {
 
 #[tokio::test]
 async fn each_router_holds_independent_state() {
-    // 每个 router 实例持有独立内存状态，互不串网络。
+    // Each router instance holds independent in-memory state, so networks never bleed across tests.
     let app_a = app().await;
     let app_b = app().await;
 

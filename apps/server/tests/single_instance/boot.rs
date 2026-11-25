@@ -28,12 +28,12 @@ pub(super) async fn desired_plan(app: &Router, token: &str) -> DevicePlan {
     serde_json::from_value(body).unwrap()
 }
 
-// ------------------------------------------------------------------ M3 故障矩阵
+// ------------------------------------------------------------------ M3 fault matrix
 //
-// 每个场景都是独立的 `#[tokio::test]`，共用下面的启动器：按生产启动路径连库、
-// `persist::load` 装载 mesh、注入 netns 后端，再建一个网络 + 两台设备并收敛。
+// Each scenario is its own `#[tokio::test]`, sharing the launchers below: follow the production boot path
+// to connect to the DB, load the mesh via `persist::load`, inject the netns backend, then create one network + two devices and converge.
 
-/// 已启动的服务与一个已收敛的网络（hub 已应用，两台设备已应用并回执）。
+/// A booted service and a converged network (the hub has been applied; both devices have been applied and reported back).
 pub(super) struct Boot {
     pub(super) app: Router,
     pub(super) cookie: String,
@@ -46,8 +46,8 @@ pub(super) struct Boot {
     pub(super) device_ids: Vec<String>,
 }
 
-/// 按生产启动路径构建服务：连库 → `persist::load` → 注入沙箱后端。库里有存量
-/// 时 mesh 直接来自库（恢复/重启场景靠这一点），空库则 mesh 为空。
+/// Build the service along the production boot path: connect to the DB -> `persist::load` -> inject the sandbox backend.
+/// With data already in the DB, the mesh comes straight from the DB (what recovery/restart scenarios rely on); on an empty DB the mesh starts empty.
 pub(super) async fn boot_app(sandbox: &Sandbox, key_file: &str) -> Boot {
     let (private, _) = meshlet_network::keys::generate_keypair().unwrap();
     let path = sandbox.dir.join(key_file);
@@ -87,8 +87,8 @@ pub(super) async fn boot_app(sandbox: &Sandbox, key_file: &str) -> Boot {
         .with_apply_backend(factory),
     );
     let app = meshlet_server::router(state.clone());
-    // 全新库走 bootstrap；已有管理员（从备份恢复后重启）改走登录——拿到的
-    // 是同一种会话，与真实运维流程一致。
+    // A brand-new DB bootstraps; an existing admin (after a restart from a backup-restored DB) logs in instead -
+    // either way the same kind of session comes out, matching a real operations flow.
     let credentials = json!({"email":"admin@test.local","password":"single-instance-password"});
     let mut response = app
         .clone()
@@ -141,7 +141,7 @@ pub(super) async fn boot_app(sandbox: &Sandbox, key_file: &str) -> Boot {
     }
 }
 
-/// 建一个网络 + 邀请 + 两台设备，hub 应用，两台设备应用并回执。
+/// Create a network + invite + two devices, apply on the hub, apply on both devices, and report back.
 pub(super) async fn boot_network(sandbox: &Sandbox, key_file: &str) -> Boot {
     let mut boot = boot_app(sandbox, key_file).await;
     let network = admin(
@@ -185,7 +185,7 @@ pub(super) async fn boot_network(sandbox: &Sandbox, key_file: &str) -> Boot {
     boot
 }
 
-/// 设备端拉取期望、注入真实 underlay endpoint、应用、回执。
+/// The device side pulls its desired plan, injects a real underlay endpoint, applies, and reports back.
 pub(super) async fn converge_device(sandbox: &Sandbox, boot: &Boot, index: usize) -> DevicePlan {
     let plan = desired_plan(&boot.app, &boot.tokens[index]).await;
     let mut local = plan.clone();
@@ -216,8 +216,8 @@ pub(super) async fn converge_device(sandbox: &Sandbox, boot: &Boot, index: usize
     plan
 }
 
-/// 恢复日志（`hub_deployments.plan_json`）里的 hub 部署，供断言被撤销设备
-/// 是否仍然被记账。
+/// The hub deployment from the recovery journal (`hub_deployments.plan_json`), used to assert whether revoked
+/// devices are still being accounted for.
 pub(super) async fn journal_plan(pool: &sqlx::SqlitePool, network: &str) -> Value {
     let json: String =
         sqlx::query_scalar("SELECT plan_json FROM hub_deployments WHERE network_id=?")
@@ -238,8 +238,8 @@ pub(super) fn wg_own_public_key(sandbox: &Sandbox, index: usize) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// WireGuard peer 身份行（peer 公钥 + allowed-ips），排序后作为重启/变更前后
-/// 的逐字段比对基准。endpoints、handshake 时间等易变字段不参与比对。
+/// WireGuard peer identity lines (peer public key + allowed-ips), sorted and used as a field-by-field comparison baseline
+/// before/after a restart or change. Volatile fields such as endpoints and handshake times do not participate.
 pub(super) fn wg_identity_lines(sandbox: &Sandbox, index: usize) -> Vec<String> {
     let out = ns(&sandbox.names[index], &["wg", "show", "wg0"]);
     assert!(
@@ -271,7 +271,7 @@ pub(super) fn sorted_lines(sandbox: &Sandbox, index: usize, args: &[&str]) -> Ve
     lines
 }
 
-/// 设备上所有权注释为 Meshlet 的 NAT 规则行（两条链合并，排序）。
+/// The device's NAT rule lines whose owner comment is Meshlet (both chains merged, sorted).
 pub(super) fn meshlet_nat_lines(sandbox: &Sandbox, index: usize) -> Vec<String> {
     let mut lines = Vec::new();
     for chain in ["PREROUTING", "POSTROUTING"] {

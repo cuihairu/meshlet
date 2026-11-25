@@ -1,11 +1,13 @@
-//! 发布对象内存记录（DB 行、内存与设备计划的共享形态）。
+//! In-memory records for published objects (the shared shape of the DB rows,
+//! the in-memory state and the device plan).
 
 use crate::service::MeshState;
 use meshlet_publish::health::{HealthState, ProbeTarget};
 use meshlet_publish::{AuthorizationPolicy, ForwardProtocol};
 
-/// L4 端口转发：`policy` 原样进计划（agent 侧 [`meshlet_publish`] 直接消费），
-/// DB 里 CIDR 与 token 以 JSON 存放。
+/// L4 port forward: `policy` goes into the plan as-is (consumed directly by
+/// [`meshlet_publish`] on the agent side); in the DB, CIDRs and tokens are
+/// stored as JSON.
 #[derive(Debug, Clone)]
 pub struct PublishForward {
     pub id: String,
@@ -19,7 +21,7 @@ pub struct PublishForward {
     pub created_at: String,
 }
 
-/// HTTP 路由：同网络内 `(hostname, path_prefix)` 唯一。
+/// HTTP route: `(hostname, path_prefix)` is unique within a network.
 #[derive(Debug, Clone)]
 pub struct PublishHttpRoute {
     pub id: String,
@@ -34,8 +36,9 @@ pub struct PublishHttpRoute {
     pub created_at: String,
 }
 
-/// 健康探针：平铺字段（DB 列一一对应），`target()` 时组装成
-/// [`ProbeTarget`]；最近一次结果驻内存（`last_*`），agent 上报后更新。
+/// Health probe: flat fields (one-to-one with the DB columns), assembled into
+/// a [`ProbeTarget`] by `target()`; the most recent result lives in memory
+/// (`last_*`) and is updated after the agent reports in.
 #[derive(Debug, Clone)]
 pub struct PublishProbe {
     pub id: String,
@@ -56,8 +59,9 @@ impl PublishProbe {
     }
 }
 
-/// Split-horizon DNS 记录：`name` 必须落在设备套接字的 `internal_suffix` 内
-/// （域层校验）；每设备一个 `(bind_address, internal_suffix)`。
+/// Split-horizon DNS record: `name` must fall inside the device socket's
+/// `internal_suffix` (domain-layer validation); one
+/// `(bind_address, internal_suffix)` per device.
 #[derive(Debug, Clone)]
 pub struct PublishDnsRecord {
     pub id: String,
@@ -72,8 +76,8 @@ pub struct PublishDnsRecord {
     pub created_at: String,
 }
 
-/// 一个网络的全部发布对象。启动时由 `persist::load` 灌回，计划构建时按
-/// 设备过滤。
+/// All published objects of one network. Loaded back by `persist::load` at
+/// startup, filtered per device when building the plan.
 #[derive(Debug, Clone, Default)]
 pub struct PublishCatalog {
     pub forwards: Vec<PublishForward>,
@@ -83,7 +87,8 @@ pub struct PublishCatalog {
 }
 
 impl MeshState {
-    /// 启动重建：灌回一条发布对象（DB 已做外键约束，网络/设备必然存在）。
+    /// Startup restore: load back one published object (foreign keys are already
+    /// enforced in the DB, so the network/device must exist).
     pub(crate) fn restore_publish_forward(&mut self, forward: PublishForward) {
         self.publishes
             .entry(forward.network_id.clone())
@@ -117,7 +122,8 @@ impl MeshState {
     }
 }
 
-/// 启动摘要用：发布对象总条数（四类之和）。
+/// For the startup summary: total number of published objects (the sum of the
+/// four kinds).
 pub(crate) fn publish_object_count(state: &MeshState) -> usize {
     state
         .publishes

@@ -1,5 +1,5 @@
-//! 设备端点：列设备、吊销（锁外失效凭证 + 留痕）与 MT-005 标签更新
-//! （不记修订，审计随标签同一事务）。
+//! Device endpoints: listing, revocation (credential invalidation and tracing outside the lock), and MT-005 label updates
+//! (no revision is recorded; the audit entry commits in the same transaction as the labels).
 
 use crate::auth::{AuthenticatedUser, CsrfHeader, SharedAppState, WriteUser};
 use crate::service;
@@ -23,7 +23,9 @@ pub(crate) async fn revoke_device_handler(
     CsrfHeader: CsrfHeader,
     axum::extract::Path((network_id, device_id)): axum::extract::Path<(String, String)>,
 ) -> Result<(StatusCode, Json<service::RevisionRef>), service::ServiceError> {
-    // 先完成撤销 + 修订簿记 + 落库（同一互斥段），再在锁外失效 agent 凭证并留痕。
+    // Finish revocation + revision bookkeeping + persistence first (in one
+    // critical section), then invalidate the agent credential and record the
+    // trail outside the lock.
     let _persist = state.persist.lock().await;
     let (rev, device, revision, staged) = {
         let guard = state.mesh.lock().unwrap();
@@ -68,9 +70,11 @@ pub(crate) async fn revoke_device_handler(
     Ok((StatusCode::ACCEPTED, Json(rev)))
 }
 
-/// MT-005 设备标签更新（`POST /api/v1/networks/{network_id}/devices/{device_id}/labels`）。
-/// 标签是路由元数据：不记修订、不触发期望配置应用；内存变更 + 落库同一
-/// 互斥段，审计随标签同一事务（「不留痕不放行」）。
+/// MT-005 device label update (`POST /api/v1/networks/{network_id}/devices/{device_id}/labels`).
+/// Labels are routing metadata: no revision is recorded and no desired-config
+/// apply is triggered; the in-memory change and persistence happen in one
+/// critical section, and the audit entry commits in the same transaction as the
+/// labels ("no audit trail, no pass-through").
 pub(crate) async fn set_device_labels_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -79,8 +83,10 @@ pub(crate) async fn set_device_labels_handler(
     Json(req): Json<service::SetDeviceLabelsRequest>,
 ) -> Result<Json<service::DeviceView>, service::ServiceError> {
     let _persist = state.persist.lock().await;
-    // 先克隆 → 变更克隆（mesh 锁在 await 前释放，future 须 Send）→ 落库
-    // 成功才换入 live state（「不落库不放行」，与 revoke/approve 同一纪律）。
+    // Clone first → mutate the clone (the mesh lock is released before the
+    // await, so the future must be Send) → only swap the staged state into the
+    // live state after persistence succeeds ("no persistence, no pass-through",
+    // the same discipline as revoke/approve).
     let (device, staged) = {
         let guard = state.mesh.lock().unwrap();
         let mut staged = guard.clone();

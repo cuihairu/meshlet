@@ -1,12 +1,12 @@
-//! 集成测试：设备数据面计划下发（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
+//! Integration tests: device dataplane plan delivery ([ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)).
 //!
-//! 端到端路径：加入（拿到 agent_token）→ `GET /api/v1/agent/device/desired`
-//! （Bearer 凭证）→ 拿回**结构化配置对象**（§16.4：类型化隧道/路由/NAT +
-//! `desired_config_hash`，绝无 Shell 命令）。断言重点：
-//! - 计划不含私钥（ADR-010：`private_key` 恒为 `null`，agent 本地注入）；
-//! - 自己发布的 LAN 不回灌 AllowedIPs（避免环路，§7.2）；
-//! - 网关设备拿到 Alias NAT 规则（所有权注释定位，§12.6）；
-//! - 服务端 `[dataplane] enabled = false` → 503（不返回空计划冒充「已生效」）。
+//! End-to-end path: join (obtain the agent_token) → `GET /api/v1/agent/device/desired`
+//! (Bearer credential) → receive back a **structured config object** (§16.4: typed
+//! tunnel/routes/NAT + `desired_config_hash`, never shell commands). Key assertions:
+//! - the plan contains no private key (ADR-010: `private_key` is always `null`, the agent injects it locally);
+//! - a LAN the device itself publishes is not fed back into its own AllowedIPs (avoids loops, §7.2);
+//! - the gateway device gets the Alias NAT rules (located via ownership comments, §12.6);
+//! - server-side `[dataplane] enabled = false` → 503 (an empty plan is never returned as if it were "effective").
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -26,8 +26,8 @@ struct Ctx {
     network_id: String,
 }
 
-/// `wg` 可用（真推导 hub 公钥需要）；不可用时相关用例打印 `SKIP:` 正常返回，
-/// CI 无 wireguard-tools 仍全绿。
+/// `wg` is available (needed to truly derive the hub public key); when missing, the affected cases
+/// print `SKIP:` and return normally, keeping CI all green without wireguard-tools.
 fn wg_available() -> bool {
     match std::process::Command::new("wg").arg("--version").output() {
         Ok(o) if o.status.success() => true,
@@ -42,7 +42,7 @@ fn wg_available() -> bool {
     }
 }
 
-/// 生成一个 hub 私钥文件（ADR-010：仅本地，服务端不落库）。
+/// Generate a hub private key file (ADR-010: local only, never persisted by the server).
 fn write_hub_key(dir: &Path) -> Option<std::path::PathBuf> {
     let out = match std::process::Command::new("wg").arg("genkey").output() {
         Ok(o) if o.status.success() => o,
@@ -60,8 +60,8 @@ fn write_hub_key(dir: &Path) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
-/// 永远成功的 apply 桩：本文件只验「计划推导」，不碰内核（数据面真应用由
-/// [`meshlet_network`] 的 netns 集成测试覆盖）。
+/// An apply stub that always succeeds: this file only checks "plan derivation" and never touches the
+/// kernel (actual dataplane application is covered by the [`meshlet_network`] netns integration tests).
 struct OkBackend;
 
 impl meshlet_domain::ConfigApplyBackend for OkBackend {
@@ -73,7 +73,7 @@ impl meshlet_domain::ConfigApplyBackend for OkBackend {
     }
 }
 
-/// 构建 router：`dataplane` 参数模拟服务端 `[dataplane]` 配置。
+/// Build the router: the `dataplane` argument simulates the server-side `[dataplane]` config.
 async fn app(dataplane: meshlet_config::DataPlaneConfig) -> Router {
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
@@ -107,7 +107,7 @@ async fn res_body(res: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// GET /agent/device/desired（Bearer 凭证；agent API，无 CSRF）。
+/// GET /agent/device/desired (Bearer credential; agent API, no CSRF).
 async fn desired(app: &Router, agent_token: Option<&str>) -> (StatusCode, serde_json::Value) {
     let mut builder = Request::builder().uri("/api/v1/agent/device/desired");
     if let Some(token) = agent_token {
@@ -144,7 +144,7 @@ async fn admin(
     (res.status(), res_body(res).await)
 }
 
-/// bootstrap → 建网络 → 建邀请 → 设备加入。返回 ctx 与 agent_token。
+/// bootstrap → create network → create invite → device joins. Returns the ctx and agent_token.
 async fn bootstrap_with_device(
     dataplane: meshlet_config::DataPlaneConfig,
     public_key: &str,
@@ -234,7 +234,7 @@ async fn bootstrap_in_app(app: Router, public_key: &str) -> (Ctx, String) {
     (ctx, agent_token)
 }
 
-/// 用同一邀请再入一台设备（返回 device_id、agent_token）。
+/// Enroll another device with the same invite (returns device_id and agent_token).
 async fn enroll_extra(ctx: &Ctx, public_key: &str) -> (String, String) {
     let (st, invite) = admin(
         &ctx.app,
@@ -275,7 +275,7 @@ async fn enroll_extra(ctx: &Ctx, public_key: &str) -> (String, String) {
     )
 }
 
-/// 建一条 LAN 路由（`route_mode`：`direct` / `alias`）。
+/// Create a LAN route (`route_mode`: `direct` / `alias`).
 async fn create_route(ctx: &Ctx, gateway: &str, destination: &str, mode: &str) -> String {
     let (st, route) = admin(
         &ctx.app,
@@ -293,7 +293,7 @@ async fn create_route(ctx: &Ctx, gateway: &str, destination: &str, mode: &str) -
     route["id"].as_str().unwrap().to_string()
 }
 
-/// 建一个 Alias 映射（返回 alias_id）。
+/// Create an Alias mapping (returns alias_id).
 async fn create_alias(ctx: &Ctx, route_id: &str, alias_cidr: &str) -> String {
     let (st, alias) = admin(
         &ctx.app,
@@ -306,7 +306,7 @@ async fn create_alias(ctx: &Ctx, route_id: &str, alias_cidr: &str) -> String {
     alias["id"].as_str().unwrap().to_string()
 }
 
-/// 应用当前最新修订（backend 桩成功）→ 期望项状态收敛为 `applied`（§10.1）。
+/// Apply the current latest revision (stub backend succeeds) → desired-item status settles to `applied` (§10.1).
 async fn apply_current(ctx: &Ctx) -> serde_json::Value {
     let res = ctx
         .app
@@ -350,7 +350,7 @@ async fn apply_current(ctx: &Ctx) -> serde_json::Value {
 
 #[tokio::test]
 async fn desired_plan_returns_503_when_server_dataplane_disabled() {
-    // 数据面未开启时不返回空计划——agent 据此重试而不是把「未配置」当「已生效」。
+    // No empty plan when the dataplane is off — the agent retries on this rather than treating "unconfigured" as "effective".
     let (ctx, token) = bootstrap_with_device(
         meshlet_config::DataPlaneConfig::default(),
         "pub-edge-aaaa-0001",
@@ -392,7 +392,7 @@ async fn desired_plan_carries_a_structured_plan_without_private_key() {
     let (st, plan) = desired(&ctx.app, Some(&token)).await;
     assert_eq!(st, StatusCode::OK, "{plan}");
 
-    // 隧道：本设备虚拟 IP + 单一 hub peer，AllowedIPs 恰好覆盖 Overlay。
+    // Tunnel: this device's virtual IP + a single hub peer, AllowedIPs exactly covering the overlay.
     assert_eq!(plan["tunnel"]["name"], "wg0");
     assert_eq!(plan["tunnel"]["address_prefix"], 16);
     assert!(
@@ -402,7 +402,7 @@ async fn desired_plan_carries_a_structured_plan_without_private_key() {
             .starts_with("10.240.0."),
         "overlay address: {plan}"
     );
-    // ADR-010：服务端永不携带私钥——agent 本地注入。
+    // ADR-010: the server never carries the private key — the agent injects it locally.
     assert!(plan["tunnel"]["private_key"].is_null(), "{plan}");
     assert_eq!(plan["tunnel"]["peers"].as_array().unwrap().len(), 1);
     let peer = &plan["tunnel"]["peers"][0];
@@ -420,11 +420,11 @@ async fn desired_plan_carries_a_structured_plan_without_private_key() {
 
     assert!(plan["routes"].as_array().unwrap().is_empty());
     assert!(plan["nat_rules"].as_array().unwrap().is_empty());
-    // 期望配置哈希：与修订簿记同一来源（§10.1 有变更才重放）。
+    // Desired config hash: same source as revision bookkeeping (§10.1 replay only on change).
     let hash = plan["desired_config_hash"].as_str().unwrap();
     assert_eq!(hash.len(), 64, "sha256 hex: {plan}");
 
-    // 同一凭证重复拉取 = 同一计划（计划推导是确定性的）。
+    // Re-fetching with the same credential = the same plan (plan derivation is deterministic).
     let (st2, plan2) = desired(&ctx.app, Some(&token)).await;
     assert_eq!(st2, StatusCode::OK);
     assert_eq!(plan, plan2);
@@ -450,8 +450,8 @@ async fn plan_grows_only_after_the_revision_is_applied() {
     let (peer_id, _) = enroll_extra(&ctx, "pub-peer-bbbb-0004").await;
     create_route(&ctx, &peer_id, "192.168.20.0/24", "direct").await;
 
-    // 期望项只写了账本、尚未下发内核（§10.1）→ 不进计划：agent 不会拿到
-    // 一个还没生效的远端网段去转发。
+    // Desired items are only written to the ledger, not yet pushed to the kernel (§10.1) → excluded
+    // from the plan: the agent never gets a remote segment to forward that isn't effective yet.
     let (st, pending_plan) = desired(&ctx.app, Some(&token)).await;
     assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{pending_plan}");
     assert_eq!(pending_plan["error"]["code"], "dataplane_not_configured");
@@ -503,7 +503,7 @@ async fn gateway_plan_carries_alias_nat_rules_and_hides_own_lan() {
     };
     let (ctx, token) = bootstrap_with_device(dp, "pub-gw-cccc-0005").await;
 
-    // 本设备是网关：alias 模式路由 + 等长前缀映射。
+    // This device is the gateway: alias-mode route + equal-length prefix mapping.
     let my_id = own_device_id(&ctx).await;
     let route_id = create_route(&ctx, &my_id, "192.168.30.0/24", "alias").await;
     let alias_id = create_alias(&ctx, &route_id, "10.241.30.0/24").await;
@@ -512,8 +512,8 @@ async fn gateway_plan_carries_alias_nat_rules_and_hides_own_lan() {
     let (st, plan) = desired(&ctx.app, Some(&token)).await;
     assert_eq!(st, StatusCode::OK, "{plan}");
 
-    // 自己发布的真实 LAN 不进自己的 AllowedIPs（避免环路，§7.2）；Alias
-    // 前缀也不进——那是别的设备要发往的前缀，不是本设备要转发的。
+    // The real LAN this device itself publishes stays out of its own AllowedIPs (avoids loops, §7.2);
+    // the Alias prefix stays out too — it's what other devices send to, not what this device forwards.
     let allowed: Vec<_> = plan["tunnel"]["peers"][0]["allowed_ips"]
         .as_array()
         .unwrap()
@@ -522,7 +522,7 @@ async fn gateway_plan_carries_alias_nat_rules_and_hides_own_lan() {
         .collect();
     assert_eq!(allowed, vec![OVERLAY], "{plan}");
 
-    // DNAT（alias→target）+ 受控 SNAT（target→网关 LAN 地址），两条都带所有权注释。
+    // DNAT (alias→target) + constrained SNAT (target→gateway LAN address), both carrying ownership comments.
     let nat = plan["nat_rules"].as_array().unwrap();
     assert_eq!(nat.len(), 2, "{plan}");
     assert_eq!(nat[0]["chain"], "prerouting");
@@ -537,7 +537,7 @@ async fn gateway_plan_carries_alias_nat_rules_and_hides_own_lan() {
         "ownership comment: {plan}"
     );
 
-    // 删除映射 = 整单元清理（§12.6）：计划里的 NAT 随之撤下。
+    // Deleting the mapping = cleaning up the whole unit (§12.6): the NAT leaves the plan with it.
     let res = ctx
         .app
         .clone()
@@ -639,7 +639,7 @@ async fn host_forward_plan_carries_full_host_nat_rules() {
 
 #[tokio::test]
 async fn desired_plan_fails_visibly_when_hub_key_file_missing() {
-    // 开启数据面但未配私钥文件：明确 500，不返回空计划。
+    // Dataplane on but no private key file configured: a clear 500, not an empty plan.
     let (ctx, token) = bootstrap_with_device(dataplane_on(), "pub-edge-dddd-0006").await;
     let (st, body) = desired(&ctx.app, Some(&token)).await;
     assert_eq!(st, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
@@ -651,7 +651,7 @@ async fn desired_plan_fails_visibly_when_hub_key_file_missing() {
 
 #[tokio::test]
 async fn revoked_device_cannot_fetch_a_plan() {
-    // 撤销设备 → 其 agent 凭证失效（§11.5）→ 401。
+    // Revoke the device → its agent credential becomes invalid (§11.5) → 401.
     let (ctx, token) = bootstrap_with_device(
         meshlet_config::DataPlaneConfig::default(),
         "pub-edge-eeee-0007",
@@ -699,7 +699,7 @@ async fn revoked_device_cannot_fetch_a_plan() {
     assert_eq!(st, StatusCode::UNAUTHORIZED, "{body}");
 }
 
-/// 开启数据面的默认配置（测试用）。
+/// Default config with the dataplane enabled (for tests).
 fn dataplane_on() -> meshlet_config::DataPlaneConfig {
     meshlet_config::DataPlaneConfig {
         enabled: true,
@@ -707,7 +707,7 @@ fn dataplane_on() -> meshlet_config::DataPlaneConfig {
     }
 }
 
-/// 本 ctx 网络的设备列表首项（bootstrap 加入的那台）。
+/// The first device in the ctx network's list (the one enrolled at bootstrap).
 async fn own_device_id(ctx: &Ctx) -> String {
     let res = ctx
         .app

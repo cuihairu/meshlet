@@ -53,8 +53,8 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .execute(&pool)
         .await
         .unwrap();
-    // 014_user_totp：v8 快照没有这两列，恢复到 v8 必须回退到 v8 形状，
-    // 否则重跑 014 会撞「duplicate column」。
+    // 014_user_totp: the v8 snapshot lacks these two columns, so restoring to v8 must roll the
+    // schema back to its v8 shape, otherwise re-running 014 hits "duplicate column".
     sqlx::query("ALTER TABLE users DROP COLUMN totp_enabled")
         .execute(&pool)
         .await
@@ -63,15 +63,15 @@ async fn version_eight_backup_is_upgraded_in_staging_before_restore() {
         .execute(&pool)
         .await
         .unwrap();
-    // 015_tasks：v8 快照没有 tasks 表，恢复到 v8 必须回退到 v8 形状，
-    // 否则重跑 015（建表）会撞「table tasks already exists」；016 的
-    // ALTER 依赖 015 建出的表，回退必须先删净。
+    // 015_tasks: the v8 snapshot has no tasks table, so restoring to v8 must roll back to the
+    // v8 shape, otherwise re-running 015 (which creates the table) hits "table tasks already
+    // exists"; 016's ALTER depends on the table 015 creates, so the rollback must drop it fully.
     sqlx::query("DROP TABLE tasks")
         .execute(&pool)
         .await
         .unwrap();
-    // 017_device_labels：v8 快照没有 devices.labels 列（tasks 已删，
-    // required_labels 随之消失），回退列否则重跑 017 撞「duplicate column」。
+    // 017_device_labels: the v8 snapshot has no devices.labels column (tasks is already
+    // dropped, taking required_labels with it), so roll it back or re-running 017 hits "duplicate column".
     sqlx::query("ALTER TABLE devices DROP COLUMN labels")
         .execute(&pool)
         .await

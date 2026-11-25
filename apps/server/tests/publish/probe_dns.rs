@@ -1,6 +1,6 @@
-//! 探针与 DNS 记录：agent 健康回报的 `device_id` 守卫（不能替别的设备写
-//! 健康）、探针目标校验（http 必带 path/expected、interval 不可为 0）、
-//! 每设备一个 DNS 套接字（同套接字多记录合法，跨后缀 409）。
+//! Probes and DNS records: the `device_id` guard on agent health reports (one device cannot write
+//! health for another), probe target validation (http requires path/expected, interval must not be 0),
+//! and one DNS socket per device (multiple records on the same socket are legal, crossing suffixes gives 409).
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
@@ -11,7 +11,7 @@ use super::*;
 async fn probe_health_report_is_guarded_by_device_id() {
     let ctx = memory_ctx().await;
     let (network_id, device_a, token_a) = provision(&ctx, "edge-a").await;
-    // 同网络第二个设备（不同 agent 凭证）。
+    // A second device in the same network (different agent credentials).
     let (_device_b, token_b) = add_device(&ctx, &network_id, "edge-b", "test-public-key-2").await;
 
     let uri = format!("/api/v1/networks/{network_id}/publish/probes");
@@ -42,7 +42,7 @@ async fn probe_health_report_is_guarded_by_device_id() {
         }]
     });
 
-    // 别的设备的 agent 不能替它写健康（越权写被拒）。
+    // Another device's agent cannot write health for it (an out-of-scope write is rejected).
     let (status, body, _) = call(
         &ctx,
         "POST",
@@ -55,7 +55,7 @@ async fn probe_health_report_is_guarded_by_device_id() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "foreign report: {body}");
 
-    // 无凭证：401。
+    // No credentials: 401.
     let (status, body, _) = call(
         &ctx,
         "POST",
@@ -68,7 +68,7 @@ async fn probe_health_report_is_guarded_by_device_id() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
-    // 本设备回报：落内存视图（不落配置，健康是证据）。
+    // The device's own report: lands in the in-memory view (not in configuration, health is evidence).
     let (status, body, _) = call(
         &ctx,
         "POST",
@@ -94,7 +94,7 @@ async fn probe_health_report_is_guarded_by_device_id() {
     assert_eq!(detail["last_state"], "healthy");
     assert_eq!(detail["last_checked_at"], "2026-10-24T00:00:00Z");
 
-    // 未知探针：404。
+    // Unknown probe: 404.
     let (status, body, _) = call(
         &ctx,
         "POST",
@@ -127,16 +127,16 @@ async fn probe_validation_rejects_bad_targets() {
         }
         body
     };
-    // http 探针必带 path + expected_status。
+    // An http probe must carry path + expected_status.
     let (status, body, _) = post(&ctx, &uri, bad(json!({"target_kind": "http"}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    // interval 不可为 0（钉死 CPU）。
+    // interval must not be 0 (that would pin the CPU).
     let (status, body, _) = post(&ctx, &uri, bad(json!({"interval_secs": 0}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    // 未知 target_kind。
+    // Unknown target_kind.
     let (status, body, _) = post(&ctx, &uri, bad(json!({"target_kind": "grpc"}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    // 空列表（无请求体）。
+    // Empty list (no request body).
     let (status, list) = get(&ctx, &uri).await;
     assert_eq!(status, StatusCode::OK);
     assert!(list.as_array().unwrap().is_empty());
@@ -165,7 +165,7 @@ async fn dns_records_share_one_socket_per_device() {
     assert_eq!(created["internal_suffix"], "mesh");
     assert_eq!(created["ttl"], 60);
 
-    // 同一套接字的第二条记录：合法（同一 DNS 套接字下多记录）。
+    // A second record on the same socket: legal (multiple records under one DNS socket).
     let mut second = record.clone();
     second["name"] = json!("db");
     second["address"] = json!("10.240.0.11");
@@ -177,7 +177,7 @@ async fn dns_records_share_one_socket_per_device() {
     );
     assert_eq!(second_created["id"], "dn-2");
 
-    // 同一设备不同后缀：409（一台设备只能有一个 DNS 套接字）。
+    // A different suffix on the same device: 409 (a device may have only one DNS socket).
     let mut other_suffix = record.clone();
     other_suffix["name"] = json!("api");
     other_suffix["internal_suffix"] = json!("lan");
@@ -188,7 +188,7 @@ async fn dns_records_share_one_socket_per_device() {
         "two sockets per device: {body}"
     );
 
-    // 端口 0 无效。
+    // Port 0 is invalid.
     let mut port_zero = record.clone();
     port_zero["name"] = json!("zero");
     port_zero["bind_address"] = json!("0.0.0.0:0");

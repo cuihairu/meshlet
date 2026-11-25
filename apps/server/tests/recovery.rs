@@ -1,14 +1,14 @@
-//! 集成测试：故障恢复（[存档 §17.3](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Integration tests: failure recovery ([archive §17.3](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 服务端重启后按期望状态恢复：
-//! 1. 建网 + 加入设备 + 发路由 + apply → 关库再从同一 DB 重建 →
-//!    网络/设备虚拟 IP/路由/修订序列逐字段一致，重启后编号与分配继续递增；
-//! 2. 停在 `applying` 的修订重启后按 §10.3 落 `failed`（不假装成功），
-//!    `rollback_pending` 保留可重试；
-//! 3. 已删路由的 id 重启后不复用；
-//! 4. presence 证据重启后保守判定——旧证据不虚构 `online`（§12.4）；
-//! 5. 自举码与待审批注册申请（含 Pending 心跳证据）跨重启逐字段重建，
-//!    注册期 agent 凭证跨重启继续有效（2026-10-15 自举注册）。
+//! After a server restart, state is rebuilt to the expected shape:
+//! 1. create network + enroll device + add route + apply -> close the DB and rebuild from the same file ->
+//!    networks/device virtual IPs/routes/revision sequence match field by field, numbering/allocation keep rising;
+//! 2. a revision stuck in `applying` lands as `failed` after restart per §10.3 (no pretending it succeeded),
+//!    while `rollback_pending` is kept retryable;
+//! 3. ids of deleted routes are never reused after a restart;
+//! 4. presence evidence is judged conservatively after restart — stale evidence must not fabricate `online` (§12.4);
+//! 5. bootstrap tokens and pending registration requests (with pending heartbeat evidence) are rebuilt field by field
+//!    across restarts, and registration-time agent credentials stay valid (2026-10-15 bootstrap registration).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -25,8 +25,8 @@ const EMAIL: &str = "admin@test.local";
 const PASSWORD: &str = "bootstrap-password-123";
 const OVERLAY: &str = "10.240.0.0/16";
 
-/// 唯一的临时库文件（进程 + 用例双维度隔离； WAL/SHM 伴生文件一并清理）。
-/// 目录用 cargo 为集成测试提供的 `CARGO_TARGET_TMPDIR`（构建区内可写）。
+/// Unique temp DB file (isolated by both process and test case; WAL/SHM sidecar files cleaned up too).
+/// Uses `CARGO_TARGET_TMPDIR`, which cargo provides to integration tests (writable within the build dir).
 fn db_file(tag: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "meshlet-recovery-{}-{tag}-{}.db",
@@ -47,9 +47,9 @@ struct Ctx {
     pool: sqlx::SqlitePool,
 }
 
-/// 打开（或重启后重新打开）一个文件库：跑 migration → §17.3 重建 Mesh 状态 →
-/// 组装应用。首开空库走 bootstrap；重启后库里有用户，走 login——两种都拿会话
-/// Cookie（顺带证明用户/会话凭证本身跨重启持久）。
+/// Open (or reopen after a restart) a file-backed DB: run migrations -> §17.3 rebuild of mesh state ->
+/// assemble the app. An empty DB goes through bootstrap; after a restart a user already exists, so login —
+/// both yield a session cookie (which also proves user/session credentials persist across restarts).
 async fn open_app(db: &Path) -> Ctx {
     let url = format!("sqlite:{}", db.display());
     let pool = meshlet_server::store::connect(&url).await.unwrap();
@@ -65,7 +65,7 @@ async fn open_app(db: &Path) -> Ctx {
     ));
     let app = meshlet_server::router(state);
 
-    // bootstrap（空库 201）或 login（重启后 200）——都从 Set-Cookie 取会话。
+    // bootstrap (201 on an empty DB) or login (200 after restart) — take the session from Set-Cookie either way.
     let res = app
         .clone()
         .oneshot(
@@ -135,7 +135,7 @@ async fn json_get(c: &Ctx, uri: &str) -> (StatusCode, Value) {
     call(c, "GET", uri, None).await
 }
 
-/// 建网 + 邀请 + 加入一台设备，返回 (network_id, device_id)。
+/// Create a network + invite + enroll one device; returns (network_id, device_id).
 async fn net_with_device(c: &Ctx) -> (String, String) {
     let (st, net) = json_post(
         c,
@@ -170,7 +170,7 @@ async fn net_with_device(c: &Ctx) -> (String, String) {
     )
 }
 
-/// §17.3 验收 1：关库 → 同一 DB 重建 → 期望状态逐字段一致，编号继续递增。
+/// §17.3 acceptance 1: close the DB -> rebuild from the same file -> state matches field by field, numbering keeps incrementing.
 #[tokio::test]
 async fn restart_rebuilds_state_field_by_field() {
     let db = db_file("rebuild");
@@ -190,7 +190,7 @@ async fn restart_rebuilds_state_field_by_field() {
         )
         .await;
         assert_eq!(st, StatusCode::CREATED);
-        // apply 走无 backend 路径 → failed（失败可见且被持久化，也是恢复语义的一部分）。
+        // apply takes the no-backend path -> failed (a visible, persisted failure is part of recovery semantics too).
         let (st, applied) = json_post(
             &c,
             &format!("/api/v1/networks/{network_id}/config-revisions/3/apply"),
@@ -216,7 +216,7 @@ async fn restart_rebuilds_state_field_by_field() {
         c.pool.close().await;
     }
 
-    // 重启：同一 DB 重建（open_app 内部经 persist::load）。
+    // Restart: rebuild from the same DB (open_app internally goes through persist::load).
     let c = open_app(&db).await;
     let after_networks = json_get(&c, "/api/v1/networks").await.1;
     let after_devices = json_get(&c, &format!("/api/v1/networks/{network_id}/devices"))
@@ -232,8 +232,8 @@ async fn restart_rebuilds_state_field_by_field() {
     .await
     .1;
 
-    // 逐字段一致：网络（含当前修订号）、设备（虚拟 IP/公钥/状态）、路由、
-    // 修订序列（版本号连续、desired_config_hash 与 error_summary 逐字回放）。
+    // Field-by-field equality: networks (incl. current revision), devices (virtual IP/public key/status), routes,
+    // and the revision sequence (contiguous numbers, desired_config_hash and error_summary replayed verbatim).
     assert_eq!(before_networks, after_networks, "networks survive restart");
     assert_eq!(before_devices, after_devices, "devices survive restart");
     assert_eq!(before_routes, after_routes, "routes survive restart");
@@ -254,8 +254,8 @@ async fn restart_rebuilds_state_field_by_field() {
         "hashes restored"
     );
 
-    // 重启后一切继续递增：新设备拿下一个虚拟 IP（不复用 .2）、修订号接续、
-    // 新路由 id 接续（rt-2，不重发 rt-1 的号）。
+    // Everything keeps incrementing after the restart: the new device gets the next virtual IP (.2 is not reused),
+    // revision numbers continue, and the new route id continues (rt-2, not a reissue of rt-1).
     let (st, invite) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/invites"),
@@ -294,8 +294,8 @@ async fn restart_rebuilds_state_field_by_field() {
     cleanup_db(&db);
 }
 
-/// §17.3 验收 2（§10.3 不假装成功）：停在 `applying` 的修订重启后落
-/// `failed` + 中断诊断；`rollback_pending` 保留可重试。
+/// §17.3 acceptance 2 (§10.3, no pretending): a revision stuck in `applying` lands as
+/// `failed` + interruption diagnosis after restart; `rollback_pending` is kept retryable.
 #[tokio::test]
 async fn interrupted_applying_lands_failed_after_restart() {
     let db = db_file("interrupted");
@@ -303,8 +303,8 @@ async fn interrupted_applying_lands_failed_after_restart() {
     {
         let c = open_app(&db).await;
         (network_id, _) = net_with_device(&c).await;
-        // 模拟崩溃现场：把修订 2 直接改成 applying / 修订 1 改成 rollback_pending
-        //（未来数据面落地后这就是真实的中间态落库）。
+        // Simulate a crash scene: force revision 2 to applying / revision 1 to rollback_pending
+        // (once the data plane lands, these become genuine persisted intermediate states).
         sqlx::query(
             "UPDATE config_revisions SET apply_status = 'rollback_pending', \
              error_summary = 'apply boom' WHERE network_id = ? AND revision = 1",
@@ -325,7 +325,7 @@ async fn interrupted_applying_lands_failed_after_restart() {
     }
 
     let c = open_app(&db).await;
-    // applying → failed，错误点名进程中断（结果不可知，不假装成功）。
+    // applying -> failed, with the error naming the process interruption (outcome unknown, no pretending).
     let (st, rev2) = json_get(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/2"),
@@ -336,7 +336,7 @@ async fn interrupted_applying_lands_failed_after_restart() {
     let summary = rev2["error_summary"].as_str().unwrap();
     assert!(summary.contains("interrupted"), "summary: {summary}");
 
-    // rollback_pending 原样保留：状态与原失败诊断逐字回放（可区分）。
+    // rollback_pending is preserved as-is: status and the original failure diagnosis replayed verbatim (distinguishable).
     let (st, rev1) = json_get(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/1"),
@@ -346,8 +346,8 @@ async fn interrupted_applying_lands_failed_after_restart() {
     assert_eq!(rev1["apply_status"], "rollback_pending");
     assert_eq!(rev1["error_summary"], "apply boom");
 
-    // 收敛后的 rev2（failed）是当前修订 → 它是回滚入口（§10.4）：无 backend
-    // 时回滚停在 rollback_pending（明确未确认，诊断合并）——200 而非 404/409。
+    // The converged rev2 (failed) is the current revision -> it is the rollback entry point (§10.4): without a
+    // backend the rollback parks at rollback_pending (explicitly unconfirmed, diagnoses merged) — 200, not 404/409.
     let (st, rolled) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/2/rollback"),
@@ -364,7 +364,7 @@ async fn interrupted_applying_lands_failed_after_restart() {
         "diagnosis merged: {}",
         rolled["error_summary"]
     );
-    // 被 rev2 取代的 rev1 不再是回滚入口（§10.4 交叉破坏防线跨重启成立）。
+    // rev1, superseded by rev2, is no longer a rollback entry point (§10.4's cross-corruption guard holds across restarts).
     let (st, _) = json_post(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions/1/rollback"),
@@ -373,8 +373,8 @@ async fn interrupted_applying_lands_failed_after_restart() {
     .await;
     assert_eq!(st, StatusCode::CONFLICT, "superseded revision rejected");
 
-    // 收敛幂等：再重启一次——非 applying 状态不受影响（rev2 停在回滚后的
-    // rollback_pending，逐字保留；没有「再次收敛」这回事）。
+    // Convergence idempotence: restart once more — non-applying states are untouched (rev2 stays at the
+    // post-rollback rollback_pending, preserved verbatim; there is no such thing as "converging again").
     c.pool.close().await;
     let c = open_app(&db).await;
     let (st, rev2) = json_get(
@@ -396,7 +396,7 @@ async fn interrupted_applying_lands_failed_after_restart() {
     cleanup_db(&db);
 }
 
-/// §17.3 验收 3：路由 id 序列持久化（mesh_meta）——已删路由的 id 重启不复用。
+/// §17.3 acceptance 3: route id sequence persisted (mesh_meta) — deleted route ids are never reused after a restart.
 #[tokio::test]
 async fn deleted_route_id_is_never_reused_after_restart() {
     let db = db_file("route-seq");
@@ -428,7 +428,7 @@ async fn deleted_route_id_is_never_reused_after_restart() {
         c.pool.close().await;
     }
 
-    // 重启后新建路由：id 从序列继续（rt-2），不重发 rt-1。
+    // New route after restart: id continues from the sequence (rt-2), rt-1 is not reissued.
     let c = open_app(&db).await;
     let (st, route) = json_post(
         &c,
@@ -447,7 +447,7 @@ async fn deleted_route_id_is_never_reused_after_restart() {
     cleanup_db(&db);
 }
 
-/// §17.3 验收 4（§12.4 保守判定）：重启后旧证据不虚构 online。
+/// §17.3 acceptance 4 (§12.4 conservative judgment): after a restart, stale evidence must not fabricate online.
 #[tokio::test]
 async fn presence_is_conservative_after_restart() {
     let db = db_file("presence");
@@ -455,7 +455,7 @@ async fn presence_is_conservative_after_restart() {
     {
         let c = open_app(&db).await;
         (network_id, _) = net_with_device(&c).await;
-        // 心跳前先拿 agent token（enroll 只返回一次）——重新走一遍邀请/加入。
+        // Grab the agent token before heartbeating (enroll returns it only once) — replay invite/enroll.
         let (st, invite) = json_post(
             &c,
             &format!("/api/v1/networks/{network_id}/invites"),
@@ -477,7 +477,7 @@ async fn presence_is_conservative_after_restart() {
         assert_eq!(st, StatusCode::CREATED);
         let agent_token = agent_dev["agent_token"].as_str().unwrap().to_string();
 
-        // 心跳（带握手证据 + 数据面实测证据，§7.5）→ online。
+        // Heartbeat (with handshake evidence + data-plane measured evidence, §7.5) -> online.
         let mut req = Request::builder()
             .method("POST")
             .uri("/api/v1/agent/heartbeat")
@@ -495,7 +495,7 @@ async fn presence_is_conservative_after_restart() {
                 .to_string(),
             ))
             .unwrap();
-        // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+        // §12: heartbeat observes the direct-connection source address (ConnectInfo is assembled at the serve layer).
         req.extensions_mut().insert(axum::extract::ConnectInfo(
             "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
         ));
@@ -505,7 +505,7 @@ async fn presence_is_conservative_after_restart() {
         let hb: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(hb["online_state"], "online");
 
-        // 实测证据已落库：重启后同源可见（§17.3 逐字段恢复）。
+        // Measured evidence is persisted: visible from the same source after restart (§17.3 field-by-field restore).
         let (_, before) = json_get(&c, &format!("/api/v1/networks/{network_id}/devices")).await;
         let laptop = before
             .as_array()
@@ -516,8 +516,8 @@ async fn presence_is_conservative_after_restart() {
         assert_eq!(laptop["dataplane_evidence"]["tunnel_mtu"], 1380);
         assert_eq!(laptop["dataplane_evidence"]["mtu_probe_payload"], 1352);
 
-        // 模拟「重启后时间流逝」：把证据时间戳改到远古（直接改 DB 等价于
-        // 服务停了很久——判定在读取时刻做，不由启动时刻虚构）。
+        // Simulate "time passing after the restart": push the evidence timestamps into the distant past (editing
+        // the DB directly equals the service being down for a long time — judgment happens at read time, not at startup).
         sqlx::query(
             "UPDATE devices SET last_seen_at = '2026-01-01T00:00:00Z', \
              last_handshake_at = '2026-01-01T00:00:00Z', \
@@ -541,7 +541,7 @@ async fn presence_is_conservative_after_restart() {
             "source of last evidence shown"
         );
     }
-    // 数据面证据随设备行恢复（重启不清零读数；staleness 由 presence 承载）。
+    // Data-plane evidence comes back with the device row (restart does not zero the readings; staleness is presence's job).
     let laptop = devices
         .as_array()
         .unwrap()
@@ -555,7 +555,7 @@ async fn presence_is_conservative_after_restart() {
     cleanup_db(&db);
 }
 
-/// Agent API 调用（Bearer 凭证，无会话/CSRF）。
+/// Agent API call (Bearer credential, no session/CSRF).
 async fn agent_call(
     app: &Router,
     method: &str,
@@ -570,7 +570,7 @@ async fn agent_call(
         .header("content-type", "application/json")
         .body(body)
         .unwrap();
-    // §12：heartbeat 观测直连源地址（ConnectInfo 装配于 serve 层）。
+    // §12: heartbeat observes the direct-connection source address (ConnectInfo is assembled at the serve layer).
     req.extensions_mut().insert(axum::extract::ConnectInfo(
         "10.240.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
     ));
@@ -581,8 +581,8 @@ async fn agent_call(
     (status, value)
 }
 
-/// §17.3 延伸（2026-10-15 自举注册）：自举码与待审批申请跨重启逐字段重建，
-/// 注册期 agent 凭证跨重启继续有效（心跳仍 pending），重启后批准照常走通。
+/// §17.3 extension (2026-10-15 bootstrap registration): bootstrap tokens and pending requests are rebuilt field by
+/// field across restarts, registration-time agent credentials stay valid (heartbeat stays pending), approval still works.
 #[tokio::test]
 async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
     let db = db_file("selfreg");
@@ -616,7 +616,7 @@ async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
             "new networks persist the canonical default segment"
         );
 
-        // 自举码 → 设备自注册 → Pending 心跳（带数据面证据）。
+        // Bootstrap token -> device self-registration -> pending heartbeat (with data-plane evidence).
         let (st, token) = json_post(
             &c,
             &format!("/api/v1/networks/{network_id}/bootstrap-tokens"),
@@ -664,7 +664,7 @@ async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
         c.pool.close().await;
     }
 
-    // 重启：同一 DB 重建——自举码元数据与待审批申请（含心跳证据）逐字段恢复。
+    // Restart: rebuild from the same DB — bootstrap token metadata and the pending request (incl. heartbeat evidence) restored field by field.
     let c = open_app(&db).await;
     let after_regs = json_get(&c, &format!("/api/v1/networks/{network_id}/registrations"))
         .await
@@ -688,7 +688,7 @@ async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
     assert_eq!(after_tokens[0]["id"], "bt-1");
     assert_eq!(after_tokens[0]["used_count"], 1);
 
-    // 注册期凭证跨重启仍有效：心跳继续 pending；desired 仍 404 pending approval。
+    // The registration-time credential still works across the restart: heartbeat stays pending; desired still 404s pending approval.
     let (st, hb) = agent_call(
         &c.app,
         "POST",
@@ -716,7 +716,7 @@ async fn pending_registrations_and_bootstrap_tokens_survive_restart() {
         .unwrap()
         .contains("pending approval"));
 
-    // 重启后批准照常走通：设备入册 + 恰好一个新修订（基线 = 建网初始修订）。
+    // Approval works normally after the restart: device registered + exactly one new revision (baseline = the network's initial revision).
     let (st, revisions_before) = json_get(
         &c,
         &format!("/api/v1/networks/{network_id}/config-revisions"),

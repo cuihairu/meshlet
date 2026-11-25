@@ -1,5 +1,5 @@
-//! 集成测试：控制台认证（存档 §11.4，验收：全部管理 API 需认证；
-//! 哈希/限流/Cookie 安全属性/CSRF 就位）。
+//! Integration tests: console authentication (archive §11.4; acceptance: all management
+//! APIs require auth; hashing/rate limiting/Cookie security attributes/CSRF in place).
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -111,7 +111,7 @@ fn cookie_value(set_cookie: &str) -> String {
     set_cookie.split(';').next().unwrap().to_string()
 }
 
-/// bootstrap 建管理员 + 发 Cookie。返回会话 Cookie（含属性的原串）。
+/// bootstrap creates the admin + issues a Cookie. Returns the session Cookie (raw string, attributes included).
 async fn bootstrap(ctx: &Ctx) -> (StatusCode, serde_json::Value, String) {
     let (st, body, cookie) = post_json(
         ctx,
@@ -132,15 +132,15 @@ async fn bootstrap_creates_first_admin_with_secure_cookie() {
     assert_eq!(body["email"], EMAIL);
     assert!(body["user_id"].as_str().is_some_and(|v| !v.is_empty()));
 
-    // Cookie 安全属性（§11.4）：HttpOnly + SameSite=Strict + Max-Age + 作用域限 /api/v1。
+    // Cookie security attributes (§11.4): HttpOnly + SameSite=Strict + Max-Age + Path scoped to /api/v1.
     assert!(cookie.contains("HttpOnly"), "{cookie}");
     assert!(cookie.contains("SameSite=Strict"), "{cookie}");
     assert!(cookie.contains("Max-Age="), "{cookie}");
     assert!(cookie.contains("Path=/api/v1"), "{cookie}");
-    // 开发配置（cookie_secure=false）下不带 Secure；生产置 true 由配置测试覆盖。
+    // No Secure attribute under the dev config (cookie_secure=false); the production true setting is covered by config tests.
     assert!(!cookie.contains("; Secure"));
 
-    // 密码与哈希都不出现在响应里。
+    // Neither the password nor its hash appears in the response.
     let raw = body.to_string();
     assert!(!raw.contains(PASSWORD));
     assert!(!raw.contains("argon2"));
@@ -183,7 +183,7 @@ async fn login_succeeds_with_correct_password() {
         .as_ref()
         .is_some_and(|c| c.contains("meshlet_session=")));
 
-    // 新会话可用：GET /auth/me 返回当前用户。
+    // The new session works: GET /auth/me returns the current user.
     let (st, me) = get_json(
         &ctx,
         "/api/v1/auth/me",
@@ -199,7 +199,7 @@ async fn login_failure_is_generic_401() {
     let ctx = ctx().await;
     bootstrap(&ctx).await;
 
-    // 错密码与不存在用户同形（不泄露账号存在性）。
+    // Wrong password and nonexistent user look identical (no account-existence leak).
     let (st, err, cookie) = post_json(
         &ctx,
         "/api/v1/auth/login",
@@ -228,12 +228,12 @@ async fn login_failure_is_generic_401() {
 async fn management_api_requires_authentication() {
     let ctx = ctx().await;
 
-    // 未认证：列表 401。
+    // Unauthenticated: list returns 401.
     let (st, err) = get_json(&ctx, "/api/v1/networks", None).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     assert_eq!(err["error"]["code"], "unauthorized");
 
-    // 未认证：写操作 401（CSRF 头带了也没用）。
+    // Unauthenticated: write returns 401 (the CSRF header doesn't help either).
     let (st, _, _) = post_json(
         &ctx,
         "/api/v1/networks",
@@ -255,7 +255,7 @@ async fn management_api_accepts_valid_session() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(networks.as_array().map(Vec::len), Some(0));
 
-    // 带 CSRF 头的写操作通过。
+    // Write with the CSRF header passes.
     let (st, net, _) = post_json(
         &ctx,
         "/api/v1/networks",
@@ -274,7 +274,7 @@ async fn management_writes_require_csrf_header() {
     let (_, _, cookie) = bootstrap(&ctx).await;
     let cookie = cookie_value(&cookie);
 
-    // 有效会话但缺 X-Requested-With：写操作 403（CSRF 防线）。
+    // Valid session but missing X-Requested-With: write returns 403 (CSRF defense).
     let (st, err, _) = post_json(
         &ctx,
         "/api/v1/networks",
@@ -286,7 +286,7 @@ async fn management_writes_require_csrf_header() {
     assert_eq!(st, StatusCode::FORBIDDEN);
     assert_eq!(err["error"]["code"], "forbidden");
 
-    // GET 不受 CSRF 头约束。
+    // GET is not subject to the CSRF header requirement.
     let (st, _) = get_json(&ctx, "/api/v1/networks", Some(&cookie)).await;
     assert_eq!(st, StatusCode::OK);
 }
@@ -297,7 +297,7 @@ async fn two_factor_writes_require_csrf_header_and_write_scope() {
     let (_, _, cookie) = bootstrap(&ctx).await;
     let cookie = cookie_value(&cookie);
 
-    // 有效会话但缺 X-Requested-With：2FA 写操作 403（CSRF 双重防线）。
+    // Valid session but missing X-Requested-With: 2FA writes return 403 (second CSRF line of defense).
     for uri in [
         "/api/v1/auth/2fa/enroll",
         "/api/v1/auth/2fa/activate",
@@ -315,7 +315,7 @@ async fn two_factor_writes_require_csrf_header_and_write_scope() {
         assert_eq!(err["error"]["code"], "forbidden", "{uri}");
     }
 
-    // 带 CSRF 头的 2FA 写操作通过（enroll 无 body）。
+    // 2FA write with the CSRF header passes (enroll takes no body).
     let (st, _, _) = post_json(
         &ctx,
         "/api/v1/auth/2fa/enroll",
@@ -326,7 +326,7 @@ async fn two_factor_writes_require_csrf_header_and_write_scope() {
     .await;
     assert_eq!(st, StatusCode::OK, "enroll with csrf must pass");
 
-    // read-only API Token（Bearer）即便带 CSRF 头也被拒——WriteUser 需 write scope。
+    // A read-only API Token (Bearer) is rejected even with the CSRF header — WriteUser requires the write scope.
     let (st, created) = {
         let builder = Request::builder()
             .method("POST")
@@ -401,7 +401,7 @@ async fn logout_revokes_session() {
         "cookie cleared"
     );
 
-    // 旧会话失效。
+    // The old session is now invalid.
     let (st, _) = get_json(&ctx, "/api/v1/networks", Some(&cookie)).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
 }
@@ -411,7 +411,7 @@ async fn login_rate_limit_kicks_in_then_recovers_on_success() {
     let ctx = ctx().await;
     bootstrap(&ctx).await;
 
-    // 5 次失败（LOGIN_MAX_ATTEMPTS）后第 6 次被拒——即使第 6 次密码正确。
+    // After 5 failures (LOGIN_MAX_ATTEMPTS) the 6th is rejected — even with the correct password.
     for _ in 0..5 {
         let (st, _, _) = post_json(
             &ctx,
@@ -434,7 +434,7 @@ async fn login_rate_limit_kicks_in_then_recovers_on_success() {
     assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(err["error"]["code"], "too_many_requests");
 
-    // 其他账号不受牵连（按 email 限流）。
+    // Other accounts are unaffected (rate limiting is per email).
     let (st, _, _) = post_json(
         &ctx,
         "/api/v1/auth/login",
@@ -477,7 +477,7 @@ async fn bootstrap_validates_input() {
 async fn enroll_and_status_stay_public() {
     let ctx = ctx().await;
 
-    // enroll 是设备侧端点（邀请 Token 即凭证），无需控制台会话。
+    // enroll is a device-side endpoint (the invite Token is the credential); it needs no console session.
     let (st, err, _) = post_json(
         &ctx,
         "/api/v1/enroll",
@@ -504,7 +504,7 @@ async fn enroll_and_status_stay_public() {
 
 #[tokio::test]
 async fn cookie_secure_flag_flips_with_config() {
-    // cookie_secure=true 时 Cookie 带 Secure（生产：HTTPS 反代后）。
+    // With cookie_secure=true the Cookie carries Secure (production: behind an HTTPS reverse proxy).
     let pool = meshlet_server::store::connect("sqlite::memory:")
         .await
         .unwrap();
@@ -586,8 +586,8 @@ async fn concurrent_bootstrap_has_exactly_one_admin_session() {
     );
 }
 
-/// 从 otpauth:// URI 提取 base32 密钥（扫码导入材料的唯一承载；服务端
-/// 任何出站响应不含密钥原文的其他形式）。
+/// Extract the base32 secret from the otpauth:// URI (the sole carrier of the QR-scan
+/// material; no outbound server response contains the raw secret in any other form).
 fn secret_from_uri(uri: &str) -> String {
     let after = uri.split("secret=").nth(1).expect("secret param");
     let secret = after.split('&').next().unwrap();
@@ -604,13 +604,13 @@ async fn totp_enroll_activate_then_login_requires_code() {
     let ctx = ctx().await;
     let (_st, _body, cookie) = bootstrap(&ctx).await;
 
-    // 初始：未绑定。
+    // Initially: not bound.
     let (st, status) = get_json(&ctx, "/api/v1/auth/2fa/status", Some(&cookie)).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(status["enabled"], false);
     assert_eq!(status["pending"], false);
 
-    // enroll：生成密钥 + 返回 otpauth URI（无明文密钥原文）。
+    // enroll: generates the secret + returns the otpauth URI (no plaintext secret material).
     let (st, body, _c) = post_json(
         &ctx,
         "/api/v1/auth/2fa/enroll",
@@ -629,13 +629,13 @@ async fn totp_enroll_activate_then_login_requires_code() {
     assert!(!uri.contains("P@ssw0rd"), "no plaintext password in uri");
     let secret = secret_from_uri(&uri);
 
-    // 待激活状态。
+    // Pending-activation state.
     let (st, status) = get_json(&ctx, "/api/v1/auth/2fa/status", Some(&cookie)).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(status["enabled"], false);
     assert_eq!(status["pending"], true);
 
-    // 激活：正确码。
+    // Activate: correct code.
     let code = meshlet_domain::totp::code_at(&secret, totp_now()).expect("code");
     let (st, body, _c) = post_json(
         &ctx,
@@ -648,7 +648,7 @@ async fn totp_enroll_activate_then_login_requires_code() {
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["enabled"], true);
 
-    // 错码激活被拒（重新 enroll 后再试错码）。
+    // Activation with a wrong code is rejected (re-enroll, then try a wrong code again).
     let (_st, _b, _c) = post_json(
         &ctx,
         "/api/v1/auth/2fa/enroll",
@@ -666,7 +666,7 @@ async fn totp_enroll_activate_then_login_requires_code() {
     )
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
-    // 重新激活（正确码）。
+    // Re-activate (correct code).
     let secret2 = {
         let (_st, b, _c) = post_json(
             &ctx,
@@ -689,7 +689,7 @@ async fn totp_enroll_activate_then_login_requires_code() {
     .await;
     assert_eq!(st, StatusCode::OK);
 
-    // 登出后：登录缺码 → 提示第二步，不种会话。
+    // After logout: login without a code → prompted for the second step, no session set.
     let (_st, _b, _c) = post_json(
         &ctx,
         "/api/v1/auth/logout",
@@ -711,7 +711,7 @@ async fn totp_enroll_activate_then_login_requires_code() {
     assert_eq!(body["two_factor_enabled"], true, "{body}");
     assert!(cookie2.is_none(), "no session cookie before 2fa step");
 
-    // 错码 → 401。
+    // Wrong code → 401.
     let (st, _b, _c) = post_json(
         &ctx,
         "/api/v1/auth/login",
@@ -722,7 +722,7 @@ async fn totp_enroll_activate_then_login_requires_code() {
     .await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
 
-    // 正确码 → 200 + 会话 Cookie。
+    // Correct code → 200 + session Cookie.
     let code3 = meshlet_domain::totp::code_at(&secret2, totp_now()).expect("code3");
     let (st, body, cookie3) = post_json(
         &ctx,

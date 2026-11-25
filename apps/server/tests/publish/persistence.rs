@@ -1,5 +1,5 @@
-//! 持久化与审计：每条发布写都留审计行（无审计不落库）、重启后从 DB 恢复且
-//! id 序列不复用、DevicePlan 携带发布段（期望计划门禁下 apply 桩先行）。
+//! Persistence and audit: every publish write leaves an audit row (no audit, no
+//! commit); a restart restores objects from the DB without reusing the id sequence; DevicePlan carries the publish segment (under the desired-config gate the apply stub runs first).
 
 use axum::http::StatusCode;
 use serde_json::json;
@@ -54,13 +54,13 @@ async fn every_publish_write_leaves_an_audit_row() {
         "one audit row per publish write: {actions:?}"
     );
 
-    // 删除也要留痕，且对象随之消失。
+    // Deletions leave a trail too, and the object disappears along with it.
     let (status, body) = delete(&ctx, &format!("{}/pf-1", p("forwards"))).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     let actions = audit_actions(&ctx, "publish.").await;
     assert_eq!(actions.len(), 5, "{actions:?}");
 
-    // 审计行的 detail 不得携带 bearer token（密钥材料不落审计）。
+    // An audit row's detail must not carry a bearer token (secret material never lands in the audit log).
     let detail = sqlx::query_scalar::<_, String>(
         "SELECT detail FROM audit_events WHERE action = 'publish.http_route_created'",
     )
@@ -72,7 +72,7 @@ async fn every_publish_write_leaves_an_audit_row() {
         "audit must not carry tokens: {detail}"
     );
 
-    // 每条发布变更都记一个修订（对象属于期望配置）。
+    // Every publish change records a revision (publish objects belong to the desired config).
     let (status, revisions, _) = call(
         &ctx,
         "GET",
@@ -124,11 +124,11 @@ async fn publish_objects_restore_after_restart_and_ids_are_not_reused() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{raw}");
 
-    // 保留库文件再关掉连接句柄（Drop 默认会清理库文件）。
+    // Keep the db file around by dropping the connection handle (Drop would delete the file by default).
     ctx.db = None;
     drop(ctx);
 
-    // 重启：从 DB 重建内存状态。
+    // Restart: rebuild in-memory state from the DB.
     let ctx = reopen(&db).await;
     let (status, forwards) = get(&ctx, &p("forwards")).await;
     assert_eq!(status, StatusCode::OK);
@@ -151,8 +151,8 @@ async fn publish_objects_restore_after_restart_and_ids_are_not_reused() {
         "health evidence is not restored as configuration"
     );
 
-    // 全局 publish 序列跨重启单调不复用：此前 pf-1 / dn-2 / pb-3 已消耗
-    // seq 1-3，重启后的新对象必须是 seq 4（不是 pf-2）。
+    // The global publish sequence is monotonic across restarts and never reuses ids:
+    // pf-1 / dn-2 / pb-3 already consumed seq 1-3, so the new object after a restart must be seq 4 (not pf-2).
     let (status, next, raw) = post(
         &ctx,
         &p("forwards"),
@@ -190,7 +190,7 @@ async fn device_plan_carries_the_publish_segment() {
     let (network_id, device_a, token_a) = provision(&ctx, "edge-a").await;
     let (_, token_b) = add_device(&ctx, &network_id, "edge-b", "test-public-key-2").await;
 
-    // 有发布对象的设备：计划带发布段，且计划哈希因发布对象而变。
+    // A device with publish objects: the plan carries a publish segment, and the plan hash changes because of them.
     let (status, _, raw) = post(
         &ctx,
         &format!("/api/v1/networks/{network_id}/publish/forwards"),
@@ -201,7 +201,7 @@ async fn device_plan_carries_the_publish_segment() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{raw}");
 
-    // 期望计划门禁：当前修订必须已应用（apply 桩成功）才下发。
+    // Desired-config gate: the current revision must already be applied (apply stub succeeded) before the plan is served.
     apply_current(&ctx, &network_id).await;
     let (status, with_publish) = agent_desired(&ctx, &token_a).await;
     assert_eq!(status, StatusCode::OK);
@@ -213,7 +213,7 @@ async fn device_plan_carries_the_publish_segment() {
     assert_eq!(publish["forwards"][0]["id"], "pf-1");
     assert_eq!(publish["forwards"][0]["listener_address"], "127.0.0.1:9500");
 
-    // 无发布对象的设备：publish 段为 null（向后兼容旧 agent），哈希也不同。
+    // A device without publish objects: the publish segment is null (backward compatible with older agents), and the hash differs.
     let (status, without_publish) = agent_desired(&ctx, &token_b).await;
     assert_eq!(status, StatusCode::OK);
     assert!(without_publish["publish"].is_null(), "{without_publish}");

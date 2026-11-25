@@ -6,9 +6,9 @@ use axum::http::StatusCode;
 use meshlet_network::SystemBackend;
 use serde_json::{json, Value};
 
-/// 场景 4：删除 LAN 路由 = 删除一个「路由 + 从属 Alias」的完整单元。受管对象
-/// 必须按身份收干净：hub 路由、hub AllowedIPs 由 hub 侧重应用收敛，网关 NAT
-/// 由网关 agent 的所有权清扫收敛——两边都不许留孤儿。
+/// Scenario 4: deleting a LAN route = deleting the complete unit of "route + its dependent aliases".
+/// Managed objects must be cleaned up by identity: hub routes and hub AllowedIPs converge by re-applying on
+/// the hub side, and gateway NAT converges by the gateway agent's ownership sweep — neither side may leave orphans.
 #[tokio::test(flavor = "multi_thread")]
 async fn deleting_a_lan_route_cascades_managed_kernel_objects() {
     let Some(sandbox) = setup() else {
@@ -37,7 +37,7 @@ async fn deleting_a_lan_route_cascades_managed_kernel_objects() {
     converge_device(&sandbox, &boot, 0).await;
     converge_device(&sandbox, &boot, 1).await;
 
-    // 三处受管证据先留底：hub 路由、网关 NAT、hub 侧 AllowedIPs。
+    // Capture the three managed pieces of evidence first: hub routes, gateway NAT, hub AllowedIPs.
     let hub_routes = sorted_lines(&sandbox, 0, &["ip", "-4", "route", "show", "dev", "wg0"]);
     let nat = meshlet_nat_lines(&sandbox, 1);
     let allowed = wg_identity_lines(&sandbox, 0);
@@ -54,7 +54,7 @@ async fn deleting_a_lan_route_cascades_managed_kernel_objects() {
         "hub AllowedIPs must carry the alias prefix: {allowed:?}"
     );
 
-    // 删除 LAN 路由：Alias 是它的从属单元，必须一并消失（控制面）。
+    // Delete the LAN route: the alias is its dependent unit and must disappear along with it (control plane).
     let (status, body) = request(
         &boot.app,
         "DELETE",
@@ -84,7 +84,7 @@ async fn deleting_a_lan_route_cascades_managed_kernel_objects() {
         "the alias must be cascade-deleted: {body}"
     );
 
-    // hub 侧由 apply 收敛：路由与 AllowedIPs 里的别名网段都该消失。
+    // The hub side converges via apply: both the route and the alias prefix in AllowedIPs should be gone.
     assert_eq!(
         apply(&boot.app, &boot.cookie, &boot.network).await["apply_status"],
         "applied"
@@ -101,8 +101,8 @@ async fn deleting_a_lan_route_cascades_managed_kernel_objects() {
         "hub AllowedIPs must shrink back to the overlay /32"
     );
 
-    // 网关侧由 agent 收敛：新计划 nat_rules 为空，apply_device_plan_sync 会在
-    // 空 NAT 上提前返回，必须走 Agent::reconcile 的所有权清扫。
+    // The gateway side converges via the agent: the new plan has empty nat_rules, and apply_device_plan_sync
+    // returns early on empty NAT, so Agent::reconcile's ownership sweep must be the path taken.
     let plan = desired_plan(&boot.app, &boot.tokens[0]).await;
     assert!(
         plan.nat_rules.is_empty(),

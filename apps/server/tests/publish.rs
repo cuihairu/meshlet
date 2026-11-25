@@ -1,23 +1,23 @@
-//! 集成测试：服务发布（R-06）控制面。
+//! Integration tests: the service publishing (R-06) control plane.
 //!
-//! 覆盖：PortForward / HTTP 路由 / 探针 / DNS 记录的 建-列-查-删 往返；
-//! 写入端点的 WriteUser + CSRF 边界；`allowed_bearer_tokens` **永不回显**
-//! （视图只给计数）；端口冲突按**设备**判定（同设备同端口 409，别的设备同
-//! 端口合法）；每设备一个 DNS 套接字；agent 探针回报的 `device_id` 守卫
-//! （不能替别的设备写健康）；每条写都有审计行（无审计不落库）；重启后从
-//! DB 恢复且 id 序列不复用。
+//! Covers create-list-get-delete round trips for PortForward / HTTP routes / probes / DNS records;
+//! the WriteUser + CSRF boundary on write endpoints; `allowed_bearer_tokens` is **never echoed**
+//! (views expose a count only); port conflicts are judged per **device** (same device + same port
+//! is 409, other devices may reuse the port); one DNS socket per device; the `device_id` guard on
+//! agent probe reports (a device cannot report health for another device); every write leaves an
+//! audit row (no audit, no commit); and state restores from the DB after restart without id reuse.
 //!
-//! 真机端到端验收（真实 agent 起监听、真实 DNS 套接字）不在本文件范围。
+//! Real-device end-to-end acceptance (a live agent opening listeners, a real DNS socket) is out of scope here.
 
-// 按对象族拆分的子模块（公共 helper 留在本文件，子模块 `use super::*` 复用）。
+// Submodules split by object family (shared helpers stay in this file, reused via `use super::*`).
 #[path = "publish/auth.rs"]
-mod auth; // 鉴权与回显边界
+mod auth; // auth + echo boundary
 #[path = "publish/persistence.rs"]
-mod persistence; // 持久化 / 审计 / DevicePlan 发布段
+mod persistence; // persistence / audit / the DevicePlan publish section
 #[path = "publish/probe_dns.rs"]
-mod probe_dns; // 探针与 DNS 记录
+mod probe_dns; // probes and DNS records
 #[path = "publish/routes.rs"]
-mod routes; // 端口冲突 / HTTP 路由 / TLS passthrough
+mod routes; // port conflicts / HTTP routes / TLS passthrough
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -33,8 +33,8 @@ const PASSWORD: &str = "bootstrap-password-123";
 const OVERLAY: &str = "10.240.0.0/16";
 static DB_SEQ: AtomicU32 = AtomicU32::new(0);
 
-/// `wg` 可用（推导 hub 公钥需要）；不可用时 device-plan 用例 SKIP（与
-/// agent_plan.rs 同口径）。
+/// `wg` is available (needed to derive the hub public key); when missing, the device-plan cases
+/// SKIP (same rule as agent_plan.rs).
 fn wg_available() -> bool {
     match std::process::Command::new("wg").arg("--version").output() {
         Ok(o) if o.status.success() => true,
@@ -45,7 +45,7 @@ fn wg_available() -> bool {
     }
 }
 
-/// 生成 hub 私钥文件（ADR-010：仅本地，服务端不落库）。
+/// Generate the hub private key file (ADR-010: local only, never persisted by the server).
 fn write_hub_key(dir: &Path) -> PathBuf {
     let out = std::process::Command::new("wg")
         .arg("genkey")
@@ -57,7 +57,7 @@ fn write_hub_key(dir: &Path) -> PathBuf {
     path
 }
 
-/// 永远成功的 apply 桩：本文件只验「计划携带发布段」，不碰内核。
+/// An apply stub that always succeeds: this file only checks that "the plan carries the publish section", so it never touches the kernel.
 struct OkBackend;
 
 impl meshlet_domain::ConfigApplyBackend for OkBackend {
@@ -132,7 +132,7 @@ async fn memory_ctx() -> Ctx {
     ctx_from(app, cookie, pool, None)
 }
 
-/// 文件库上下文：用于重启恢复测试。
+/// File-backed DB context: used by the restart-restore tests.
 async fn file_ctx() -> (Ctx, PathBuf) {
     let db = file_db();
     let pool = meshlet_server::store::connect(&format!("sqlite:{}", db.display()))
@@ -143,7 +143,7 @@ async fn file_ctx() -> (Ctx, PathBuf) {
     (ctx_from(app, cookie, pool, Some(db.clone())), db)
 }
 
-/// 重启后重开：跑 §17.3 恢复（含发布对象）→ 用 login 拿会话。
+/// Reopen after a restart: run the §17.3 restore (including published objects) → get a session via login.
 async fn reopen(db: &Path) -> Ctx {
     let pool = meshlet_server::store::connect(&format!("sqlite:{}", db.display()))
         .await
@@ -159,7 +159,7 @@ async fn reopen(db: &Path) -> Ctx {
         false,
     ));
     let app = meshlet_server::router(state);
-    // 空库走 bootstrap，重启后走 login——两种都能拿到会话 Cookie。
+    // An empty DB goes through bootstrap, a restarted one through login — either way a session Cookie is obtained.
     let res = app
         .clone()
         .oneshot(auth_request("/api/v1/auth/bootstrap"))
@@ -261,7 +261,7 @@ async fn get(ctx: &Ctx, uri: &str) -> (StatusCode, Value) {
     (status, value)
 }
 
-/// 带原始响应体的 GET（用于断言「正文里不出现 token 原文」）。
+/// GET returning the raw response body (for asserting "the body never contains the token itself").
 async fn get_raw(ctx: &Ctx, uri: &str) -> (StatusCode, Value, String) {
     call(ctx, "GET", uri, Some(&ctx.cookie), None, false, None).await
 }
@@ -271,7 +271,7 @@ async fn delete(ctx: &Ctx, uri: &str) -> (StatusCode, Value) {
     (status, value)
 }
 
-/// 建网络 + 批准一个设备：返回 (network_id, device_id, agent_token)。
+/// Create a network + approve one device: returns (network_id, device_id, agent_token).
 async fn provision(ctx: &Ctx, device_name: &str) -> (String, String, String) {
     let (status, net, _) = post(
         ctx,
@@ -316,7 +316,7 @@ async fn provision(ctx: &Ctx, device_name: &str) -> (String, String, String) {
     (network_id, device_id, agent_token)
 }
 
-/// 在同一网络里注册并批准第二个设备：返回 (device_id, agent_token)。
+/// Register and approve a second device in the same network: returns (device_id, agent_token).
 async fn add_device(
     ctx: &Ctx,
     network_id: &str,
@@ -362,7 +362,7 @@ async fn audit_actions(ctx: &Ctx, prefix: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// 应用当前最新修订（apply 桩成功）——期望计划下发的门禁（§10.1）。
+/// Apply the current latest revision (stub apply succeeds) — the gate for plan delivery (§10.1).
 async fn apply_current(ctx: &Ctx, network_id: &str) {
     let (status, list) = get(
         ctx,
@@ -387,7 +387,7 @@ async fn apply_current(ctx: &Ctx, network_id: &str) {
     assert_eq!(body["apply_status"], "applied", "{body}");
 }
 
-/// Agent 拉期望计划（Bearer 凭证，无 CSRF）。
+/// Agent fetches the desired plan (Bearer credential, no CSRF).
 async fn agent_desired(ctx: &Ctx, token: &str) -> (StatusCode, Value) {
     let (status, value, _) = call(
         ctx,

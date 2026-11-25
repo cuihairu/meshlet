@@ -1,4 +1,4 @@
-//! 发布检查接线：把 meshlet-publish 的授权判断暴露成 server 路由。
+//! Publishing-check wiring: exposes meshlet-publish's authorization decisions as server routes.
 
 use axum::{extract::State, http::StatusCode, Json};
 use meshlet_publish::{AuthorizationDecision, AuthorizationPolicy, AuthorizedClient};

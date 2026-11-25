@@ -1,28 +1,39 @@
-//! Mesh 状态持久化与启动重建（[存档 §17.3](../../docs/review/chatgpt-2026-10-13.md)）
-//! 与一致性备份/恢复（[存档 §17.4](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Mesh state persistence and boot reconstruction
+//! ([Archive §17.3](../../docs/review/chatgpt-2026-10-13.md)) and consistent
+//! backup/restore ([Archive §17.4](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 请求路径：`MeshState` 仍是唯一事实源（`service.rs`）；每次变更在锁内
-//! 完成后，由 handler 把**新行**镜像到 SQLite（本模块的 `insert_*`/
-//! `update_*`/`delete_*`）。落库失败 → 请求 500（「不落库不放行」，与审计
-//! 的「不留痕不放行」同纪律）；内存与 DB 的写序由 `AppState::persist` 互斥
-//! 串行化（变更 + 落库同临界区），任何并发交错都不会让旧行覆盖新行。
+//! Request path: `MeshState` is still the single source of truth
+//! (`service.rs`); each change finishes inside the lock, and the handler then
+//! mirrors the **new row** into SQLite (this module's `insert_*`/`update_*`/
+//! `delete_*`). A failed DB write → request 500 ("no DB row, no passage", the
+//! same discipline as the audit log's "no trail, no passage"); the write order
+//! between memory and DB is serialized by the `AppState::persist` mutex
+//! (mutation + DB write in one critical section), so no concurrent interleaving
+//! can let a stale row overwrite a newer one.
 //!
-//! 启动路径（[`load`]）：
-//! 1. 从 DB 装载 networks/devices/lan_routes/invitations/config_revisions/
-//!    `mesh_meta`（route_seq），重建 `MeshState`——IPAM 保留全部已分配地址
-//!    （含已撤销设备），修订序列与哈希逐字回放；
-//! 2. **中断收敛（§10.3）**：停在 `applying` 的修订结果不可知，一律落
-//!    `failed` + 中断诊断并回写 DB（不假装成功）；`rollback_pending` 保留
-//!    可重试；已 `applied` 不重放 backend；
-//! 3. presence 证据时间戳按 DB 原值恢复——重启**不虚构**在线（§12.4）：
-//!    判定发生在读取时刻，无新鲜证据即 `offline`/`tunnel_only`。
+//! Boot path ([`load`]):
+//! 1. Load networks/devices/lan_routes/invitations/config_revisions/
+//!    `mesh_meta` (route_seq) from the DB and rebuild `MeshState` — IPAM keeps
+//!    every allocated address (including revoked devices), and the revision
+//!    sequence and hashes are replayed verbatim;
+//! 2. **Interrupted convergence (§10.3)**: a revision stuck in `applying` has
+//!    an unknown outcome, so it always becomes `failed` + an interruption
+//!    diagnosis written back to the DB (never pretend success);
+//!    `rollback_pending` stays retryable; an already `applied` revision does not
+//!    replay the backend;
+//! 3. Presence evidence timestamps are restored to their DB values — a restart
+//!    **does not fabricate** online status (§12.4): the verdict is made at read
+//!    time, and with no fresh evidence it is `offline`/`tunnel_only`.
 //!
-//! 备份/恢复（§17.4）：[`backup_to`] 以 `VACUUM INTO` 产生单一自洽的本地
-//! 快照（一致性由 SQLite 快照本身保证）；[`restore_from_backup`] 校验 →
-//! 原子换名 → 留痕 → 复用 [`load`] 重建，语义与正常启动一致。
+//! Backup/restore (§17.4): [`backup_to`] uses `VACUUM INTO` to produce a single
+//! self-consistent local snapshot (consistency comes from the SQLite snapshot
+//! itself); [`restore_from_backup`] verifies → atomically renames → leaves a
+//! trail → reuses [`load`] to rebuild, with semantics identical to a normal
+//! start.
 //!
-//! 客户端（agent）侧重启恢复随数据面 backend 落地（拉取期望配置重新应用），
-//! 本模块先把「服务端重启不丢期望状态」钉死。
+//! Client (agent) side restart recovery lands with the dataplane backend
+//! (pulling the desired config and re-applying it); this module first pins down
+//! "a server restart loses no desired state".
 
 use super::entities::update_revision_status;
 use super::shared::{
@@ -117,7 +128,8 @@ pub async fn commit_task(
     Ok(())
 }
 
-/// 从 DB 恢复任务队列（MT-002 重启恢复）：`tasks` 行 + `mesh_meta.task_seq`。
+/// Restore the task queue from the DB (MT-002 restart recovery): `tasks` rows +
+/// `mesh_meta.task_seq`.
 pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), sqlx::Error> {
     let rows = sqlx::query(
         "SELECT id, network_id, target_device_id, cmd, workdir, timeout_secs,
@@ -155,7 +167,7 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
             "running" => meshlet_domain::TaskState::Running,
             "done" => meshlet_domain::TaskState::Done,
             "failed" => meshlet_domain::TaskState::Failed,
-            _ => continue, // 未知状态行（不应发生）；跳过避免启动失败
+            _ => continue, // Unknown state row (should not happen); skip so boot does not fail
         };
         let mut task = meshlet_domain::Task::new(
             meshlet_domain::TaskId(id.clone()),
@@ -193,7 +205,8 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
             },
         );
     }
-    // 任务 id 序列（`task-{seq}`）从 mesh_meta 恢复，重启不归零、不重号。
+    // The task id sequence (`task-{seq}`) is restored from mesh_meta, so restart
+    // neither zeroes nor reuses numbers.
     if let Ok(seq) =
         sqlx::query_scalar::<_, i64>("SELECT value FROM mesh_meta WHERE key = 'task_seq'")
             .fetch_one(pool)
@@ -205,14 +218,16 @@ pub async fn load_tasks(pool: &SqlitePool, state: &mut MeshState) -> Result<(), 
 }
 
 // ---------------------------------------------------------------------------
-// 启动重建（§17.3）
+// Boot reconstruction (§17.3)
 // ---------------------------------------------------------------------------
 
-/// 从 DB 重建 `MeshState` 并做 §10.3 中断收敛。
+/// Rebuild `MeshState` from the DB and perform §10.3 interrupted convergence.
 ///
-/// 期望状态逐字恢复（设备虚拟 IP / 路由 / 修订号与哈希与重启前一致）；
-/// IPAM 重放全部分配；`applying` 修订收敛为 `failed` 并**回写 DB**（第二次
-/// 重启看到的已是 `failed`，收敛幂等）。
+/// The desired state is restored verbatim (device virtual IPs / routes /
+/// revision numbers and hashes match the pre-restart values); IPAM replays all
+/// allocations; `applying` revisions converge to `failed` and are **written
+/// back to the DB** (a second restart already sees `failed`, so convergence is
+/// idempotent).
 pub async fn load(
     pool: &SqlitePool,
     thresholds: meshlet_domain::PresenceThresholds,
@@ -248,7 +263,8 @@ pub async fn load(
         ));
     }
 
-    // 网络按创建顺序（net-N 序列决定插入序，列表展示稳定）。
+    // Networks in creation order (the net-N sequence decides insertion order, so
+    // list rendering stays stable).
     let network_rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
         "SELECT id, name, overlay_cidr, status, created_at, updated_at
          FROM networks ORDER BY created_at, id",
@@ -330,7 +346,8 @@ pub async fn load(
     }
     let segment_grants = state.segment_grant_count();
 
-    // 设备：注册表顺序 = 加入顺序（created_at, id）；IPAM 逐一保留地址。
+    // Devices: registry order = join order (created_at, id); IPAM keeps each
+    // address.
     let device_rows = sqlx::query_as::<
         _,
         (
@@ -395,7 +412,8 @@ pub async fn load(
     }
     let devices = state.device_count();
 
-    // 待审批的注册申请（ZeroTier 式）：不进 IPAM、不进期望配置，重启后仍待批。
+    // Registration requests awaiting approval (ZeroTier style): they join neither
+    // IPAM nor the desired config, and are still pending after a restart.
     let reg_rows = sqlx::query_as::<
         _,
         (
@@ -438,7 +456,8 @@ pub async fn load(
     }
     let registrations = state.registration_count();
 
-    // 自举码（摘要索引；撤销/次数上限如常恢复）。
+    // Bootstrap tokens (digest index; revocation / use-count caps restored as
+    // usual).
     let bt_rows = sqlx::query_as::<
         _,
         (
@@ -471,7 +490,8 @@ pub async fn load(
             .insert(token.token_hash.clone(), token);
     }
 
-    // 自举码与注册申请各持一条序列（`bt-N` / `dev-reg-N`，前缀不冲突）。
+    // Bootstrap tokens and registration requests each keep one sequence
+    // (`bt-N` / `dev-reg-N`; the prefixes do not collide).
     for key in ["bootstrap_seq", "registration_seq"] {
         let value: Option<String> =
             sqlx::query_scalar(&format!("SELECT value FROM mesh_meta WHERE key = '{key}'"))
@@ -488,7 +508,7 @@ pub async fn load(
         }
     }
 
-    // LAN 路由 + 路由 id 序列。
+    // LAN routes + the route id sequence.
     let route_rows = sqlx::query_as::<
         _,
         (
@@ -539,8 +559,10 @@ pub async fn load(
         state.set_route_seq(seq);
     }
 
-    // Alias 映射（§12.6）：随绑定路由重建。孤儿行（绑定路由已删，正常写
-    // 路径不会产生，只有手改库才可能）不进内存——单元语义在启动时即收敛。
+    // Alias mappings (§12.6): rebuilt along with their bound route. Orphan rows
+    // (the bound route was deleted — the normal write path cannot produce this,
+    // only a hand-edited database) never enter memory: unit semantics converge
+    // at boot.
     let bound_routes: std::collections::HashSet<String> = state.bound_route_ids();
     let alias_rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
         "SELECT id, network_id, lan_route_id, alias_cidr, target_cidr, translation_mode, status
@@ -573,7 +595,8 @@ pub async fn load(
     }
     let aliases = state.alias_count();
 
-    // 邀请（摘要索引；撤销/兑换计数如常恢复，未兑换的邀请跨重启仍可用）。
+    // Invitations (digest index; revocation / redemption counts restored as usual,
+    // and unredeemed invitations stay usable across a restart).
     let invite_rows = sqlx::query_as::<
         _,
         (
@@ -610,7 +633,8 @@ pub async fn load(
     }
     let invites = state.invite_count();
 
-    // 修订簿记：逐字回放（哈希/状态/时间原样），随后做 §10.3 中断收敛。
+    // Revision bookkeeping: replayed verbatim (hashes / statuses / timestamps
+    // as-is), followed by §10.3 interrupted convergence.
     let revision_rows = sqlx::query_as::<
         _,
         (
@@ -649,13 +673,16 @@ pub async fn load(
             .await?
     {
         let mut saved = serde_json::from_str(&json).map_err(|e| corrupt("hub deployment", e))?;
-        // 日志可能在失败修订（journal 未更新）与撤销并存时短暂滞留旧计划：
-        // 装载即按当前授权快照过滤，恢复路径读到的永远是已授权子集。
+        // The journal can briefly hold a stale plan when a failed revision (journal
+        // not updated) coexists with a revocation: loading filters against the
+        // current authorization snapshot, so the restore path always reads an
+        // already-authorized subset.
         crate::revision::enforce_authorization(&state, &id, &mut saved);
         state.deployments.insert(id, saved);
     }
 
-    // §10.3：applying 结果不可知 → failed（内存 + DB，幂等）。
+    // §10.3: an `applying` outcome is unknown → failed (in memory + DB,
+    // idempotent).
     let interrupted = state.ledger.interrupt_applying(INTERRUPTED_SUMMARY);
     for (network_id, revision) in &interrupted {
         let r = state
@@ -665,9 +692,11 @@ pub async fn load(
         update_revision_status(pool, r).await?;
     }
 
-    // 服务发布对象（R-06）：四张表 + mesh_meta.publish_seq + 健康证据镜像。
+    // Service publish objects (R-06): the four tables + mesh_meta.publish_seq +
+    // the health-evidence mirror.
     crate::publish::persist::load(pool, &mut state).await?;
-    // 任务队列（MT-002）：恢复任务 + mesh_meta.task_seq（断线补派不丢、不重复）。
+    // Task queue (MT-002): restore tasks + mesh_meta.task_seq (a redispatch
+    // after a disconnect is neither lost nor duplicated).
     load_tasks(pool, &mut state).await?;
 
     Ok(BootState {
@@ -691,7 +720,8 @@ pub async fn load(
     })
 }
 
-/// 供 handler 把落库错误转为统一服务错误（500，内部细节不外泄）。
+/// Lets a handler turn a DB-write error into the unified service error (500,
+/// with no internals leaking out).
 pub fn internal(e: sqlx::Error) -> ServiceError {
     ServiceError::Internal(format!("persist: {e}"))
 }

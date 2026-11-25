@@ -41,7 +41,7 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
         assert!(backup["bytes"].as_u64().unwrap() > 0);
         backup_path = PathBuf::from(backup["path"].as_str().unwrap().to_string());
 
-        // 备份含口令哈希等敏感材料：落盘即收紧权限（unix 0600）。
+        // Backups hold sensitive material such as password hashes: permissions are tightened the moment they hit disk (unix 0600).
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -52,7 +52,7 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
             assert_eq!(mode & 0o777, 0o600, "backup file restricted to owner");
         }
 
-        // 审计留痕：system.backup，actor = 操作会话的用户 id。
+        // Audit trail: system.backup, actor = the user id of the operating session.
         let (_, me) = json_get(&c, "/api/v1/auth/me").await;
         let (_, audit) = json_get(&c, "/api/v1/audit").await;
         let events = audit["events"].as_array().unwrap();
@@ -62,7 +62,7 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
             .expect("system.backup audited");
         assert_eq!(backup_event["actor_id"], me["user_id"]);
 
-        // 备份之后的变更：第二条路由（rt-2）+ 第二台设备。
+        // Changes after the backup: a second route (rt-2) + a second device.
         let (st, _) = json_post(
             &c,
             &format!("/api/v1/networks/{network_id}/routes"),
@@ -96,8 +96,8 @@ async fn backup_file_is_independent_snapshot_not_written_back() {
         c.pool.close().await;
     }
 
-    // 备份文件独立可打开：26 表 + 16 个迁移齐全；内容停留在备份时刻
-    // （路由 1 条、route_seq=1），不随活动库后续变更回写。
+    // The backup file opens independently: all 26 tables + migrations present; the content is frozen at the
+    // moment of backup (1 route, route_seq=1) and is not written back as the live DB changes.
     let (tables, migrations, routes, seq) = inspect_backup(&backup_path).await;
     assert_eq!(tables, 26, "schema complete in backup");
     assert_eq!(migrations, 17, "migrations 001-017 recorded in backup");

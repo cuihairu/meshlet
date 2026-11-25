@@ -1,14 +1,14 @@
-//! 审计日志（存档 §16.5、ADR-010）。
+//! Audit log (archival, §16.5, ADR-010).
 //!
-//! 记录敏感操作：登录成功/失败、bootstrap、登出、网络创建、邀请签发/撤销、
-//! 设备加入/撤销、LAN Route 增删、API Token 签发/撤销、配置应用与回滚
-//! （应用失败必留痕）。schema 见 `migrations/001_init.sql` 的 `audit_events`
-//! （Phase 1 已建表）。
+//! Records sensitive operations: login success/failure, bootstrap, logout, network creation, invite issuance/revocation,
+//! device enrollment/revocation, LAN Route add/remove, API Token issuance/revocation, config apply and rollback
+//! (a failed apply always leaves a trace). Schema: `audit_events` in `migrations/001_init.sql`
+//! (table created in Phase 1).
 //!
-//! **不记录明文秘密**（§16.5）：`record` 只接受受控字段（actor / action /
-//! target_type / target_id / detail 结构化值），不接收请求体原文——密码、
-//! 私钥、邀请 Token、agent/API Token 原始材料在类型上就进不了审计表
-//! （测试断言 `no_secret_material_in_audit`）。
+//! **No plaintext secrets are recorded** (§16.5): `record` only accepts controlled fields (actor / action /
+//! target_type / target_id / structured detail values) and never the raw request body — passwords,
+//! private keys, invite Tokens, and raw agent/API Token material cannot reach the audit table by construction
+//! (test assertion `no_secret_material_in_audit`).
 
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -19,13 +19,13 @@ use sqlx::SqlitePool;
 use crate::auth::{AuthenticatedUser, SharedAppState};
 use crate::service;
 
-/// 审计存储：与凭证同库（`audit_events` 表，migration 001）。
+/// Audit storage: the same database as credentials (the `audit_events` table, migration 001).
 #[derive(Clone)]
 pub struct AuditStore {
     pool: SqlitePool,
 }
 
-/// 审计事件视图（列表响应条目；无原始凭证材料）。
+/// Audit event view (a list-response entry; no raw credential material).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuditEvent {
     pub id: i64,
@@ -42,7 +42,7 @@ impl AuditStore {
         Self { pool }
     }
 
-    /// 记录一条审计事件。`detail` 只接受受控结构化值（JSON 存 TEXT 列）。
+    /// Record one audit event. `detail` accepts only controlled structured values (JSON stored in a TEXT column).
     pub async fn record(
         &self,
         actor: Option<&str>,
@@ -68,7 +68,7 @@ impl AuditStore {
         Ok(())
     }
 
-    /// 最新在前（id 降序）。
+    /// Newest first (id descending).
     pub async fn list(&self, limit: u32, offset: u64) -> Result<Vec<AuditEvent>, sqlx::Error> {
         Ok(sqlx::query_as::<
             _,
@@ -123,7 +123,7 @@ struct AuditPage {
     events: Vec<AuditEvent>,
 }
 
-/// `GET /api/v1/audit?limit=&offset=`：审计事件列表（最新在前，分页）。
+/// `GET /api/v1/audit?limit=&offset=`: the audit event list (newest first, paginated).
 async fn list_audit_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(_user): AuthenticatedUser,
@@ -148,8 +148,8 @@ pub fn routes() -> Router<SharedAppState> {
     Router::new().route("/api/v1/audit", get(list_audit_handler))
 }
 
-/// 敏感操作留痕辅助：写入失败 → `Internal`（§16.5「敏感操作全记录」的
-/// 落地口径——**不留痕不放行**；审计与业务同库，独立失败即库已坏）。
+/// Helper for tracing sensitive operations: a write failure -> `Internal` (the operational form of §16.5's
+/// "record all sensitive operations" — **no trace, no proceed**; audit and business data share one database, so an independent failure means the database is already broken).
 pub(crate) async fn record_or_fail(
     state: &SharedAppState,
     actor: Option<&str>,

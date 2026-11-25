@@ -17,7 +17,7 @@ use std::time::Instant;
 use crate::service;
 
 // ---------------------------------------------------------------------------
-// 端点
+// Endpoints
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -25,7 +25,7 @@ use crate::service;
 pub struct CredentialsRequest {
     pub email: String,
     pub password: String,
-    /// TOTP 验证码（第二步）。该用户已启用 2FA 时提供；未启用则忽略。
+    /// TOTP verification code (second factor). Provide it when this user has 2FA enabled; ignored otherwise.
     #[serde(default)]
     pub code: Option<String>,
 }
@@ -34,37 +34,38 @@ pub struct CredentialsRequest {
 pub struct SessionResponse {
     pub user_id: String,
     pub email: String,
-    /// 本次登录尚缺 TOTP 第二步（响应未种会话 Cookie；客户端应提示输入验证码）。
+    /// This login still lacks the TOTP second factor (no session cookie set in this response; the client should prompt for the code).
     pub two_factor_required: bool,
-    /// 该用户已启用 TOTP（客户端据此决定是否显示绑定引导）。
+    /// TOTP is enabled for this user (the client uses this to decide whether to show the enrollment flow).
     pub two_factor_enabled: bool,
 }
 
-/// TOTP 绑定/激活/关停请求体。
+/// Request body for TOTP enrollment/activation/disabling.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TotpCodeRequest {
     pub code: String,
 }
 
-/// `GET /api/v1/auth/2fa/status` 响应。
+/// Response for `GET /api/v1/auth/2fa/status`.
 #[derive(Debug, Serialize)]
 pub struct TotpStatusResponse {
-    /// 已激活（登录需第二步）。
+    /// Activated (login requires the second factor).
     pub enabled: bool,
-    /// 已生成密钥、待验证码激活（绑定引导进行中）。
+    /// Secret generated, awaiting activation by code (enrollment flow in progress).
     pub pending: bool,
 }
 
-/// `POST /api/v1/auth/2fa/enroll` 响应。
+/// Response for `POST /api/v1/auth/2fa/enroll`.
 #[derive(Debug, Serialize)]
 pub struct TotpEnrollResponse {
-    /// 认证器扫码导入的 otpauth:// URI。仅此 URI 承载 base32 密钥——这是认证器
-    /// 导入的标准材料；响应不含密钥原文的其他表示形式。
+    /// The otpauth:// URI the authenticator scans to import. This URI is the only
+    /// carrier of the base32 secret — it is the standard material for authenticator
+    /// import; the response holds no other representation of the raw secret.
     pub otpauth_uri: String,
 }
 
-/// 建会话 + 种 Cookie。
+/// Create a session and set the cookie.
 async fn open_session(state: &AppState, user_id: &UserId) -> Result<HeaderMap, AuthApiError> {
     let (raw_token, session) = Session::generate(user_id.clone(), service::now());
     state
@@ -75,7 +76,7 @@ async fn open_session(state: &AppState, user_id: &UserId) -> Result<HeaderMap, A
     Ok(session_cookie_header(&raw_token, state.cookie_secure))
 }
 
-/// `POST /api/v1/auth/bootstrap`：仅空库可用，创建首个管理员并直接登录。
+/// `POST /api/v1/auth/bootstrap`: only usable on an empty database; creates the first admin and logs in immediately.
 pub async fn bootstrap_handler(
     State(state): State<SharedAppState>,
     Json(req): Json<CredentialsRequest>,
@@ -145,8 +146,8 @@ pub async fn bootstrap_handler(
         .into_response())
 }
 
-/// `POST /api/v1/auth/login`：校验密码，成功发会话 Cookie。
-/// 不区分「用户不存在」与「密码错误」（统一 401 + 恒时校验）。
+/// `POST /api/v1/auth/login`: verifies the password and issues a session cookie on success.
+/// Does not distinguish "unknown user" from "wrong password" (uniform 401 + constant-time check).
 pub async fn login_handler(
     State(state): State<SharedAppState>,
     Json(req): Json<CredentialsRequest>,
@@ -162,7 +163,7 @@ pub async fn login_handler(
         .await
         .map_err(|e| AuthApiError::Internal(e.to_string()))?;
     let Some(record) = record else {
-        // 恒时：对固定哈希跑一次校验再拒绝。
+        // Constant time: run one verification pass against a fixed hash before rejecting.
         let password = req.password;
         let _permit = state.auth_blocking.acquire().await;
         let _ = tokio::task::spawn_blocking(move || {
@@ -170,8 +171,9 @@ pub async fn login_handler(
         })
         .await
         .map_err(|e| AuthApiError::Internal(e.to_string()));
-        // 失败也要留痕（§16.5：登录失败必记录）；email 非秘密字段，有助
-        // 暴破诊断。不记录密码本身。
+        // Failures must leave a trace too (§16.5: login failures are always recorded);
+        // email is not a secret field and helps brute-force diagnosis. The password
+        // itself is never recorded.
         record_audit(
             &state,
             None,
@@ -223,7 +225,8 @@ pub async fn login_handler(
         return Err(AuthApiError::Unauthorized);
     }
 
-    // 第二步（TOTP）：已启用 2FA 时，缺码→提示补码（不种会话）；错码→401。
+    // Second factor (TOTP): when 2FA is enabled, a missing code -> prompt for the code
+    // (no session cookie set); a wrong code -> 401.
     if record.totp_enabled {
         let secret = record.totp_secret.clone().unwrap_or_default();
         let provided = req.code.clone();
@@ -233,7 +236,7 @@ pub async fn login_handler(
             .map(|c| totp::verify_code(&secret, c, now))
             .unwrap_or(false);
         if provided.is_none() {
-            // 客户端据此提示输入验证码；本响应不带 Set-Cookie。
+            // The client uses this to prompt for the verification code; this response carries no Set-Cookie.
             return Ok((
                 StatusCode::OK,
                 Json(SessionResponse {
@@ -301,7 +304,7 @@ pub async fn login_handler(
         .into_response())
 }
 
-/// `GET /api/v1/auth/2fa/status`：当前用户的 TOTP 绑定状态。
+/// `GET /api/v1/auth/2fa/status`: the current user's TOTP enrollment state.
 pub async fn two_factor_status_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(user_id): AuthenticatedUser,
@@ -318,8 +321,9 @@ pub async fn two_factor_status_handler(
     }))
 }
 
-/// `POST /api/v1/auth/2fa/enroll`：生成新 TOTP 密钥（服务端持有，待激活），
-/// 返回扫码导入 URI。已激活则先关停旧绑定再重建（重新绑定）。
+/// `POST /api/v1/auth/2fa/enroll`: generates a new TOTP secret (held by the server,
+/// awaiting activation) and returns the URI to scan for import. If already activated,
+/// the old binding is disabled first and then rebuilt (re-enrollment).
 pub async fn two_factor_enroll_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -354,7 +358,7 @@ pub async fn two_factor_enroll_handler(
     Ok(Json(TotpEnrollResponse { otpauth_uri: uri }))
 }
 
-/// `POST /api/v1/auth/2fa/activate`：以验证码确认并激活 TOTP（绑定引导收尾）。
+/// `POST /api/v1/auth/2fa/activate`: confirms with the code and activates TOTP (concludes the enrollment flow).
 pub async fn two_factor_activate_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -394,7 +398,7 @@ pub async fn two_factor_activate_handler(
     }))
 }
 
-/// `POST /api/v1/auth/2fa/disable`：以验证码确认后关停并清除 TOTP 绑定。
+/// `POST /api/v1/auth/2fa/disable`: after confirming with the code, disables and clears the TOTP binding.
 pub async fn two_factor_disable_handler(
     State(state): State<SharedAppState>,
     WriteUser(user_id): WriteUser,
@@ -439,14 +443,14 @@ pub async fn two_factor_disable_handler(
     }))
 }
 
-/// `POST /api/v1/auth/logout`：撤销会话并清 Cookie。
+/// `POST /api/v1/auth/logout`: revokes the session and clears the cookie.
 pub async fn logout_handler(
     State(state): State<SharedAppState>,
     req: axum::extract::Request,
 ) -> Response {
     if let Some(token) = session_token_from_headers(req.headers()) {
         let now: Timestamp = service::now();
-        // 先取属主再撤销（撤销后查不到了），登出留痕归属到人。
+        // Fetch the owner first, then revoke (it cannot be looked up after revocation); the logout trace is attributed to the person.
         let actor = state
             .auth
             .validate_session(&token, &now)
@@ -485,12 +489,12 @@ pub async fn logout_handler(
         .into_response()
 }
 
-/// `GET /api/v1/auth/me`：返回当前会话用户。
+/// `GET /api/v1/auth/me`: returns the current session user.
 pub async fn me_handler(
     State(state): State<SharedAppState>,
     AuthenticatedUser(user_id): AuthenticatedUser,
 ) -> Result<Json<SessionResponse>, AuthApiError> {
-    // 会话有效 ≠ 用户仍存在；再核一次。
+    // A valid session != the user still exists; check once more.
     let record = state
         .auth
         .find_user_by_id(&user_id)

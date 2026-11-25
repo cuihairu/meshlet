@@ -16,15 +16,15 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 #[cfg(test)]
-// 文件本身经 `mod tests;` 引入，内层再叫 tests 触发 module_inception；
-// 这是测试组织惯例而非缺陷，局部放行。
+// The file itself is pulled in via `mod tests;`; naming the inner module tests again triggers module_inception.
+// That is a test-organization convention rather than a defect, so it is allowed locally.
 #[allow(clippy::module_inception)]
 mod tests {
     use super::*;
 
     #[test]
     fn enums_round_trip_through_persisted_strings() {
-        // 持久化字符串与 API 展示一致，往返无损（重启重建依赖）。
+        // Persisted strings match the API representation and round-trip losslessly (restart-time rebuilds depend on this).
         for s in ["pending", "active", "revoked"] {
             assert_eq!(device_status_to_str(device_status_parse(s).unwrap()), s);
         }
@@ -115,7 +115,7 @@ mod tests {
 
     #[tokio::test]
     async fn device_labels_survive_database_reload() {
-        // MT-005：标签经 commit_device_labels 落库，重启 load 后逐字恢复。
+        // MT-005: labels are persisted through commit_device_labels and restored verbatim by load after a restart.
         let pool = crate::store::connect("sqlite::memory:").await.unwrap();
         let network_id = NetworkId("net-1".into());
         let network = Network::new(
