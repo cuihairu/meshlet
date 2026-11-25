@@ -164,7 +164,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
     setError(null);
     try {
       if (step === 'code') {
-        // 第二步：带 TOTP 码重新提交登录。
+        // Second step: resubmit the login with the TOTP code.
         const user = await api.login(values.email, values.password, values.code);
         onSignedIn(user);
       } else {
@@ -173,7 +173,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
             ? await api.login(values.email, values.password)
             : await api.bootstrap(values.email, values.password);
         if (mode === 'login' && user.two_factor_required) {
-          // 服务端要求 TOTP 第二步（未种会话）——进入验证码步骤。
+          // Server demands the TOTP second step (no session established) — enter the verification-code step.
           setStep('code');
           return;
         }
@@ -181,9 +181,9 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
       }
     } catch (e) {
       if (e instanceof ApiError) {
-        // 第二步错码：服务端返回 401（auth.rs 的 bad_totp_code 路径），而非
-        // two_factor_required。此时必须明确提示「验证码无效」，不能把它误当
-        // 成「缺码重新要求」而停留在 code 步且无提示。
+        // Wrong code at the second step: the server returns 401 (the auth.rs bad_totp_code path),
+        // not two_factor_required. This must be surfaced explicitly as "verification code invalid",
+        // and must not be misread as "code missing, request again" and linger on the code step with no hint.
         if (step === 'code' && e.status === 401) {
           setError(t('auth.verifyCodeInvalid'));
           return;
@@ -260,7 +260,7 @@ function AuthGate({ onSignedIn }: { onSignedIn: (user: SessionUser) => void }) {
         block
         onClick={() => {
           if (step === 'code') {
-            // 返回凭据步骤（保持登录模式）。
+            // Back to the credentials step (keeping the current login mode).
             setStep('credentials');
           } else {
             setMode(mode === 'login' ? 'bootstrap' : 'login');

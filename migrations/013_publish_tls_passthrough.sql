@@ -1,11 +1,13 @@
 -- 013_publish_tls_passthrough.sql
 --
--- M1 字段更名：`tls_termination` 名不副实。该列记录的是 SNI 嗅探 + TLS
--- 原始字节直通，meshlet 没有证书、不解密，从来不做 TLS 终结。列名与
--- API 字段统一改为 `tls_passthrough`（沿用 Envoy/Luban 一类通用术语），
--- 取值与语义原样沿用，存量行无需改写。
+-- M1 field rename: `tls_termination` was a misnomer. What this column records is SNI
+-- sniffing + raw TLS byte passthrough; meshlet holds no certificates, decrypts nothing,
+-- and never terminates TLS. The column and the API field are both renamed to
+-- `tls_passthrough` (a generic term, as used by Envoy and the like); the values and
+-- semantics carry over unchanged and existing rows need no rewrite.
 --
--- 真正的 TLS 终结当前不支持：passthrough 路由上配置无法执行的项
--- （bearer token、非 `/` 路径前缀）在创建期 409 拒绝，不静默忽略。
+-- True TLS termination is not supported today: options that cannot execute on a
+-- passthrough route (bearer token, a path prefix other than `/`) are rejected with 409
+-- at creation time, never silently ignored.
 
 ALTER TABLE publish_http_routes RENAME COLUMN tls_termination TO tls_passthrough;

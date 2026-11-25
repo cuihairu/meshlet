@@ -122,7 +122,7 @@ export function TopologyDiagram({ devices }: { devices: Device[] }) {
           >
             <span className="topo-node-name">{p.device.name}</span>
             <code className="topo-node-ip">{p.device.virtual_ipv4}</code>
-            {/* 如实展示设备自己上报的 online_state，不臆测在线 */}
+            {/* Render online_state exactly as reported by the device; do not infer online status */}
             <span className={`topo-tag tag-${tagColor(p.device.online_state)}`}>
               {p.device.online_state}
             </span>

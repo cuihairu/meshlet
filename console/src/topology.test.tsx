@@ -54,7 +54,7 @@ describe('topologyState', () => {
         },
       ],
     });
-    // 建立直连 → direct；仅 pending 不算（流量仍走 hub 中继）。
+    // Established direct link → direct; pending alone does not count (traffic still relays via hub).
     expect(topologyState([direct, device({ id: 'd2', name: 'b' })])).toBe('direct');
     expect(topologyState([pending, device({ id: 'd2', name: 'b' })])).toBe('relay-only');
     expect(topologyState([device({})])).toBe('single');

@@ -19,7 +19,7 @@ const hub: api.Device = {
   approved_at: '2026-01-01T00:00:00Z',
   direct_links: [],
   diagnostics: null,
-  // P2P-⑤: hub 公网观测该设备 → observed 与 public 同值。
+  // P2P-⑤: the hub observed this device publicly → observed and public share the same value.
   observed_endpoint: '203.0.113.7:51820',
   public_endpoint: '203.0.113.7:51820',
 };
@@ -38,14 +38,14 @@ const edge: api.Device = {
   presence_source: 'agent_report',
   dataplane_evidence: null,
   approved_at: '2026-01-01T00:00:00Z',
-  // 对 hub 已建立直连（握手 12s 前）；对 pending 对端尚未握上手。
+  // Direct link to the hub established (last handshake 12s ago); the handshake with the pending peer is not complete yet.
   direct_links: [
     {
       public_key: 'pk-hub',
       virtual_ipv4: '10.240.0.1',
       link_state: 'direct',
       last_handshake_age_secs: 12,
-      // R-DIAG-2 富化字段（旧服务端可省略）。
+      // R-DIAG-2 enriched fields (older servers may omit them).
       peer_name: 'hub-node',
       connection_mode: 'p2p_direct',
       endpoint: '192.168.1.50:51821',
@@ -63,7 +63,7 @@ const edge: api.Device = {
     },
   ],
   diagnostics: null,
-  // P2P-⑤: hub 同内网观测 → observed 保留，public 缺。
+  // P2P-⑤: the hub observed the device on the same LAN → observed kept, public absent.
   observed_endpoint: '192.168.1.11:51820',
   public_endpoint: null,
 };
@@ -78,11 +78,11 @@ describe('DevicesSection direct links', () => {
     vi.spyOn(api.api, 'listDevices').mockResolvedValue([edge, hub]);
     render(<DevicesSection networkId="net-1" />);
 
-    // edge 行：对 hub 的「P2P」标签（peer_name 优先于设备名回退）+ 对
-    // pending 对端无 peer_name → 回退 overlay IP 的「P2P pending」标签。
+    // edge row: the "P2P" tag for the hub (peer_name preferred over the device-name fallback) +
+    // the pending peer has no peer_name → fall back to the overlay IP "P2P pending" tag.
     expect(await screen.findByText(/hub-node · P2P$/)).toBeTruthy();
     expect(screen.getByText(/10.240.0.3 · P2P pending/)).toBeTruthy();
-    // hub 行：无直连链路 → 「全部经 hub 中继」提示。
+    // hub row: no direct links → the "all relay via hub" hint.
     expect(screen.getAllByText(/all relay via hub/).length).toBeGreaterThan(0);
   });
 
@@ -90,11 +90,11 @@ describe('DevicesSection direct links', () => {
     vi.spyOn(api.api, 'listDevices').mockResolvedValue([edge, hub]);
     render(<DevicesSection networkId="net-1" />);
 
-    // hub 直连链路携带 endpoint/RTT/流量 → 详情行可见。
+    // The hub direct link carries endpoint/RTT/traffic → the detail line is visible.
     expect(await screen.findByText(/192\.168\.1\.50:51821/)).toBeTruthy();
     expect(screen.getByText(/3 ms/)).toBeTruthy();
     expect(screen.getByText(/111B↑ 2\.0K↓/)).toBeTruthy();
-    // pending 对端无端点/流量 → 「暂无端点或流量」占位。
+    // The pending peer has no endpoint/traffic → the "no endpoint or traffic yet" placeholder.
     expect(screen.getByText(/no endpoint or traffic yet/)).toBeTruthy();
   });
 
@@ -102,10 +102,10 @@ describe('DevicesSection direct links', () => {
     vi.spyOn(api.api, 'listDevices').mockResolvedValue([edge, hub]);
     render(<DevicesSection networkId="net-1" />);
 
-    // hub 行：观测与公网同值（公网观测）。
+    // hub row: observed and public share the same value (public observation).
     expect(await screen.findByText(/observed 203\.0\.113\.7:51820/)).toBeTruthy();
     expect(screen.getByText(/public 203\.0\.113\.7:51820/)).toBeTruthy();
-    // edge 行：同内网观测 → 有 observed、无 public（不标公网误导打洞）。
+    // edge row: observed on the same LAN → observed present, no public (no public label that would mislead hole punching).
     expect(screen.getByText(/observed 192\.168\.1\.11:51820/)).toBeTruthy();
     expect(screen.queryByText(/public 192\.168\.1\.11:51820/)).toBeNull();
   });

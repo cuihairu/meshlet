@@ -1,5 +1,5 @@
-// 渲染 vitepress 产出的 div.language-mermaid 代码块为 mermaid SVG。
-// 渲染失败时保留原始代码块并告警，绝不让整页挂掉。
+// Render VitePress's div.language-mermaid code blocks into mermaid SVG.
+// On render failure, keep the original code block and warn — never take the whole page down.
 let seq = 0
 let queue: Promise<unknown> = Promise.resolve()
 
@@ -29,7 +29,7 @@ export function renderAllMermaid(): Promise<unknown> {
     for (const block of blocks) {
       const pre = block.querySelector('pre')
       if (!pre || block.classList.contains('mermaid-rendered')) continue
-      // 首次渲染前把源码固化到 dataset，深浅色重渲染时不丢失原文。
+      // Freeze the source into the dataset before the first render so light/dark re-renders keep the original text.
       const source =
         block.dataset.mermaidSrc ??
         (block.querySelector('code')?.textContent ?? pre.textContent ?? '')

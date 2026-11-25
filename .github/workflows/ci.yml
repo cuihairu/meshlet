@@ -41,10 +41,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2.9.3
 
-      # 76ddfbc 把 apps/tray-app/src-tauri（Tauri v2，依赖 glib/webkit）加进
-      # workspace 后，ubuntu 腿的 clippy/test 需要 GTK+WebKit 系统库才能编译
-      # （glib-sys 经 pkg-config 找 glib-2.0，缺失即 build script 失败）。
-      # 仅在 Linux 装：windows-latest 用 WebView2，不需要这些。
+      # 76ddfbc added apps/tray-app/src-tauri (Tauri v2, depends on glib/webkit) to
+      # the workspace, so the ubuntu leg's clippy/test needs the GTK+WebKit system
+      # libraries to compile (glib-sys resolves glib-2.0 via pkg-config; missing, the build script fails).
+      # Linux only: windows-latest uses WebView2 and needs none of these.
       - name: Install Tauri system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -81,10 +81,10 @@ jobs:
       - name: Enforce zero third-party dependencies in meshlet-planner
         run: scripts/check-planner-deps.sh
 
-  # AGENT-WIN-1/3/4 证据腿（todo.md「CI windows-latest 出截图证据」）：
-  # tray-host 在真实 Windows 桌面会话消费 TraySink 四态 fixture（examples/
-  # tray_fixture 生成，与生产端同一 PNG 格式）、注册托盘图标（NIM_ADD）、
-  # 随状态换 tooltip——截图 + stderr 日志上传为验收工件。
+  # AGENT-WIN-1/3/4 evidence leg (todo.md: "CI windows-latest produces screenshot
+  # evidence"): in a real Windows desktop session tray-host consumes the TraySink
+  # four-state fixture (examples/tray_fixture output, same PNG format as production),
+  # registers the tray icon (NIM_ADD) and swaps the tooltip per state; screenshots + stderr log are uploaded as acceptance artifacts.
   tray-windows:
     name: tray host / windows-latest
     runs-on: windows-latest
@@ -101,15 +101,15 @@ jobs:
         run: cargo test -p meshlet-tray-host
 
       - name: Generate four-state tray fixtures
-        # TraySink 布局：fixture 产出 `<out>/<state>/tray/{status.json,icon-*}`，
-        # tray-host 以 `<out>\<state>` 为 state_dir（内部拼 `\tray`）。
+        # TraySink layout: the fixture produces `<out>/<state>/tray/{status.json,icon-*}`,
+        # tray-host uses `<out>\<state>` as state_dir (it joins `\tray` internally).
         run: cargo run -p meshlet-tray-host --example tray_fixture -- tray-fixture
 
       - name: Build tray host
         run: cargo build -p meshlet-tray-host
 
-      # 托盘宿主有 agent 联动看门狗：无 meshlet-agent.exe 进程时宽限 ~30s 后
-      # 自退。stub 常驻进程让截图窗口内托盘保持在线（进程名匹配即满足）。
+      # The tray host has an agent watchdog: with no meshlet-agent.exe process it
+      # self-exits after a ~30s grace period. A resident stub keeps the tray online through the capture window (a process-name match is enough).
       - name: Start keep-alive stub agent process
         run: |
           Copy-Item C:\Windows\System32\cmd.exe "$env:TEMP\meshlet-agent.exe" -Force
@@ -118,9 +118,9 @@ jobs:
       - name: Launch tray host
         run: |
           $trayHost = Join-Path (Get-Location) "target\debug\meshlet-tray-host.exe"
-          # `-WindowStyle Hidden`：让进程带自己的（隐藏）控制台，不挂在 runner
-          # 本步的 console 上——实测（run 42267986109）无此参数时 tray-host 会在
-          # launch 步与后续步之间被静默回收（日志无 panic、进程消失）。
+          # `-WindowStyle Hidden`: gives the process its own (hidden) console instead of
+          # hanging off this step's runner console -- measured (run 42267986109): without it, tray-host gets
+          # silently reaped between the launch step and later steps (no panic in the log, process gone).
           Start-Process $trayHost `
             -ArgumentList "$(Resolve-Path tray-fixture\online)" `
             -WindowStyle Hidden `
@@ -137,17 +137,17 @@ jobs:
           $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
           $bitmap.Save("$PWD\tray-windows.png")
 
-      # 本地面板门禁（LOCAL-PANEL-1）：tray-host 自托管的 loopback 只读页必须
-      # 200 且三块齐全（当前节点 / 直连节点 / 本地路由）——数据来自 fixture 的
-      # 状态文件，证明面板不依赖 server 可达。
-      # URL 走 `local-panel.json` 交接文件而非日志：重定向的日志在进程存活期间
-      # 读不到（本作业上轮踩坑），而面板必须在托盘进程活着时访问。
+      # Local panel gate (LOCAL-PANEL-1): the loopback read-only page tray-host
+      # self-hosts must return 200 with all three sections present (current node /
+      # direct nodes / local routes) -- data comes from the fixture's status files,
+      # proving the panel does not depend on the server being reachable. The URL
+      # goes via the `local-panel.json` handoff file, not the log: redirected logs are unreadable while the process lives (pitfall from this job's last round), and the panel must be reached while the tray process is up.
       - name: Gate on local panel (loopback 200 + three sections)
         run: |
           $ErrorActionPreference = 'Stop'
           $urlFile = "tray-fixture\online\local-panel.json"
-          # 有界重试：等文件出现**且能解析出合法 URL**（写入已原子化，但读方
-          # 仍按「可能撞见旧文件/半截 JSON」防御，只解析一次会假红）。
+          # Bounded retry: wait for the file to exist **and parse into a valid URL**
+          # (writes are atomic, but the reader still guards against a stale file / truncated JSON; parsing once risks a false red).
           $panel = $null
           for ($i = 0; $i -lt 20; $i++) {
             if (Test-Path $urlFile) {
@@ -162,24 +162,24 @@ jobs:
           Write-Output "local panel: $url (pid $($panel.pid))"
           $alive = [bool](Get-Process meshlet-tray-host -ErrorAction SilentlyContinue)
           Write-Output "tray-host alive: $alive"
-          # 实测（run 42267986109）：tray-host 会在 launch 步与门禁步之间被 CI
-          # 会话静默回收（stderr 日志无 panic、进程消失、连接拒绝），上一轮旧门
-          # 禁的「curl 空输出」即连接被拒被 `-s` 吞掉。门禁自愈：死了就地重拉一
-          # 份再验——启动与探测在同一 step 内，进程不再跨 step 存活。重拉后
-          # `local-panel.json` 被新进程原子覆盖（新端口/pid），等 pid 变化即拿到
-          # 新 URL；等不到新 pid 判失败，不吃旧 URL 假绿。
+          # Measured (run 42267986109): tray-host gets silently reaped by the CI session between the
+          # launch step and the gate step (no panic in the stderr log, process gone, connections
+          # refused); last round the old gate's "curl empty output" was a refused connection swallowed
+          # by `-s`. The gate self-heals: if it died, relaunch in place and re-verify -- startup and
+          # probing share one step, so the process no longer needs to survive across steps. After a
+          # relaunch the new process atomically overwrites `local-panel.json` (new port/pid): wait for the pid to change to get the new URL; no new pid = failure, no false green off a stale URL.
           if (-not $alive) {
             $exe = Join-Path (Get-Location) 'target\debug\meshlet-tray-host.exe'
             if (-not (Test-Path $exe)) { Write-Error 'meshlet-tray-host.exe missing (build step did not run?)'; exit 1 }
             Write-Host "tray-host died between steps; relaunching $exe"
-            # 先删旧交接文件再拉起：pid 可能被内核复用，旧文件里的 pid 有概率
-            # 撞上新进程 PID——删掉后只剩「重拉之后新写出的文件」可能通过等式
-            # 检查。删除必须成功并核实（`-ErrorAction Stop` + 复查）：删不掉
-            # （权限/占用）就红，不让旧文件继续参与等待循环。
+            # Delete the stale handoff file before relaunching: the kernel may reuse pids, so the old
+            # file's pid can collide with the new process's PID -- once deleted, only a file written
+            # after the relaunch can pass the equality check. Removal must succeed and be verified
+            # (`-ErrorAction Stop` + recheck): undeletable (permissions/in use) = red, no stale file in the wait loop.
             if (Test-Path $urlFile) { Remove-Item $urlFile -ErrorAction Stop }
             if (Test-Path $urlFile) { Write-Error "failed to remove stale $urlFile"; exit 1 }
-            # `-PassThru`：拿到新进程的真实 PID，交接文件里的 pid 必须与它相等
-            # 才算「观察到新进程」。
+            # `-PassThru`: obtain the new process's real PID; the handoff file's pid
+            # must equal it to count as "new process observed".
             $proc = Start-Process $exe `
               -ArgumentList "$(Resolve-Path tray-fixture\online)" `
               -WindowStyle Hidden `
@@ -190,8 +190,8 @@ jobs:
               Start-Sleep -Seconds 1
               if (Test-Path $urlFile) {
                 try { $p2 = Get-Content $urlFile -Raw | ConvertFrom-Json -ErrorAction Stop } catch { $p2 = $null }
-                # 交接 pid 必须是 >0 的整数且等于刚拉起进程的 PID——JSON 缺
-                # pid、畸形 pid 或旧文件残留都不算「观察到新进程」，继续等。
+                # The handoff pid must be an integer > 0 equal to the just-started process's
+                # PID -- missing pid, malformed pid, or stale-file leftover does not count as "new process observed"; keep waiting.
                 $newPid = $p2.pid
                 if ($p2 -and $p2.url -match '^http://127\.0\.0\.1:\d+/' -and
                     ($newPid -is [int] -or $newPid -is [long]) -and $newPid -gt 0 -and $newPid -eq $proc.Id) { $panel = $p2; break }
@@ -201,12 +201,12 @@ jobs:
             $url = $panel.url
             Write-Output "relaunched tray-host: $url (pid $($panel.pid))"
           }
-          # 请求面板：curl 先行（`--noproxy '*'` 绕过 runner 的代理环境，上一轮
-          # curl 静默失败只留下空串）；curl 不通就用裸 TCP 直连同一端口——门禁验的
-          # 必须是面板本身，不是本机 curl 的环境；两条路径的失败原因都打进日志。
-          # 诊断一律走 Write-Host：Write-Output 会污染成功流，把函数返回值变成数组。
-          # curl 的 stderr 走 `--stderr <file>`（Actions 默认 EAP=Stop，`2>&1` 会先抛；
-          # PS 的 `2>` 重定向在 5.1 下还会把 stderr 变成 ErrorRecord 字符串）。
+          # Ask the panel: curl first (`--noproxy '*'` bypasses the runner's proxy env; last round
+          # curl failed silently and left an empty string); if curl cannot get through, hit
+          # the same port over raw TCP -- the gate must exercise the panel itself, not this machine's
+          # curl environment; both paths log their failure reason. Diagnostics always go through
+          # Write-Host: Write-Output pollutes the success stream and turns the function's return
+          # value into an array. curl's stderr goes to `--stderr <file>` (Actions defaults to EAP=Stop, so `2>&1` throws first; PS `2>` redirection on 5.1 also turns stderr into an ErrorRecord string).
           function Read-PanelRaw([string]$u, [string]$method, [string]$outFile, [string]$errFile) {
             $eap = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
@@ -231,9 +231,9 @@ jobs:
               $req = "$method $($target.PathAndQuery) HTTP/1.1`r`nHost: 127.0.0.1`r`nConnection: close`r`n`r`n"
               $b = [Text.Encoding]::ASCII.GetBytes($req)
               $s.Write($b, 0, $b.Length)
-              # 总读超时（ReadTimeout 只是单次读的空闲上限， trickle-feeding 的
-              # 对端能一直占着这一步）——整体 5s 拿不到完整响应就判失败。
-              # 按字节收（MemoryStream），不按字符解码——正文含多字节 UTF-8。
+              # Overall read deadline (ReadTimeout is only a per-read idle limit, and a
+              # trickle-feeding peer can hold this step forever) -- no complete response within 5s total is a failure.
+              # Collect bytes (MemoryStream), don't decode as characters -- the body holds multibyte UTF-8.
               $ms = New-Object System.IO.MemoryStream
               $buf = New-Object byte[] 4096
               $deadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -255,9 +255,9 @@ jobs:
               if ($c -ne $null) { $c.Close() }
             }
           }
-          # 状态行与正文分开断言：状态码必须完整匹配（`2000` 不能算 200），section id
-          # 只在正文里找（命中响应头就是假绿）。按原始字节切头/正文——正文含多字节
-          # UTF-8，字符级切分会在多字节边界上错位。
+          # Assert status line and body separately: the status code must match in full
+          # (`2000` must not count as 200), and section ids are looked up in the body only
+          # (a header hit would be a false green); split on raw bytes -- multibyte UTF-8 bodies misalign under character-level splits.
           function Split-ResponseBytes([byte[]]$bytes) {
             for ($i = 0; $i -le $bytes.Length - 4; $i++) {
               if ($bytes[$i] -eq 13 -and $bytes[$i + 1] -eq 10 -and $bytes[$i + 2] -eq 13 -and $bytes[$i + 3] -eq 10) {
@@ -268,9 +268,9 @@ jobs:
             }
             return $null
           }
-          # early-EOF 假通过守卫（审核意见）：截断响应曾能同时满足「200 + 三
-          # section」——现在必须 (1) Content-Length 与正文**字节数**一致（截断即
-          # 失配），(2) 正文以 </html> 结尾。两条全过才算完整响应。
+          # Early-EOF false-pass guard (reviewer's point): a truncated response used to satisfy
+          # "200 + three sections" at once -- now required: (1) Content-Length matches the body's
+          # **byte count** (truncation = mismatch), (2) the body ends with </html>. Both must pass to count as a complete response.
           function Assert-ResponseComplete([hashtable]$parts, [string]$label) {
             $cl = $null
             foreach ($line in ($parts.header -split "`r`n")) {
@@ -305,10 +305,10 @@ jobs:
           if (-not (Assert-ResponseComplete $parts 'GET')) { exit 1 }
           if (-not (Assert-Sections $parts.body 'GET')) { exit 1 }
           New-Item -ItemType Directory -Force tray-host-out | Out-Null
-          # 工件存正文原始字节（不含响应头、不带 BOM）：fallback 路径不能把头当
-          # HTML 存下来，`Set-Content -Encoding UTF8` 在 5.1 下还会加 BOM。
+          # The artifact stores the body's raw bytes (no response headers, no BOM): the fallback
+          # path must not save headers as HTML, and `Set-Content -Encoding UTF8` adds a BOM on 5.1.
           [IO.File]::WriteAllBytes("$PWD\tray-host-out\tray-panel.html", $parts.body)
-          # 非 GET 只读语义：写操作必须被拒绝。
+          # Read-only semantics beyond GET: write methods must be rejected.
           $post = Read-PanelRaw $url 'POST' $rawFile $errFile
           if (-not $post.ok) { exit 1 }
           $postBytes = [IO.File]::ReadAllBytes($rawFile)
@@ -319,8 +319,8 @@ jobs:
           if ($postStatus -notmatch '^HTTP/1\.1 405(?:\s|$)') { Write-Error "local panel accepted a write method: $postStatus"; exit 1 }
           if (-not (Assert-ResponseComplete $postParts 'POST')) { exit 1 }
 
-      # 桌面会话里真实打开面板页并截屏（best-effort：浏览器启动时序不受控，
-      # 失败不红 CI——硬门禁在上一步的 curl 断言）。
+      # Really open the panel page in the desktop session and screenshot it (best-effort:
+      # browser startup timing is uncontrolled and failure does not redden CI -- the hard gate is the curl assertion above).
       - name: Open local panel in desktop session and capture
         continue-on-error: true
         run: |
@@ -335,7 +335,7 @@ jobs:
           $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
           $bitmap.Save("$PWD\tray-panel.png")
 
-      # 先停进程再验门禁：重定向日志在进程持有期间被锁，读不到内容（上轮踩坑）。
+      # Stop the processes before gating on the log: redirected logs are locked while the process holds them (tripped over this last round).
       - name: Stop stub and tray host
         if: always()
         run: |
@@ -343,7 +343,7 @@ jobs:
           Get-Process meshlet-agent -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 2
 
-      # 门禁：托盘图标注册成功（NIM_ADD = true）且 tooltip 随状态 JSON 更新。
+      # Gate: tray icon registered successfully (NIM_ADD = true) and tooltip follows the status JSON.
       - name: Gate on tray registration evidence
         run: |
           Get-Content tray-host.log | Write-Output

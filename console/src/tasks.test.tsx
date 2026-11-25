@@ -63,20 +63,20 @@ describe('TasksSection queue panel', () => {
     vi.spyOn(api.api, 'listDevices').mockResolvedValue([edge]);
     render(<TasksSection networkId="net-1" />);
 
-    // 组标题分列：assigned/running、done、failed、settled。
+    // Separate group headings: assigned/acked/running, done, failed, settled.
     expect(await screen.findByRole('heading', { name: /assigned \/ acked \/ running \(/ })).toBeTruthy();
     expect(screen.getByRole('heading', { name: /^done \(/ })).toBeTruthy();
     expect(screen.getByRole('heading', { name: /^failed \(/ })).toBeTruthy();
     expect(screen.getByRole('heading', { name: /^settled \(/ })).toBeTruthy();
 
-    // done 任务：确认完成 + 驳回重跑；failed 任务：仅驳回重跑；
-    // running 任务：无动作按钮；已确认任务：Confirmed 标记、无动作。
+    // done tasks: Confirm done + Reject & rerun; failed tasks: Reject & rerun only;
+    // running tasks: no action buttons; confirmed tasks: Confirmed marker, no actions.
     expect(screen.getAllByText('Confirm done')).toHaveLength(1);
     expect(screen.getAllByText('Reject & rerun')).toHaveLength(2);
     expect(screen.getByText('Confirmed')).toBeTruthy();
     expect(screen.getByText(/task-3/)).toBeTruthy();
-    // 无动作任务（running / confirmed）不渲染 Confirm/Reject 按钮：共
-    // 1(done confirm) + 2(done+failed retry) 个任务动作。
+    // Tasks with no actions (running / confirmed) render no Confirm/Reject buttons:
+    // 1 (done confirm) + 2 (done+failed retry) task actions in total.
     expect(screen.queryAllByText('Confirm done')).toHaveLength(1);
   });
 
@@ -102,10 +102,10 @@ describe('TasksSection queue panel', () => {
     render(<TasksSection networkId="net-1" />);
 
     const retries = await screen.findAllByText('Reject & rerun');
-    // done 组在前、failed 组在后；点击 failed 任务的驳回。
+    // The done group comes first and the failed group after; click the failed task's reject.
     fireEvent.click(retries[1]);
     expect(retrySpy).toHaveBeenCalledWith('net-1', 'task-2');
-    // 提示须同时说清被驳回的原任务 id 与重跑的新代 id。
+    // The notice must state both the rejected task id and the new rerun generation id.
     expect(
       await screen.findByText(/Rejected task-2 .*rerun task-2-r1 dispatched/),
     ).toBeTruthy();
@@ -117,7 +117,7 @@ describe('TasksSection queue panel', () => {
     const createSpy = vi.spyOn(api.api, 'createTask').mockResolvedValue({ ...base, id: 'task-9' });
     render(<TasksSection networkId="net-1" />);
 
-    // 选择目标设备（antd Select：打开下拉后点选项）。
+    // Select the target device (antd Select: open the dropdown, then click the option).
     fireEvent.mouseDown(await screen.findByRole('combobox'));
     fireEvent.click(await screen.findByText('edge (10.240.0.2)'));
     fireEvent.change(screen.getByPlaceholderText('Command to run on the device'), {

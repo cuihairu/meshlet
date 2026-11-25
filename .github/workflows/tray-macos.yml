@@ -1,10 +1,10 @@
 name: tray-macos
 
-# R-TRAY-1 后续（用户令 2026-11-01：macOS x86_64 = tray 应用 macOS 打包）：
-# 在 Intel macOS 上构建 tray 的 .app（无签名、ad-hoc），并跑 tray 单测。
-# 诚实边界：set_autostart/open_log_dir 是 #[cfg(windows)]，macOS 上如实报
-# 不支持；SystemBackend 在 macOS 走 UnsupportedBackend；无签名证书、无
-# mac 真机走查——本 workflow 只验证「能编译出 .app」与单测绿。
+# Follow-up to R-TRAY-1 (user directive 2026-11-01: macOS x86_64 = tray app macOS packaging):
+# build the tray .app on Intel macOS (unsigned, ad-hoc) and run the tray unit tests.
+# Honest boundaries: set_autostart/open_log_dir are #[cfg(windows)] and are honestly reported
+# as unsupported on macOS; SystemBackend resolves to UnsupportedBackend on macOS; there is no
+# signing certificate and no hands-on pass on a real Mac -- this workflow only proves "the .app builds" and that the unit tests are green.
 
 on:
   push:
@@ -28,8 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      # 运行器架构守卫：macos-latest 已迁 arm64，本任务明确要 x86_64（Intel），
-      # 若 GitHub 变更运行器架构，显式失败而不是默默产出 arm64 假 x86_64 资产。
+      # Runner arch guard: macos-latest has moved to arm64, but this job explicitly wants x86_64
+      # (Intel); if GitHub changes the runner arch, fail loudly rather than silently ship arm64 as a fake x86_64 asset.
       - name: Assert x86_64 runner
         run: |
           arch=$(uname -m)
@@ -42,13 +42,13 @@ jobs:
         with:
           workspaces: apps/tray-app/src-tauri
 
-      # tauri-cli 与 tauri crate 不严格同步发版：tauri 2.12.5 无对应 cli，
-      # 2.x 最新 cli 为 2.12.4（同 major，兼容 2.x 配置）。
+      # tauri-cli and the tauri crate are not released in lockstep: tauri 2.12.5 has no matching cli,
+      # and the newest 2.x cli is 2.12.4 (same major, compatible with 2.x config).
       - name: Install tauri-cli 2.12.4
         run: cargo install tauri-cli --locked --version 2.12.4
 
-      # 同时跑 meshlet-network：macOS 上后端走 UnsupportedBackend（unsupported.rs
-      # 只在非 linux/windows 编译），它的拒绝语义测试只在 macOS 才真实执行。
+      # Also run meshlet-network: on macOS the backend resolves to UnsupportedBackend (unsupported.rs
+      # only compiles on non-linux/windows), so its rejection-semantics tests actually execute only on macOS.
       - name: Test network + tray
         working-directory: apps/tray-app/src-tauri
         run: cargo test -p meshlet-network -p meshlet-tray
@@ -59,8 +59,8 @@ jobs:
           cargo tauri build \
             --config '{"bundle":{"active":true,"targets":["app"],"macOS":{"signingIdentity":"-"}}}'
 
-      # 注意：tray 是 workspace 成员，cargo 的 target 目录在 workspace 根
-      # `target/`（非 `apps/tray-app/src-tauri/target`），bundle 落在根 target 下。
+      # Note: tray is a workspace member, so cargo's target dir is the workspace root
+      # `target/` (not `apps/tray-app/src-tauri/target`), and the bundle lands under the root target.
       - name: Upload .app
         uses: actions/upload-artifact@v7.0.2
         with:

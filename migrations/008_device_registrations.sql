@@ -1,25 +1,30 @@
 -- meshlet schema v0.0.8 (device self-registration, ZeroTier-style).
--- 设备持自举码自举 → 落 device_registrations（Pending）→ 控制中心审批/拒绝。
+-- A device bootstraps with a bootstrap code -> lands in device_registrations (Pending)
+-- -> the control center approves or rejects.
 --
--- 关键取舍：**Pending 申请不进 `devices` 表**。理由三条：
---   1. `devices.virtual_ipv4` 为 NOT NULL，而虚拟 IP 在**批准时刻**才分配（批准前
---      占用地址会让管理员看到的可用容量虚低，拒绝后还得回收）；
---   2. 不占地址 = 不进期望配置 / 不进 Peer AllowedIPs（device_plan 只读
---      `devices`），Pending 设备对数据面完全不可见；
---   3. 设备 id 在注册时即分配（`dev-reg-N`，单调序列见 mesh_meta），批准后
---      **沿用同一 id** 转入 `devices`，`agent_tokens.device_id` 等引用无需迁移。
+-- Key trade-off: **Pending applications never enter the `devices` table**. Three reasons:
+--   1. `devices.virtual_ipv4` is NOT NULL and the virtual IP is only allocated at
+--      **approval time** (reserving an address earlier would inflate the apparent free
+--      capacity admins see, and a rejection would then need a reclaim);
+--   2. no address reserved = not in the desired config / not in Peer AllowedIPs
+--      (device_plan only reads `devices`), so a Pending device is fully invisible to
+--      the dataplane;
+--   3. the device id is assigned at registration time (`dev-reg-N`, a monotonic
+--      sequence kept in mesh_meta); after approval the **same id carries over** into
+--      `devices`, so references like `agent_tokens.device_id` need no migration.
 --
--- `devices.approved_at`：批准时刻。自举注册路径下 `created_at` 是「申请时刻」
--- （Pending 起始），批准后 `approved_at` 落审批时刻——控制台据此区分
--- 「刚批准」与「已运行一周」。老邀请入会路径两者同值，该列为 NULL。
+-- `devices.approved_at`: approval time. On the self-registration path `created_at` is
+-- the "application time" (start of Pending) while `approved_at` lands at approval -
+-- the console uses the pair to tell "just approved" from "running for a week". On the
+-- legacy invite path both hold the same value and the column stays NULL.
 ALTER TABLE devices ADD COLUMN approved_at TEXT;
 
 CREATE TABLE bootstrap_tokens (
     id         TEXT PRIMARY KEY,
     network_id TEXT NOT NULL REFERENCES networks(id),
-    -- 只存 SHA-256 摘要（§11.3）：原始自举码只在创建响应里出现一次。
+    -- Only the SHA-256 digest is stored (§11.3): the raw bootstrap code appears exactly once, in the create response.
     token_hash TEXT NOT NULL,
-    -- 允许 NULL = 默认不限次（它是长期注册入口，不是一次性邀请）。
+    -- NULL allowed = unlimited uses by default (this is a long-lived registration entry, not a one-shot invite).
     max_uses   INTEGER,
     used_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -35,11 +40,11 @@ CREATE TABLE device_registrations (
     public_key         TEXT NOT NULL,
     platform           TEXT NOT NULL,
     requested_at       TEXT NOT NULL,
-    -- Pending 设备尚无 devices 行，agent 心跳证据只落这两列（§7.5/§12.4）。
+    -- A Pending device has no devices row yet, so agent heartbeat evidence lands only in these two columns (§7.5/§12.4).
     last_report_at     TEXT,
     dataplane_evidence TEXT
 );
 CREATE INDEX idx_device_registrations_network ON device_registrations(network_id);
--- 同网络内设备名跨阶段唯一（批准路径按此判冲突）。
+-- Device names are unique within a network across both stages (the approval path checks conflicts here).
 CREATE UNIQUE INDEX uniq_device_registrations_network_name
     ON device_registrations(network_id, name);

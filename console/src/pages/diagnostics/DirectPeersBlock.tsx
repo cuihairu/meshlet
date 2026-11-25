@@ -5,7 +5,7 @@ import type { Device, DirectCandidate, DirectLink } from '../../api';
 import { useLanguage } from '../../i18n/language-context';
 import { formatBytes } from '../../lib/format';
 
-/** R-DIAG-2: the 直连 peers block on the diagnostics page — every direct link
+/** R-DIAG-2: the direct peers block on the diagnostics page — every direct link
  *  any device in the network reported, with mode/endpoint/RTT/handshake/traffic.
  *  Relay peers are not in `direct_links` (absence = relay via hub). */
 export function DirectPeersBlock({ networkId }: { networkId: string }) {
@@ -66,7 +66,7 @@ export function DirectPeersBlock({ networkId }: { networkId: string }) {
                 <tr key={`${device.id}:${link.public_key}`}>
                   <td>
                     {device.name}
-                    {/* SEL-004: peer 详情展开，展示全部候选端点。 */}
+                    {/* SEL-004: peer details expanded, showing all candidate endpoints. */}
                     <div className="direct-candidates">
                       <h4>{t('diagnostics.directPeersCandidates')}</h4>
                       {(link.candidates?.length ?? 0) === 0 ? (

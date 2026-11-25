@@ -1,7 +1,8 @@
--- 外部系统机器凭据（API Token，2026-10-14 用户需求）。
--- 与邀请/会话/agent 凭证同一纪律：只存 SHA-256 摘要，原始 Token 仅在创建
--- 响应中出现一次（mlt_ 前缀 + 64 hex）。撤销/列表走稳定 id，摘要不出边界。
--- scopes：'read' 或 'write'（write 隐含 read）。
+-- Machine credentials for external systems (API tokens, requested by the user 2026-10-14).
+-- Same discipline as invite/session/agent credentials: only the SHA-256 digest is stored;
+-- the raw token appears exactly once, in the create response (mlt_ prefix + 64 hex).
+-- Revoke/list go by stable id; the digest never leaves the boundary.
+-- scopes: 'read' or 'write' (write implies read).
 CREATE TABLE api_tokens (
     id           TEXT PRIMARY KEY,
     token_hash   TEXT NOT NULL UNIQUE,

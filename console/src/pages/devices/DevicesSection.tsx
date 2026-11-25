@@ -136,7 +136,7 @@ export function DevicesSection({
         return links.map((link) => {
           const peer = devices?.find((p) => p.virtual_ipv4 === link.virtual_ipv4);
           const label = link.peer_name || (peer ? peer.name : link.virtual_ipv4);
-          // R-DIAG-2 连接模式：优先 connection_mode，旧服务端回退 link_state。
+          // R-DIAG-2 connection mode: prefer connection_mode, fall back to link_state on older servers.
           const direct =
             link.connection_mode === 'p2p_direct' ||
             (link.connection_mode == null && link.link_state === 'direct');
@@ -147,7 +147,7 @@ export function DevicesSection({
             link.last_handshake_age_secs == null
               ? t('devices.directAgeUnknown')
               : t('devices.directAge', { secs: String(link.last_handshake_age_secs) });
-          // R-DIAG-2 详情：endpoint · RTT ms · rx↑/tx↓（原始值，非 UI 标签不译）。
+          // R-DIAG-2 detail: endpoint · RTT ms · rx↑/tx↓ (raw values, not UI labels, left untranslated).
           const detail = [
             link.endpoint || null,
             link.rtt_ms != null ? `${link.rtt_ms} ms` : null,
@@ -171,8 +171,8 @@ export function DevicesSection({
       },
     },
     {
-      // P2P-⑤：hub 观测的源端点（原始观测，不做私网过滤）与公网候选端点。
-      // 两者都由服务端从心跳源地址 + agent 上报的 wg 监听端口合成。
+      // P2P-⑤: the hub-observed source endpoint (raw observation, no private-net filtering) and the public candidate endpoint.
+      // Both are synthesized by the server from the heartbeat source address + the wg listen port reported by the agent.
       title: t('devices.colEndpoints'),
       key: 'endpoints',
       render: (_, d) => {

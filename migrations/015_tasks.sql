@@ -1,7 +1,8 @@
--- Tasks (MT-002): 通用任务通道。server 经既有 agent 拉取通道派任务，agent
--- 回 ack / 运行 / 回传 exit code + 日志尾部；task id 为幂等键，断线补派
--- 不重复执行。状态机见 meshlet-domain TaskState（assigned→acked→running→
--- done|failed），`state` 列存 as_str() 契约字段。
+-- Tasks (MT-002): a general task channel. The server dispatches tasks over the existing
+-- agent pull channel; the agent acks, runs, and reports back the exit code + log tail.
+-- The task id is the idempotency key: re-dispatch after a disconnect never re-executes.
+-- State machine: meshlet-domain TaskState (assigned->acked->running->done|failed);
+-- the `state` column stores the as_str() contract field.
 CREATE TABLE tasks (
     id TEXT PRIMARY KEY,
     network_id TEXT NOT NULL,
@@ -18,5 +19,5 @@ CREATE TABLE tasks (
     updated_at TEXT NOT NULL
 );
 
--- 按目标设备 + 状态查询待办（agent 拉取 pending、控制台按节点分列）。
+-- Pending-work lookup by target device + state (agent pulls pending; the console groups by node).
 CREATE INDEX idx_tasks_target_state ON tasks (target_device_id, state);

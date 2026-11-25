@@ -318,7 +318,7 @@ export interface Task {
   result_ref: string | null;
   exit_code: number | null;
   log_tail: string | null;
-  /** User-side confirmation timestamp; the agent never sets this ("agent 不得自判 done"). */
+  /** User-side confirmation timestamp; the agent never sets this ("agent must not self-mark done"). */
   confirmed_at: string | null;
   /** User-side rejection timestamp → a rerun generation was dispatched. */
   rejected_at: string | null;

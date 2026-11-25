@@ -5,9 +5,9 @@ import DefaultTheme from 'vitepress/theme'
 import { renderAllMermaid } from './mermaidClient'
 import './custom.css'
 
-// 显式切换语言时落 localStorage，与 console 的 language-provider 共用 meshlet-lang 键：
-// 落盘后首页的自动跳转脚本（config.mts localeRedirectScript）不再覆盖用户选择。
-// 只认语言切换器（.VPNavBarTranslations）内的 locale 链接，不误伤正文里的 zh 链接。
+// An explicit language switch persists to localStorage under the meshlet-lang key shared with the console's
+// language-provider, so the homepage auto-redirect script (config.mts localeRedirectScript) stops overriding
+// the user's choice. Only locale links inside the language switcher (.VPNavBarTranslations) count.
 function recordLocaleSwitch(e: Event): void {
   const target = e.target as HTMLElement | null
   const link = target?.closest('a[href]')
@@ -26,12 +26,12 @@ export default {
   extends: DefaultTheme,
   setup() {
     const route = useRoute()
-    // 初次挂载与每次路由切换后渲染 ```mermaid 围栏。
+    // Render ```mermaid fences on initial mount and after every route change.
     onMounted(() => {
       void renderAllMermaid()
-      // 捕获语言切换器点击（capture 阶段，先于 VitePress 客户端路由跳转执行）。
+      // Capture language-switcher clicks (capture phase, before VitePress client-side routing runs).
       document.addEventListener('click', recordLocaleSwitch, true)
-      // 深浅色切换时重渲染（mermaid 主题在渲染期固化，需重画）。
+      // Re-render on dark/light toggle (mermaid bakes the theme in at render time, so it must be redrawn).
       const observer = new MutationObserver(() => {
         void renderAllMermaid()
       })

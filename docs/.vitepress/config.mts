@@ -4,12 +4,12 @@ import { defineConfig } from 'vitepress'
 
 const BASE = '/meshlet/'
 
-// 首次访问按浏览器语言自动跳 /zh/（FLEET-DOC-G2 ①，2026-11-22 用户拍板）。
-// 与 console 的 language-provider 同款探测：navigator.language 以 zh 开头即中文。
-// 只在「无任何显式选择（localStorage['meshlet-lang'] 未设）」且落在英文首页时跳一次；
-// 显式切换会写 localStorage['meshlet-lang']（theme/index.ts 监听切换器），之后尊重用户选择不再跳。
-// 只重定向首页（首次访问的典型落点），不映射深层链接——zh 目录尚非 100% 覆盖（存在 EN-only 页），
-// 深层页保持英文、由手动 switcher 切换，避免把用户导向 404。
+// First visits redirect to /zh/ based on the browser language (FLEET-DOC-G2 ①, approved by the user on 2026-11-22).
+// This uses the console language-provider probe: navigator.language is Chinese when it starts with zh.
+// Redirect once only when there is no explicit choice (localStorage['meshlet-lang'] is unset) and the visitor lands on the English homepage;
+// an explicit switch writes localStorage['meshlet-lang'] (theme/index.ts listens to the switcher), after which the user's choice is respected and no redirect occurs.
+// Redirect the homepage only (the typical first-visit landing point), not deep links—the zh tree is not yet 100% complete (some pages are English-only),
+// and deep pages stay in English and are switched manually through the switcher, avoiding 404 redirects.
 const localeRedirectScript = `(function(){try{var s=localStorage.getItem('meshlet-lang');if(s==='zh'||s==='en')return;var l=(navigator.language||'').toLowerCase();if(l.indexOf('zh')!==0)return;var p=window.location.pathname;var b=${JSON.stringify(BASE)};if(p===b||p===b.slice(0,-1)){window.location.replace(b+'zh/')}}catch(e){}})()`
 
 export default defineConfig({
@@ -45,7 +45,7 @@ export default defineConfig({
           { text: 'Decisions', link: '/decisions/', activeMatch: '/decisions/' },
           { text: 'Archive', link: '/review/chatgpt-2026-10-13', activeMatch: '/review/' },
           { text: 'Guides', link: '/guide/external-caller', activeMatch: '/guide/' },
-          // 语言切换走 VitePress 官方 locale switcher（由 locales[].label 渲染），不自造 nav 项。
+          // Language switching uses VitePress's official locale switcher (rendered from locales[].label); no custom nav item is created.
         ],
         sidebar: {
           '/analysis/': [{ text: 'Analysis', items: [
@@ -144,7 +144,7 @@ export default defineConfig({
           { text: '决策', link: '/zh/decisions/', activeMatch: '/zh/decisions/' },
           { text: '存档', link: '/zh/review/chatgpt-2026-10-13', activeMatch: '/zh/review/' },
           { text: '指南', link: '/zh/guide/external-caller', activeMatch: '/zh/guide/' },
-          // 语言切换走 VitePress 官方 locale switcher（由 locales[].label 渲染），不自造 nav 项。
+          // Language switching uses VitePress's official locale switcher (rendered from locales[].label); no custom nav item is created.
         ],
         sidebar: {
           '/zh/analysis/': [{ text: '分析整理', items: [

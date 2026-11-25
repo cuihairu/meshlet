@@ -1,14 +1,14 @@
-// DOC-GIF 捕获：真实 UI / 真实 HTTP 输出 → off/on 截图 + 过渡帧 → ffmpeg 合成 GIF。
-// 兼作配置效果回归测试：任一断言失败即以非零退出码退出（可进 CI 门禁）。
+// DOC-GIF capture: real UI / real HTTP output -> off/on screenshots + transition frames -> GIF composed with ffmpeg.
+// Doubles as a regression test for toggle effects: any failed assertion exits with a non-zero code (CI-gateable).
 //
-// 被捕获的开关（见 docs 配置效果页）：
-//   1. console 主题（dark↔light）         —— 真实 antd 切换，断言 html[data-theme]
-//   2. console 语言（en↔zh）              —— 真实 antd Dropdown，断言导航文本 + localStorage
-//   3. server cookie_secure（false→true） —— 真实 bootstrap Set-Cookie，断言 Secure 属性出现
-//   4. server console_dir（未设→已设）     —— 真实 GET /，断言 404→200
+// Toggles captured (see the docs config-effects page):
+//   1. console theme (dark<->light)       -- real antd switch, asserts html[data-theme]
+//   2. console language (en<->zh)         -- real antd Dropdown, asserts nav text + localStorage
+//   3. server cookie_secure (false->true) -- real bootstrap Set-Cookie, asserts the Secure attribute appears
+//   4. server console_dir (unset->set)    -- real GET /, asserts 404->200
 //
-// 依赖：playwright（chromium，见 package.json）、ffmpeg（合成 GIF）、
-//       run.sh 预先起的临时 meshlet-server 实例。
+// Depends on: playwright (chromium, see package.json), ffmpeg (GIF composition),
+//            and the temp meshlet-server instance that run.sh starts beforehand.
 import { chromium } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import { readdirSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -36,7 +36,7 @@ const check = (name, cond, detail = '') => {
 };
 
 // ---------------------------------------------------------------------------
-// GIF 合成（palettegen/paletteuse，避免色彩抖动）
+// GIF composition (palettegen/paletteuse to avoid color dithering)
 // ---------------------------------------------------------------------------
 function gifFromFrames(dir, out, fps) {
   const frames = readdirSync(dir).filter((f) => f.endsWith('.png')).sort();
@@ -62,7 +62,7 @@ async function shotFrames(page, dir, count, pauseMs, start = 0) {
   }
 }
 
-// 当前导航链接文本（用于语言状态自检，避免缓存/竞态把错帧写进 GIF）。
+// Current nav link text (self-check for language state, so cache/races can't write a wrong frame into the GIF).
 async function navText(page) {
   const el = page.locator('a[href="#/networks"]').first();
   if ((await el.count()) === 0) return null;
@@ -70,7 +70,7 @@ async function navText(page) {
 }
 
 // ---------------------------------------------------------------------------
-// 终端渲染（真实捕获文本 → 终端风格帧）
+// Terminal rendering (real captured text -> terminal-styled frames)
 // ---------------------------------------------------------------------------
 function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -99,7 +99,7 @@ function terminalHtml(title, lines) {
     <pre class="body">${body}</pre></div></body></html>`;
 }
 
-// 逐行揭示 → 帧（模拟终端输出逐行出现）
+// Reveal line by line -> frames (mimics terminal output appearing line by line)
 async function terminalFrames(page, title, lines, dir) {
   for (let n = 1; n <= lines.length; n += 1) {
     await page.setContent(terminalHtml(title, lines.slice(0, n)));
@@ -115,7 +115,7 @@ async function terminalShot(page, title, lines, out) {
 }
 
 // ---------------------------------------------------------------------------
-// 真实 HTTP 捕获（fetch 直连临时 server）
+// Real HTTP capture (fetch straight to the temp server)
 // ---------------------------------------------------------------------------
 async function httpRequest(base, method, urlPath, body) {
   const res = await fetch(base + urlPath, {
@@ -130,16 +130,16 @@ async function httpRequest(base, method, urlPath, body) {
 }
 
 function shortToken(cookie) {
-  // 仅展示真实 cookie 头，token 值缩短以便阅读（不影响 Secure 属性可见性）。
+  // Show the real cookie header, with the token shortened for readability (does not affect Secure-attribute visibility).
   return cookie.replace(/meshlet_session=[^;]+/, (m) => `${m.slice(0, 34)}…`);
 }
 
 // ---------------------------------------------------------------------------
-// console 捕获
+// console capture
 // ---------------------------------------------------------------------------
 async function captureConsole(page) {
-  // 管理员已由 captureCookieSecure 的首次 bootstrap 创建（CONSOLE_BASE）。
-  // 真实 UI 登录（antd 表单）。
+  // The admin was already created by captureCookieSecure's first bootstrap (CONSOLE_BASE).
+  // Real UI login (antd form).
   await page.goto(`${CONSOLE_BASE}/`, { waitUntil: 'networkidle' });
   await page.getByLabel('Email').waitFor({ timeout: 15000 });
   await page.getByLabel('Email').fill(EMAIL);
@@ -148,7 +148,7 @@ async function captureConsole(page) {
   await page.getByRole('link', { name: 'Networks', exact: true }).waitFor({ timeout: 15000 });
   check('console signed in (nav visible)', true);
 
-  // --- 主题：dark（off）↔ light（on）---
+  // --- theme: dark (off) <-> light (on) ---
   await page.evaluate(() => localStorage.setItem('meshlet-theme', 'dark'));
   await page.reload({ waitUntil: 'networkidle' });
   await page.locator('html[data-theme="dark"]').waitFor({ timeout: 10000 });
@@ -167,7 +167,7 @@ async function captureConsole(page) {
   check('theme persists', themeStored === 'light', `got ${themeStored}`);
   gifFromFrames(themeFrames, path.join(OUT, 'console-theme.gif'), UI_FPS);
 
-  // --- 语言：en（off）↔ zh（on）---
+  // --- language: en (off) <-> zh (on) ---
   await page.evaluate(() => localStorage.setItem('meshlet-lang', 'en'));
   await page.reload({ waitUntil: 'networkidle' });
   await page.getByRole('link', { name: 'Networks', exact: true }).waitFor({ timeout: 10000 });
@@ -177,10 +177,10 @@ async function captureConsole(page) {
   const langFrames = freshFrames('lang');
   await page.getByRole('button', { name: 'Change language' }).click();
   await page.getByRole('menuitem', { name: '中文' }).waitFor({ timeout: 5000 });
-  // 下拉展开阶段（此时仍为英文）——真实开合动画帧。
+  // Dropdown opening phase (still in English) -- real open/close animation frames.
   await shotFrames(page, langFrames, 3, 100, 0);
   check('dropdown open still EN', (await navText(page)) === 'Networks', `nav=${await navText(page)}`);
-  // 选择中文 → 全站重渲染。
+  // Pick Chinese -> whole site re-renders.
   await page.getByRole('menuitem', { name: '中文' }).click();
   await page.getByRole('link', { name: '网络', exact: true }).waitFor({ timeout: 10000 });
   await shotFrames(page, langFrames, 6, 110, 3);
@@ -193,10 +193,10 @@ async function captureConsole(page) {
 }
 
 // ---------------------------------------------------------------------------
-// cookie_secure 捕获（真实 bootstrap Set-Cookie）
+// cookie_secure capture (real bootstrap Set-Cookie)
 // ---------------------------------------------------------------------------
 async function captureCookieSecure(page) {
-  // 首个 bootstrap 也顺带创建 CONSOLE_BASE 管理员（供 UI 登录）。
+  // The first bootstrap also creates the CONSOLE_BASE admin (used for the UI login).
   const off = await httpRequest(CONSOLE_BASE, 'POST', '/api/v1/auth/bootstrap', { email: EMAIL, password: PASSWORD });
   const on = await httpRequest(COOKIE_BASE, 'POST', '/api/v1/auth/bootstrap', { email: EMAIL, password: PASSWORD });
   check('cookie_secure off bootstrap is 201', off.status === 201, `status=${off.status}`);
@@ -230,7 +230,7 @@ async function captureCookieSecure(page) {
 }
 
 // ---------------------------------------------------------------------------
-// console_dir 捕获（真实 GET /）
+// console_dir capture (real GET /)
 // ---------------------------------------------------------------------------
 async function captureConsoleServed(page) {
   const on = await httpRequest(CONSOLE_BASE, 'GET', '/');

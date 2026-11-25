@@ -108,7 +108,7 @@
 							n.online + ' / ' + n.total,
 							''
 						]);
-						// 设备明细：一行摘要，控制名/ VIP / 在线态。
+						// Per-device detail: one summary line per network -- control name / VIP / online state.
 						var summary = (n.devices || []).map(function(d) {
 							return d.name + ' ' + (d.virtual_ipv4 || '') + ' [' + d.online_state + ']';
 						}).join(' · ');

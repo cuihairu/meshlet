@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# DOC-GIF 流水线：真实验证配置开关效果，产出 off/on 截图 + GIF（docs/public/toggles/）。
-# 兼作配置效果回归测试：capture.mjs 任一断言失败即非零退出。
+# DOC-GIF pipeline: really exercise the config toggles and produce off/on screenshots + GIFs (docs/public/toggles/).
+# Doubles as a regression test for toggle effects: any capture.mjs assertion failure exits non-zero.
 #
-# 用法：
-#   scripts/doc-gif/run.sh            # 构建产物 + 起临时 server + 捕获 + 合成 GIF
-#   SKIP_BUILD=1 scripts/doc-gif/run.sh   # 跳过 console/二进制重建
+# Usage:
+#   scripts/doc-gif/run.sh            # build artifacts + start temp server + capture + compose GIF
+#   SKIP_BUILD=1 scripts/doc-gif/run.sh   # skip rebuilding console/binaries
 #
-# 输出：
+# Outputs:
 #   docs/public/toggles/console-theme-off.png|on.png|.gif
 #   docs/public/toggles/console-lang-en.png|zh.png|.gif
 #   docs/public/toggles/cookie-secure-off.png|on.png|.gif
@@ -25,7 +25,7 @@ OUT="$REPO/docs/public/toggles"
 EMAIL="${MESHLET_DOCGIF_EMAIL:-admin@docgif.local}"
 PASSWORD="${MESHLET_DOCGIF_PASSWORD:-docgif-admin-2026-pass}"
 
-# 端口：避免与系统 server（18080）和无关进程冲突。
+# Ports: avoid clashing with the system server (18080) and unrelated processes.
 CONSOLE_PORT="${MESHLET_DOCGIF_CONSOLE_PORT:-18082}"
 COOKIE_PORT="${MESHLET_DOCGIF_COOKIE_PORT:-18083}"
 NOCONSOLE_PORT="${MESHLET_DOCGIF_NOCONSOLE_PORT:-18084}"
@@ -39,7 +39,7 @@ trap cleanup EXIT
 log() { echo "[doc-gif] $*"; }
 
 # ---------------------------------------------------------------------------
-# 构建（可重跑；配置/源码变更后重生成证据）
+# Build (idempotent; regenerate the evidence after config/source changes)
 # ---------------------------------------------------------------------------
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   log "building console dist"
@@ -57,7 +57,7 @@ rm -f "$SCRATCH"/*.db "$SCRATCH"/*.db-* "$SCRATCH"/server-*.log
 rm -rf "$HERE/frames"
 
 # ---------------------------------------------------------------------------
-# 起临时 server 实例（全隔离：临时 DB、临时端口、本机回环）
+# Start temp server instances (fully isolated: temp DB, temp port, loopback only)
 # ---------------------------------------------------------------------------
 start_server() {
   local name="$1" port="$2" db="$3" console_dir="$4" cookie_secure="$5"
@@ -87,7 +87,7 @@ start_server cookie   "$COOKIE_PORT"  "$SCRATCH/cookie.db"  "" "true"
 start_server noconsole "$NOCONSOLE_PORT" "$SCRATCH/noconsole.db" "" "false"
 
 # ---------------------------------------------------------------------------
-# 捕获 + 断言 + GIF 合成
+# Capture + assertions + GIF composition
 # ---------------------------------------------------------------------------
 export MESHLET_DOCGIF_EMAIL="$EMAIL" MESHLET_DOCGIF_PASSWORD="$PASSWORD"
 export MESHLET_DOCGIF_CONSOLE_BASE="http://127.0.0.1:$CONSOLE_PORT"

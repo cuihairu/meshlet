@@ -52,7 +52,7 @@ describe('DirectPeersBlock', () => {
     ]);
     render(<DirectPeersBlock networkId="net-1" />);
 
-    // 列标题与各字段可见（原始数值不译，UI 标签按默认 en）。
+    // Column headers and all fields are visible (raw values untranslated, UI labels default to en).
     expect(await screen.findByText('edge')).toBeTruthy();
     expect(screen.getByText('hub-node')).toBeTruthy();
     expect(screen.getByText('P2P')).toBeTruthy();
@@ -69,7 +69,7 @@ describe('DirectPeersBlock', () => {
   });
 
   it('renders all candidates with endpoint/RTT/loss/current selection (SEL-004)', async () => {
-    // 模拟双候选：c1 选中（current），c2 备份（backup）。
+    // Simulate two candidates: c1 selected (current), c2 backup.
     vi.spyOn(api.api, 'listDevices').mockResolvedValue([
       device({
         direct_links: [
@@ -111,15 +111,15 @@ describe('DirectPeersBlock', () => {
     expect(await screen.findByText('hub-node')).toBeTruthy();
     const candidateTable = screen.getByText('candidates').closest('.direct-candidates')! as HTMLElement;
     const candidateScope = within(candidateTable);
-    // 全部候选可见（端点/RTT/丢包/选中与理由）。
+    // All candidates visible (endpoint/RTT/loss/selected flag and reason).
     expect(candidateScope.getByText('192.168.1.50:51821')).toBeTruthy();
     expect(candidateScope.getByText('192.168.1.60:51821')).toBeTruthy();
     expect(candidateScope.getByText('11 ms')).toBeTruthy();
     expect(candidateScope.getByText('40 ms')).toBeTruthy();
-    expect(candidateScope.getByText('50%')).toBeTruthy(); // 丢包率 0.5 → 50%
+    expect(candidateScope.getByText('50%')).toBeTruthy(); // loss rate 0.5 → 50%
     expect(candidateScope.getByText('current')).toBeTruthy();
     expect(candidateScope.getByText('backup')).toBeTruthy();
-    expect(candidateScope.getByText('selected')).toBeTruthy(); // 选中标记
+    expect(candidateScope.getByText('selected')).toBeTruthy(); // selected marker
   });
 });
 

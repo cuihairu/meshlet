@@ -61,7 +61,7 @@ describe('AuthGate two-factor login', () => {
       );
     render(<App />);
 
-    // 等 me() resolve（signed-out）→ 登录表单出现。
+    // Wait for me() to resolve (signed-out) → sign-in form appears.
     expect(await screen.findByRole('heading', { name: /sign in/i })).toBeTruthy();
     fireEvent.change(screen.getByLabelText(/email/i), {
       target: { value: 'admin@test.local' },
@@ -80,7 +80,7 @@ describe('AuthGate two-factor login', () => {
     fireEvent.click(screen.getByRole('button', { name: /^verify$/i }));
     await waitFor(() => expect(login).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/invalid verification code/i)).toBeTruthy();
-    // 仍停留在验证码步骤，不种会话。
+    // Still on the verification-code step; no session established.
     expect(
       await screen.findByRole('heading', { name: /two-factor verification/i }),
     ).toBeTruthy();

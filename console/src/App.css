@@ -323,7 +323,7 @@ tr.state-unknown td { color: var(--muted-c); }
   white-space: nowrap;
 }
 
-/* R-DIAG-2 diagnostics-page 直连 peers block. */
+/* R-DIAG-2 diagnostics-page direct peers block. */
 .direct-peers-block {
   margin-top: var(--space-5);
 }
@@ -351,7 +351,7 @@ tr.state-unknown td { color: var(--muted-c); }
   font-weight: 500;
 }
 
-/* SEL-004: 每个 peer 详情下内嵌的候选端点子表（端点/RTT/丢包/选中与理由）。 */
+/* SEL-004: candidate-endpoint subtable nested under each peer's details (endpoint/RTT/loss/selected flag and reason). */
 .direct-candidates {
   margin-top: var(--space-2);
   font-size: 0.8125rem;
@@ -384,7 +384,7 @@ tr.state-unknown td { color: var(--muted-c); }
   background: color-mix(in srgb, var(--green, #52c41a) 10%, transparent);
 }
 
-/* R-DIAG diagnostics-page 网络快照 block（路由表/接口/wg 三快照，按设备分节）。 */
+/* R-DIAG diagnostics-page network snapshot block (routes/interfaces/wg snapshots, sectioned per device). */
 .snapshots-block {
   margin-top: var(--space-5);
 }

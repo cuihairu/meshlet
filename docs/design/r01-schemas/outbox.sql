@@ -1,4 +1,5 @@
--- R-01 Outbox 草案：与 Revision 同事务写入，至少一次投递，执行器回执后标记。
+-- R-01 outbox draft: written in the same transaction as the revision, delivered at
+-- least once, and marked once the executor acks.
 CREATE TABLE IF NOT EXISTS outbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   network_id TEXT NOT NULL,

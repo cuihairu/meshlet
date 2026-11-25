@@ -7,11 +7,11 @@ import type { Device, Task } from '../../api';
 import { useLanguage } from '../../i18n/language-context';
 import type { MessageKey } from '../../i18n/en';
 
-/** MT-003 任务队列面板：assigned/running/done 分列 + 一键「确认完成/驳回重跑」。
+/** MT-003 task queue panel: assigned/running/done in separate groups + one-click "Confirm done / Reject & rerun".
  *
- * 确认是用户侧动作（agent 不得自判 done）——只有 done 任务给「确认完成」；
- * done/failed 给「驳回重跑」（服务端派发 `{root}-r{n}` 新一代）。已确认/
- * 已驳回的任务进 settled 区，不再给动作。
+ * Confirmation is a user-side action (the agent must not self-mark done) — only done tasks get "Confirm done";
+ * done/failed get "Reject & rerun" (the server dispatches a new `{root}-r{n}` generation). Confirmed/
+ * rejected tasks move to the settled group and get no further actions.
  */
 export function TasksSection({
   networkId,
