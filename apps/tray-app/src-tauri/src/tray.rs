@@ -5,7 +5,7 @@ use crate::i18n;
 use crate::state::{get_peers, state_tier};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
-/// 菜单首行摘要的当前文案（状态 + 直连计数，语言跟随托盘语言）。
+/// Current text of the menu's first-row summary (state + direct-peer count; language follows the tray language).
 pub(crate) fn tray_summary_text() -> String {
     let status = get_status();
     let state = status["state"].as_str().unwrap_or("unknown");
@@ -21,9 +21,9 @@ pub(crate) fn build_summary_item(
     MenuItem::with_id(app, "status_summary", text, false, None::<&str>)
 }
 
-/// 托盘菜单（双平台共用结构，按各自惯例呈现）：
-/// [disabled 状态摘要] │ 状态面板 │ 诊断/路由表/对等节点 │ 打开设置+日志子菜单 │ 退出。
-/// 快捷键统一写 `CmdOrCtrl`（Tauri accelerator 按平台显示 Ctrl+D / ⌘D）。
+/// Tray menu (one structure shared by both platforms, presented per platform convention):
+/// [disabled status summary] │ Status panel │ Diagnostics/Route table/Peers │ Open Settings+Logs submenu │ Quit.
+/// Accelerators are always written `CmdOrCtrl` (Tauri renders them as Ctrl+D / ⌘D per platform).
 pub(crate) fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let texts = i18n::menu_texts(&i18n::read_tray_lang());
     let summary = build_summary_item(app)?;
@@ -58,9 +58,9 @@ pub(crate) fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<taur
     )
 }
 
-// ── 状态弹层窗口 ───────────────────────────────────────────────────────
-/// 弹层定位（纯函数，可测）：Windows 贴任务栏右下（任务栏 ≈48px + 余量），
-/// macOS 贴菜单栏右上（菜单栏 ≈25px + 余量）。全部乘 scale（物理像素）。
+// ── Status popup window ───────────────────────────────────────────────────────
+/// Popup positioning (pure function, testable): on Windows it hugs the bottom-right taskbar
+/// (taskbar ≈48px + margin), on macOS the top-right menu bar (menu bar ≈25px + margin). All × scale (physical pixels).
 pub(crate) fn popup_origin(
     monitor_width: i32,
     monitor_height: i32,

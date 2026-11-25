@@ -1,21 +1,21 @@
-//! 本地状态/配置路径与 agent TOML 读写。
+//! Local state/config paths and agent TOML read/write.
 
-/// 本机 Meshlet 状态目录：`%LOCALAPPDATA%/meshlet/state`（与安装脚本
-/// `scripts/install.ps1` 生成 `state_dir = %LOCALAPPDATA%\meshlet\state` 一致）。
+/// Local Meshlet state dir: `%LOCALAPPDATA%/meshlet/state` (matches the
+/// `state_dir = %LOCALAPPDATA%\meshlet\state` written by `scripts/install.ps1`).
 pub(crate) fn meshlet_state_dir() -> String {
     let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:/Users/Public".into());
     state_dir_from_local(&local)
 }
 
-/// 本机 agent 配置路径：`%LOCALAPPDATA%/meshlet/agent.toml`（安装脚本
-/// `scripts/install.ps1` 把配置写到该路径；前端读写必须与之一致，否则
-/// 托盘设置的保存/读取与 agent 实际配置脱节）。
+/// Local agent config path: `%LOCALAPPDATA%/meshlet/agent.toml` (the installer
+/// `scripts/install.ps1` writes the config there; the frontend must read and write
+/// the same path, or tray settings would diverge from the agent's actual config).
 pub(crate) fn meshlet_config_path() -> String {
     let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:/Users/Public".into());
     config_path_from_local(&local)
 }
 
-/// 纯路径构造（可测）：`<local>/meshlet/state`。
+/// Pure path construction (testable): `<local>/meshlet/state`.
 pub(crate) fn state_dir_from_local(local: &str) -> String {
     std::path::Path::new(local)
         .join("meshlet")
@@ -24,7 +24,7 @@ pub(crate) fn state_dir_from_local(local: &str) -> String {
         .into_owned()
 }
 
-/// 纯路径构造（可测）：`<local>/meshlet/agent.toml`。
+/// Pure path construction (testable): `<local>/meshlet/agent.toml`.
 pub(crate) fn config_path_from_local(local: &str) -> String {
     std::path::Path::new(local)
         .join("meshlet")
@@ -33,8 +33,8 @@ pub(crate) fn config_path_from_local(local: &str) -> String {
         .into_owned()
 }
 
-/// 简单 TOML 键值解析（扁平，忽略 section 头/注释）：与 `get_config` 同解析
-/// 口径；返回 键→去引号后的值。
+/// Minimal TOML key=value parsing (flat; ignores section headers/comments):
+/// same parsing rules as `get_config`; returns key → unquoted value.
 pub(crate) fn parse_agent_toml(text: &str) -> std::collections::BTreeMap<String, String> {
     let mut map = std::collections::BTreeMap::new();
     for line in text.lines() {
@@ -52,15 +52,15 @@ pub(crate) fn parse_agent_toml(text: &str) -> std::collections::BTreeMap<String,
     map
 }
 
-/// TOML 字符串引号包裹（转义内嵌双引号）。
+/// Wrap a TOML string in quotes (escaping embedded double quotes).
 pub(crate) fn quote(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
 }
 
-/// 纯配置重建（可测）：只替换设置页管理的键（server_url/device_name/
-/// hub_endpoint/interface/enabled），**保留** agent 自行管理的键
-/// （state_dir/bootstrap_token/private_key_file/poll_interval_secs 等）——
-/// 否则保存设置会丢掉 install.ps1 写入的键，破坏 agent 配置。
+/// Pure config rebuild (testable): replaces only the settings-page-managed keys
+/// (server_url/device_name/hub_endpoint/interface/enabled) and **keeps** the
+/// agent-managed ones (state_dir/bootstrap_token/private_key_file/poll_interval_secs
+/// etc.) — otherwise saving settings would drop the keys install.ps1 wrote and break the agent config.
 pub(crate) fn rebuild_config(
     existing: &str,
     server_url: &str,
@@ -83,8 +83,8 @@ pub(crate) fn rebuild_config(
     out.push('\n');
     out.push_str("[dataplane]\n");
     out.push_str("enabled = true\n");
-    // 实际隧道名按 install.ps1/README 为 wg-meshlet（后端默认 meshlet），
-    // 不再写死 "WireGuard"。
+    // The real tunnel name is wg-meshlet per install.ps1/README (backend default meshlet),
+    // no longer hardcoded as "WireGuard".
     out.push_str("interface = \"wg-meshlet\"\n");
     if let Some(value) = config.get("private_key_file") {
         push(&mut out, "private_key_file", &quote(value));
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn save_config_preserves_agent_managed_keys() {
-        // 设置页只该改 server_url/device_name/interface/hub_endpoint，不得丢其余键。
+        // The settings page may only change server_url/device_name/interface/hub_endpoint; the other keys must survive.
         let existing = "server_url = \"https://old.example.com\"\n\
                         state_dir = \"C:\\\\Users\\\\bob\\\\AppData\\\\Local\\\\meshlet\\\\state\"\n\
                         bootstrap_token = \"bt-123\"\n\

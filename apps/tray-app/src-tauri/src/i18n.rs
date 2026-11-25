@@ -1,6 +1,6 @@
-// ── 托盘 i18n / 菜单文案 / 状态摘要（自 main.rs 抽出，行为不变）──────────
-// 职责：档位短标签、菜单文案表、状态摘要行、托盘语言镜像文件读写。
-// 依赖 main.rs 的 [`crate::Tier`]、[`crate::meshlet_state_dir`]。
+// ── Tray i18n / menu texts / status summary (extracted from main.rs, behavior unchanged) ──────────
+// Responsibilities: tier short labels, menu text table, status summary line, tray language mirror file I/O.
+// Depends on [`crate::Tier`] and [`crate::meshlet_state_dir`] from main.rs.
 
 use crate::config_io::meshlet_state_dir;
 use crate::state::Tier;
@@ -18,11 +18,11 @@ fn tier_label(tier: Tier, lang: &str) -> &'static str {
     }
 }
 
-// ── 托盘菜单文案（纯表，可测）──────────────────────────────────────────
-/// 托盘菜单文案。跟随设置窗的 i18n：设置窗切换语言时经 `set_tray_lang`
-/// 命令把语言写入 `{state}/tray/lang` 并即时重建菜单；托盘启动时读同一
-/// 文件。托盘侧（Rust）取不到 webview 的 localStorage（设置窗真实的
-/// i18n 存储），文件镜像即「跟随」机制；文件缺失时默认中文。
+// ── Tray menu texts (pure table, testable) ──────────────────────────────────
+/// Tray menu texts. Follows the settings window i18n: on a language switch the
+/// `set_tray_lang` command writes it to `{state}/tray/lang` and rebuilds the menu at
+/// once; the tray reads the same file at startup. The tray side (Rust) cannot reach
+/// the webview localStorage (the real i18n store), so this file mirror follows it; zh by default.
 pub(crate) struct MenuTexts {
     pub(crate) popup: &'static str,
     pub(crate) diag: &'static str,
@@ -60,8 +60,8 @@ pub(crate) fn menu_texts(lang: &str) -> MenuTexts {
     }
 }
 
-/// 菜单首行状态摘要（disabled 行）：`Meshlet · 在线 · 直连 3/4`。直连计数
-/// 仅在确实读到 peers 时附加（wg.exe 缺失/无隧道时不画 0/0）。
+/// Menu first-row status summary (disabled row): `Meshlet · {tier} · {online}/{total}`.
+/// Peer counts are appended only when peers were actually read (no 0/0 when wg.exe is missing or there is no tunnel).
 pub(crate) fn summary_line(tier: Tier, online: usize, total: usize, lang: &str) -> String {
     let label = tier_label(tier, lang);
     if total > 0 {
@@ -75,8 +75,8 @@ pub(crate) fn summary_line(tier: Tier, online: usize, total: usize, lang: &str) 
     }
 }
 
-/// get_peers 结果 → (在线数, 总数)。`connected` 由 main.rs get_peers 按握手
-/// 新鲜度（<180s）判定，此处只汇总。
+/// get_peers result → (online count, total). `connected` is decided in
+/// main.rs get_peers by handshake freshness (<180s); this only aggregates.
 pub(crate) fn peers_summary(peers: &[serde_json::Value]) -> (usize, usize) {
     let online = peers
         .iter()
@@ -85,8 +85,8 @@ pub(crate) fn peers_summary(peers: &[serde_json::Value]) -> (usize, usize) {
     (online, peers.len())
 }
 
-// ── 托盘语言持久化（跟随设置窗 i18n 的镜像文件）───────────────────────
-/// 纯路径构造（可测）：`<local>/meshlet/state/tray/lang`。
+// ── Tray language persistence (mirror file following the settings window i18n) ───────────────
+/// Pure path construction (testable): `<local>/meshlet/state/tray/lang`.
 fn tray_lang_path_from(local: &str) -> String {
     std::path::Path::new(local)
         .join("meshlet")
@@ -97,8 +97,8 @@ fn tray_lang_path_from(local: &str) -> String {
         .into_owned()
 }
 
-/// 当前托盘语言：读设置窗写出的镜像文件；缺失/非法时默认中文
-/// （托盘侧取不到设置窗 webview 的 localStorage，见 `menu_texts` 注释）。
+/// Current tray language: read from the mirror file written by the settings window;
+/// defaults to Chinese if missing/invalid (the tray cannot reach the settings webview localStorage; see `menu_texts`).
 pub(crate) fn read_tray_lang() -> String {
     let path = tray_lang_path_from(
         &std::env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:/Users/Public".into()),
@@ -120,10 +120,10 @@ pub(crate) fn write_tray_lang(lang: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // ── 菜单摘要行 ─────────────────────────────────────────────────────
+    // ── Menu summary line ─────────────────────────────────────────────────────
     #[test]
     fn summary_line_appends_peer_counts_only_when_known() {
-        // 读到 peers 才附加计数；wg.exe 缺失时不画 0/0。
+        // Append the count only when peers were actually read; no 0/0 while wg.exe is missing.
         assert_eq!(
             summary_line(Tier::Online, 3, 4, "zh"),
             "Meshlet · 在线 · 直连 3/4"
@@ -141,17 +141,17 @@ mod tests {
             serde_json::json!({"connected": true}),
             serde_json::json!({"connected": false}),
             serde_json::json!({"connected": true}),
-            serde_json::json!({}), // 缺字段按未连接
+            serde_json::json!({}), // missing field counts as not connected
         ];
         assert_eq!(peers_summary(&peers), (2, 4));
         assert_eq!(peers_summary(&[]), (0, 0));
     }
 
-    // ── 菜单文案 i18n ──────────────────────────────────────────────────
+    // ── Menu text i18n ──────────────────────────────────────────────────
     #[test]
     fn menu_texts_zh_and_en_cover_same_items() {
-        // 中英两表必须覆盖同一组键（新增菜单项漏译会在启动时直接暴露为
-        // 编译期字段，这里保证非空且成对）。
+        // The zh/en tables must cover the same key set (a missing translation for a new menu item
+        // surfaces at startup as a compile-time field; this pins non-empty, pairwise entries).
         let zh = menu_texts("zh");
         let en = menu_texts("en");
         for (a, b) in [
@@ -173,10 +173,10 @@ mod tests {
     fn tier_label_defaults_to_zh_for_unknown_lang() {
         assert_eq!(tier_label(Tier::Online, "zh"), "在线");
         assert_eq!(tier_label(Tier::Online, "en"), "Online");
-        assert_eq!(tier_label(Tier::Online, "fr"), "在线"); // 未知语言回落中文
+        assert_eq!(tier_label(Tier::Online, "fr"), "在线"); // unknown language falls back to Chinese
     }
 
-    // ── 托盘语言持久化路径 ─────────────────────────────────────────────
+    // ── Tray language persistence path ─────────────────────────────────────────────
     #[test]
     fn tray_lang_path_matches_state_dir_convention() {
         let got = tray_lang_path_from(r"C:\Users\bob\AppData\Local");
@@ -188,10 +188,10 @@ mod tests {
 
     #[test]
     fn tray_lang_mirror_defaults_to_chinese() {
-        // 默认中文：托盘侧取不到设置窗 localStorage（真实 i18n 存储），
-        // 语言镜像文件缺失/内容非法时回落中文，不猜测系统语言。
-        // （read_tray_lang 的文件读取依赖宿主状态目录，此处只测回落语义：
-        // zh 之外只认 en，其余一律按 zh。）
+        // Chinese by default: the tray cannot reach the settings localStorage (the real i18n store),
+        // so fall back to Chinese when the language mirror file is missing or malformed; never guess the system language.
+        // (read_tray_lang's file read depends on the host state dir; only the fallback semantics are tested here:
+        // anything other than zh is accepted only as en, all else maps to zh.)
         let zh = menu_texts("zh");
         let en = menu_texts("en");
         assert_eq!(zh.quit, "退出 Meshlet");

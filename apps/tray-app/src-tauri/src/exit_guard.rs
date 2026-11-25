@@ -1,29 +1,29 @@
-//! 托盘退出密码保护（用户令 2026-11-20：退出不该人人可点）。
+//! Tray quit password protection (user order 2026-11-20: quitting must not be callable by just anyone).
 //!
-//! 存储：`{state}/tray/exit-guard.json` = `{"version":1,"salt_hex":..,
-//! "hash_hex":..}`，`hash = sha256(salt ‖ password)`（sha256+随机盐，明文
-//! 密码永不落盘）。设置窗「常规」区设置/修改/清除；托盘菜单「退出」在
-//! 已设密码时先弹 exit-guard 小窗验证，匹配才退出。
+//! Storage: `{state}/tray/exit-guard.json` = `{"version":1,"salt_hex":..,
+//! "hash_hex":..}`, `hash = sha256(salt ‖ password)` (salted sha256; the plaintext password never hits
+//! disk). Set/change/clear in the settings window's "General" section; the tray menu's "Quit" first opens
+//! the exit-guard mini window to verify when a password is set, and only a match exits.
 //!
-//! 为什么不写 agent.toml：agent 对配置做严格解析，未知字段直接拒启
-//! （2026-11-19 target_homes 先例）；且退出保护是纯 tray 侧语义，与
-//! agent 无关。文件缺失/损坏一律按未设置放行——保护宁可失效，也不能
-//! 把常驻托盘进程锁死。
+//! Why not agent.toml: the agent parses configs strictly and refuses to start on unknown fields
+//! (the 2026-11-19 target_homes precedent); quit protection is pure tray-side semantics, unrelated to the agent.
+//! A missing/corrupt file always counts as unset and lets quit through — the guard may fail safe, but must never
+//! lock the resident tray process.
 
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// 记录文件名（放 `{state}/tray/`，与托盘语言镜像同目录）。
+/// Record file name (stored in `{state}/tray/`, same dir as the tray language mirror).
 const GUARD_FILE: &str = "exit-guard.json";
-/// 记录格式版本；改字段时递增，旧版记录按损坏处理（放行）。
+/// Record format version; bump when fields change — older records are treated as corrupt (allow).
 const GUARD_VERSION: u32 = 1;
-/// 设置/修改时的最短密码长度（清除不校验长度，只校验当前密码）。
+/// Minimum password length when setting/changing (clearing skips the length check, only the current password is verified).
 const MIN_PASSWORD_LEN: usize = 4;
-/// 盐长度（字节）。
+/// Salt length in bytes.
 const SALT_LEN: usize = 16;
 
-/// 纯路径构造（可测）：`<state>/tray/exit-guard.json`。
+/// Pure path construction (testable): `<state>/tray/exit-guard.json`.
 fn guard_path_from(state_dir: &str) -> PathBuf {
     Path::new(state_dir).join("tray").join(GUARD_FILE)
 }
@@ -39,7 +39,7 @@ struct GuardFile {
     hash_hex: String,
 }
 
-/// sha256(salt ‖ password utf8)。
+/// sha256(salt ‖ password utf8).
 fn hash_password(salt: &[u8], password: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(salt);
@@ -60,7 +60,7 @@ fn from_hex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// 常数时间字节数组比较（不靠时序泄漏匹配前缀长度）。
+/// Constant-time byte-array comparison (leaks no matching-prefix length via timing).
 fn bytes_equal_const(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -68,7 +68,7 @@ fn bytes_equal_const(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b.iter()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
-/// 读取并校验记录：版本不符 / 盐或哈希长度不对 = None（按未设置放行）。
+/// Load and validate the record: version mismatch / wrong salt or hash length = None (treated as unset, allow).
 fn load_from(path: &Path) -> Option<GuardFile> {
     let text = std::fs::read_to_string(path).ok()?;
     let guard: GuardFile = serde_json::from_str(&text).ok()?;
@@ -100,8 +100,8 @@ fn save_at(path: &Path, password: &str) -> Result<(), String> {
     std::fs::write(path, body).map_err(|e| e.to_string())
 }
 
-/// 校验当前密码：已有 guard 时 `current` 必须提供且匹配；没有 guard
-/// （首次设置）直接放行。
+/// Verify the current password: with an existing guard, `current` must be provided and match; without one
+/// (first-time setup) it passes directly.
 fn verify_current(guard: Option<&GuardFile>, current: Option<&str>) -> Result<(), String> {
     let Some(guard) = guard else {
         return Ok(());
@@ -118,12 +118,12 @@ fn verify_current(guard: Option<&GuardFile>, current: Option<&str>) -> Result<()
     }
 }
 
-/// 是否已设退出密码（文件缺失/损坏 = 未设置）。
+/// Whether a quit password is set (missing/corrupt file = not set).
 pub(crate) fn guard_is_set() -> bool {
     load_from(&guard_path()).is_some()
 }
 
-/// 设置/修改退出密码；已设密码时必须先验当前密码。
+/// Set/change the quit password; if one is already set, the current password must be verified first.
 pub(crate) fn set_guard(current: Option<&str>, new_password: &str) -> Result<(), String> {
     set_guard_at(&guard_path(), current, new_password)
 }
@@ -138,7 +138,7 @@ fn set_guard_at(path: &Path, current: Option<&str>, new_password: &str) -> Resul
     save_at(path, new_password)
 }
 
-/// 清除退出密码；已设密码时必须先验当前密码（否则人人可一键拆锁）。
+/// Clear the quit password; if one is set, the current password must be verified first (or anyone could strip the lock in one click).
 pub(crate) fn clear_guard(current: Option<&str>) -> Result<(), String> {
     clear_guard_at(&guard_path(), current)
 }
@@ -147,13 +147,13 @@ fn clear_guard_at(path: &Path, current: Option<&str>) -> Result<(), String> {
     verify_current(load_from(path).as_ref(), current)?;
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
-        // 没设过密码的清除按幂等成功。
+        // Clearing when no password was ever set succeeds idempotently.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }
 
-/// 退出验证：未设置（或记录损坏）= 放行；已设置则按哈希比对。
+/// Quit verification: not set (or corrupt record) = allow; otherwise compare by hash.
 pub(crate) fn verify_quit(password: &str) -> bool {
     verify_quit_at(&guard_path(), password)
 }
@@ -199,8 +199,8 @@ mod tests {
         let bytes = [0u8, 1, 0x0f, 0xa5, 0xff];
         let hexed = to_hex(&bytes);
         assert_eq!(from_hex(&hexed).unwrap(), bytes);
-        assert!(from_hex("abc").is_none()); // 奇数长度
-        assert!(from_hex("zz").is_none()); // 非 hex
+        assert!(from_hex("abc").is_none()); // odd length
+        assert!(from_hex("zz").is_none()); // not hex
         assert_eq!(from_hex("").unwrap(), Vec::<u8>::new());
     }
 
@@ -228,11 +228,11 @@ mod tests {
     fn set_verify_clear_lifecycle_requires_current_password() {
         let state = temp_state("life");
         let path = guard_path_from(state.to_str().unwrap());
-        // 未设置：验证放行，清除幂等成功。
+        // Not set: verification passes, clearing succeeds idempotently.
         assert!(verify_quit_at(&path, "whatever"));
         assert!(clear_guard_at(&path, None).is_ok());
 
-        // 首次设置无需当前密码；短密码拒收。
+        // First-time setup needs no current password; short passwords are rejected.
         assert!(set_guard_at(&path, None, "abc").is_err());
         set_guard_at(&path, None, "secret1").unwrap();
         assert!(load_from(&path).is_some());
@@ -240,7 +240,7 @@ mod tests {
         assert!(!verify_quit_at(&path, "wrong"));
         assert!(verify_quit_at(&path, "secret1"));
 
-        // 已设后：改/清都必须带对当前密码。
+        // Once set: changing/clearing both require the correct current password.
         assert!(set_guard_at(&path, None, "secret2").is_err());
         assert!(set_guard_at(&path, Some("bad"), "secret2").is_err());
         set_guard_at(&path, Some("secret1"), "secret2").unwrap();
@@ -264,7 +264,7 @@ mod tests {
             verify_quit_at(&path, "anything"),
             "corrupt record must allow quit"
         );
-        // 结构合法但字段长度不对：同样放行。
+        // Structurally valid but wrong field lengths: also allowed through.
         std::fs::write(&path, r#"{"version":1,"salt_hex":"aabb","hash_hex":"cc"}"#).unwrap();
         assert!(verify_quit_at(&path, "anything"));
         let _ = std::fs::remove_dir_all(&state);

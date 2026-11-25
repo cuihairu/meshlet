@@ -1,8 +1,8 @@
 //! Tauri IPC handlers for local state, settings, peers, diagnostics, and navigation.
 
 use crate::config_io::{meshlet_config_path, rebuild_config};
-// 仅 windows 分支用到（open_log_dir 的 explorer 调用）；非 windows 编译期
-// 摘除，避免 unused import 破坏 linux 目标 -D warnings。
+// Used only by the windows branch (open_log_dir's explorer call); compiled out on non-windows
+// so the unused import cannot break -D warnings on the linux target.
 #[cfg(windows)]
 use crate::config_io::meshlet_state_dir;
 use crate::state::goto_zone_js;
@@ -17,7 +17,7 @@ pub(crate) fn get_status() -> serde_json::Value {
 pub(crate) fn get_config() -> serde_json::Value {
     let config_path = meshlet_config_path();
     let text = std::fs::read_to_string(config_path).unwrap_or_default();
-    // 简单解析 TOML 为 JSON（避免额外依赖）
+    // Parse TOML into JSON naively (avoids an extra dependency)
     let mut result = serde_json::Map::new();
     for line in text.lines() {
         let line = line.trim();
@@ -48,15 +48,15 @@ pub(crate) fn save_config(
 
 #[tauri::command]
 pub(crate) async fn get_peers() -> Vec<serde_json::Value> {
-    // wg 子进程同步执行曾把主线程堵死（设置窗卡死，2026-11-20 imac 实报）；
-    // 移到阻塞线程池，主线程只 await。
+    // A synchronous wg subprocess once blocked the main thread (frozen settings window, 2026-11-20
+    // imac report); moved to the blocking thread pool so the main thread only awaits.
     tauri::async_runtime::spawn_blocking(crate::state::get_peers)
         .await
         .unwrap_or_default()
 }
 
-/// 直连节点表（`<state_dir>/direct-peers.json`，agent 对账循环维护）。
-/// 设置窗「直连」tab 数据源：name/virtual_ipv4/endpoint/rtt_ms/last_handshake_at。
+/// Direct-peer table (`<state_dir>/direct-peers.json`, maintained by the agent's reconciliation loop).
+/// Data source for the settings window's Direct tab: name/virtual_ipv4/endpoint/rtt_ms/last_handshake_at.
 #[tauri::command]
 pub(crate) fn get_direct_peers() -> Vec<serde_json::Value> {
     let path =
@@ -75,7 +75,7 @@ pub(crate) fn get_commands() -> Vec<meshlet_commands::CommandSpec> {
 
 #[tauri::command]
 pub(crate) async fn get_diag() -> Result<meshlet_network::NetworkDiagnostics, String> {
-    // 诊断是同步全系统探测（同卡死风险类别），与 get_peers 同样移出主线程。
+    // Diagnostics is a synchronous whole-system probe (same freeze-risk class) and is moved off the main thread like get_peers.
     tauri::async_runtime::spawn_blocking(|| {
         meshlet_network::SystemBackend::new()
             .diagnostics_sync()
@@ -94,7 +94,7 @@ fn set_autostart_impl(enabled: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW：reg.exe 是 console 工具，GUI 进程直接 spawn 会闪窗。
+        // CREATE_NO_WINDOW: reg.exe is a console tool; spawning it from a GUI process flashes a window.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -123,7 +123,7 @@ fn set_autostart_impl(enabled: bool) -> Result<(), String> {
                 .args(["delete", key, "/v", "meshlet", "/f"])
                 .creation_flags(CREATE_NO_WINDOW);
             let output = command.output().map_err(|error| error.to_string())?;
-            // 删除不存在的值：reg 报 "unable to find"，按幂等成功处理。
+            // Deleting a nonexistent value makes reg report "unable to find"; treat that as idempotent success.
             if !output.status.success()
                 && !String::from_utf8_lossy(&output.stderr).contains("unable to find")
             {
@@ -143,8 +143,8 @@ fn set_autostart_impl(enabled: bool) -> Result<(), String> {
 pub(crate) fn open_log_dir() -> Result<(), String> {
     #[cfg(windows)]
     {
-        // 日志目录直指 `<state_dir>/logs`（agent 每日滚动写这里，fc8c3af）；
-        // 不存在则建，避免 explorer 打开 state 根只见一堆数据文件。
+        // The log dir points straight at `<state_dir>/logs` (where the agent rolls daily logs, fc8c3af);
+        // create it if missing so explorer doesn't open onto the state root's raw data files.
         let log_dir = std::path::Path::new(&meshlet_state_dir()).join("logs");
         std::fs::create_dir_all(&log_dir)
             .map_err(|error| format!("create log dir {}: {error}", log_dir.display()))?;
@@ -197,14 +197,14 @@ pub(crate) fn set_tray_lang(app: tauri::AppHandle, lang: String) -> Result<(), S
     Ok(())
 }
 
-// ── 退出密码（tray 侧独立文件，不进 agent.toml）───────────────────────
+// ── Quit password (tray-side standalone file, not in agent.toml) ───────────────────────
 
 #[tauri::command]
 pub(crate) fn exit_guard_status() -> bool {
     crate::exit_guard::guard_is_set()
 }
 
-/// 已设密码时 `current` 必须匹配才能改；首次设置传 None。
+/// When a password is already set, `current` must match before it can change; pass None on first-time setup.
 #[tauri::command]
 pub(crate) fn set_exit_guard(current: Option<String>, new: String) -> Result<(), String> {
     crate::exit_guard::set_guard(current.as_deref(), &new)
@@ -215,8 +215,8 @@ pub(crate) fn clear_exit_guard(current: Option<String>) -> Result<(), String> {
     crate::exit_guard::clear_guard(current.as_deref())
 }
 
-/// 退出小窗的验证入口：匹配即整体退出（`app.exit` 走正常退出事件）；
-/// 不匹配返回 Err 由页面显示重试。
+/// Verification entry for the exit mini window: a match exits the whole app (`app.exit` goes through
+/// the normal quit events); a mismatch returns Err for the page to show a retry.
 #[tauri::command]
 pub(crate) fn verify_exit_guard(app: tauri::AppHandle, password: String) -> Result<(), String> {
     if crate::exit_guard::verify_quit(&password) {

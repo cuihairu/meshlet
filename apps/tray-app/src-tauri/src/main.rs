@@ -12,10 +12,10 @@ use tauri::{tray::TrayIconBuilder, Manager};
 
 fn main() {
     tauri::Builder::default()
-        // 单实例防护必须最先注册（官方要求，deep-link 场景对注册顺序敏感）：
-        // 第二实例启动即回调本进程携带 argv 后自行退出——这里唤起既有设置
-        // 面板，而不是再开一套托盘+窗口，避免双图标状态互相覆盖、菜单操作
-        // 打到随机实例上。
+        // Single-instance protection must be registered first (official requirement; deep-link
+        // scenarios are order-sensitive): a second instance calls back into this process with its
+        // argv and then exits — so surface the existing settings panel instead of another
+        // tray+window, avoiding dueling icons and menu clicks landing on a random instance.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             second_instance_focus(app);
         }))
@@ -38,11 +38,11 @@ fn main() {
             commands::verify_exit_guard
         ])
         .setup(|app| {
-            // 托盘菜单（分组重设计）：状态摘要(disabled) │ 状态面板 │
-            // 诊断/路由表/对等节点 │ 打开设置+日志子菜单 │ 退出
+            // Tray menu (regrouped): status summary (disabled) │ Status panel │
+            // Diagnostics/Route table/Peers │ Settings+Logs submenu │ Quit
             let menu = tray::build_tray_menu(app.handle())?;
 
-            // 托管摘要行句柄：轮询线程每 3s set_text 刷新状态/直连计数。
+            // Managed summary-row handle: the polling thread set_texts it every 3s to refresh state/peer counts.
             app.manage(std::sync::Mutex::new(Some(tray::build_summary_item(
                 app.handle(),
             )?)));
@@ -53,9 +53,9 @@ fn main() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    // 退出密码保护（2026-11-20 用户令）：已设密码先弹验证
-                    // 小窗，匹配才退出；未设置（或记录损坏，exit_guard 按未
-                    // 设置处理）直接退，保护绝不锁死常驻进程。
+                    // Quit password guard (user order 2026-11-20): with a password set, pop the
+                    // verification mini window first and quit only on a match; when unset (or the
+                    // record is corrupt, which exit_guard treats as unset) quit directly — the guard never locks the resident process.
                     "quit" => {
                         if crate::exit_guard::guard_is_set() {
                             windows::open_exit_guard_window(app);
@@ -75,11 +75,11 @@ fn main() {
                     }
                     _ => {}
                 })
-                // 左键单击直接切换面板显隐（Windows 主流约定是单击激活，
-                // 双击才弹是缺陷）。Windows 上一次物理双击会依次产生
-                // Click(Left,Up) → DoubleClick(Left) → Click(Left,Up)（双击
-                // 后的抬起），若每个事件都翻转一次面板会闪两次；统一走
-                // tray_activate_debounced 合并成一次翻转。
+                // Left click toggles panel visibility directly (the mainstream Windows convention is
+                // single-click activation; requiring a double-click to pop it is a defect). On Windows a
+                // physical double-click emits Click(Left,Up) → DoubleClick(Left) → Click(Left,Up) (the
+                // release after the double-click), so toggling on every event would flash twice; route
+                // everything through tray_activate_debounced to coalesce into a single toggle.
                 .on_tray_icon_event(|tray, event| match event {
                     tauri::tray::TrayIconEvent::Click {
                         button: tauri::tray::MouseButton::Left,
@@ -103,7 +103,7 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while running meshlet-tray")
         .run(|app_handle, event| {
-            // 拦截窗口关闭请求：隐藏而非退出应用；弹层另在失焦时自动隐藏。
+            // Intercept window close requests: hide instead of quitting the app; the popup auto-hides on focus loss.
             if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
                 match event {
                     tauri::WindowEvent::CloseRequested { api, .. } => {
@@ -114,7 +114,7 @@ fn main() {
                             }
                         }
                     }
-                    // 弹层失焦自动隐藏（点外部即收起，托盘弹层惯例）。
+                    // Popup auto-hides on focus loss (clicking outside collapses it — standard tray popup behavior).
                     tauri::WindowEvent::Focused(false) if label == "popup" => {
                         if let Some(window) = app_handle.get_webview_window("popup") {
                             let _ = window.hide();
@@ -126,23 +126,23 @@ fn main() {
         });
 }
 
-/// 单实例二次启动回调的唤起面：把既有实例的设置面板带到前台。独立成
-/// 泛型函数以便契约测试在 mock runtime 上走与真回调完全相同的调用链
-/// （Wry 的托盘回调与测试的 MockRuntime 句柄都落在这里）。
+/// The surface used by the single-instance second-launch callback: bring the existing
+/// instance's settings panel to the front. A standalone generic function so contract tests run
+/// the same call chain as the real callback on a mock runtime (Wry tray callbacks and the MockRuntime handle both land here).
 fn second_instance_focus<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     windows::open_settings_window(app);
 }
 
-/// 状态轮询：更新 tooltip / 图标 / 菜单摘要行，并把状态推给弹层
-/// （弹层不自带轮询，与主循环共用同一时钟）。
+/// Status polling: updates the tooltip / icon / menu summary row and pushes status to the popup
+/// (the popup has no poller of its own; it shares the main loop's clock).
 fn start_status_polling(app_handle: tauri::AppHandle, tray: tauri::tray::TrayIcon<tauri::Wry>) {
     std::thread::spawn(move || loop {
         let status = commands::get_status();
         let tooltip = status["tooltip"].as_str().unwrap_or("Meshlet");
         let _ = tray.set_tooltip(Some(tooltip));
 
-        // 根据状态换图标（从 exe 同级 Resources 目录加载；首选
-        // 16px 微调变体，缺失时回落 32px 原图）。
+        // Swap the icon per state (loaded from the Resources dir next to the exe; prefer the
+        // hand-tuned 16px variant, falling back to the 32px original when missing).
         let state = status["state"].as_str().unwrap_or("unknown");
         let (icon_preferred, icon_fallback) = state::icon_for_state(state);
         if let Ok(executable) = std::env::current_exe() {
@@ -158,7 +158,7 @@ fn start_status_polling(app_handle: tauri::AppHandle, tray: tauri::tray::TrayIco
             }
         }
 
-        // 菜单首行状态摘要（disabled）每轮刷新：状态档位 + 直连计数。
+        // Refresh the menu's first-row status summary (disabled) every round: state tier + peer count.
         let summary_text = tray::tray_summary_text();
         if let Some(slot) =
             app_handle.try_state::<std::sync::Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>>()
@@ -168,7 +168,7 @@ fn start_status_polling(app_handle: tauri::AppHandle, tray: tauri::tray::TrayIco
             }
         }
 
-        // 弹层可见时推送状态（共用车轮）；隐藏时不打扰。
+        // Push status while the popup is visible (shared poller); leave it alone while hidden.
         if let Some(popup) = app_handle.get_webview_window("popup") {
             if popup.is_visible().unwrap_or(false) {
                 if let Ok(json) = serde_json::to_string(&status) {
@@ -183,18 +183,18 @@ fn start_status_polling(app_handle: tauri::AppHandle, tray: tauri::tray::TrayIco
     });
 }
 
-/// 托盘左键激活的合并窗口。Windows 上一次物理双击会发出 Click → DoubleClick
-/// → Click（双击后的抬起）三个事件；若每个事件都翻转一次面板会重复触发。
-/// 该窗口把属于同一次激活手势的后续事件吞掉，只翻转一次。250ms 覆盖常见
-/// 双击速度，同时让单击保持即时响应（无需延迟确认）。
+/// Coalescing window for tray left-click activation: on Windows one physical double-click emits
+/// Click → DoubleClick → Click (the post-double-click release), so toggling once per event would fire repeatedly.
+/// This window swallows the follow-up events of a single activation gesture, toggling only once;
+/// 250ms covers common double-click speeds while keeping a single click responsive (no delayed confirm).
 const TRAY_ACTIVATE_DEDUP: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// 上次托盘左键激活（翻转面板）的时刻，用于合并 Click/DoubleClick 事件对。
+/// Timestamp of the last tray left-click activation (panel toggle), used to coalesce Click/DoubleClick event pairs.
 static LAST_TRAY_ACTIVATE: std::sync::Mutex<Option<std::time::Instant>> =
     std::sync::Mutex::new(None);
 
-/// 纯判定（可测）：距上次激活已过 `TRAY_ACTIVATE_DEDUP`（或从未激活过）则
-/// 本次应触发；仍在窗口内则吞掉（属于同一次双击的后续事件）。
+/// Pure decision (testable): this activation is due if `TRAY_ACTIVATE_DEDUP` has elapsed since the last one
+/// (or there was never one); still inside the window means swallow it (a follow-up event of the same double-click).
 fn tray_activate_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     match last {
         Some(previous) => now.duration_since(previous) >= TRAY_ACTIVATE_DEDUP,
@@ -202,8 +202,8 @@ fn tray_activate_due(last: Option<std::time::Instant>, now: std::time::Instant) 
     }
 }
 
-/// 记录本次激活并报告是否应翻转面板。合并单/双击：只有窗口外（>= 250ms）
-/// 的事件才会真正触发，窗口内的 Click/DoubleClick 一律吞掉。
+/// Record this activation and report whether the panel should toggle. Single/double-click merging: only events
+/// outside the window (>= 250ms) really fire; Click/DoubleClick events inside it are swallowed.
 fn tray_activate_debounced() -> bool {
     let now = std::time::Instant::now();
     let mut last = LAST_TRAY_ACTIVATE.lock().unwrap();
@@ -256,11 +256,11 @@ mod tests {
         ));
     }
 
-    /// 契约：单实例二次启动回调作用于既有实例的 settings 窗本身——
-    /// 走 reveal（复用）分支而不是再建一扇窗，也不落到其他 label 上。
-    /// MockRuntime 的 is_visible 恒为 true（mock_runtime.rs 硬编码），
-    /// show/focus 腿在 mock 上不可观测，窗口复用关系用唯一性断言钉住；
-    /// 显示效果真机面由全部打开路径共用的 reveal_window 兜底。
+    /// Contract: the single-instance second-launch callback acts on the existing instance's own settings
+    /// window — the reveal (reuse) branch rather than building another window, and never another label.
+    /// MockRuntime's is_visible is always true (hardcoded in mock_runtime.rs), so the show/focus legs are
+    /// unobservable on the mock; the window-reuse relation is pinned by the uniqueness assertion, while the
+    /// real on-device display effect is backstopped by reveal_window, shared by every open path.
     #[test]
     fn second_instance_focus_reuses_existing_settings_window() {
         let app = tauri::test::mock_app();
@@ -277,8 +277,8 @@ mod tests {
         assert!(windows.contains_key("settings"));
     }
 
-    /// 契约（建窗分支）：settings 窗不存在时回调会补建一个（同 label），
-    /// 第二实例唤起的始终是同一个 label 的窗，不会落成孤儿窗口。
+    /// Contract (window-creation branch): when no settings window exists the callback builds one (same label),
+    /// so a second instance always surfaces that one label's window and never leaves an orphan window behind.
     #[test]
     fn second_instance_focus_builds_settings_window_when_missing() {
         let app = tauri::test::mock_app();

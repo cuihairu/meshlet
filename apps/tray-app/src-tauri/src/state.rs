@@ -1,13 +1,13 @@
-//! agent 状态分档、深链定位与 WireGuard 对等节点读取。
+//! Agent state tiering, deep-link navigation, and WireGuard peer reading.
 
 use crate::config_io::meshlet_state_dir;
 
-// ── 状态分档（纯函数，可测）────────────────────────────────────────────
-/// 四档状态分类：agent 写入 status.json 的一切 `state` 字符串统一归档。
-/// 真实生产者值是 `accessible_name()` 全称句（见 `state_tier` 注释）；
-/// 与 `apps/agent/src/tray.rs` 的 [`TrayState`] 四态对位：tunnel only/drift →
-/// 降级（隧道通、控制通道断）；error/failed → 异常；offline/未知 → 离线。
-/// `degraded` 后端暂不产出，此处先行对位（agent 后续补分档即自动生效）。
+// ── State tiering (pure functions, testable) ────────────────────────────────────────────
+/// Four-tier state classification: buckets every `state` string the agent writes to status.json.
+/// Real producer values are `accessible_name()` full sentences (see the `state_tier` comment);
+/// maps onto the four [`TrayState`] states in `apps/agent/src/tray.rs`: tunnel only/drift →
+/// Degraded (tunnel up, control channel down); error/failed → Error; offline/unknown → Offline.
+/// `degraded` isn't produced by the backend yet — mapped here ahead of time (takes effect once the agent adds it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tier {
     Online,
@@ -17,14 +17,14 @@ pub(crate) enum Tier {
 }
 
 pub(crate) fn state_tier(state: &str) -> Tier {
-    // 真实生产者是 agent 写出的 `accessible_name()`（apps/agent/src/tray.rs:106）
-    // 全称句："Meshlet online" / "Meshlet tunnel only" / "Meshlet tunnel drift" /
-    // "Meshlet offline"。故按**小写化后的子串**匹配（不区分大小写），而不是
-    // snake_case 精确等值——后者对真实输入恒 miss，四档恒落 Offline。
-    // 判定顺序固定：先降级（tunnel only/drift/degraded），再异常（error/
-    // failed），再在线（online；"offline" 不含 "online" 子串，天然互斥），
-    // 其余一律 Offline。snake_case（online/tunnel_only/degraded/error…）
-    // 继续兼容，防 agent 侧未来增写字段。
+    // The real producer is the agent's `accessible_name()` (apps/agent/src/tray.rs:106)
+    // full sentence: "Meshlet online" / "Meshlet tunnel only" / "Meshlet tunnel drift" /
+    // "Meshlet offline". Hence match **lowercased substrings** (case-insensitive) instead of
+    // exact snake_case equality — the latter always misses real input and lands on Offline for all four tiers.
+    // Fixed check order: Degraded first (tunnel only/drift/degraded), then Error (error/
+    // failed), then Online ("offline" lacks the "online" substring, so they are naturally
+    // exclusive); everything else is Offline. snake_case (online/tunnel_only/degraded/error…)
+    // stays supported in case the agent adds those fields later.
     let state = state.to_lowercase();
     if state.contains("tunnel only")
         || state.contains("tunnel_only")
@@ -37,7 +37,7 @@ pub(crate) fn state_tier(state: &str) -> Tier {
     if state.contains("error") || state.contains("failed") {
         return Tier::Error;
     }
-    // "up"/"ok" 等短词只做全等匹配：子串匹配会误吞 "setup"/"lookup" 类值。
+    // Short words like "up"/"ok" use equality only: substring matching would swallow values such as "setup"/"lookup".
     if state.contains("online")
         || state == "connected"
         || state == "ready"
@@ -49,9 +49,9 @@ pub(crate) fn state_tier(state: &str) -> Tier {
     Tier::Offline
 }
 
-/// 状态 → 托盘图标文件名。16px 变体手工像素级微调过（内孔不被抗锯齿残渣
-/// 填塞，见 `icons/gen_icons.py`），Windows 托盘 100% DPI 原生 16px 直接
-/// 1:1 渲染；32px 为兜底（高 DPI 或 16px 文件缺失时）。
+/// State → tray icon file name. The 16px variants were hand-tuned pixel by pixel (inner hole not
+/// clogged by antialiasing residue, see `icons/gen_icons.py`) and render 1:1 at the Windows tray's
+/// native 16px @100% DPI; the 32px files are the fallback (high DPI or missing 16px files).
 pub(crate) fn icon_for_state(state: &str) -> (&'static str, &'static str) {
     match state_tier(state) {
         Tier::Online => ("icon-online-16.png", "icon-online.png"),
@@ -61,14 +61,14 @@ pub(crate) fn icon_for_state(state: &str) -> (&'static str, &'static str) {
     }
 }
 
-// ── 设置窗定位（深链，纯函数可测）──────────────────────────────────────
-/// `__gotoZone` 接受的定位目标白名单：4 个 Tab + 诊断区锚点 + 连接区 Peers。
+// ── Settings window navigation (deep links, pure testable functions) ───────────────────────────────
+/// Whitelist of navigation targets accepted by `__gotoZone`: 4 tabs + the diagnostics anchor + the connection tab's Peers.
 const GOTO_ZONES: &[&str] = &[
     "conn", "diag", "cmd", "gen", "routes", "ifaces", "wg", "peers",
 ];
 
-/// 定位 JS（可测）：带白名单校验，`zone` 来自菜单/弹层调用方，绝不拼接进
-/// 未校验的字符串（防 JS 注入）。
+/// Navigation JS (testable): whitelist-validated; `zone` comes from menu/popup callers and is
+/// never concatenated from unvalidated strings (guards against JS injection).
 pub(crate) fn goto_zone_js(zone: &str) -> Option<String> {
     if !GOTO_ZONES.contains(&zone) {
         return None;
@@ -77,9 +77,9 @@ pub(crate) fn goto_zone_js(zone: &str) -> Option<String> {
     Some(format!("window.__gotoZone && window.__gotoZone({quoted})"))
 }
 
-/// 新建设置窗还在加载时，eval 的定位 JS 会落在 `__gotoZone` 定义之前：
-/// 先把 zone 挂起到这里，设置窗脚本初始化时经 `take_pending_goto` 取走，
-/// 双通道（eval + 启动取件）保证新旧窗口都能定位。
+/// While a freshly built settings window is still loading, the eval'd navigation JS may land
+/// before `__gotoZone` is defined: park the zone here and have the settings script fetch it via
+/// `take_pending_goto` at init — the dual channel (eval + startup pickup) lets both old and new windows navigate.
 static PENDING_GOTO: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub(crate) fn set_pending_goto(zone: &str) {
@@ -99,10 +99,10 @@ pub(crate) fn is_tunnel_interface(name: &str) -> bool {
 }
 
 pub(crate) fn get_status() -> serde_json::Value {
-    // 与 tray-host（apps/tray-host/src/main.rs:40-42）及安装脚本
-    // （scripts/install.ps1 的 state 目录）约定一致：状态写
-    // `%LOCALAPPDATA%/meshlet/state/tray/status.json`。不在前端硬编码用户
-    // 目录，避免用户名写死/换用户失效。
+    // Matches the tray-host (apps/tray-host/src/main.rs:40-42) and installer
+    // (scripts/install.ps1 state dir) conventions: status is written to
+    // `%LOCALAPPDATA%/meshlet/state/tray/status.json`. Never hardcode the user
+    // dir in the frontend — a baked-in username would break when the user changes.
     let path = std::path::Path::new(&meshlet_state_dir())
         .join("tray")
         .join("status.json");
@@ -116,8 +116,8 @@ pub(crate) fn get_peers() -> Vec<serde_json::Value> {
     let wg_path = "C:\\Program Files\\WireGuard\\wg.exe";
     let mut command = std::process::Command::new(wg_path);
     command.args(["show", "all", "dump"]);
-    // CREATE_NO_WINDOW：tray 是 GUI 子系统进程，直接 spawn wg.exe 这个
-    // console 工具会在每次轮询时闪一个终端窗口（2026-11-20 imac 实报）。
+    // CREATE_NO_WINDOW: the tray is a GUI-subsystem process, and spawning the
+    // console tool wg.exe directly would flash a terminal window on every poll (2026-11-20 imac report).
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -134,9 +134,9 @@ pub(crate) fn get_peers() -> Vec<serde_json::Value> {
 
     for line in text.lines() {
         let columns: Vec<&str> = line.split('\t').collect();
-        // peer 行: <iface> <pubkey> <preshared> <endpoint> <allowed> <handshake> <rx> <tx> <keepalive>
-        // 实际隧道名按 install.ps1/README 为 wg-meshlet（后端默认 meshlet）；
-        // 硬编码 "WireGuard" 会把真实隧道读成恒为空，须按实际名匹配。
+        // peer row: <iface> <pubkey> <preshared> <endpoint> <allowed> <handshake> <rx> <tx> <keepalive>
+        // The real tunnel name is wg-meshlet per install.ps1/README (backend default meshlet);
+        // hardcoding "WireGuard" would read the real tunnel as permanently empty — match the actual name.
         if columns.len() >= 9 && is_tunnel_interface(columns[0]) {
             let public_key = columns[1];
             let endpoint = columns[3];
@@ -149,9 +149,9 @@ pub(crate) fn get_peers() -> Vec<serde_json::Value> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            // R-UI-1：把原始 epoch 交给前端 fmtEpoch 统一渲染。原来这里硬编码
-            // “{} 秒前”，超过一天的握手只显示「61028 秒前」——既看不出是哪一天，
-            // 也没法按时间排序。秒数/分钟前等相对格式一律在前端做。
+            // R-UI-1: hand the raw epoch to the frontend fmtEpoch for uniform rendering. This used to hardcode
+            // "{} seconds ago", so a handshake older than a day showed "61028 seconds ago" — telling neither the day nor
+            // allowing a time sort. Seconds/minutes and other relative formats all belong to the frontend.
             let last_seen = handshake;
 
             let short_key: String = public_key.chars().take(16).collect();
