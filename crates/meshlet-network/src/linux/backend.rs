@@ -128,9 +128,9 @@ impl LinuxNetworkBackend {
             .collect())
     }
 
-    /// Peer lines of `wg show <if> dump` -> identity-level readings (public key
-    /// + allowed-ips). Drift is judged on the **identity set**, not on the
-    /// count: an extra peer that should not be there, or a peer whose
+    /// Peer lines of `wg show <if> dump` -> identity-level readings (public
+    /// key and allowed-ips). Drift is judged on the **identity set**, not on
+    /// the count: an extra peer that should not be there, or a peer whose
     /// allowed-ips was widened, just like a missing peer, must be repaired by
     /// a replay.
     pub(super) fn peers_on_interface(&self) -> Result<Vec<PeerObserved>, NetworkError> {

@@ -1,7 +1,8 @@
-//! Endpoint candidate table (FLIP-001 brings the roaming surface under the table): three source
-//! classes - the server-delivered surface (`Config`) + the kernel roaming observed surface (`Roaming`)
-//! + the probe-confirmed reachable surface (`Discovered`) - merged agent-side into an "effective
-//! candidate set" consumed by SEL-001 probing and the direct-connect state machine.
+//! Endpoint candidate table (FLIP-001 brings the roaming surface under the table):
+//! three source classes — the server-delivered surface (`Config`), the kernel roaming
+//! observed surface (`Roaming`), and the probe-confirmed reachable surface
+//! (`Discovered`) — merged agent-side into an "effective candidate set" consumed by
+//! SEL-001 probing and the direct-connect state machine.
 //!
 //! Why: kernel wg roaming is the strongest evidence that "the peer changed networks / a new face is
 //! available" (the kernel roaming to an endpoint the moment it receives a legitimately authenticated

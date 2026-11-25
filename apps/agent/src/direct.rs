@@ -3,14 +3,19 @@
 //! set` kernel calls (via the `meshlet_network` backend). Pure logic
 //! ([plan_updates], [DirectManager] state retention) is separated from IO (fetching
 //! endpoints, `wg set`): the former is unit-testable without privileges, the latter
-//! is executed in [crate::agent::Agent]. Each cycle: - pull the
-//! directly-connectable candidates published by the server (advice, not a promise);
+//! is executed in [crate::agent::Agent]. Each cycle:
+//! - pull the directly-connectable candidates published by the server
+//!   (advice, not a promise);
 //! - per candidate peer: `decide_direct_path` (same LAN / public hole punch /
-//! relay) → `classify_probe` (handshake age) → `on_probe` (state transition) →
-//! actions; - peers no longer in the candidate set (revoked/offline): fall back to
-//! hub and remove; - actions are **local** wg config additions/removals
-//! (allowed-ips only carries the peer `/32`); never touches other nodes nor the
-//! server plan (§12). Restart recovery: direct peers are persisted in the local
+//!   relay) → `classify_probe` (handshake age) → `on_probe` (state
+//!   transition) → actions;
+//! - peers no longer in the candidate set (revoked/offline): fall back to hub
+//!   and remove;
+//! - actions are **local** wg config additions/removals (allowed-ips only
+//!   carries the peer `/32`); never touches other nodes nor the server plan
+//!   (§12).
+//!
+//! Restart recovery: direct peers are persisted in the local
 //! ledger (`{state_dir}/direct.json`, keep set only) — after a restart the ledger
 //! restores them as "established" (Direct); the next cycle converges on handshake
 //! health (stale → fall back, healthy → keep). **Never guess from the kernel**: if
@@ -383,8 +388,10 @@ fn mode_str(state: PeerLinkState) -> &'static str {
 }
 /// State-transition plan for one cycle (pure function, no IO; returns peers sorted by
 /// public key, deterministic). For the replay-augmented version see
-/// [`plan_updates_logged`]. - `wanted`: directly-connectable candidates published by the
-/// server
+/// [`plan_updates_logged`].
+///
+/// Parameters:
+/// - `wanted`: directly-connectable candidates published by the server
 ///   (already filtered to this device's routed range);
 /// - `my_lan_subnets`: local LAN subnets (for same-subnet checks);
 /// - `scope` / `self_vip`: this device's routable range and its own overlay
@@ -393,6 +400,7 @@ fn mode_str(state: PeerLinkState) -> &'static str {
 ///   across cycles);
 /// - `handshake_ages`: seconds since each peer's last handshake (kernel
 ///   readings).
+///
 /// Behavior:
 /// - peers outside the candidate set (revoked/offline/moved segments) → fall
 ///   back and remove;
@@ -406,7 +414,8 @@ fn mode_str(state: PeerLinkState) -> &'static str {
 /// - `suppress_promote`: the FLIP-002 demote-backoff suppression table
 ///   (public key → defer reason string). Suppressed peers **do not start a
 ///   promote** this cycle (stay on relay, keep the memory face) — it only
-/// affects the promote side; degradation checks / demote are untouched. Empty table = no suppression (legacy behavior).
+///   affects the promote side; degradation checks / demote are untouched.
+///   Empty table = no suppression (legacy behavior).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_updates_logged(
     wanted: &[PeerEndpoints],

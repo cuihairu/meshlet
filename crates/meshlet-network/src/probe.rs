@@ -335,9 +335,9 @@ struct SwitchRecord {
     rolled_back: bool,
 }
 
-/// The hysteresis gate (SEL-002): a new path must score better than the current one by
-/// >= `margin` (default 30%) for **`required` consecutive** samples before switching — debounce.
-/// A pure state machine, no IO.
+/// The hysteresis gate (SEL-002): a new path must score better than the current one
+/// by at least `margin` (default 30%) for **`required` consecutive** samples before
+/// switching — debounce. A pure state machine, no IO.
 ///
 /// State records the consecutive-better count per `(peer, candidate)`: a candidate getting worse,
 /// the current path re-taking the lead, or the switch target changing each reset the relevant

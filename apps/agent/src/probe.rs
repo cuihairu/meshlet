@@ -195,7 +195,7 @@ impl ProbeRuntime {
                 continue;
             };
             if is_degraded(
-                &window,
+                window,
                 self.degrade_rtt_ms,
                 self.loss_spike,
                 self.degrade_min_samples,
