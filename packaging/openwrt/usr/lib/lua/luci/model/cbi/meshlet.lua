@@ -13,7 +13,7 @@ function m.on_commit()
 	luci.sys.call("/etc/init.d/meshlet-agent restart >/dev/null 2>&1")
 end
 
--- hub 角色设置（server）。
+-- Hub role settings (server).
 s = m:section(NamedSection, "server", "server", translate("Hub 服务 (meshlet-server)"))
 s.addremove = false
 
@@ -50,7 +50,7 @@ o = s:option(Value, "api_token", translate("API token (LuCI 状态页用)"))
 o.password = true
 o.description = translate("read scope 的 mlt_… token，仅用于状态页查设备在线；页面只显示脱敏前缀")
 
--- 设备接入角色设置（agent：路由自身加入 mesh）。
+-- Device role settings (agent: the router itself joins the mesh).
 a = m:section(NamedSection, "agent", "agent", translate("设备接入 (meshlet-agent)"))
 a.addremove = false
 

@@ -1,5 +1,5 @@
 //! Invite token security ([archive §11.3](../../docs/review/chatgpt-2026-10-13.md),
-//! [ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)）。
+//! [ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)).
 //!
 //! Invariants:
 //! - tokens come from a secure random source (32 bytes → 64 hex characters);

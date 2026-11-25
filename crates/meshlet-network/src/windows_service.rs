@@ -51,7 +51,7 @@ impl ServiceStartMode {
 /// One controlled `sc.exe` command (plan state; execution in [exec]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceCommand {
-    /// `sc create <name> binPath= <path> start= <auto|disabled>`。
+    /// `sc create <name> binPath= <path> start= <auto|disabled>`.
     Create {
         name: String,
         bin_path: String,
@@ -72,7 +72,7 @@ pub enum ServiceCommand {
         name: String,
         start_mode: ServiceStartMode,
     },
-    /// `sc failure <name> reset= <secs> actions= restart/…/restart/…/restart/…`。
+    /// `sc failure <name> reset= <secs> actions= restart/…/restart/…/restart/…`.
     ConfigRecovery {
         name: String,
         reset_secs: u32,

@@ -126,7 +126,7 @@ pub(crate) fn task_request(
 }
 
 /// `meshlet task assign --network <id> --node <device-id> --cmd <cmd>`
-/// [--workdir <dir>] [--timeout <secs>] [--id <id>]。
+/// [--workdir <dir>] [--timeout <secs>] [--id <id>]
 pub(crate) fn cmd_task_assign(args: &[String]) {
     let (flags, _positional) = parse_flags(args);
     let server = task_server(&flags);
@@ -170,7 +170,7 @@ pub(crate) fn cmd_task_assign(args: &[String]) {
     }
 }
 
-/// `meshlet task ls --network <id>`。
+/// `meshlet task ls --network <id>`.
 pub(crate) fn cmd_task_ls(args: &[String]) {
     let (flags, _positional) = parse_flags(args);
     let server = task_server(&flags);

@@ -5,7 +5,7 @@
 //! [§11.3](../../docs/review/chatgpt-2026-10-13.md). For design decisions, see
 //! [ADR-004](../../docs/decisions/adr-004-overlay-ipam.md) /
 //! [ADR-006](../../docs/decisions/adr-006-alias-prefix-nat.md) /
-//! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)。
+//! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md).
 
 pub mod auth;
 pub mod cidr;
