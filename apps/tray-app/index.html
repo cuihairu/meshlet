@@ -14,7 +14,7 @@
       font-size: 14px;
     }
     h1 { font-size: 17px; margin-bottom: 14px; color: #4e8fa6; }
-    /* ── 四分区 Tab ── */
+    /* ── Four-zone tabs ── */
     .tabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid #2a2a4a; }
     .tab {
       padding: 8px 18px;
@@ -43,8 +43,8 @@
     }
     .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #80868c; }
     .status-dot.online { background: #22c55e; }
-    /* 四档状态点（与托盘/弹层同语义）：disconnected/down→灰、
-       error/failed→红、tunnel_only→铜（品牌琥珀 #C97B2E） */
+    /* Four-tier status dot (same semantics as tray/popup): disconnected/down→gray,
+       error/failed→red, tunnel_only→copper (brand amber #C97B2E) */
     .status-dot.degraded { background: #c97b2e; }
     .status-dot.error { background: #ef4444; }
     .status-dot.offline { background: #80868c; }
@@ -92,7 +92,7 @@
     .peer-detail { color: #80868c; font-size: 12px; }
     .muted { color: #80868c; font-size: 13px; }
 
-    /* 诊断区 */
+    /* Diagnostics zone */
     .diag-pre {
       background: #16213e;
       border: 1px solid #2a2a4a;
@@ -115,7 +115,7 @@
     table.diag th { color: #80868c; font-weight: 500; }
     table.diag td.mono { font-family: Consolas, monospace; }
 
-    /* 命令区 */
+    /* Commands zone */
     .cmd-group { margin-bottom: 14px; }
     .cmd-row {
       display: flex;
@@ -129,7 +129,7 @@
     .cmd-name { font-family: Consolas, monospace; color: #4e8fa6; white-space: nowrap; }
     .cmd-summary { color: #80868c; font-size: 12.5px; flex: 1; }
 
-    /* 常规区 */
+    /* General zone */
     .gen-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
     .gen-row label { min-width: 130px; color: #e0e0e0; }
     .gen-row select {
@@ -174,7 +174,7 @@
     <button class="tab" data-zone="gen" id="tabGen"></button>
   </div>
 
-  <!-- ① 连接：hub 地址 / 隧道状态 / 本机 overlay IP / 直连 peers -->
+  <!-- ① Connection: hub URL / tunnel state / local overlay IP / direct peers -->
   <section class="zone active" id="zone-conn">
     <div class="status-bar">
       <div class="status-dot" id="statusDot"></div>
@@ -208,13 +208,13 @@
     <div id="peers" class="muted">Loading...</div>
   </section>
 
-  <!-- ⑤ 直连：直连对端表（get_direct_peers → `<state>/direct-peers.json`） -->
+  <!-- ⑤ Direct: direct-peer table (get_direct_peers → `<state>/direct-peers.json`) -->
   <section class="zone" id="zone-direct">
     <h2 id="lblDirectTitle">Direct peers</h2>
     <div id="directBody" class="muted">Loading...</div>
   </section>
 
-  <!-- ② 诊断：路由表 / 接口清单 / wg 读数（联动 R-DIAG） -->
+  <!-- ② Diagnostics: route table / interface list / wg readings (tied to R-DIAG) -->
   <section class="zone" id="zone-diag">
     <div class="muted" id="diagState">Loading...</div>
     <div id="diagBody" style="display:none;">
@@ -233,12 +233,12 @@
     </div>
   </section>
 
-  <!-- ③ 命令：CLI 全部子命令（目录单一事实源，联动 R-TRAY-1） -->
+  <!-- ③ Commands: all CLI subcommands (catalog is the single source of truth, tied to R-TRAY-1) -->
   <section class="zone" id="zone-cmd">
     <div id="cmdList"></div>
   </section>
 
-  <!-- ④ 常规：开机自启 / 动效 / 语言 / 日志目录 -->
+  <!-- ④ General: autostart / animation / language / log directory -->
   <section class="zone" id="zone-gen">
     <div class="gen-row">
       <label for="autostart" id="lblAutostart">Start with Windows</label>
@@ -282,7 +282,7 @@
   <script type="module">
     const invoke = window.__TAURI_INTERNALS__?.invoke;
 
-    // i18n（语言优先级：localStorage > navigator.language）
+    // i18n (language precedence: localStorage > navigator.language)
     const i18n = {
       en: {
         title: 'Meshlet Settings',
@@ -409,7 +409,7 @@
     document.getElementById('langSel').value = lang;
     applyAnim(localStorage.getItem('meshlet-anim') !== 'off');
 
-    // Tab 切换
+    // Tab switching
     function activateTab(zone) {
       document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.zone').forEach(z => z.classList.remove('active'));
@@ -417,16 +417,16 @@
       if (btn) btn.classList.add('active');
       const zoneEl = document.getElementById('zone-' + zone);
       if (zoneEl) zoneEl.classList.add('active');
-      // 直连表按需刷新（agent 对账循环才重发 direct-peers.json）。
+      // Refresh the direct-peer table on demand (only the agent reconcile loop rewrites direct-peers.json).
       if (zone === 'direct') loadDirectPeers();
     }
     for (const btn of document.querySelectorAll('.tab')) {
       btn.addEventListener('click', () => activateTab(btn.dataset.zone));
     }
 
-    // 深链定位：托盘菜单「诊断/路由表/对等节点」与状态弹层快捷入口经
-    // Rust eval 调到这里（zone 由 main.rs GOTO_ZONES 白名单校验）。
-    // 锚点先切 Tab 再滚动到对应小节。
+    // Deep-link navigation: tray menu "Diagnostics/Routes/Peers" entries and the status popup
+    // shortcuts land here via Rust eval (zone allow-listed by main.rs GOTO_ZONES).
+    // Anchors switch the tab first, then scroll to the matching section.
     const ZONE_ANCHORS = {
       routes: ['diag', 'lblRoutes'],
       ifaces: ['diag', 'lblIfaces'],
@@ -468,21 +468,21 @@
       setTimeout(() => { el.style.display = 'none'; }, 3000);
     }
 
-    // ── 连接区数据 ─────────────────────────────────────────────
-    let lastDiag = null; // 诊断快照缓存：连接区本机 IP / 隧道状态复用
+    // ── Connection zone data ─────────────────────────────────────────────
+    let lastDiag = null; // Diag snapshot cache: connection zone reuses it for local IP / tunnel state
 
     async function load() {
-      if (!invoke) return; // IPC 不可用：保留提示，不覆盖。
+      if (!invoke) return; // IPC unavailable: keep the placeholder, do not overwrite.
       try {
         const status = await invoke('get_status');
         const text = document.getElementById('statusText');
         text.textContent = status.tooltip || status.state || t.statusUnknown;
         const s = (status.state || '').toLowerCase();
-        // 四档状态点，与托盘图标/状态弹层同语义（main.rs state_tier）：
-        // 真实生产者是 agent accessible_name() 全称句（"Meshlet online" /
-        // "Meshlet tunnel only" / "Meshlet tunnel drift" / "Meshlet offline"），
-        // 小写化后按子串匹配；顺序：降级 → 异常 → 在线，其余灰色离线。
-        // snake_case（online/tunnel_only/error…）继续兼容防回归。
+        // Four-tier status dot, same semantics as the tray icon / status popup (main.rs state_tier):
+        // the real producer is the agent's accessible_name() full sentence ("Meshlet online" /
+        // "Meshlet tunnel only" / "Meshlet tunnel drift" / "Meshlet offline"),
+        // lowercased and matched by substring; order: degraded → error → online, rest gray/offline.
+        // snake_case (online/tunnel_only/error…) still tolerated to guard against regression.
         const dot = document.getElementById('statusDot');
         if (s.includes('tunnel only') || s.includes('tunnel_only') ||
             s.includes('tunnel drift') || s.includes('tunnel_drift') ||
@@ -511,7 +511,7 @@
     }
 
     async function save() {
-      if (!invoke) return; // IPC 不可用：不执行保存。
+      if (!invoke) return; // IPC unavailable: skip the save.
       try {
         await invoke('save_config', {
           serverUrl: document.getElementById('serverUrl').value,
@@ -534,9 +534,9 @@
           el.innerHTML = `<div class="muted">${t.noPeers}</div>`;
           return;
         }
-        // 对齐 get_peers 实际字段：last_handshake（epoch 秒）/ connected / rx_bytes / tx_bytes。
-        // R-UI-1：按最近握手倒序（最新在上）；原来直接按后端 JSON 顺序渲染，
-        // 列表随设备字典序漂，新握手的老设备不会浮上来。
+        // Mirrors the real get_peers fields: last_handshake (epoch seconds) / connected / rx_bytes / tx_bytes.
+        // R-UI-1: sort by most recent handshake, descending (newest on top); it used to render in raw
+        // backend JSON order, so the list drifted with device-name order and re-handshaked old devices never surfaced.
         el.innerHTML = [...peers]
           .sort((a, b) => (b.last_handshake || 0) - (a.last_handshake || 0))
           .map(p => `
@@ -554,7 +554,7 @@
       }
     }
 
-    // ── 直连对端区（get_direct_peers → `<state>/direct-peers.json`）───────
+    // ── Direct-peer zone (get_direct_peers → `<state>/direct-peers.json`)───────
     function escapeHtml(s) {
       return String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -572,8 +572,8 @@
       if (secs < 60) return lang === 'zh' ? `${secs} 秒前` : `${secs}s ago`;
       if (secs < 3600) { const m = Math.floor(secs / 60); return lang === 'zh' ? `${m} 分钟前` : `${m}m ago`; }
       if (secs < 86400) { const h = Math.floor(secs / 3600); return lang === 'zh' ? `${h} 小时前` : `${h}h ago`; }
-      // R-UI-1：超过一天的不再只显示「N 天前」——用户看不出是哪一天。
-      // 改为绝对日期，秒/分/小时仍用相对值（当天事件用相对值最直观）。
+      // R-UI-1: past one day, stop showing only "Nd ago" — the user cannot tell which day.
+      // Switch to an absolute date; seconds/minutes/hours stay relative (clearest for same-day events).
       const d = Math.floor(secs / 86400);
       return fmtAbs(epoch, lang === 'zh' ? `${d} 天前` : `${d}d ago`);
     }
@@ -593,8 +593,8 @@
           el.innerHTML = `<div class="muted">${t.noDirect}</div>`;
           return;
         }
-        // 字段对齐 DirectPeerView：name/virtual_ipv4/public_key/endpoint/mode/
-        // rtt_ms/rtt_source/last_handshake_at（epoch 秒）。RTT 未知显示 —。
+        // Fields mirror DirectPeerView: name/virtual_ipv4/public_key/endpoint/mode/
+        // rtt_ms/rtt_source/last_handshake_at (epoch seconds). Unknown RTT renders as —.
         el.innerHTML = `
           <table class="diag">
             <thead><tr>
@@ -626,7 +626,7 @@
       }
     }
 
-    // ── 诊断区（联动 R-DIAG 三快照）────────────────────────────
+    // ── Diagnostics zone (tied to the R-DIAG three snapshots)────────────────────────────
     async function loadDiag() {
       if (!invoke) return;
       document.getElementById('diagState').textContent = t.diagLoading;
@@ -664,13 +664,13 @@
         renderConnFromDiag(diag);
       } catch (e) {
         document.getElementById('diagState').textContent = t.diagFailed + e;
-        // 连接区字段如实显示取不到，不臆测。
+        // Connection-zone fields shown as-is when unreadable; never guess.
         document.getElementById('tunnelState').textContent = '—';
         document.getElementById('overlayIp').textContent = '—';
       }
     }
 
-    /// 连接区的隧道状态 / 本机 overlay IP 复用诊断快照（同源不重复采集）。
+    /// Connection-zone tunnel state / local overlay IP reuse the diag snapshot (same source, no duplicate collection).
     function renderConnFromDiag(diag) {
       const wgIf = diag.interfaces.find(i => /meshlet|wg/i.test(i.name) && i.ipv4);
       document.getElementById('overlayIp').textContent =
@@ -681,7 +681,7 @@
              : (lang === 'zh' ? 'down（无接口）' : 'down (no interface)');
     }
 
-    // ── 命令区（目录单一事实源，新增命令自动出现）──────────────
+    // ── Commands zone (catalog is the single source of truth; new commands appear automatically)──────────────
     async function loadCommands() {
       if (!invoke) return;
       const el = document.getElementById('cmdList');
@@ -720,7 +720,7 @@
       });
     }
 
-    // ── 常规区 ─────────────────────────────────────────────────
+    // ── General zone ─────────────────────────────────────────────────
     async function onAutostart(enabled) {
       if (!invoke) return;
       try {
@@ -744,8 +744,8 @@
 
     function onLang(value) {
       localStorage.setItem('meshlet-lang', value);
-      // 托盘菜单文案跟随：托盘侧取不到 localStorage（i18n 真实存储），
-      // 经命令写镜像文件并即时重建菜单；失败不阻塞语言切换。
+      // Tray menu labels follow: the tray cannot read localStorage (the real i18n store),
+      // so it goes through a command that writes a mirror file and rebuilds the menu immediately; failure does not block the language switch.
       if (invoke) {
         invoke('set_tray_lang', { lang: value }).catch(() => {});
       }
@@ -761,7 +761,7 @@
       }
     }
 
-    // ── 退出密码（常规区；tray 侧独立文件，不进 agent.toml）────
+    // ── Exit password (General zone; tray-side separate file, not in agent.toml)────
     let guardIsSet = false;
     async function refreshGuardStatus() {
       if (!invoke) return;
@@ -810,8 +810,8 @@
     document.getElementById('btnGuardSet').addEventListener('click', guardSet);
     document.getElementById('btnGuardClear').addEventListener('click', guardClear);
 
-    // module 作用域的函数声明不进全局（popup.html 同款坑已在此修）：onclick/
-    // onchange 内联属性在全局作用域解析标识符，漏挂 window 的按钮点了没反应。
+    // Module-scoped function declarations are not global (same popup.html pitfall, fixed here): onclick/
+    // onchange inline attributes resolve identifiers in global scope, so buttons missing a window binding do nothing when clicked.
     window.save = save;
     window.onAutostart = onAutostart;
     window.onAnim = onAnim;
@@ -826,8 +826,8 @@
     loadCommands();
     refreshGuardStatus();
 
-    // 启动取件（双通道第二条）：新建窗口还在加载时，Rust eval 的定位 JS
-    // 会落在 __gotoZone 定义之前——挂起的 zone 在脚本初始化末尾取走并应用。
+    // Startup pickup (second of the dual channels): while a fresh window is still loading, the Rust-eval'd navigation JS
+    // can land before __gotoZone is defined — the pending zone is picked up and applied at the end of script init.
     if (invoke) {
       invoke('take_pending_goto').then(z => { if (z) window.__gotoZone(z); }).catch(() => {});
     }

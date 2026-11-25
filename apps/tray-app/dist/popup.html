@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Meshlet</title>
   <style>
-    /* 令牌与设置窗（index.html）一致：底 #16213e/#1a1a2e/#2a2a4a、
-       文字 #80868c/#e0e0e0、强调 #4e8fa6；四档状态色与托盘图标同源
-       （icon-online #326072 / degraded #c97b2e / error #ef4444 / offline #676d72）。 */
+    /* Tokens match the settings window (index.html): bases #16213e/#1a1a2e/#2a2a4a,
+       text #80868c/#e0e0e0, accent #4e8fa6; the four status colors share the tray icon source
+       (icon-online #326072 / degraded #c97b2e / error #ef4444 / offline #676d72). */
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { border-radius: 10px; overflow: hidden; }
     body {
@@ -17,7 +17,7 @@
       font-size: 13px;
       border: 1px solid #2a2a4a;
     }
-    /* ── 头部：四档状态色带 + 状态短名 + 最后更新 ── */
+    /* ── Header: four-tier status color band + short status name + last update ── */
     .hd { border-top: 4px solid #676d72; padding: 12px 14px 10px; background: #16213e; }
     .hd.online { border-top-color: #326072; }
     .hd.degraded { border-top-color: #c97b2e; }
@@ -98,8 +98,8 @@
   <script type="module">
     const invoke = window.__TAURI_INTERNALS__?.invoke;
 
-    // i18n：与设置窗同一 localStorage 键（meshlet-lang），同源窗口共享存储；
-    // 缺省跟随 navigator.language。
+    // i18n: same localStorage key as the settings window (meshlet-lang), shared across same-origin windows;
+    // falls back to navigator.language by default.
     const i18n = {
       en: {
         secsAgo: s => `${s}s ago`, minsAgo: m => `${m}min ago`, never: 'never',
@@ -131,7 +131,7 @@
     const t = i18n[lang];
     document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
 
-    // 静态文案
+    // Static labels
     document.getElementById('secConn').textContent = t.secConn;
     document.getElementById('secPeers').textContent = t.secPeers;
     document.getElementById('secLinks').textContent = t.secLinks;
@@ -146,7 +146,7 @@
         ['cWg','wg'],['cPeers','peers']]) {
       document.getElementById(id).textContent = t[key];
     }
-    // 英文副标签（.ce）恒为英文，与主标签构成中英并列
+    // English sub-labels (.ce) stay English, forming a zh/en pair with the primary label
     for (const [id, key] of [['ceDiag','diag'],['ceRoutes','routes'],['ceIfaces','ifaces'],
         ['ceWg','wg'],['cePeers','peers']]) {
       document.getElementById(id).textContent = i18n.en[key];
@@ -154,10 +154,10 @@
     document.getElementById('btnSettings').textContent = t.settings;
     document.getElementById('btnLogs').textContent = t.logs;
 
-    // ── 状态分档（口径与 main.rs state_tier 完全一致）──────────────────
-    // 真实生产者是 agent accessible_name() 全称句（"Meshlet online" 等），
-    // 小写化后按子串匹配；判定顺序固定：降级 → 异常 → 在线 → 离线。
-    // snake_case（online/tunnel_only/error…）继续兼容防回归。
+    // ── Status tiers (criteria exactly match main.rs state_tier)──────────────────
+    // The real producer is the agent's accessible_name() full sentence ("Meshlet online" etc.),
+    // lowercased and matched by substring; fixed tier order: degraded → error → online → offline.
+    // snake_case (online/tunnel_only/error…) still tolerated to guard against regression.
     function tierOf(state) {
       const s = String(state || '').toLowerCase();
       if (s.includes('tunnel only') || s.includes('tunnel_only') ||
@@ -176,7 +176,7 @@
       return (n / 1073741824).toFixed(2) + ' GB';
     }
 
-    // status.updated_at（RFC3339，agent 写出）→ 相对时间
+    // status.updated_at (RFC3339, written by the agent) → relative time
     function fmtUpdated(rfc3339) {
       if (!rfc3339) return '—';
       const secs = Math.max(0, Math.round((Date.now() - new Date(rfc3339).getTime()) / 1000));
@@ -194,8 +194,8 @@
       document.getElementById('upd').textContent = fmtUpdated(status.updated_at);
     }
 
-    // 隧道状态 / Overlay IP：与设置窗 renderConnFromDiag 同口径
-    //（get_diag interfaces 实测字段 name/ipv4/prefix/state），不臆测字段。
+    // Tunnel state / Overlay IP: same criteria as the settings window's renderConnFromDiag
+    // (get_diag interfaces' real fields name/ipv4/prefix/state); never guess fields.
     function renderDiag(diag) {
       const wgIf = (diag.interfaces || []).find(i => /meshlet|wg/i.test(i.name) && i.ipv4);
       document.getElementById('vOverlayIp').textContent =
@@ -204,7 +204,7 @@
       document.getElementById('vTunnel').textContent = wgUp ? t.tunnelUp : t.tunnelDown;
     }
 
-    // 对等节点：get_peers 实测字段 connected/last_handshake/rx_bytes/tx_bytes
+    // Peers: get_peers' real fields connected/last_handshake/rx_bytes/tx_bytes
     function renderPeers(peers) {
       const total = peers.length;
       const online = peers.filter(p => p.connected).length;
@@ -219,8 +219,8 @@
       const rx = peers.reduce((a, p) => a + (p.rx_bytes || 0), 0);
       const tx = peers.reduce((a, p) => a + (p.tx_bytes || 0), 0);
       document.getElementById('vTraffic').textContent = `↓${fmtBytes(rx)} ↑${fmtBytes(tx)}`;
-      // 最近一次握手：peer 的 last_handshake 是「N 秒前」字符串（main.rs 生成），
-      // 取数值最小（最新）的一个；解析不出就如实显示第一条。
+      // Most recent handshake: a peer's last_handshake is an "N seconds ago" string (generated in main.rs),
+      // so take the numerically smallest (newest) one; if unparsable, honestly show the first entry.
       let best = null;
       for (const p of peers) {
         const m = /(\d+)/.exec(p.last_handshake || '');
@@ -233,7 +233,7 @@
     async function refresh(status) {
       if (!invoke) return;
       renderHeader(status);
-      // 配置（只读展示）与数据面读数并行取；取不到如实留 '—'。
+      // Config (read-only display) and data-plane readings are fetched in parallel; leave '—' honestly when unreadable.
       invoke('get_config').then(cfg => {
         document.getElementById('vServer').textContent = cfg.server_url || '—';
         document.getElementById('vDevice').textContent = cfg.device_name || '—';
@@ -250,20 +250,20 @@
       });
     }
 
-    // 主循环推送入口：Rust 轮询线程每 3s eval 调用（弹层可见时），
-    // 与托盘 tooltip/图标/菜单摘要共用同一时钟，弹层不自带轮询。
+    // Push entry point from the main loop: the Rust polling thread evals it every 3s (while the popup is visible),
+    // sharing one clock with the tray tooltip/icon/menu summary; the popup runs no polling of its own.
     window.__meshletRefresh = function (status) {
       refresh(status);
     };
 
-    // 首次打开先自取一次（推送时钟下一拍才到）。
+    // On first open, fetch once by itself (the push clock's next tick arrives later).
     if (invoke) {
       invoke('get_status').then(refresh).catch(() => {});
     } else {
       document.getElementById('tip').textContent = 'Tauri IPC unavailable';
     }
 
-    // 快捷入口 → 打开设置窗并定位（Rust open_settings_at 白名单校验 zone）
+    // Shortcut entry → open the settings window and navigate there (Rust open_settings_at allow-lists zone)
     window.goto = function (zone) {
       if (!invoke) return;
       invoke('open_settings_at', { zone }).catch(() => {});

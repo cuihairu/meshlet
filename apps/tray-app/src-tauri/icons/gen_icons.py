@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""meshlet 托盘四态图标 · 16px 变体导出脚本（仅标准库，可复现）。
+"""meshlet tray four-state icons - 16px variant export script (stdlib only, reproducible).
 
-背景（2026-11 托盘重设计，用户批准的四态方案）：
-- 32px 主图 `icon-{online,degraded,offline,error}.png` 已提交（commit e9d67d4），
-  **本脚本不改动它们**；其几何常数经逐像素采样反向记录在下方 CONST 区。
-- Windows 托盘 100% DPI 的实际显示尺寸是 16px：主循环 `main.rs::icon_for_state`
-  现在优先加载本脚本产出的 `icon-<state>-16.png`（缺失时回落 32px 原图）。
-- 已知缺陷：32px 空心环（offline）被系统缩小到 16px 时，内孔被抗锯齿残渣
-  填塞、读不出「空」。对策 = 16px 独立成图、内孔按 16px 视觉手工放大
-  （HOLE 0.266→0.28，feather 1px→0.5px 更锐），原生 1:1 渲染不再经过缩小。
-- error 的字形在 16px 采用经典「挖空感叹号」（竖槽+分离点）；32px 主图的
-  槽形在 16px 过细（<1.5px）不可辨，属有意的手工微调。
+Background (2026-11 tray redesign, the user-approved four-state plan):
+- The 32px masters `icon-{online,degraded,offline,error}.png` are committed
+  (commit e9d67d4); **this script does not touch them**. Their geometry
+  constants were back-solved by per-pixel sampling and recorded in the CONST
+  section below.
+- The Windows tray actually renders 16px at 100% DPI: `main.rs::icon_for_state`
+  now prefers the `icon-<state>-16.png` produced by this script (falling back
+  to the 32px master when the file is missing).
+- Known defect: when the 32px hollow ring (offline) is downscaled by the
+  system to 16px, the inner hole gets clogged with anti-aliasing residue and
+  no longer reads as "empty". Fix = render 16px as its own image with the hole
+  hand-enlarged for 16px vision (HOLE 0.266->0.28, feather 1px->0.5px for a
+  sharper edge), so the native 1:1 render never goes through downscaling.
+- The error glyph at 16px uses the classic carved-out exclamation mark
+  (vertical slot + detached dot); the 32px master's slot shape is too thin at
+  16px (<1.5px) to read - this is an intentional hand tweak.
 
-用法：
-    python3 gen_icons.py            # 生成 4 个 icon-<state>-16.png
-    python3 gen_icons.py --verify   # 生成 + 逐像素断言（内孔透明/环连续/色纯）
+Usage:
+    python3 gen_icons.py            # generate the 4 icon-<state>-16.png files
+    python3 gen_icons.py --verify   # generate + per-pixel assertions (hole transparent / ring continuous / color purity)
 
-产物随仓库提交；改几何常数后重跑本脚本即可再生成。
+The artifacts are committed to the repo; after changing a geometry constant,
+re-run this script to regenerate.
 """
 
 import struct
@@ -27,63 +34,63 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-# ── 几何与色板（单位：相对半边长 0..0.5；由已提交 32px 主图采样反推）────
-OUTER_R = 13.4 / 32          # 外圆半径 ≈ 0.419
-HOLE = {                      # 内孔半径
-    "online":   5.0 / 32,     # 实心 + 中心圆孔
-    "degraded": 5.0 / 32,     # 同孔 + 右侧削角
-    "offline":  8.5 / 32,     # 空心环（16px 手工放大到 4.5px，见 OFFLINE_16_HOLE）
-    "error":    0.0,          # 字形用 EXCL 定义
+# ── geometry and palette (units: fraction of half side, 0..0.5; back-solved from sampling the committed 32px masters) ────
+OUTER_R = 13.4 / 32          # outer circle radius ≈ 0.419
+HOLE = {                      # inner hole radius
+    "online":   5.0 / 32,     # filled disc + centre hole
+    "degraded": 5.0 / 32,     # same hole + right edge cut back
+    "offline":  8.5 / 32,     # hollow ring (widened to 4.5px by hand at 16px, see OFFLINE_16_HOLE)
+    "error":    0.0,          # glyph is defined by EXCL
 }
-# 16px 手工微调：offline 内孔比等比缩小（8.5/32*16=4.25px）再放大半像素，
-# 抗锯齿残渣挤不进孔内；feather 由 1px 收紧到 0.5px。
+# 16px hand tweak: the offline hole is half a pixel larger than the even downscale
+# (8.5/32*16=4.25px), so anti-aliasing residue cannot squeeze into it; feather tightens from 1px to 0.5px.
 OFFLINE_16_HOLE = 4.5 / 16
 FEATHER_16 = 0.5 / 16
-# degraded 削角：右缘平边 dx<=FX，|dy|>FX 的角走 45° 斜边切掉
+# degraded bevel: flat right edge dx<=FX, corners with |dy|>FX clipped by a 45° diagonal
 DEGRADED_CUT = 7.6 / 32
-# error 挖空感叹号（16px 口径，单位像素）：竖槽 + 分离点
-EXCL_STEM = (7.0, 9.0, 3.2, 8.6)   # x0, x1(开区间), y0, y1
+# error carved-out exclamation mark (16px scale, units in pixels): vertical slot + detached dot
+EXCL_STEM = (7.0, 9.0, 3.2, 8.6)   # x0, x1(exclusive), y0, y1
 EXCL_DOT = (7.0, 9.0, 10.2, 12.2)
 
 COLORS = {
-    "online":   (0x32, 0x60, 0x72),   # 深青（与 32px 主图采样一致）
-    "degraded": (0xC9, 0x7B, 0x2E),   # 品牌琥珀铜
-    "offline":  (0x69, 0x6F, 0x74),   # 中灰
-    "error":    (0xEF, 0x44, 0x44),   # 红
+    "online":   (0x32, 0x60, 0x72),   # dark teal (matches the 32px master sample)
+    "degraded": (0xC9, 0x7B, 0x2E),   # brand amber copper
+    "offline":  (0x69, 0x6F, 0x74),   # mid grey
+    "error":    (0xEF, 0x44, 0x44),   # red
 }
 STATES = ("online", "degraded", "offline", "error")
 
 
 def _fill(dist: float, boundary: float, feather: float) -> float:
-    """到边界 boundary 的覆盖率（内侧为 1），线性 AA。"""
+    """Coverage of the distance to boundary (1 inside), linear AA."""
     if feather <= 0:
         return 1.0 if dist < boundary else 0.0
     return max(0.0, min(1.0, (boundary - dist) / feather))
 
 
 def coverage(state: str, x: float, y: float, size: int) -> float:
-    """点 (x+0.5, y+0.5) 的形状覆盖率 0..1。"""
+    """Shape coverage 0..1 at pixel center (x+0.5, y+0.5)."""
     s = size
     cx, cy = s / 2.0, s / 2.0
     dx, dy = x + 0.5 - cx, y + 0.5 - cy
     dist = (dx * dx + dy * dy) ** 0.5
     feather = FEATHER_16 * s  # 0.5px @16
-    hole = HOLE[state] * s    # 内孔半径（像素）
+    hole = HOLE[state] * s    # inner hole radius (pixels)
     if state == "offline":
         hole = OFFLINE_16_HOLE * s
     alpha = _fill(dist, OUTER_R * s, feather) * (1.0 - _fill(dist, hole, feather))
     if state == "degraded":
-        # 削角：右缘平边（dx ≤ fx）+ 45° 斜角（fx, fy 之外的角切掉），
-        # 与 32px 主图「右侧顶点削平」同形（逐像素采样反推 fx=fy≈7.5px@32）。
+        # Bevel: flat right edge (dx <= fx) + 45° diagonal (corners beyond fx, fy are
+        # clipped), matching the 32px master's "right apex flattened" shape (per-pixel sampling gives fx=fy≈7.5px@32).
         fx = DEGRADED_CUT * s
         over_dx = dx - fx
         over_dy = abs(dy) - fx
         if over_dx > 0 and over_dy > 0:
-            alpha *= _fill(over_dx + over_dy, 0.0, feather)   # 斜角
+            alpha *= _fill(over_dx + over_dy, 0.0, feather)   # diagonal
         elif over_dx > 0:
-            alpha *= _fill(over_dx, 0.0, feather)             # 平边
+            alpha *= _fill(over_dx, 0.0, feather)             # flat edge
     if state == "error":
-        # 挖空感叹号：竖槽 + 分离点（alpha 取反合并）
+        # Carved-out exclamation mark: vertical slot + detached dot (alpha inverted and combined)
         x0, x1, y0, y1 = EXCL_STEM
         in_stem = x0 <= x + 0.5 < x1 and y0 <= y + 0.5 < y1
         x0, x1, y0, y1 = EXCL_DOT
@@ -119,25 +126,25 @@ def write_png(path: Path, size: int, rgba: bytes) -> None:
 
 
 def verify(size: int) -> None:
-    """逐像素断言（16px 可读性的机器验证）。"""
+    """Per-pixel assertions (machine check of 16px legibility)."""
     c = size / 2.0
     for state in STATES:
         rgba = render_rgba(state, size)
-        # 1) 色纯：每个非透明像素必须是本档颜色（不许出现杂色残渣）
+        # 1) colour purity: every opaque pixel must be this state's colour (no stray residue allowed)
         for y in range(size):
             for x in range(size):
                 r, g, b, a = rgba[(y * size + x) * 4:(y * size + x) * 4 + 4]
                 if a and (r, g, b) != COLORS[state]:
                     raise AssertionError(f"{state}: stray color at ({x},{y})")
-        # 2) 档位特有断言
+        # 2) per-state assertions
         if state == "offline":
-            # 内孔中心全透明（残渣填塞即失败）
+            # inner hole centre fully transparent (residue clogging = failure)
             for y in range(size):
                 for x in range(size):
                     if ((x + 0.5 - c) ** 2 + (y + 0.5 - c) ** 2) ** 0.5 < 3.2:
                         a = rgba[(y * size + x) * 4 + 3]
                         assert a == 0, f"offline: hole filled at ({x},{y}) alpha={a}"
-            # 环闭合：8 个方向在环带中点 r≈5.6px 处都有实环
+            # ring closure: solid ring in all 8 directions at the band midpoint r≈5.6px
             import math
             for k in range(8):
                 ang = k * math.pi / 4
@@ -149,12 +156,12 @@ def verify(size: int) -> None:
             a = rgba[(int(c) * size + int(c)) * 4 + 3]
             assert a == 0, f"online: center hole missing (alpha={a})"
         if state == "error":
-            # 感叹号笔画挖穿（槽+点各有透明像素）
+            # exclamation strokes carved through (transparent pixels in both slot and dot)
             for (x0, x1, y0, y1) in (EXCL_STEM, EXCL_DOT):
                 sx, sy = int(x0), int((y0 + y1) / 2)
                 assert rgba[(sy * size + sx) * 4 + 3] == 0, f"error: glyph not carved at {sx},{sy}"
         if state == "degraded":
-            # 右缘削平：中行最右像素所在列比 online 少 ≥2px
+            # right edge flattened: the middle row's rightmost column is ≥2px narrower than online's
             def right_edge(name):
                 row = render_rgba(name, size)[(int(c) * size) * 4:(int(c) * size + 1) * size * 4]
                 return max(x for x in range(size) if row[x * 4 + 3] > 128)

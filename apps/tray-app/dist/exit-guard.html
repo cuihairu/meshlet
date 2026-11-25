@@ -48,7 +48,7 @@
   </div>
   <div class="err" id="err"></div>
   <script type="module">
-    // module 作用域的函数不进全局（popup.html 同款坑），事件一律 addEventListener。
+    // Module-scoped functions are not global (same popup.html pitfall), so all events use addEventListener.
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     const lang = localStorage.getItem('meshlet-lang') || (navigator.language.startsWith('zh') ? 'zh' : 'en');
     const t = lang === 'zh'
@@ -62,7 +62,7 @@
       if (!invoke) return;
       invoke('verify_exit_guard', { password: document.getElementById('pw').value })
         .then(() => {
-          // 匹配：Rust 侧 app.exit(0) 整体退出；走到这里通常窗口已随进程消亡。
+          // Match: the Rust side exits outright via app.exit(0); by the time we get here the window has usually died with the process.
         })
         .catch((e) => {
           const err = document.getElementById('err');
