@@ -8,29 +8,29 @@ use crate::agent::evidence::probe_decision;
 use crate::server;
 
 impl super::Agent {
-    /// 心跳上报并返回是否送达（失败只记日志，不让数据面循环退避）。
+    /// Report the heartbeat and return whether it was delivered (a failure only logs; it must not make the dataplane loop back off).
     pub(super) fn report_heartbeat(&self, plan: Option<&DevicePlan>) -> bool {
         match self.heartbeat(plan) {
             Ok(()) => true,
             Err(e) => {
-                // 上报失败不影响数据面：计划已按期望对账完毕。
+                // A report failure does not affect the dataplane: the plan has already been reconciled to expectation.
                 tracing::warn!(error = %e, "heartbeat not delivered");
                 false
             }
         }
     }
 
-    /// 心跳上报（§12.4/§14.1）：带本地读到的最近握手时间 + 数据面实测证据
-    /// （§7.5：内核读数 + 计划 MTU 大包探测）+ P2P 直连候选端点（§12）。
+    /// Heartbeat report (§12.4/§14.1): carries the last handshake time read locally + dataplane measured
+    /// evidence (§7.5: kernel readings + a planned-MTU large-packet probe) + the P2P direct candidate endpoints (§12).
     pub fn heartbeat(&self, plan: Option<&DevicePlan>) -> Result<(), String> {
         let evidence = self.collect_evidence(plan);
         let direct = self.direct_report();
-        // §12.3：随心跳上报各对端直连链路状态（P2P/中继），供控制台展示。
-        // 状态是最近一次 30s 探测的结果——心跳比探测密，上报的是最后已知态。
+        // §12.3: report each peer's direct link status (P2P/relay) with the heartbeat, for console display.
+        // The status is the result of the most recent 30s probe - the heartbeat is denser than the probe, so what is reported is the last known state.
         let direct_links = self.direct.link_statuses();
-        // R-DIAG：随心跳上报本地网络诊断三快照（路由表/接口/wg 读数）。采集
-        // 失败按 `None` 上报（服务端与控制台显示"无快照"，证据缺失可见），
-        // 绝不吞掉心跳本身。
+        // R-DIAG: report the three local network diagnostics snapshots (routing table / interfaces / wg readings)
+        // with the heartbeat. A collection failure is reported as `None` (server and console show "no snapshot",
+        // so the missing evidence is visible), and never swallows the heartbeat itself.
         let diagnostics = self.backend.diagnostics_sync().ok();
         server::heartbeat(
             &self.server_url,
@@ -46,10 +46,10 @@ impl super::Agent {
         .map_err(|e| format!("heartbeat failed: {e}"))
     }
 
-    /// §12 P2P：本机直连候选端点（WireGuard 监听端口 + RFC1918 局域网地址）。
-    /// 未开启直连、生效端口未解析或全部候选被挡（WIN-PORT-1 B2）时返回
-    /// `None`（上报省略，服务端按未上报处理，不伪造端点）；LAN 枚举失败
-    /// 只记空候选，不吞掉心跳本身。
+    /// §12 P2P: this machine's direct candidate endpoints (the WireGuard listen port + RFC1918 LAN addresses).
+    /// Returns `None` when direct connect is disabled, the effective port is unresolved, or all candidates are
+    /// blocked (WIN-PORT-1 B2) - the report is then omitted, the server treats it as unreported, and no endpoint
+    /// is fabricated; a LAN enumeration failure only records empty candidates and never swallows the heartbeat.
     pub fn direct_report(&self) -> Option<DirectEndpointReport> {
         if !self.dataplane.direct_connect.enabled {
             return None;
@@ -60,21 +60,21 @@ impl super::Agent {
         )
     }
 
-    /// §12.3：本设备当前各对端直连链路状态（供心跳上报与诊断导出）。
-    /// 空 = 全中继（无直连链路）。状态是最近一次 30s 探测的结果。
+    /// §12.3: this device's current direct link statuses per peer (for the heartbeat report and diagnostics export).
+    /// Empty = all relay (no direct links). The status is the result of the most recent 30s probe.
     pub fn direct_link_statuses(&self) -> Vec<DirectLinkStatus> {
         self.direct.link_statuses()
     }
 
-    /// 数据面实测证据（§7.5）：内核读数 + 大包探测。读数失败按 `None` 上报
-    /// （证据缺失可见），绝不臆测默认值——探测失败与未探测在服务端同形，
-    /// 都按「未证实」处理。
+    /// Dataplane measured evidence (§7.5): kernel readings + the large-packet probe. A reading failure is
+    /// reported as `None` (so the missing evidence is visible), and default values are never guessed - a failed
+    /// probe and a missing probe are indistinguishable to the server, and both are treated as "not proven".
     pub fn collect_evidence(&self, plan: Option<&DevicePlan>) -> DataplaneEvidence {
         let snapshot = self.backend.inspect_sync().ok();
         DataplaneEvidence {
             tunnel_mtu: snapshot.as_ref().and_then(|s| s.tunnel_mtu),
-            // 证据口径不变（布尔），但从规则指纹集合推导：指纹里出现受控 SNAT
-            // 动作即「SNAT 规则在场」，比单独枚举 POSTROUTING 链更贴近语义。
+            // The evidence's shape is unchanged (a boolean), but it is derived from the rule fingerprint set: a controlled SNAT
+            // action appearing in a fingerprint means "an SNAT rule is present", which is closer to the semantics than enumerating the POSTROUTING chain alone.
             nat_rules_present: snapshot.as_ref().map(|s| !s.nat_rules.is_empty()),
             nat_snat_rules_present: snapshot.as_ref().map(|s| {
                 s.nat_rules
@@ -82,9 +82,9 @@ impl super::Agent {
                     .any(|signature| signature.contains("|snat_to_gateway_lan|"))
             }),
             mtu_probe_payload: plan.and_then(|p| {
-                // 底层 MTU 只读一次（lane/dataplane-speed）：默认路由接口的
-                // MTU 让未钉计划时的探测载荷自适应 jumbo/PPPoE 底层；读不到
-                // 回退默认尺寸，不臆测。
+                // The underlay MTU is read only once (lane/dataplane-speed): the default-route interface's
+                // MTU lets the probe payload adapt to jumbo/PPPoE underlays when the plan does not pin one;
+                // if it cannot be read, fall back to the default size without guessing.
                 let underlay = self.backend.underlay_path_mtu_sync();
                 let (target, payload) = probe_decision(p, underlay)?;
                 self.backend
@@ -94,8 +94,8 @@ impl super::Agent {
         }
     }
 
-    /// `wg show <if> latest-handshakes` → 最近握手时刻（ISO-8601）；取不到则
-    /// 省略（服务端按「未取到」处理，不虚构在线证据）。
+    /// `wg show <if> latest-handshakes` -> the latest handshake time (ISO-8601); omitted when unavailable
+    /// (the server treats that as "not obtained" and never fabricates online evidence).
     pub(super) fn last_handshake(&self) -> Option<String> {
         let out = std::process::Command::new("wg")
             .args(["show", &self.dataplane.interface, "latest-handshakes"])

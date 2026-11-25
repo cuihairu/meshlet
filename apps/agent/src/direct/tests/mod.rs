@@ -1,5 +1,6 @@
-//! `direct` 单测：共享夹具（常量 + cidr/direct_peer/peer/lan）挂本模块，
-//! 用例按被测对象分档——纯函数系列见 [plan]，Manager 系列见 [manager]。
+//! `direct` unit tests: shared fixtures (constants + cidr/direct_peer/peer/lan)
+//! hang off this module; cases are tiered by subject - the pure-function series
+//! see [plan], the Manager series see [manager].
 
 use super::*;
 use meshlet_domain::EndpointCandidate;

@@ -1,6 +1,6 @@
 #[cfg(test)]
-// 文件本身经 `mod tests;` 引入，内层再叫 tests 触发 module_inception；
-// 这是测试组织惯例而非缺陷，局部放行。
+// This file is included via `mod tests;`; naming the inner module tests again would
+// trigger module_inception - a test-organization convention, not a flaw, so allow it locally.
 #[allow(clippy::module_inception)]
 mod tests {
     use std::path::Path;
@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn private_key_is_read_trimmed_and_absent_is_ok() {
-        // 未配置私钥：None（保留接口现有私钥，幂等重放）。
+        // No private key configured: None (keep the interface's existing key; idempotent replay).
         assert_eq!(read_private_key(&DataplaneConfig::default()).unwrap(), None);
 
         let dir = std::env::temp_dir().join("meshlet-agent-key-test");
@@ -62,11 +62,11 @@ mod tests {
             Some("key-material")
         );
 
-        // 空文件：明确报错，不当“没配”处理（首装必然握手失败）。
+        // Empty file: an explicit error, not treated as "unconfigured" (first install would otherwise fail the handshake).
         std::fs::write(&path, "\n").unwrap();
         assert!(read_private_key(&dp).is_err());
 
-        // 缺失文件：路径写错必须可见。
+        // Missing file: a wrong path must be visible.
         let missing = DataplaneConfig {
             private_key_file: Some("/nonexistent/meshlet/dev.key".into()),
             ..DataplaneConfig::default()
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn heartbeat_against_a_dead_server_fails_visibly() {
-        // 拉不到服务端时报错（可见），而不是静默「成功」——tick 据此退避重试。
+        // Reaching a dead server errors (visibly) instead of silently "succeeding" - the tick backs off and retries on it.
         let agent = Agent::new(config("/tmp/meshlet-agent-dead"), None).expect("test agent builds");
         let err = agent.heartbeat(None).expect_err("dead server");
         assert!(!err.is_empty(), "failure must be reported: {err}");
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn hub_endpoint_fills_a_plan_without_one() {
-        // 服务端计划不携带 endpoint（§16.4：服务端不知道 agent 的网络位置）。
+        // The server plan carries no endpoint (§16.4: the server does not know the agent's network location).
         let mut p = probe_plan(None, Some("10.240.0.1"), "10.240.0.7");
         p.tunnel.peers.push(meshlet_network::PeerConfig {
             public_key: "hub-pub".into(),
@@ -127,16 +127,16 @@ mod tests {
             persistent_keepalive_secs: None,
         });
 
-        // 本地兜底填充 → 设备可主动发起握手。
+        // Local fallback fill -> the device can initiate the handshake itself.
         let filled = plan_with_hub_endpoint(&p, Some("10.98.0.10:51820"));
         assert_eq!(
             filled.tunnel.peers[0].endpoint.as_deref(),
             Some("10.98.0.10:51820")
         );
-        // 哈希不被本地兜底改写：账本与漂移判定仍以服务端期望为准。
+        // The hash is not rewritten by the local fallback: the ledger and drift verdict still follow the server's expectation.
         assert_eq!(filled.desired_config_hash, p.desired_config_hash);
 
-        // 服务端已带值（未来通告 advertise endpoint）→ 尊重服务端，不覆盖。
+        // The server already carries a value (a future advertised endpoint) -> respect the server, no overwrite.
         let mut explicit = p.clone();
         explicit.tunnel.peers[0].endpoint = Some("10.98.0.99:51820".into());
         assert_eq!(
@@ -147,7 +147,7 @@ mod tests {
             explicit.tunnel.peers[0].endpoint
         );
 
-        // 未配置兜底 → 原样返回；空 peer 计划不越界。
+        // No fallback configured -> returned unchanged; an empty-peer plan never goes out of bounds.
         assert_eq!(
             plan_with_hub_endpoint(&p, None).tunnel.peers[0].endpoint,
             None
@@ -170,14 +170,14 @@ mod tests {
             Some(("10.240.0.1".parse().unwrap(), 1352))
         );
 
-        // 计划未配置 MTU：按默认 1420 探测（1420 − 28 = 1392）。
+        // Plan without an MTU: probe with the default 1420 (1420 - 28 = 1392).
         let p = probe_plan(None, Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(
             probe_decision(&p, None),
             Some(("10.240.0.1".parse().unwrap(), 1392))
         );
 
-        // hub 未知 / hub 就是自己（自 ping 不经过隧道）/ 载荷为 0：不探测。
+        // Unknown hub / the hub is this machine (a self-ping does not traverse the tunnel) / zero payload: no probe.
         let p = probe_plan(Some(1380), None, "10.240.0.7");
         assert_eq!(probe_decision(&p, None), None);
         let p = probe_plan(Some(1380), Some("10.240.0.7"), "10.240.0.7");
@@ -186,12 +186,12 @@ mod tests {
         assert_eq!(probe_decision(&p, None), None);
     }
 
-    /// rtt_source 如实四态：实测成功 probe_ok；不可测但握手新鲜 handshake_fresh
-    /// （「不可测」不再谎报链路结论）；握手不新鲜 probe_failed；没轮到 unprobed。
+    /// The four honest rtt_source states: a successful measurement is probe_ok; unmeasurable with a fresh handshake is
+    /// handshake_fresh ("unmeasurable" no longer lies about the link); a stale handshake is probe_failed; not yet probed is unprobed.
     #[test]
     fn rtt_source_is_honest_about_handshake_evidence() {
         let now = 1_800_000_000u64;
-        // 实测成功：无论握手状态，来源都是 probe_ok。
+        // Successful measurement: the source is probe_ok regardless of handshake state.
         assert_eq!(
             honest_rtt_source(
                 &RttProbe {
@@ -203,7 +203,7 @@ mod tests {
             ),
             Some("probe_ok")
         );
-        // 不可测（两路 ping 全静默）+ 握手新鲜 → handshake_fresh（链路活着）。
+        // Unmeasurable (both ping paths silent) + a fresh handshake -> handshake_fresh (the link is alive).
         assert_eq!(
             honest_rtt_source(
                 &RttProbe {
@@ -215,7 +215,7 @@ mod tests {
             ),
             Some("handshake_fresh")
         );
-        // 不可测 + 握手超过晋升阈值 → 如实 probe_failed（不再谎报「不可测=活着」）。
+        // Unmeasurable + the handshake past the promote threshold -> honestly probe_failed (no more "unmeasurable = alive" lies).
         assert_eq!(
             honest_rtt_source(
                 &RttProbe {
@@ -227,19 +227,19 @@ mod tests {
             ),
             Some("probe_failed")
         );
-        // 没轮到（探测在途）+ 无握手 → unprobed（不是结论）。
+        // Not yet probed (probe in flight) + no handshake -> unprobed (not a verdict).
         assert_eq!(
             honest_rtt_source(&RttProbe::unknown(), None, now),
             Some("unprobed")
         );
-        // 从未握手（ts=0）不算新鲜证据。
+        // Never handshaked (ts=0) does not count as fresh evidence.
         assert_eq!(
             honest_rtt_source(&RttProbe::unknown(), Some(0), now),
             Some("unprobed")
         );
     }
 
-    /// 诊断 dump → 握手年龄：从未握手 / 时钟回拨的行丢弃，其余翻译成距今秒。
+    /// Diagnostics dump -> handshake ages: never-handshaked / clock-skewed rows are dropped, the rest translated to age-in-seconds.
     #[test]
     fn dump_handshake_ages_skips_never_handshaked_and_future_timestamps() {
         let now = 1_800_000_000u64;
@@ -268,21 +268,21 @@ mod tests {
         let ages = dump_handshake_ages(Some(&net), now);
         assert_eq!(ages.len(), 1);
         assert_eq!(ages.get("fresh"), Some(&42));
-        // 无快照 → 空（证据缺失不臆造）。
+        // No snapshot -> empty (missing evidence is never fabricated).
         assert!(dump_handshake_ages(None, now).is_empty());
     }
 
     #[test]
     fn probe_payload_adapts_to_the_underlay_when_plan_leaves_mtu_unset() {
-        // 计划钉 MTU：计划优先，底层读数不影响探测载荷。
+        // Plan pins the MTU: the plan wins, the underlay reading does not affect the probe payload.
         let p = probe_plan(Some(1380), Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(
             probe_decision(&p, Some(9000)),
             Some(("10.240.0.1".parse().unwrap(), 1352))
         );
 
-        // 计划未配置：按底层 MTU 推导。1500 以太网推导回 1420（默认行为
-        // 不变）；jumbo 9000 → 8920 − 28；PPPoE 1492 → 1412 − 28。
+        // Plan unconfigured: derived from the underlay MTU. 1500 Ethernet derives back to 1420 (default
+        // behavior unchanged); jumbo 9000 -> 8920 - 28; PPPoE 1492 -> 1412 - 28.
         let p = probe_plan(None, Some("10.240.0.1"), "10.240.0.7");
         assert_eq!(
             probe_decision(&p, Some(1500)),
@@ -297,7 +297,7 @@ mod tests {
             Some(("10.240.0.1".parse().unwrap(), 1384))
         );
 
-        // 底层读数不可得：回退 WireGuard 默认（行为与旧版一致）。
+        // Underlay reading unavailable: fall back to the WireGuard default (behavior matches the old version).
         assert_eq!(
             probe_decision(&p, None),
             Some(("10.240.0.1".parse().unwrap(), 1392))
@@ -313,7 +313,7 @@ mod tests {
             persistent_keepalive_secs: None,
         };
 
-        // 单段：唯一 AllowedIPs 即 scope。
+        // Single segment: the sole AllowedIPs entry is the scope.
         let mut p = probe_plan(None, Some("10.240.0.1"), "10.240.0.2");
         p.tunnel.peers.push(hub(&["10.240.0.0/16"]));
         assert_eq!(
@@ -321,8 +321,8 @@ mod tests {
             Some("10.240.0.0/16".parse::<Ipv4Cidr>().unwrap())
         );
 
-        // 分段路由：AllowedIPs 多条且排序不保证——包含自身地址的那条才是 scope
-        //（不是 `allowed_ips[0]`）。
+        // Segmented routing: multiple AllowedIPs entries in no guaranteed order - the one containing this
+        // machine's address is the scope (not `allowed_ips[0]`).
         let mut p = probe_plan(None, Some("10.240.0.1"), "10.240.1.2");
         p.tunnel
             .peers
@@ -332,7 +332,7 @@ mod tests {
             Some("10.240.1.0/24".parse::<Ipv4Cidr>().unwrap())
         );
 
-        // 无 hub peer / 自身地址越出所有段：None（保持 hub 中继，不猜）。
+        // No hub peer / this machine's address outside every segment: None (stay on hub relay, no guessing).
         let p = probe_plan(None, Some("10.240.0.1"), "10.240.0.2");
         assert_eq!(direct_scope(&p), None);
         let mut p = probe_plan(None, Some("10.240.0.1"), "10.250.0.2");
@@ -350,12 +350,12 @@ mod tests {
             vec!["192.168.1.50".parse::<Ipv4Addr>().unwrap()]
         );
 
-        // 空候选仍合法（对端可尝试公网观测地址）。
+        // Empty candidates are still valid (the peer may try the publicly observed address).
         let report = direct_report_from(Some(51820), vec![]).expect("empty candidates");
         assert!(report.lan_addrs.is_empty());
 
-        // 生效端口缺（未开启 / 未解析 / WIN-PORT-1 B2 全候选被挡关闸）：
-        // 上报省略（None），不伪造端点——报一个绑不上的口等于让对端拨死口。
+        // Effective port missing (disabled / unresolved / all candidates blocked shut by WIN-PORT-1 B2):
+        // the report is omitted (None), no endpoint fabricated - reporting a port this machine cannot bind just points the peer at a dead port.
         assert_eq!(direct_report_from(None, vec![]), None);
     }
 
@@ -412,8 +412,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// `peer dial` 结果判定：Direct/Pending = 成功；Relay/不在管 = 失败（绝不
-    /// 假装成功）。
+    /// `peer dial` verdict: Direct/Pending = success; Relay/unmanaged = failure (never
+    /// pretend to succeed).
     #[test]
     fn dial_verdict_maps_state_to_success_or_failure() {
         use crate::direct::DirectPeer;
@@ -445,9 +445,9 @@ mod tests {
         assert_eq!(mode, "hub_relay");
     }
 
-    /// 直连对端视图合并：候选已直连/待握手取链路状态；候选无路径标
-    /// `hub_relay`（可拨号）；候选集外但链路在管的对端不进视图（候选集为
-    /// 服务端下发的可直连集合，视图只反映它）。
+    /// Direct-peer view merge: candidates already direct/pending take the link status; a candidate with no
+    /// path is marked `hub_relay` (dialable); peers outside the candidate set but with a managed link do not
+    /// enter the view (the candidate set is the server-delivered direct-connect set, and the view only reflects it).
     #[test]
     fn direct_peer_views_merges_candidates_with_link_status() {
         use meshlet_domain::EndpointCandidate;
@@ -490,12 +490,12 @@ mod tests {
         }];
         let views = direct_peer_views(&wanted, &links);
         assert_eq!(views.len(), 2);
-        // 已直连：取链路状态（mode/rtt/endpoint）。
+        // Already direct: take the link status (mode/rtt/endpoint).
         let a = views.iter().find(|v| v.public_key == "key-a").unwrap();
         assert_eq!(a.mode, "p2p_direct");
         assert_eq!(a.rtt_ms, Some(5));
         assert_eq!(a.endpoint, "192.168.1.50:51821");
-        // 候选无路径：标 hub_relay（可拨号目标）。
+        // Candidate with no path: marked hub_relay (a dialable target).
         let b = views.iter().find(|v| v.public_key == "key-b").unwrap();
         assert_eq!(b.mode, "hub_relay");
         assert_eq!(b.rtt_ms, None);
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn parse_endpoint_candidate_reads_ip_port_and_kind() {
         use meshlet_domain::EndpointKind;
-        // 私网 → Lan；畸形/空 → None。
+        // Private network -> Lan; malformed/empty -> None.
         let lan = parse_endpoint_candidate("192.168.1.50:51821").expect("lan parses");
         assert_eq!(lan.ip, "192.168.1.50".parse::<Ipv4Addr>().unwrap());
         assert_eq!(lan.port, 51821);
@@ -546,25 +546,25 @@ mod tests {
             ssh_config: None,
             desired_config_hash: "h".into(),
         };
-        // 旧版计划缺省 None → 抬到 floor。
+        // Old-version plan defaulting to None -> raised to the floor.
         let mut plan = mk(None);
         enforce_hub_keepalive(&mut plan);
         assert_eq!(
             plan.tunnel.peers[0].persistent_keepalive_secs,
             Some(meshlet_network::HUB_KEEPALIVE_SECS)
         );
-        // 计划给低于 floor 的值 → 抬到 floor。
+        // Plan value below the floor -> raised to the floor.
         let mut plan = mk(Some(5));
         enforce_hub_keepalive(&mut plan);
         assert_eq!(
             plan.tunnel.peers[0].persistent_keepalive_secs,
             Some(meshlet_network::HUB_KEEPALIVE_SECS)
         );
-        // 计划给更高值 → 尊重（永不掉）。
+        // Plan value higher -> respected (never dropped).
         let mut plan = mk(Some(30));
         enforce_hub_keepalive(&mut plan);
         assert_eq!(plan.tunnel.peers[0].persistent_keepalive_secs, Some(30));
-        // 空 peer 列表 → no-op。
+        // Empty peer list -> no-op.
         let mut plan = mk(None);
         plan.tunnel.peers.clear();
         enforce_hub_keepalive(&mut plan);

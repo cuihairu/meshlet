@@ -13,10 +13,10 @@ use crate::common::{
 fn agent_applies_the_plan_and_replays_after_a_reboot() {
     let topo = match Topology::setup("r") {
         Some(t) => t,
-        None => return, // 已打印 SKIP:
+        None => return, // printed SKIP already:
     };
 
-    // ---- hub 侧先行（server 数据面，与 agent 无关） ------------------------
+    // ---- hub side first (server data plane, unrelated to the agent) ----
     let mut hub_backend = LinuxNetworkBackend::new()
         .with_netns(&topo.hub.netns)
         .with_sudo()
@@ -29,18 +29,18 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
             &BTreeSet::new(),
         )
         .expect("hub applies its own plan");
-    // 内核级 MTU 断言（#51①）：计划里的 MTU 真的落在了接口上。
+    // Kernel-level MTU assertion (#51(1)): the plan's MTU really landed on the interface.
     assert_eq!(
         hub_backend.inspect_sync().expect("hub snapshot").tunnel_mtu,
         Some(1380),
         "hub tunnel MTU must match the plan in the kernel"
     );
 
-    // ---- 1. agent 应用设备计划（隧道 + 他人网关的前缀路由） ----------------
-    // 客户端计划的路由 = 他人网关发布的 LAN/Alias 前缀经该网关虚拟 IP，
-    // AllowedIPs 恰好覆盖同一批前缀 + Overlay（与 server `build_device_plan`
-    // 同构，§7.2）。二者必须一致：目的前缀不在 AllowedIPs 里时 WireGuard
-    // 不发包（路由装了也不通），所以「AllowedIPs 与目标路由一致」是可测约束。
+    // ---- 1. the agent applies the device plan (tunnel + other gateways' prefix routes) ----
+    // The client plan's routes = the LAN/Alias prefixes published by other gateways, via each gateway's
+    // virtual IP; AllowedIPs covers exactly that same set of prefixes + Overlay (isomorphic to the
+    // server's `build_device_plan`, §7.2). The two must agree: when a destination prefix is not inside
+    // AllowedIPs WireGuard sends nothing (the route alone never carries traffic), so "AllowedIPs matches the destination routes" is a testable constraint.
     let a_dir = temp_state_dir("state-a");
     let mut a_agent = agent_in(&topo.a, &a_dir);
     let a_plan = leaf_plan(
@@ -55,13 +55,13 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "hash-a1",
     );
 
-    // 首装：无账本 → 必须应用（NoLocalLedger）。
+    // First install: no ledger -> must apply (NoLocalLedger).
     let decision = a_agent.reconcile(&a_plan).expect("agent applies plan");
     assert!(decision.needs_apply);
     assert_eq!(decision.reason, Reason::NoLocalLedger);
     assert!(a_agent.state_path().exists(), "ledger written after apply");
 
-    // B 侧同样应用（另一个 agent 实例）。
+    // The B side applies the same way (another agent instance).
     let b_dir = temp_state_dir("state-b");
     let mut b_agent = agent_in(&topo.b, &b_dir);
     let b_plan = leaf_plan(
@@ -92,12 +92,12 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "B -> A via hub"
     );
 
-    // 无变更时不重放（§10.1 有变更才重放）。
+    // No replay when nothing changed (§10.1: replay only on change).
     let decision = a_agent.reconcile(&a_plan).expect("second reconcile");
     assert!(!decision.needs_apply, "unchanged plan must not be replayed");
     assert_eq!(decision.reason, Reason::UpToDate);
 
-    // ---- 2. 服务端新修订 → 重放 -------------------------------------------
+    // ---- 2. a new server revision -> replay ----
     let a_plan_v2 = leaf_plan(
         &topo.a,
         &topo.hub,
@@ -123,7 +123,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "data path survives replay"
     );
 
-    // ---- 3. 主机重启：账本说已应用，内核接口没了 → 判定漂移并重放（#32）----
+    // ---- 3. host reboot: the ledger says applied but the kernel interface is gone -> drift verdict + replay (#32) ----
     require_ok(
         &netns_exec(&topo.a.netns, &["ip", "link", "del", "wg0"]),
         "simulate host reboot losing the tunnel",
@@ -132,7 +132,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         !topo.ping(&topo.a.netns, &topo.b.overlay),
         "tunnel is gone after the simulated reboot"
     );
-    // 账本仍记着 hash-a2 —— 这正是「重启后账本记 applied」的现场。
+    // The ledger still records hash-a2 — exactly the "ledger says applied after reboot" scene.
     let decision = a_agent.reconcile(&a_plan_v2).expect("replay after reboot");
     assert!(decision.needs_apply, "lost tunnel must be replayed");
     assert_eq!(decision.reason, Reason::KernelDrift);
@@ -145,17 +145,17 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "A -> B recovered after replay"
     );
 
-    // 重放后再次对账：无漂移 → 不重放。
+    // Reconcile again after the replay: no drift -> no replay.
     assert!(!a_agent.reconcile(&a_plan_v2).unwrap().needs_apply);
 
-    // ---- 3.5 MTU：计划值落到内核；内核读数不符 → 判漂移并纠回（#51）-------
+    // ---- 3.5 MTU: plan value lands in the kernel; a mismatching kernel reading -> drift verdict + correction (#51) ----
     let a_backend = LinuxNetworkBackend::new()
         .with_netns(&topo.a.netns)
         .with_sudo()
         .with_interface("wg0");
     let mut mtu_plan = a_plan_v2.clone();
     mtu_plan.tunnel.mtu = Some(1380);
-    // MTU 是计划的一部分：服务端哈希覆盖整份计划，MTU 变化即新修订。
+    // MTU is part of the plan: the server hash covers the whole plan, so an MTU change is a new revision.
     mtu_plan.desired_config_hash = "hash-a3".into();
     let decision = a_agent.reconcile(&mtu_plan).expect("apply mtu plan");
     assert!(decision.needs_apply);
@@ -166,7 +166,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "planned MTU must land in the kernel"
     );
 
-    // 内核读数被改走（手工改动 / 半途失败）→ 对账判漂移，重放纠回。
+    // The kernel reading gets knocked off (manual change / partial failure) -> reconcile judges drift, replay corrects it.
     require_ok(
         &netns_exec(&topo.a.netns, &["ip", "link", "set", "wg0", "mtu", "1420"]),
         "sabotage tunnel mtu",
@@ -182,8 +182,8 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "replay restores the planned MTU"
     );
 
-    // 设备侧实测证据（#51②）：内核读数 + 大包探测（`ping -M do`，载荷 =
-    // 计划 MTU − 28）随心跳回传——探测目标 = hub overlay 地址，走真实隧道。
+    // Device-side measured evidence (#51(2)): kernel readings plus a big-packet probe (`ping -M do`,
+    // payload = plan MTU − 28) ride the heartbeat back — probe target = the hub overlay address, over the real tunnel.
     let evidence = a_agent.collect_evidence(Some(&mtu_plan));
     assert_eq!(evidence.tunnel_mtu, Some(1380), "kernel reading reported");
     assert_eq!(
@@ -192,7 +192,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "large-packet probe must pass at planned MTU - 28 via the tunnel"
     );
 
-    // ---- 4. 网关侧：Alias NAT 随计划下发，映射删除即整单元清理（§12.6）----
+    // ---- 4. gateway side: Alias NAT comes down with the plan; deleting the mapping cleans up the whole unit (§12.6) ----
     let gw_dir = temp_state_dir("state-gw");
     let mut gw_agent = agent_in(&topo.gw, &gw_dir);
     let gw_plan = leaf_plan(
@@ -207,26 +207,26 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         .reconcile(&gw_plan)
         .expect("gateway applies nat rules");
     assert!(topo.wait_handshake(&topo.gw.netns), "G handshake");
-    // 网关证据（#57②）：心跳回传的 NAT 读数反映内核实际（有规则 → true）。
+    // Gateway evidence (#57(2)): the NAT reading carried back by the heartbeat reflects kernel reality (rules present -> true).
     let gw_evidence = gw_agent.collect_evidence(Some(&gw_plan));
     assert_eq!(
         gw_evidence.nat_rules_present,
         Some(true),
         "gateway must report its meshlet NAT rules as present"
     );
-    // Direct 模式（非 Alias）路由：计划里的 `192.168.1.0/24 via 网关` 让远端
-    // 真实 LAN 直接可达（§8.1 验收「发布 CIDR 后远端可访问」）。
+    // Direct-mode (non-Alias) route: the plan's `192.168.1.0/24 via gateway` makes the remote
+    // real LAN directly reachable (§8.1 acceptance: "once the CIDR is published the remote side can reach it").
     assert!(
         topo.ping_within(&topo.a.netns, "192.168.1.5", HANDSHAKE_TIMEOUT),
         "A -> remote LAN via the gateway (direct route from the plan)"
     );
-    // Alias 路径：计划里的 Alias 前缀 + 网关侧 DNAT/SNAT 规则打通同一网段。
+    // Alias path: the plan's Alias prefix plus the gateway-side DNAT/SNAT rules connect the same segment.
     assert!(
         topo.ping_within(&topo.a.netns, "10.241.1.5", HANDSHAKE_TIMEOUT),
         "A -> alias prefix reaches the real LAN behind G"
     );
 
-    // 预埋一条非 Meshlet 规则（用户视角的外来规则）。
+    // Plant a non-Meshlet rule (a foreign rule from the user's point of view).
     require_ok(
         &netns_exec(
             &topo.gw.netns,
@@ -249,7 +249,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "plant foreign nat rule",
     );
 
-    // 映射被删除（新修订，NAT 规则清空）→ agent 按所有权注释精确清理。
+    // The mapping is deleted (new revision, NAT rules emptied) -> the agent cleans up precisely, keyed by the ownership comment.
     let gw_plan_v2 = leaf_plan(
         &topo.gw,
         &topo.hub,
@@ -278,7 +278,7 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         topo.ping_within(&topo.a.netns, &topo.b.overlay, HANDSHAKE_TIMEOUT),
         "overlay must stay unaffected by the mapping removal"
     );
-    // 清理后的证据如实翻转（#57②）：内核实际没有 Meshlet NAT 规则 → false。
+    // After cleanup the evidence flips honestly (#57(2)): the kernel really has no Meshlet NAT rules -> false.
     let gw_evidence = gw_agent.collect_evidence(Some(&gw_plan_v2));
     assert_eq!(
         gw_evidence.nat_rules_present,
@@ -286,8 +286,8 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "evidence must report the kernel after the ownership cleanup"
     );
 
-    // ---- 4.5 身份级漂移端到端（M2）：Reason 归因 + 非 meshlet 资源永不动 ----
-    // (a) 隧道上多出一个外来 peer（身份不在计划里）→ KernelDrift 并清掉。
+    // ---- 4.5 identity-level drift end to end (M2): Reason attribution + non-meshlet resources are never touched ----
+    // (a) a foreign peer shows up on the tunnel (identity not in the plan) -> KernelDrift and it gets removed.
     let stranger_private = wg_genkey().expect("generate a stranger key");
     let stranger_public = wg_pubkey(&stranger_private).expect("derive the stranger key");
     require_ok(
@@ -331,8 +331,8 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "data path must survive the peer repair"
     );
 
-    // (b) 隧道接口上一条未打 Meshlet 标记的路由 → 不算漂移（UpToDate），
-    // 且该路由原样保留：非本 meshlet 资源永不动。
+    // (b) a route without the Meshlet marker on the tunnel interface -> not drift (UpToDate),
+    // and that route is kept untouched: resources outside this meshlet are never touched.
     require_ok(
         &netns_exec(
             &topo.a.netns,
@@ -361,8 +361,8 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "the foreign route must survive untouched: {shown}"
     );
 
-    // (c) 网关上一条 Meshlet 所有权注释、但不在计划里的 NAT 规则（多余自有
-    // 对象）→ KernelDrift 并按指纹清理；外来规则保留。
+    // (c) a NAT rule on the gateway carrying a Meshlet ownership comment but not in the plan (an
+    // extra self-owned object) -> KernelDrift, cleaned up by fingerprint; foreign rules are kept.
     gw_agent
         .reconcile(&gw_plan)
         .expect("gateway re-applies nat plan");
@@ -413,8 +413,8 @@ fn agent_applies_the_plan_and_replays_after_a_reboot() {
         "no drift left on A"
     );
 
-    // teardown 并断言「跑完不留垃圾」（按本进程标签计，历史残留由
-    // `preflight_cleanup` 负责）。
+    // Teardown and assert "nothing is left behind after the run" (counted by this process's tag;
+    // historical leftovers are `preflight_cleanup`'s job).
     drop(topo);
     let tag = tag("r");
     let netns_text = String::from_utf8_lossy(&sudo(&["ip", "netns", "list"]).stdout).to_string();

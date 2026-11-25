@@ -1,23 +1,24 @@
-//! server 交互（agent API，Bearer 凭证；§16.4 无命令下发）。
+//! Server interaction (agent API, Bearer credential; §16.4 issues no commands).
 //!
-//! 三个端点，都只读/只写**类型化对象**：
-//! - `GET /api/v1/agent/device/desired` → [`DevicePlan`]（隧道/路由/NAT +
-//!   发布段 [`meshlet_publish::PublishPlan`] + `desired_config_hash`；
-//!   `private_key` 恒为 `null`）；
-//! - `POST /api/v1/agent/heartbeat` → 上报本地时间 + 可选握手时间 + 数据面
-//!   实测证据（内核读数 + 大包探测，§7.5/§12.4）；
-//! - `POST /api/v1/agent/publish-health` → 批量上报探针结果
-//!   （[`meshlet_publish::ProbeReport`]，服务端落 `publish_probe_reports`）。
+//! Three endpoints, each reading/writing only **typed objects**:
+//! - `GET /api/v1/agent/device/desired` -> [`DevicePlan`] (tunnel/routing/NAT +
+//!   the publish section [`meshlet_publish::PublishPlan`] + `desired_config_hash`;
+//!   `private_key` is always `null`);
+//! - `POST /api/v1/agent/heartbeat` -> reports local time + an optional handshake time + dataplane
+//!   measured evidence (kernel readings + large-packet probe, §7.5/§12.4);
+//! - `POST /api/v1/agent/publish-health` -> batch-reports probe results
+//!   ([`meshlet_publish::ProbeReport`], persisted server-side into `publish_probe_reports`).
 //!
-//! 认证边界（§13.5）：agent API 用 Bearer 凭证，与管理 API 的 Cookie + CSRF
-//! 完全分离；凭证缺失/失效一律 401，**不得**回退到任何其他认证方式。
-//! 服务端数据面未开启时返回 503（`dataplane_not_configured`）——agent 视为
-//! 「计划暂不可用」重试，绝不把空计划当成「已生效」。
+//! Authentication boundary (§13.5): the agent API uses Bearer credentials, entirely separate from the
+//! management API's Cookie + CSRF; a missing/invalid credential always yields 401 and **must not**
+//! fall back to any other authentication scheme. When the server dataplane is not enabled it returns
+//! 503 (`dataplane_not_configured`) - the agent treats that as "plan temporarily unavailable" and
+//! retries, never treating an empty plan as "applied".
 
 use meshlet_domain::{DataplaneEvidence, PeerEndpoints};
 use meshlet_network::DevicePlan;
 
-/// 拉取本设备的期望数据面计划。
+/// Fetch this device's desired dataplane plan.
 pub fn fetch_plan(server_url: &str, token: &str) -> Result<DevicePlan, String> {
     let url = format!(
         "{}/api/v1/agent/device/desired",
@@ -25,16 +26,17 @@ pub fn fetch_plan(server_url: &str, token: &str) -> Result<DevicePlan, String> {
     );
     let req = ureq::get(&url).set("authorization", &format!("Bearer {token}"));
     let body = read(req.call())?;
-    // 服务端契约：结构化配置对象。解析失败必须显式报错——绝不吞掉、也绝不
-    // 用「空计划」顶替（空计划会抹掉现有隧道配置）。
+    // The server contract is a structured configuration object. A parse failure must be reported
+    // explicitly - never swallowed, and never substituted with an "empty plan" (an empty plan would wipe the existing tunnel configuration).
     serde_json::from_str(&body).map_err(|e| format!("parse the desired plan: {e}"))
 }
 
-/// 拉取本设备可直连的对端候选端点（§12 P2P）。
+/// Fetch this device's directly-connectable peer candidate endpoints (§12 P2P).
 ///
-/// 服务端已按本设备视角聚合（排除自身/非 Active/未上报/越出路由范围）并
-/// 确定性排序。失败（服务端不可达 / 401 / 待审批 404）以 `Err` 报出，由
-/// 调用方决定——直连是增益，失败不打断 hub 中继路径。
+/// The server has already aggregated from this device's perspective (excluding itself / non-Active /
+/// unreported / out-of-routing-scope peers) and sorted deterministically. Failures (server unreachable /
+/// 401 / pending approval 404) are reported as `Err` and left to the caller - direct connect is a
+/// bonus, and a failure must not interrupt the hub relay path.
 pub fn fetch_peer_endpoints(server_url: &str, token: &str) -> Result<Vec<PeerEndpoints>, String> {
     let url = format!(
         "{}/api/v1/agent/device/peers/endpoints",
@@ -51,30 +53,30 @@ pub(crate) fn read_public(response: Result<ureq::Response, ureq::Error>) -> Resu
     read_response(response)
 }
 
-/// 响应读取（非 2xx → 分类错误）：agent 侧 HTTP 端点共用，含任务通道
-/// （`crate::tasks`）。
+/// Response reader (non-2xx -> categorized error): shared by the agent-side HTTP endpoints,
+/// including the task channel (`crate::tasks`).
 pub(crate) fn read_response(
     response: Result<ureq::Response, ureq::Error>,
 ) -> Result<String, String> {
     read(response)
 }
 
-/// 自举注册响应（`POST /api/v1/device-registrations`）。
+/// Bootstrap registration response (`POST /api/v1/device-registrations`).
 #[derive(Debug, serde::Deserialize)]
 pub struct RegisterDeviceResponse {
     pub device_id: String,
     pub network_id: String,
-    /// 恒为 `pending`（控制中心批准前不参与数据面）。
+    /// Always `pending` (it does not take part in the dataplane before control-center approval).
     pub status: String,
-    /// Agent API 凭证，**仅此一次**下发。
+    /// Agent API credential, issued **this one time only**.
     pub agent_token: String,
     pub requested_at: String,
 }
 
-/// 自举注册：持自举码上报本机公钥，落 Pending 申请等控制中心审批。
+/// Bootstrap registration: report this machine's public key with a bootstrap token, filing a Pending request to await control-center approval.
 ///
-/// 401（自举码无效/已撤销/已耗尽）、409（设备名冲突）等都会以服务端
-/// 分类错误原样报出——这是运维能直接读懂的信息，不做本地转译。
+/// 401 (bootstrap token invalid/revoked/exhausted), 409 (device-name conflict), and the like are all
+/// reported as the server's own categorized error verbatim - this is information operators can read directly, so no local rewording is done.
 pub fn register_device(
     server_url: &str,
     bootstrap_token: &str,
@@ -120,10 +122,10 @@ pub fn report_apply(
     .map(|_| ())
 }
 
-/// 心跳上报：返回服务端在线判定回执（仅用于日志/排查）。
+/// Heartbeat report: returns the server's online verdict receipt (for logging / troubleshooting only).
 ///
-/// 失败一律以 `Err` 报出（含 401/503 等分类），由调用方决定是否重试。
-#[allow(clippy::too_many_arguments)] // 心跳字段多，与 direct.rs/peers_endpoints.rs 惯例一致
+/// Failures are always reported as `Err` (including categories such as 401/503), and the caller decides whether to retry.
+#[allow(clippy::too_many_arguments)] // the heartbeat has many fields, matching the direct.rs/peers_endpoints.rs convention
 pub fn heartbeat(
     server_url: &str,
     token: &str,
@@ -154,8 +156,8 @@ pub fn heartbeat(
     read(req)
 }
 
-/// 探针结果批量上报（R-06）：`{"reports": [...]}`，服务端按 (probe_id,
-/// device_id) 守卫落库。失败以 `Err` 报出，调用方保留未送达报告下轮重试。
+/// Batch reporting of probe results (R-06): `{"reports": [...]}`, with the server guarding the insert on (probe_id,
+/// device_id). Failures are reported as `Err`, and the caller retains the undelivered reports for a retry next round.
 pub fn report_publish_health(
     server_url: &str,
     token: &str,
@@ -175,15 +177,15 @@ pub fn report_publish_health(
     .map(|_| ())
 }
 
-/// 读取响应体（非 2xx → 分类错误）。
+/// Read the response body (non-2xx -> categorized error).
 fn read(res: Result<ureq::Response, ureq::Error>) -> Result<String, String> {
     let resp = res.map_err(describe)?;
     resp.into_string()
         .map_err(|e| format!("read response body: {e}"))
 }
 
-/// 错误分类：HTTP 非 2xx 一律带状态码与响应体片段报出（§12.2 失败可见——
-/// agent 侧日志能一眼看出是 401 凭证问题还是 503 服务端数据面未开启）。
+/// Error categorization: non-2xx HTTP always reports with the status code and a body fragment (§12.2 failure visibility -
+/// the agent-side log shows at a glance whether it is a 401 credential problem or a 503 server dataplane not enabled).
 fn describe(e: ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, resp) => {
@@ -216,16 +218,16 @@ mod tests {
 
     #[test]
     fn fetch_plan_rejects_malformed_json() {
-        // 契约解析失败必须可见：不得返回空计划伪装成“已生效”。
+        // A contract parse failure must stay visible: an empty plan must never be returned disguised as "applied".
         let body = "{\"tunnel\": {}}";
         assert!(serde_json::from_str::<DevicePlan>(body).is_err());
     }
 
     #[test]
     fn fetch_plan_requires_private_key_to_be_absent() {
-        // 服务端下发时 private_key 必须是 null（ADR-010）；若意外带值说明
-        // 契约被破坏——agent 应当发现（此单测锁定“null 可解析、有值也解析
-        // 但不入账本”这条边界，最终以 netns 集成测试断言执行侧不写盘私钥）。
+        // The server must deliver private_key as null (ADR-010); an accidental value would mean the
+        // contract was broken, which the agent should notice (this unit test pins the boundary "null parses, a value also parses
+        // but is never entered into the ledger", and the netns integration test ultimately asserts the executor writes no private key to disk).
         let plan: DevicePlan = serde_json::from_str(
             r#"{"tunnel":{"name":"wg0","address":"10.240.0.7","address_prefix":16,
             "listen_port":null,"peers":[],"mtu":null,"private_key":null},

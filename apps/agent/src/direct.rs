@@ -1,22 +1,22 @@
-//! P2P 直连管理器（§12）：对每个可直连对端驱动域层状态机（[on_probe]），
-//! 把跃迁动作翻译成 `wg set` 内核调用（经 `meshlet_network` 后端）。
-//!
-//! 纯逻辑（[plan_updates]、[DirectManager] 的状态持留）与 IO（fetch 端点、
-//! `wg set`）分离：前者可无特权单测，后者在 [crate::agent::Agent] 里执行。
-//!
-//! 每个周期：
-//! - 拉取服务端下发的可直连候选（建议而非承诺）；
-//! - 对每个候选对端：`decide_direct_path`（同 LAN / 公网打洞 / 中继）→
-//!   `classify_probe`（握手年龄）→ `on_probe`（状态跃迁）→ 动作；
-//! - 不再在候选集里的对端（撤销/下线）：回退 hub 并移除；
-//! - 动作是**本机**的 wg 配置增删（allowed-ips 只写对端 `/32`），不触碰
-//!   其他节点、不触碰服务端计划（§12）。
-//!
-//! 重启恢复：直连对端持久化在本机 ledger（`{state_dir}/direct.json`，只存
-//! keep set）——重启后按 ledger 恢复为「已建立」（Direct），下一周期由握手
-//! 健康度收敛（过期即回退，健康即保持）。**不从内核猜**：内核里任何非 hub
-//! peer 若被当作自有直连，外来 peer 的漂移检测就被废掉了（真机测试曾抓到
-//! 这个回归）。
+//! P2P direct-connection manager (§12): drives the domain-layer state machine per
+//! directly-connectable peer ([on_probe]) and translates state transitions into `wg
+//! set` kernel calls (via the `meshlet_network` backend). Pure logic
+//! ([plan_updates], [DirectManager] state retention) is separated from IO (fetching
+//! endpoints, `wg set`): the former is unit-testable without privileges, the latter
+//! is executed in [crate::agent::Agent]. Each cycle: - pull the
+//! directly-connectable candidates published by the server (advice, not a promise);
+//! - per candidate peer: `decide_direct_path` (same LAN / public hole punch /
+//! relay) → `classify_probe` (handshake age) → `on_probe` (state transition) →
+//! actions; - peers no longer in the candidate set (revoked/offline): fall back to
+//! hub and remove; - actions are **local** wg config additions/removals
+//! (allowed-ips only carries the peer `/32`); never touches other nodes nor the
+//! server plan (§12). Restart recovery: direct peers are persisted in the local
+//! ledger (`{state_dir}/direct.json`, keep set only) — after a restart the ledger
+//! restores them as "established" (Direct); the next cycle converges on handshake
+//! health (stale → fall back, healthy → keep). **Never guess from the kernel**: if
+//! any non-hub kernel peer were treated as an owned direct peer, drift detection
+//! for foreign peers would be defeated (a live-machine test once caught exactly
+//! that regression).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -29,68 +29,82 @@ use meshlet_domain::{
     DIRECT_PERSISTENT_KEEPALIVE_SECS, DIRECT_PROMOTE_FRESH_SECS, MAX_PROMOTE_ATTEMPTS,
 };
 
-/// 单个对端的直连管理状态（域层状态机状态 + 对端 overlay 地址）。
+/// Per-peer direct-connection management state (domain state machine state +
+/// the peer's overlay address).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectPeer {
-    /// 对端 overlay 地址（AllowedIPs `/32` 来源；域层已保证在路由范围内）。
+    /// Peer overlay address (source of the AllowedIPs `/32`; the domain layer
+    /// guarantees it is within the routed range).
     pub virtual_ipv4: Ipv4Addr,
-    /// 当前直连链路状态。
+    /// Current direct link state.
     pub state: PeerLinkState,
-    /// 最近一次探测读到的直连握手年龄（秒）。探测时快照（不是心跳时再读
-    /// 内核——状态机的决策输入与上报信号同源）；`None` = pending 中或读数失败。
+    /// Direct handshake age (seconds) at the last probe. Snapshotted at probe
+    /// time (not re-read from the kernel at heartbeat time — the state
+    /// machine's decision input and the reported signal share one source);
+    /// `None` = pending or read failure.
     pub last_handshake_age_secs: Option<u64>,
-    /// 对端名称（R-DIAG-2 展示；候选里读到）。
+    /// Peer name (R-DIAG-2 display; read from candidates).
     pub peer_name: String,
-    /// 当前直连 endpoint（`ip:port`）；未建立 / 无候选为空。
+    /// Current direct endpoint (`ip:port`); empty when not established / no
+    /// candidate.
     pub endpoint: String,
-    /// 最近一次直连路径实测 RTT（毫秒）。
+    /// Measured RTT (ms) on the last direct path probe.
     pub rtt_ms: Option<u64>,
-    /// RTT 读数来源（`overlay` / `endpoint` / `unreachable`；`None` = 未测）。
+    /// RTT source (`overlay` / `endpoint` / `unreachable`; `None` = unprobed).
     pub rtt_source: Option<String>,
-    /// 最近一次握手 Unix 时间戳（秒）。
+    /// Last handshake Unix timestamp (seconds).
     pub last_handshake_at: Option<u64>,
-    /// 累计接收字节（wg 读数）。
+    /// Total received bytes (wg reading).
     pub rx_bytes: u64,
-    /// 累计发送字节（wg 读数）。
+    /// Total sent bytes (wg reading).
     pub tx_bytes: u64,
-    /// SEL-004 候选端点详情（端点/RTT/丢包/当前选中与原因）；由 agent 探测
-    /// 周期填充（[DirectManager::record_candidates]）。
+    /// SEL-004 candidate endpoint details (endpoint/RTT/loss/selected and
+    /// reason); filled by the agent probe cycle
+    /// ([DirectManager::record_candidates]).
     pub candidates: Vec<meshlet_domain::DirectCandidateStatus>,
-    /// 记忆面：上次直连实际在用的 endpoint（promote 时记下、内核读数随
-    /// wg roaming 刷新）。回中继后的再晋升（re-promote）优先选回它——这类
-    /// 面（尤其内核漫游出来的源面）常不在服务端候选表，是「无探测目标 →
-    /// 永无 SEL-003 劣化误判」的最稳面；候选表按最低 IP 取 SameLan 会拿
-    /// 10.x ZT 面压过它（2026-11-13 stranded 实锤）。pending 验证失败
-    /// （3 拍无握手）即清除——死面不死锁。重启后清零（ledger 不存）。
+    /// Memory face: the endpoint actually in use by the last direct link
+    /// (recorded on promote, refreshed by kernel readings as wg roams).
+    /// Re-promotion after falling back to relay prefers it — such faces
+    /// (especially kernel-roamed source faces) are often absent from the
+    /// server candidate table, and are the safest face against "no probe
+    /// target → ever-present SEL-003 misjudgment"; picking SameLan by lowest
+    /// IP from the candidate table would let a 10.x ZT face outrank it
+    /// (2026-11-13 stranded incident). Cleared when pending verification
+    /// fails (3 rounds without a handshake) — a dead face must not deadlock.
+    /// Reset after restart (not persisted in the ledger).
     pub last_direct: Option<meshlet_domain::EndpointCandidate>,
 }
 
-/// 直连管理器：对端公钥 → 管理状态。跨周期持留（状态机要记住 pending 尝试次数）。
+/// Direct manager: peer public key → management state. Retained across cycles
+/// (the state machine must remember pending attempt counts).
 #[derive(Debug, Default)]
 pub struct DirectManager {
     peers: BTreeMap<String, DirectPeer>,
 }
 
-/// 一个周期的直连动作（执行层据此下发 `wg set`）。
+/// Direct actions for one cycle (the executor issues `wg set` from these).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectUpdate {
-    /// 建立直连：`allowed-ips` 只写对端 `/32` + 直连 endpoint + keepalive。
+    /// Establish direct: `allowed-ips` carries only the peer `/32` plus the
+    /// direct endpoint and keepalive.
     Promote {
         public_key: String,
         allowed_ips: Vec<Ipv4Cidr>,
         endpoint: SocketAddrV4,
     },
-    /// 回退 hub：移除该对端直连 peer（hub 整段路由自动接管）。
+    /// Fall back to hub: remove the peer's direct peer entry (the hub's whole
+    /// routed range takes over automatically).
     Demote { public_key: String },
 }
 
 impl DirectManager {
-    /// 重建一个空管理器（agent 启动时）。
+    /// Build an empty manager (at agent startup).
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 计划重放时应保留的直连 peer 公钥集（非 Relay 状态 = 想让它在场）。
+    /// Public keys of direct peers that should survive a plan replay
+    /// (non-Relay state = we want them present).
     pub fn keep_keys(&self) -> BTreeSet<String> {
         self.peers
             .iter()
@@ -98,23 +112,27 @@ impl DirectManager {
             .map(|(key, _)| key.clone())
             .collect()
     }
-
-    /// 本机是否还能直连某个对端（供 tray/诊断；当前仅按状态非 Relay）。
+    /// Whether this host can still reach a peer directly (for tray/diag;
+    /// currently just "state is not Relay").
     pub fn is_direct(&self, public_key: &str) -> bool {
         self.peers
             .get(public_key)
             .is_some_and(|peer| peer.state == PeerLinkState::Direct)
     }
 
-    /// 单个对端的当前管理状态（`peer dial` 结果判定用）。对端不在管返回
-    /// `None`——不是候选（本周期候选集外），拨号结果按失败呈现。
+    /// A peer's current management state (for judging `peer dial` results).
+    /// Returns `None` when the peer is unmanaged — not a candidate (outside
+    /// this cycle's candidate set), so the dial result is reported as failed.
     pub fn status_of(&self, public_key: &str) -> Option<&DirectPeer> {
         self.peers.get(public_key)
     }
 
-    /// 一个周期：拉候选 → 域层状态机 → 就地更新 → 返回待下发动作与决策记录。
-    /// 见 [plan_updates_logged]；执行层拿到动作后逐个 `wg set`（失败只记
-    /// 日志），决策记录补全判据摘要后落盘（决策日志 + 模式翻转事件）。
+    /// One cycle: pull candidates → domain state machine → in-place update →
+    /// return pending actions and decision records. See
+    /// [plan_updates_logged]; the executor issues `wg set` per action
+    /// (failures are only logged), and decision records are persisted after
+    /// the executor fills in the evidence summary (decision log + mode-flip
+    /// events).
     #[allow(clippy::too_many_arguments)]
     pub fn apply_plan(
         &mut self,
@@ -142,8 +160,9 @@ impl DirectManager {
         )
     }
 
-    /// 直连开关关闭：清空管理状态并回退所有已建立的直连（交还 hub）。
-    /// 返回待下发动作（全部 [DirectUpdate::Demote]）。
+    /// Direct toggle turned off: clear management state and fall back all
+    /// established direct links (hand back to hub). Returns the actions to
+    /// issue (all [DirectUpdate::Demote]).
     pub fn demote_all(&mut self) -> Vec<DirectUpdate> {
         let keys: Vec<String> = self.peers.keys().cloned().collect();
         self.peers.clear();
@@ -152,9 +171,11 @@ impl DirectManager {
             .collect()
     }
 
-    /// 持久化 keep set（`{state_dir}/direct.json`）：重启后据此恢复「已建立」。
-    /// 只写非 Relay 对端；写失败只报错由调用方记日志（ledger 是加速器而非
-    /// 真相源——丢了顶多多一个探测周期重建直连）。
+    /// Persist the keep set (`{state_dir}/direct.json`): the restart recovery
+    /// source for "established". Writes only non-Relay peers; write failure
+    /// is merely reported for the caller to log (the ledger is an
+    /// accelerator, not the source of truth — losing it costs at most one
+    /// extra probe cycle to rebuild direct links).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         #[derive(serde::Serialize)]
         struct Entry<'a> {
@@ -173,9 +194,11 @@ impl DirectManager {
         std::fs::write(path, serde_json::to_vec(&peers).unwrap_or_default())
     }
 
-    /// 从 ledger 恢复（agent 启动时）：所有登记对端按「已建立」（Direct）
-    /// 持有，下一周期由握手健康度收敛。文件缺失/损坏 → 空管理器（内核里
-    /// 遗留的直连对端会被对账当漂移清掉，再由探测周期重建——自愈，不猜）。
+    /// Restore from the ledger (agent startup): all registered peers are held
+    /// as "established" (Direct); the next cycle converges on handshake
+    /// health. Missing/corrupt file → empty manager (leftover direct peers in
+    /// the kernel get swept as drift by reconciliation, then rebuilt by the
+    /// probe cycle — self-healing, no guessing).
     pub fn load(path: &Path) -> Self {
         #[derive(serde::Deserialize)]
         struct Entry {
@@ -212,9 +235,10 @@ impl DirectManager {
         manager
     }
 
-    /// §12.3 链路状态上报：每个在管对端一条（按公钥排序，确定性）。供心跳
-    /// 携带给 hub（控制台展示 P2P/中继）。Relay 状态的对端不在此列——它们
-    /// 没有直连链路，UI 按「中继」默认呈现。
+    /// §12.3 link status report: one entry per managed peer (sorted by public
+    /// key, deterministic). Carried to the hub with the heartbeat (console
+    /// shows P2P/relay). Relay-state peers are not listed — they have no
+    /// direct link, and the UI shows them as "relay" by default.
     pub fn link_statuses(&self) -> Vec<DirectLinkStatus> {
         self.peers
             .iter()
@@ -241,8 +265,9 @@ impl DirectManager {
             .collect()
     }
 
-    /// SEL-004：填充某对端的候选端点详情（探测周期由执行侧调用）。对端不在管
-    /// 或处于 Relay（无直连链路可展示）则 no-op。
+    /// SEL-004: fill in a peer's candidate endpoint details (called by the
+    /// executor each probe cycle). No-op when the peer is unmanaged or in
+    /// Relay (no direct link to show).
     pub fn record_candidates(
         &mut self,
         public_key: &str,
@@ -255,8 +280,9 @@ impl DirectManager {
         }
     }
 
-    /// 当前处于直连相关状态（非 Relay）的对端清单（公钥 + overlay 地址），
-    /// 供探测周期做内核读数与直连路径延时实测（R-DIAG-2）。
+    /// Peers currently in a direct-related state (non-Relay): public key +
+    /// overlay address, for the probe cycle's kernel readings and direct-path
+    /// latency measurements (R-DIAG-2).
     pub fn direct_candidates(&self) -> Vec<(String, Ipv4Addr)> {
         self.peers
             .iter()
@@ -265,10 +291,12 @@ impl DirectManager {
             .collect()
     }
 
-    /// 记录已建立的直连 endpoint（Promote 成功后与内核读数刷新时由执行侧
-    /// 调用；§12.3 状态上报与控制台/CLI 展示）。对端不在管或处于 Relay
-    /// （无直连链路）则 no-op。记忆面跟随内核实况——wg roaming 后的真实
-    /// 源面（常不在候选表）正是再晋升要能选回的对象。
+    /// Record the established direct endpoint (called by the executor after a
+    /// successful Promote and on kernel-reading refreshes; §12.3 status
+    /// report and console/CLI display). No-op when the peer is unmanaged or
+    /// in Relay (no direct link). The memory face tracks kernel reality — the
+    /// real source face after wg roaming (often absent from the candidate
+    /// table) is exactly what re-promotion must be able to select again.
     pub fn record_endpoint(&mut self, public_key: &str, endpoint: String) {
         if let Some(peer) = self.peers.get_mut(public_key) {
             if peer.state != PeerLinkState::Relay {
@@ -278,7 +306,8 @@ impl DirectManager {
         }
     }
 
-    /// 清空直连 endpoint 与 RTT（Demote 回退 hub 后由执行侧调用）。
+    /// Clear the direct endpoint and RTT (called by the executor after a
+    /// Demote falls back to hub).
     pub fn clear_endpoint(&mut self, public_key: &str) {
         if let Some(peer) = self.peers.get_mut(public_key) {
             peer.endpoint.clear();
@@ -287,11 +316,12 @@ impl DirectManager {
         }
     }
 
-    /// 刷新直连状态读数（探测周期由执行侧调用）：直连路径实测 RTT（毫秒）+
-    /// 来源（如实四态：`probe_ok` / `handshake_fresh` / `probe_failed` /
-    /// `unprobed`，见 [`crate::direct_rtt::RttSource`]）、最近握手 Unix 秒、
-    /// 累计收发字节（wg 读数）。对端不在管或处于 Relay（无直连链路可测）
-    /// 则 no-op。
+    /// Refresh direct status readings (called by the executor each probe
+    /// cycle): measured direct-path RTT (ms) + source (honest four states:
+    /// `probe_ok` / `handshake_fresh` / `probe_failed` / `unprobed`, see
+    /// [`crate::direct_rtt::RttSource`]), last handshake Unix seconds, and
+    /// total rx/tx bytes (wg readings). No-op when the peer is unmanaged or
+    /// in Relay (no direct link to measure).
     pub fn record_peer_status(
         &mut self,
         public_key: &str,
@@ -313,33 +343,37 @@ impl DirectManager {
     }
 }
 
-/// 一次对端决策的回放记录（[`plan_updates_logged`] 全分支产出；执行层落
-/// `agent-decisions.jsonl` 决策日志，模式翻转换算成 switch-events 事件）。
-/// 无控制台上下文（Windows 服务 / schtasks SYSTEM）也能事后回放判定原因
-/// 与判据输入（2026-11-14 巡检单诊断缺口）。
+/// Replay record of one peer decision (produced by every branch of [`plan_updates_logged`]; the executor writes them to the
+/// `agent-decisions.jsonl` decision log, with mode flips converted into
+/// switch-events). Post-mortems can replay the reasons and evidence inputs
+/// even without a console context (Windows service / schtasks SYSTEM) — a
+/// diagnostic gap from the 2026-11-14 inspection sheet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerDecisionRecord {
-    /// 对端 wg 公钥。
+    /// Peer wg public key.
     pub public_key: String,
-    /// 对端名称（候选里读到的展示名）。
+    /// Peer name (display name read from candidates).
     pub peer_name: String,
-    /// 判定前模式（`p2p_direct` / `direct_pending` / `hub_relay`）。
+    /// Mode before the decision (`p2p_direct` / `direct_pending` /
+    /// `hub_relay`).
     pub from_mode: &'static str,
-    /// 判定后模式。
+    /// Mode after the decision.
     pub to_mode: &'static str,
-    /// 动作：`promote` / `demote` / `hold_relay` / `probe` / `defer`。
+    /// Action: `promote` / `demote` / `hold_relay` / `probe` / `defer`.
     pub action: &'static str,
-    /// 判定原因（人读）。
+    /// Reason for the decision (human-readable).
     pub reason: String,
-    /// 判据输入：最近直连握手年龄（秒；内核读数快照）。
+    /// Evidence input: last direct handshake age (seconds; kernel snapshot).
     pub handshake_age_secs: Option<u64>,
-    /// 判据输入：SEL-003 探测窗口劣化判定。
+    /// Evidence input: SEL-003 probe-window degradation verdict.
     pub degraded: bool,
-    /// 涉事 endpoint（promote 目标；demote 时的现役面；空 = 无）。
+    /// Endpoint involved (promote target; the active face on demote; empty =
+    /// none).
     pub endpoint: String,
 }
 
-/// [`PeerLinkState`] → 台账/上报模式字符串（决策记录与事件共用口径）。
+/// [`PeerLinkState`] → ledger/report mode string (shared by decision records
+/// and events).
 fn mode_str(state: PeerLinkState) -> &'static str {
     match state {
         PeerLinkState::Direct => "p2p_direct",
@@ -347,28 +381,32 @@ fn mode_str(state: PeerLinkState) -> &'static str {
         PeerLinkState::Relay => "hub_relay",
     }
 }
-
-/// 一个周期内的状态跃迁计划（纯函数，无 IO；返回按公钥排序，确定性）。
-/// 决策回放版见 [`plan_updates_logged`]。
-///
-/// - `wanted`：服务端下发的可直连候选（已按本设备路由范围过滤）；
-/// - `my_lan_subnets`：本机局域网子网（同网段判定）；
-/// - `scope` / `self_vip`：本设备可路由网段与自身 overlay 地址（AllowedIPs
-///   `/32` 冲突检查用）；
-/// - `current`：管理器当前状态（**就地更新**，跨周期持留）；
-/// - `handshake_ages`：各对端最近握手距今秒（内核读数）。
-///
-/// 行为：
-/// - 候选集之外的对端（撤销/下线/换段）→ 回退并移除；
-/// - 候选集之内：`decide_direct_path` 无可行路径 → 保持中继（不报错）；
-///   有路径 → `on_probe` 跃迁（Relay→Promote、Pending 超时→Demote、
-///   Direct 断开→Demote、恢复→再 Promote）。
-/// - `unhealthy_faces`：探测窗口判劣化的 (公钥, 候选面) 集合（promote 偏好
-///   健康面：晋升选路前置过滤）。探测关/空集合 = 不过滤（旧口径）。
-/// - `suppress_promote`：FLIP-002 demote backoff 的抑制表（公钥 → defer
-///   理由串）。抑制中的对端本轮**不发起 promote**（保持中继、保留记忆面）
-///   ——只作用 promote 侧，劣化判定 / demote 完全不受影响。空表 = 无抑制
-///   （旧口径）。
+/// State-transition plan for one cycle (pure function, no IO; returns peers sorted by
+/// public key, deterministic). For the replay-augmented version see
+/// [`plan_updates_logged`]. - `wanted`: directly-connectable candidates published by the
+/// server
+///   (already filtered to this device's routed range);
+/// - `my_lan_subnets`: local LAN subnets (for same-subnet checks);
+/// - `scope` / `self_vip`: this device's routable range and its own overlay
+///   address (for AllowedIPs `/32` conflict checks);
+/// - `current`: the manager's current state (**updated in place**, retained
+///   across cycles);
+/// - `handshake_ages`: seconds since each peer's last handshake (kernel
+///   readings).
+/// Behavior:
+/// - peers outside the candidate set (revoked/offline/moved segments) → fall
+///   back and remove;
+/// - inside the set: `decide_direct_path` with no viable path → stay on relay
+///   (no error); a path exists → `on_probe` transition (Relay→Promote,
+///   Pending timeout→Demote, Direct broken→Demote, recovered→Promote again).
+/// - `unhealthy_faces`: (public key, candidate face) pairs the probe window
+///   deems degraded (promote prefers healthy faces: pre-filter for promotion
+///   path selection). Probing off / empty set = no filtering (legacy
+///   behavior).
+/// - `suppress_promote`: the FLIP-002 demote-backoff suppression table
+///   (public key → defer reason string). Suppressed peers **do not start a
+///   promote** this cycle (stay on relay, keep the memory face) — it only
+/// affects the promote side; degradation checks / demote are untouched. Empty table = no suppression (legacy behavior).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_updates_logged(
     wanted: &[PeerEndpoints],
@@ -385,7 +423,8 @@ pub fn plan_updates_logged(
     let mut updates = Vec::new();
     let mut records = Vec::new();
 
-    // 候选集之外：回退并移除（先收集，避免借用冲突）。
+    // Outside the candidate set: fall back and remove (collect first to avoid
+    // borrow conflicts).
     let wanted_keys: BTreeMap<&str, ()> = wanted
         .iter()
         .map(|peer| (peer.public_key.as_str(), ()))
@@ -418,24 +457,36 @@ pub fn plan_updates_logged(
             .get(&key)
             .map(|entry| entry.state)
             .unwrap_or(PeerLinkState::Relay);
-        // 决策直连路径。回中继后的再晋升（re-promote）优先选回记忆面：
-        // 上次直连实际在用的 endpoint（含内核漫游出来的、不在服务端候选表
-        // 的面）。候选表决策只在无记忆时兜底（首次晋升 / 记忆已因验证失败
-        // 清除）。
+        // Decide the direct path. Re-promotion after falling back to relay
+        // prefers the memory face: the endpoint actually used by the last
+        // direct link (including kernel-roamed faces absent from the server
+        // candidate table). The candidate-table decision is only the fallback
+        // when there is no memory (first promotion / memory already cleared
+        // by failed verification).
         //
-        // promote 偏好健康面（2026-11-14 巡检单 nov14-1410 代决，三选一之二）：
-        // 记忆面/候选面若正处探测窗口劣化（unhealthy_faces），本轮不选它——
-        // 劣化面上 re-promote 只会立刻再降级（SEL-003 demote → 记忆面回拨 →
-        // 再降级的翻转循环，930f137 决策日志实录）。滤后有健康面用健康面；
-        // 只剩劣化面 → 本轮 defer（保持中继等面恢复，决策记录留痕）。无基线
-        // /探测关的面不在 unhealthy_faces（不武断封面），行为同旧口径。
+        // Promote prefers healthy faces (2026-11-14 inspection sheet
+        // nov14-1410 delegated decision, option two of three): if the memory
+        // face / candidate face is currently degraded per the probe window
+        // (unhealthy_faces), do not pick it this cycle — re-promoting on a
+        // degraded face just degrades again immediately (the flip loop of
+        // SEL-003 demote → memory-face fallback → degrade again, recorded in
+        // the 930f137 decision log). If healthy faces remain after filtering,
+        // use them; if only degraded faces remain → defer this cycle (stay on
+        // relay until faces recover, recorded in the decision log). Faces
+        // without a baseline / with probing off are not in unhealthy_faces
+        // (never blanket-blacklist them), matching legacy behavior.
         let mut used_memory_face = false;
         let mut deferred_face: Option<EndpointCandidate> = None;
-        // AGENT-ISO-2：endpoint 落在本机 overlay 范围内 = 拿隧道里的地址当隧道
-        // endpoint——包要先进隧道才够得到它，纯 hairpin 空转。imac 2026-11-23
-        // 实测该形态 RTT 1750ms，同网段直连仅 19ms。候选面与记忆面都要滤：
-        // 记忆面绕过 decide_direct_path 直接当选，只滤候选拦不住它回潮。
-        // `scope` 即单段网络的整个 overlay（分段网络为所属段前缀），语义正好。
+        // AGENT-ISO-2: an endpoint inside the local overlay range = using an
+        // in-tunnel address as the tunnel endpoint — packets must first enter
+        // the tunnel to reach it, pure hairpin waste. Measured on the imac
+        // 2026-11-23: 1750ms RTT in this shape vs 19ms same-subnet direct.
+        // Filter both candidate faces and the memory face: the memory face
+        // bypasses decide_direct_path and is picked directly, so filtering
+        // candidates alone cannot stop it from coming back.
+        // `scope` is exactly the whole overlay of a single-segment network (the owning
+        // segment prefix for segmented networks), which is precisely the
+        // semantics needed here.
         let candidates: Vec<EndpointCandidate> = peer
             .endpoints
             .iter()
@@ -443,10 +494,13 @@ pub fn plan_updates_logged(
             .filter(|c| !scope.contains(c.ip))
             .collect();
         let unhealthy = |c: &EndpointCandidate| unhealthy_faces.contains(&(key.clone(), *c));
-        // 记忆面必须**仍然够格**才可复用：它是历史/内核漫游写下的，绕过
-        // decide_direct_path 直接当选——若不复核，换成 LAN 口径后的旧地址
-        // （如对端的 ZeroTier 地址，本机已不认它是同网段）会一直被选回，
-        // 永远切不到物理面。判据与源头过滤同一条（[is_viable_endpoint]）。
+        // The memory face is only reusable if it is **still qualified**: it
+        // was written by history/kernel roaming and is picked directly,
+        // bypassing decide_direct_path — without re-checking, a stale address
+        // from before the LAN-criteria change (e.g. the peer's ZeroTier
+        // address, no longer same-subnet to us) would keep getting selected,
+        // and the physical face would never be reached. Same criterion as the
+        // source filter ([is_viable_endpoint]).
         let memory = current
             .get(&key)
             .and_then(|entry| entry.last_direct)
@@ -471,7 +525,9 @@ pub fn plan_updates_logged(
                             {
                                 deferred_face = Some(c);
                             } else if let Some(c) = memory {
-                                // 候选表无路而记忆面被劣化否决：坏点即记忆面。
+                                // No candidate-table path and the memory face
+                                // was vetoed as degraded: the bad point is the
+                                // memory face.
                                 deferred_face = Some(c);
                             }
                         }
@@ -481,9 +537,11 @@ pub fn plan_updates_logged(
             }
             _ => decide_direct_path(my_lan_subnets, &candidates),
         };
-        // SEL-003 恢复门：回中继后未连续健康 N 轮 → 保持中继（不立即切回，
-        // 防抖）。健康已稳定（ready）后才允许状态机重新 Promote。记忆面
-        // 穿透保持——门放行后的再晋升仍优先选回它。
+        // SEL-003 recovery gate: fewer than N consecutive healthy rounds since
+        // falling back to relay → stay on relay (no immediate switch back;
+        // debouncing). The state machine may Promote again only once health
+        // is stable (ready). The memory face persists through the hold —
+        // re-promotion after the gate opens still prefers it.
         if hold_relay.contains(&key) && matches!(state, PeerLinkState::Relay) {
             let last_direct = current.get(&key).and_then(|entry| entry.last_direct);
             records.push(PeerDecisionRecord {
@@ -516,9 +574,11 @@ pub fn plan_updates_logged(
             );
             continue;
         }
-        // FLIP-002 demote backoff：抑制中的对端本轮不 promote（保持中继、
-        // 保留记忆面）——指数退避拉开重试间隔，劣化面上的无效重试从分钟级
-        // 循环退化为个位数尝试。只拦 promote：劣化判定与 demote 不受影响。
+        // FLIP-002 demote backoff: suppressed peers do not promote this cycle
+        // (stay on relay, keep the memory face) — exponential backoff widens
+        // the retry interval, turning minute-scale futile retry loops on a
+        // degraded face into single-digit attempts. Only promotes are
+        // blocked: degradation checks and demote are unaffected.
         if matches!(state, PeerLinkState::Relay) {
             if let Some(reason) = suppress_promote.get(&key) {
                 let last_direct = current.get(&key).and_then(|entry| entry.last_direct);
@@ -553,9 +613,12 @@ pub fn plan_updates_logged(
                 continue;
             }
         }
-        // promote defer：候选里只剩劣化面 → 本轮不晋升（保持中继等面恢复）。
-        // 不在劣化面上打洞/握手——那只会立刻被 SEL-003 再降级成翻转噪声。
-        // 记忆面保留不清（面恢复后记忆面照常优先选回）。
+        // Promote defer: only degraded faces remain among candidates → no
+        // promotion this cycle (stay on relay until faces recover). Do not
+        // hole-punch/handshake on a degraded face — SEL-003 would just
+        // degrade it again into flip noise. The memory face is kept, not
+        // cleared (once faces recover, the memory face is preferred again as
+        // usual).
         if let Some(face) = deferred_face {
             let last_direct = current.get(&key).and_then(|entry| entry.last_direct);
             records.push(PeerDecisionRecord {
@@ -588,20 +651,26 @@ pub fn plan_updates_logged(
             );
             continue;
         }
-        // SEL-003：直连劣化（丢包尖峰/超时/RTT 深劣化）→ 立即回中继，不等
-        // 握手过期。（劣化优先级最高：即使握手证据新鲜，劣化仍回退——降级
-        // 口径不放松。这是「握手新鲜短路」的补口子：freshness 不能单方面判
-        // Healthy，探测必须参与判定——2026-11-13 SEL-002 双机验收实锤的
-        // hs 冻结 133–203s 钉直连，正是缺这条时延/探测否决路径。）
+        // SEL-003: direct degradation (loss spike / timeout / deeply degraded
+        // RTT) → fall back to relay immediately, don't wait for handshake
+        // expiry. (Degradation has top priority: even with fresh handshake
+        // evidence, degradation still falls back — the demotion criteria are
+        // not relaxed. This closes the "fresh handshake short-circuit" hole:
+        // freshness alone must not judge Healthy; probing must participate —
+        // the 2026-11-13 SEL-002 two-machine acceptance run pinned the direct
+        // link with a handshake frozen at 133–203s, exactly the missing
+        // latency/probe veto path.)
         if degraded.get(&key).copied().unwrap_or(false)
             && matches!(
                 state,
                 PeerLinkState::Direct | PeerLinkState::DirectPending { .. }
             )
         {
-            // 劣化回退的记忆面：已建立的 Direct 保留（面大概率还在，真死了
-            // 下次 promote 验证失败自然清除）；pending 被打断的 endpoint 尚未
-            // 验证过握手，弃用。
+            // Memory face on a degradation fallback: keep it for established
+            // Direct links (the face is probably still there; if truly dead,
+            // the next promote's failed verification clears it naturally);
+            // discard it for pending — an interrupted endpoint has never
+            // verified a handshake.
             let mut last_direct = current.get(&key).and_then(|entry| entry.last_direct);
             if matches!(state, PeerLinkState::DirectPending { .. }) {
                 last_direct = None;
@@ -641,10 +710,12 @@ pub fn plan_updates_logged(
             updates.push(DirectUpdate::Demote { public_key: key });
             continue;
         }
-        // 探测判读：pending 用**握手证据优先**的晋升门槛（最近握手新鲜即
-        // 视为直连验证成功，ICMP 探测失败/不可用不拦晋升——Windows 网格
-        // 防火墙对 wg 接口 100% 丢包，imac 2026-11-07 取证）；其余状态沿用
-        // 健康窗口口径（Direct 断开回退等）。
+        // Probe interpretation: pending uses a **handshake-evidence-first**
+        // promotion gate (a fresh recent handshake counts as direct-link
+        // verification success; ICMP probe failure/unavailability does not
+        // block promotion — the Windows mesh firewall drops 100% of packets
+        // to the wg interface, per imac forensics 2026-11-07); other states
+        // keep the health-window criteria (Direct broken → fall back, etc.).
         let handshake_age = handshake_ages.get(&key).copied();
         let probe = match state {
             PeerLinkState::DirectPending { .. } => classify_promote_probe(
@@ -655,12 +726,13 @@ pub fn plan_updates_logged(
             _ => classify_probe(state, handshake_age, DIRECT_HEALTH_WINDOW_SECS),
         };
         let (next_state, mut action) = on_probe(state, decision, probe, MAX_PROMOTE_ATTEMPTS);
-        // AGENT-ISO-3：现役面不达标时强制重选。历史遗留 / 内核漫游写下的坏面
-        // （对端 ZeroTier 地址、自身 overlay hairpin）只要握手还健康，状态机就
-        // 一直 `Keep` 它——源头过滤永远没机会生效（2026-11-23 实录：重启后
-        // endpoint 原样保留）。这里补一次纠正：有达标替代面就直接 Promote 覆盖
-        // （不先 Demote，不中断现有握手）。切完现役面即达标，下轮不再触发——
-        // 收敛，不会来回抖；读不到现役面则不武断（§7.5），维持原动作。
+        // AGENT-ISO-3: force re-selection when the active face is unqualified.
+        // A bad face left by history / kernel roaming (the peer's ZeroTier
+        // // address, self-overlay hairpin) stays `Keep`ed by the state machine // as long as its handshake is healthy —
+        // the source filter never gets a // chance to apply (2026-11-23: the endpoint survived a restart // unchanged). Add
+        // a correction here: if a qualified alternative face // exists, Promote over it directly (no Demote first, keeping the
+        // // existing handshake). Once switched, the active face qualifies and // this stops firing — convergent, no flapping; if
+        // the active face // cannot be read, do not act arbitrarily (§7.5), keep the original // action.
         if matches!(action, PeerLinkAction::Keep) {
             let current_viable = current
                 .get(&key)
@@ -681,9 +753,12 @@ pub fn plan_updates_logged(
                 action = PeerLinkAction::Promote(decision);
             }
         }
-        // 记忆面维护：promote 记下要拨的面；pending 验证失败的回退弃用记忆
-        // （该 endpoint 未能建立握手，死面不锁死再晋升）；已建立直连的回退
-        // 保留（面大概率还在，见劣化分支同款语义）。
+        // Memory-face maintenance: promote records the face being dialed; a
+        // pending verification failure discards the memory (that endpoint
+        // never established a handshake; a dead face must not lock up
+        // re-promotion); a fallback from an established direct link keeps it
+        // (the face is probably still there; same semantics as the
+        // degradation branch).
         let mut last_direct = current.get(&key).and_then(|entry| entry.last_direct);
         match &action {
             PeerLinkAction::Promote(path) => {
@@ -709,8 +784,9 @@ pub fn plan_updates_logged(
                 state: next_state,
                 last_handshake_age_secs: handshake_age,
                 peer_name: peer.name.clone(),
-                // endpoint 在 Promote 动作里给出；Relay/Demote 保留上次值，
-                // 由动作执行侧在 Demote 时清空（见 agent.apply_direct_update）。
+                // endpoint is provided by the Promote action; Relay/Demote
+                // keep the last value, and the executor clears it on Demote
+                // (see agent.apply_direct_update).
                 endpoint: prev_endpoint.clone(),
                 rtt_ms: None,
                 rtt_source: None,
@@ -721,8 +797,10 @@ pub fn plan_updates_logged(
                 last_direct,
             },
         );
-        // 决策入账：状态迁移或非 Keep 动作都记一条（探测窗口/握手年龄等判据
-        // 输入由执行层补全后落盘，见 agent.reconcile_direct）。
+        // Ledger the decision: record one entry for any state transition or
+        // non-Keep action (evidence inputs like probe window / handshake age
+        // are filled in by the executor before persisting; see
+        // agent.reconcile_direct).
         if next_state != state || !matches!(action, PeerLinkAction::Keep) {
             let (action_str, reason) = match &action {
                 PeerLinkAction::Promote(_) => (
@@ -753,8 +831,9 @@ pub fn plan_updates_logged(
                     },
                 ),
                 PeerLinkAction::Keep => {
-                    // Keep 且状态变化 = pending 门槛判定：验成（→Direct）或
-                    // 继续等（attempts+1）。验成与 Promote 同性质（晋升）。
+                    // Keep with a state change = pending gate verdict:
+                    // verified (→Direct) or keep waiting (attempts+1).
+                    // Verification is promote-like in nature (promotion).
                     if matches!(next_state, PeerLinkState::Direct) {
                         (
                             "promote",
@@ -789,8 +868,10 @@ pub fn plan_updates_logged(
             PeerLinkAction::Keep => {}
             PeerLinkAction::Demote => updates.push(DirectUpdate::Demote { public_key: key }),
             PeerLinkAction::Promote(path) => {
-                // 冲突边界（自己/越出路由范围）由域层复核；异常即放弃直连
-                // （保持中继，绝不发越界 / 自指 peer）。
+                // Conflict boundaries (self / outside the routed range) are
+                // re-checked by the domain layer; on error, give up the direct
+                // link (stay on relay — never issue an out-of-range or
+                // self-referential peer).
                 let Ok(allowed_ips) = direct_peer_allowed_ips(scope, self_vip, peer.virtual_ipv4)
                 else {
                     continue;
@@ -806,7 +887,8 @@ pub fn plan_updates_logged(
     (updates, records)
 }
 
-/// 仅取动作序列的便捷封装（决策记录不需要时的入口）。
+/// Convenience wrapper returning only the action sequence (entry point for
+/// callers that do not need decision records).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_updates(
     wanted: &[PeerEndpoints],
@@ -835,18 +917,23 @@ pub fn plan_updates(
     .0
 }
 
-/// endpoint 是否仍可作为直连面（AGENT-ISO-3，源头过滤与记忆面复核共用）。
+/// Whether an endpoint still qualifies as a direct face (AGENT-ISO-3, shared
+/// by the source filter and the memory-face re-check).
 ///
-/// 判据与 [decide_direct_path] 同源：**同网段可达，或公网可打洞**。据此剔除
-/// 三类坏面：
-/// - 落在本机 overlay 范围内 → hairpin 自环（包要先进隧道才够得到它，
-///   imac 2026-11-23 实测 1750ms vs 同网段 19ms）；
-/// - 私网但既不同网段也不在 overlay → **外来网段**（对端的 ZeroTier 地址），
-///   用它当 endpoint 等于借道本机不掌握的另一套隧道；
-/// - 其余远端 LAN 私网 → 本机本就无法直达，挡在候选表外免得探测窗口与
-///   SEL-002 切换绕过决策层把它选成现役面。
+/// Same criterion as [decide_direct_path]: **same-subnet reachable, or
+/// public and hole-punchable**. This rejects three classes of bad faces:
+/// - inside the local overlay range → hairpin self-loop (packets must first
+///   enter the tunnel to reach it; measured on the imac 2026-11-23:
+///   1750ms vs 19ms same-subnet);
+/// - private but neither same-subnet nor in the overlay → **foreign subnet**
+///   (the peer's ZeroTier address); using it as the endpoint means riding
+// / another tunnel this host does not control; / - other remote-LAN private ranges → unreachable from
+// here anyway; keep / them out of the candidate table so the probe window and SEL-002
+///   switching cannot bypass the decision layer and make one the active
+///   face.
 ///
-/// `scope` = 本机 overlay 可路由范围（单段网络即整个 overlay）。
+/// `scope` = the local overlay routable range (the whole overlay for a
+/// single-segment network).
 pub(crate) fn is_viable_endpoint(
     candidate: &EndpointCandidate,
     my_lan_subnets: &[Ipv4Cidr],
@@ -858,24 +945,27 @@ pub(crate) fn is_viable_endpoint(
     is_lan_reachable(my_lan_subnets, candidate) || candidate.kind == EndpointKind::Public
 }
 
-/// 决策路径的 endpoint（SameLan / HolePunch 都给出一个直连地址）。
+/// The endpoint of the decision path (SameLan / HolePunch each yield a direct
+/// address).
 fn path_endpoint(path: DirectDecision) -> SocketAddrV4 {
     match path {
         DirectDecision::SameLan(candidate) | DirectDecision::HolePunch(candidate) => {
             candidate.socket()
         }
         DirectDecision::Relay => {
-            // `on_probe` 只在非 Relay 决策下发 Promote，这里不会走到。
+            // `on_probe` only issues Promote on a non-Relay decision; this
+            // arm is unreachable.
             SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)
         }
     }
 }
 
-/// 握手读数兜底合并（纯函数）：`dedicated`（`wg show latest-handshakes` 专项
-/// 读数）为空/缺某对端时，用诊断 dump（`wg show dump`，同一次内核读数的另一
-/// 投影）推导的年龄补齐。Windows 隧道服务重装抖动期间 latest-handshakes 可能
-/// 不可读（「Unable to access interface」，imac 2026-11-07 取证）——专项读数
-/// 失败不该让握手证据整体丢失，否则晋升门槛拿不到输入，直连永卡「拨号中」。
+/// Fallback merge of handshake readings (pure function): when `dedicated`
+/// (the `wg show latest-handshakes` dedicated reading) is empty or missing a
+/// peer, fill in the age derived from the diagnostic dump (`wg show dump`,
+/// another projection of the same kernel reading). During Windows tunnel
+// / service reinstall churn, latest-handshakes can be unreadable ("Unable to / access interface", imac forensics 2026-11-07) — a failed dedicated reading / must
+// not lose the handshake evidence wholesale, otherwise the promotion / gate gets no input and the direct link stays stuck on "dialing".
 pub fn merge_handshake_ages(
     dedicated: BTreeMap<String, u64>,
     dump: BTreeMap<String, u64>,
@@ -887,7 +977,7 @@ pub fn merge_handshake_ages(
     merged
 }
 
-/// keepalive 周期（域层常量，执行层据此下发）。
+/// Keepalive period (domain-layer constant; the executor issues it).
 pub fn keepalive_secs() -> u32 {
     DIRECT_PERSISTENT_KEEPALIVE_SECS
 }

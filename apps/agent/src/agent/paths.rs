@@ -12,7 +12,8 @@ pub(super) fn task_ledger_path(state_dir: &str) -> PathBuf {
     Path::new(state_dir).join("tasks.json")
 }
 
-/// 本设备私钥（ADR-010：只在本机文件里，服务端永不携带；未配置则保留接口现有私钥）。
+/// This device's private key (ADR-010: it lives only in local files, the server
+/// never carries it; when unconfigured, keep the interface's existing private key).
 pub fn read_private_key(dp: &DataplaneConfig) -> Result<Option<String>, String> {
     let Some(path) = dp
         .private_key_file

@@ -8,20 +8,20 @@ use crate::common::{
     spawn_endpoint_server, temp_state_dir, Topology, HANDSHAKE_TIMEOUT,
 };
 
-/// §12 直连建立/回退的真机验收：走**完整真实流程**——mock agent API 下发候选
-/// → `reconcile_direct`（拉候选 → 域层状态机 → `wg set`）建立同网段直连 →
-/// hub 入口关闭仍通（证明走的是直连，/32 长前缀优先）→ 服务端撤候选 →
-/// 状态机回退并移除直连 → 经 hub 恢复。对账全程不得把直连对端当漂移清掉；
-/// 外来 peer 注入仍必须按漂移清除。
+/// On-box acceptance for §12 direct-connect setup/fallback: drives the **full real flow** — the mock
+/// agent API serves candidates -> `reconcile_direct` (fetch candidates -> domain-layer state machine ->
+/// `wg set`) establishes a same-LAN direct link -> with the hub ingress closed traffic still flows (proving
+/// it rides the direct peer, the longer /32 prefix winning) -> the server withdraws the candidate -> the
+/// state machine falls back and removes the direct peer -> traffic resumes via hub. Reconcile must never clear direct peers as drift; injected foreign peers still must be cleared as drift.
 #[test]
 fn agent_direct_connect_establishes_and_falls_back_to_hub() {
     let topo = match Topology::setup("d") {
         Some(t) => t,
-        None => return, // 已打印 SKIP:
+        None => return, // printed SKIP already:
     };
     let port: u16 = 51820;
 
-    // ---- mock agent API：A 看到候选 B，B 看到候选 A（各自 LAN endpoint）----
+    // ---- mock agent API: A sees candidate B and B sees candidate A (each on its own LAN endpoint) ----
     let (server_url, responses) = spawn_endpoint_server(vec![
         (
             "tok-a".into(),
@@ -33,7 +33,7 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
         ),
     ]);
 
-    // ---- hub 侧先行（server 数据面） --------------------------------------
+    // ---- hub side first (server data plane) -------------------------------
     let mut hub_backend = LinuxNetworkBackend::new()
         .with_netns(&topo.hub.netns)
         .with_sudo()
@@ -47,7 +47,7 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
         )
         .expect("hub applies its own plan");
 
-    // ---- A、B 各起一个带直连配置的 agent：reconcile 把 wg0 绑到直连端口 ----
+    // ---- start one direct-configured agent for each of A and B: reconcile binds wg0 to the direct port ----
     let a_dir = temp_state_dir("direct-a");
     let b_dir = temp_state_dir("direct-b");
     let mut a_agent = agent_in_direct(&topo.a, &a_dir, port, &server_url, "tok-a");
@@ -76,11 +76,11 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
         topo.ping_within(&topo.a.netns, &topo.b.overlay, HANDSHAKE_TIMEOUT),
         "A -> B via hub"
     );
-    // ---- 真实直连探测一轮（拉候选 → SameLan 决策 → wg set 下发）----------
+    // ---- one real direct probe round (fetch candidates -> SameLan decision -> wg set) ----
     a_agent.reconcile_direct(&a_plan);
     b_agent.reconcile_direct(&b_plan);
 
-    // 直连握手建立（keepalive 15s 触发；域层健康窗口 35s 判健康）。
+    // The direct handshake comes up (keepalive triggers every 15s; the domain health window is 35s).
     let a_backend = LinuxNetworkBackend::new()
         .with_netns(&topo.a.netns)
         .with_sudo()
@@ -100,9 +100,9 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
     };
     assert!(established, "direct handshake A <-> B did not establish");
 
-    // ---- §12.3 状态上报：等一个「到期」探测周期（30s 节流真实生效，keepalive
-    // 15s 持续刷新握手 → 到期周期读到健康 → 状态机转 Direct）。届时链路状态
-    // 导出「direct」并携带探测时的握手年龄快照（供 hub/控制台展示）。------
+    // ---- §12.3 status reporting: wait for a probe cycle that becomes "due" (the 30s throttle really
+    // applies; keepalive refreshes the handshake every 15s -> the due cycle reads healthy -> the state
+    // machine switches to Direct). The link state then exports "direct" carrying the handshake-age snapshot from that probe (for hub/console display). ----
     let reported_direct = {
         let start = Instant::now();
         loop {
@@ -127,8 +127,8 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
         "healthy handshake age snapshotted: {statuses:?}"
     );
 
-    // ---- 关 hub 入口：A/B 的 hub peer endpoint 指到死地址。此后 A→B 仍通
-    // 必然是直连 peer（/32 长前缀优先）承载，而非 hub。-------------------
+    // ---- close the hub ingress: point A's/B's hub peer endpoint at a dead address. A->B still
+    // working afterwards must be carried by the direct peer (/32 longest prefix), not the hub. ----
     for node in [&topo.a, &topo.b] {
         require_ok(
             &netns_exec(
@@ -155,7 +155,7 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
         "B -> A via direct with hub down"
     );
 
-    // ---- 直连对端不得被对账当漂移清掉：reconcile 后仍在、且不重放 -------
+    // ---- reconcile must not clear direct peers as drift: still present after reconcile, no replay ----
     let decision = a_agent
         .reconcile(&a_plan)
         .expect("A reconcile with a direct peer");
@@ -172,7 +172,7 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
         "direct peer survived reconcile"
     );
 
-    // ---- 服务端撤候选（B 下线）→ 下一探测周期状态机回退并移除直连 -------
+    // ---- server withdraws the candidate (B goes offline) -> next probe cycle the state machine falls back and removes the direct peer ----
     responses
         .lock()
         .unwrap()
@@ -181,7 +181,7 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
     let demoted = {
         let start = Instant::now();
         loop {
-            // 30s 节流内新周期不触发，直接再驱动一轮（测试不受节流约束语义）。
+            // Within the 30s throttle a new cycle would not fire, so just drive another round (the test is not bound by throttling semantics).
             a_agent.reconcile_direct(&a_plan);
             b_agent.reconcile_direct(&b_plan);
             if !a_backend
@@ -199,13 +199,13 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
     };
     assert!(demoted, "direct peer must be demoted after the revoke");
 
-    // ---- §12.3 状态上报随回退清空：不再上报该对端（UI 默认按中继呈现）----
+    // ---- §12.3 status reporting clears on fallback: the peer is no longer reported (the UI defaults to relay presentation) ----
     assert!(
         a_agent.direct_link_statuses().is_empty(),
         "no direct link reported after fallback"
     );
 
-    // ---- 恢复 hub 入口 → 经 hub 恢复 -------------------------------------
+    // ---- restore the hub ingress -> traffic resumes via hub ----
     for node in [&topo.a, &topo.b] {
         require_ok(
             &netns_exec(
@@ -232,7 +232,7 @@ fn agent_direct_connect_establishes_and_falls_back_to_hub() {
         "B -> A via hub after fallback"
     );
 
-    // ---- 回退后对账不再持有直连保留集，也不重放（缺失的直连对端不算漂移）
+    // ---- after fallback reconcile holds no direct-connect retention set and replays nothing (a missing direct peer is not drift)
     let decision = a_agent
         .reconcile(&a_plan)
         .expect("A reconcile after fallback");

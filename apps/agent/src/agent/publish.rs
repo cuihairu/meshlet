@@ -4,21 +4,21 @@ use meshlet_publish::{ProbeReport, PublishPlan, Publisher};
 
 use crate::server;
 
-/// 发布运行时（R-06）：一个单 worker 的 tokio runtime 承载
-/// [`meshlet_publish::Publisher`] 的监听任务与探针排程；`unreported` 是尚未
-/// 送达控制面的探针结果（上报失败保留，下一轮重试）。
+/// Publish runtime (R-06): a single-worker tokio runtime carries
+/// [`meshlet_publish::Publisher`]'s listener tasks and probe scheduling; `unreported` holds probe results not
+/// yet delivered to the control plane (kept on report failure, retried next round).
 ///
-/// 运行层只由服务端计划驱动（§16.4：不下发命令），失败只记日志——发布问题
-/// 绝不打断隧道/路由/NAT 的数据面循环。
+/// The runtime layer is driven only by the server plan (§16.4: commands are never issued), and failures only log
+/// - publish problems must never interrupt the tunnel/routing/NAT dataplane loop.
 pub(super) struct PublishRuntime {
-    /// 发布层专用运行时（Agent 主循环是同步线程，没有环境运行时可用）；
-    /// 用 `Option` 持有是为了在 `Drop` 里取走它、放到独立线程关闭。
+    /// Runtime dedicated to the publish layer (the agent main loop is a synchronous thread with no ambient runtime available);
+    /// it is held in an `Option` so `Drop` can take it away and shut it down on a separate thread.
     runtime: Option<tokio::runtime::Runtime>,
     publisher: Publisher,
     unreported: Vec<ProbeReport>,
 }
 
-/// 单批上报上限（与控制面 `PublishHealthRequest` 的批上限一致）。
+/// Per-batch report cap (matching the control plane's `PublishHealthRequest` batch limit).
 pub(super) const PUBLISH_REPORT_BATCH: usize = 256;
 
 impl PublishRuntime {
@@ -37,7 +37,7 @@ impl PublishRuntime {
         }
     }
 
-    /// 是否没有任何监听或探针在跑（决定能否跳过 tokio 调用）。
+    /// Whether no listener or probe is running (decides whether the tokio call can be skipped).
     pub(super) fn is_idle(&self) -> bool {
         self.publisher.is_idle()
     }
@@ -45,9 +45,9 @@ impl PublishRuntime {
 
 impl Drop for PublishRuntime {
     fn drop(&mut self) {
-        // tokio 不允许在异步上下文里 drop Runtime（关闭时要 block_on）。Agent
-        // 主循环是同步线程，但测试/嵌入方可能在 async 上下文里构造并丢弃
-        // Agent——把 Runtime 挪到独立线程关闭，任何调用方都不会踩这个坑。
+        // tokio forbids dropping a Runtime from inside an async context (shutdown needs block_on). The agent
+        // main loop is a synchronous thread, but tests/embedders may construct and drop the Agent from an async
+        // context - shut the Runtime down on a separate thread so no caller hits this pitfall.
         let Some(runtime) = self.runtime.take() else {
             return;
         };
@@ -60,12 +60,12 @@ impl Drop for PublishRuntime {
     }
 }
 impl super::Agent {
-    /// 发布段对账（R-06）：把本机监听与探针排程对齐到计划里属于本设备的期望
-    /// 发布态。`None`（待审批、无计划）= 全部停用。
+    /// Publish section reconciliation (R-06): align local listeners and probe scheduling to the plan's
+    /// expected publish state for this device. `None` (pending approval, no plan) = disable everything.
     pub(super) fn apply_publish(&mut self, plan: Option<&PublishPlan>) {
         let wanted_empty = plan.map(|plan| plan.is_empty()).unwrap_or(true);
         if wanted_empty && self.publish.is_idle() {
-            // 无发布对象且无监听：不起 tokio 任务，保持冷路径零开销。
+            // Nothing to publish and no listeners: spawn no tokio tasks, keeping the cold path free of overhead.
             return;
         }
         let PublishRuntime {
@@ -80,7 +80,7 @@ impl super::Agent {
         {
             Ok(events) => events,
             Err(e) => {
-                // 计划自相矛盾：拒绝部分生效，保留现有监听，下一轮重试。
+                // The plan is self-contradictory: refuse partial application, keep the existing listeners, and retry next round.
                 tracing::warn!(error = %e, "publish plan rejected; keeping current listeners");
                 return;
             }
@@ -95,15 +95,15 @@ impl super::Agent {
         }
     }
 
-    /// 探针结果上报（R-06）：回收本轮结果并入未送达队列，失败保留重试。
-    /// 证据不是配置：上报失败只影响健康可见性，不影响发布监听。
+    /// Probe result reporting (R-06): collect this round's results into the undelivered queue, keeping failures for retry.
+    /// Evidence is not configuration: a report failure only affects health visibility, never the publish listeners.
     pub(super) fn report_publish_health(&mut self) {
         let fresh = self.publish.publisher.drain_reports();
         self.publish.unreported.extend(fresh);
         if self.publish.unreported.is_empty() {
             return;
         }
-        // 批上限对齐控制面；超出丢弃最旧的（探针会按周期重排，不会永久丢失）。
+        // The batch cap matches the control plane; beyond it the oldest entries are dropped (probes reschedule on a cycle, so nothing is lost permanently).
         let excess = self
             .publish
             .unreported

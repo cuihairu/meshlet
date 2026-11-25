@@ -1,8 +1,8 @@
-//! 托盘产物落盘：[`TraySink`] 把状态图与 `status.json` 写到
-//! `{state_dir}/tray/`，内容相同则不重写（幂等发布，「纪律二」）；
-//! headless 下 no-op（不建目录、不写文件、不 panic，「纪律四」）。
-//! [`TrayStatus`] 是发布的记录：状态 ＋ 文本等价物（tooltip / accessible_name，
-//! 「纪律三」：不能只靠颜色）。
+//! Writing tray artifacts to disk: [`TraySink`] writes the status icons and `status.json` into
+//! `{state_dir}/tray/`, and skips rewriting when the content is identical (idempotent publishing, "discipline two");
+//! it is a no-op when headless (no directory, no files, no panic, "discipline four").
+//! [`TrayStatus`] is the published record: state + text equivalents (tooltip / accessible_name,
+//! "discipline three": color alone is never sufficient).
 
 use std::path::{Path, PathBuf};
 
@@ -11,21 +11,21 @@ use super::icon::IconSize;
 use super::png::png_encode;
 use super::state::TrayState;
 
-/// 状态 ＋ 文本等价物。
+/// State + text equivalents.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayStatus {
     pub state: TrayState,
-    /// tooltip（面板悬停显示；含设备名与整句说明）。
+    /// Tooltip (shown on panel hover; carries the device name and a full sentence of explanation).
     pub tooltip: String,
-    /// 无障碍短名。
+    /// Accessibility short name.
     pub accessible_name: &'static str,
 }
 
 impl TrayStatus {
-    /// 带设备名、**本机虚拟 IP** 与网络接口的 tooltip（tooltip 是文本等价物，
-    /// 不能只靠颜色）。`virtual_ip` 来自计划隧道地址（`plan.tunnel.address`，
-    /// 与 `info` 命令同一链路）——用户要求托盘 tooltip / 菜单首行
-    /// = 设备名 + 虚拟 IPv4 + 状态。待审批（无计划）时为 `None`。
+    /// Tooltip carrying the device name, **this machine's virtual IP**, and the network interface (the tooltip
+    /// is the text equivalent, and color alone is never sufficient). `virtual_ip` comes from the plan's tunnel address
+    /// (`plan.tunnel.address`, the same path as the `info` command) - the user requires tray tooltip / first menu
+    /// line = device name + virtual IPv4 + state. `None` while pending approval (no plan).
     pub fn new(
         state: TrayState,
         device_name: Option<&str>,
@@ -47,20 +47,20 @@ impl TrayStatus {
     }
 }
 
-/// 一次落盘的结果（区分「跳过」「写了」「内容未变」）。
+/// The outcome of one write to disk (distinguishing "skipped", "written", and "content unchanged").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayWrite {
-    /// headless：不写任何文件。
+    /// Headless: no files written at all.
     Skipped,
-    /// 内容未变：不重写（幂等）。
+    /// Content unchanged: not rewritten (idempotent).
     Unchanged,
-    /// 状态变化，已写新图。
+    /// State changed, new icons written.
     Written,
 }
 
-/// 托盘产物落盘：`{state_dir}/tray/{icon-16.png,icon-24.png,status.json}`。
+/// Writing tray artifacts: `{state_dir}/tray/{icon-16.png,icon-24.png,status.json}`.
 ///
-/// headless 下 no-op（不建目录、不写文件、不 panic）。
+/// A no-op when headless (no directory, no files, no panic).
 pub struct TraySink {
     dir: PathBuf,
 }
@@ -76,18 +76,18 @@ impl TraySink {
         &self.dir
     }
 
-    /// 便利入口：用真实环境探测。
+    /// Convenience entry point: probes the real environment.
     pub fn publish(&self, status: &TrayStatus) -> Result<TrayWrite, String> {
         self.publish_with(status, &EnvProbe::from_env())
     }
 
-    /// 注入环境探测（测试与 CI 用）。
+    /// Injected environment probe (for tests and CI).
     pub fn publish_with(&self, status: &TrayStatus, env: &EnvProbe) -> Result<TrayWrite, String> {
         if !env.has_desktop_session() {
             return Ok(TrayWrite::Skipped);
         }
-        // 幂等比较只看语义字段（state + tooltip + version + env）：
-        // `updated_at` 每次都会变，不参与比较，否则每轮 tick 都会重写。
+        // The idempotency comparison looks only at semantic fields (state + tooltip + version + env):
+        // `updated_at` changes every time, so it is excluded from the comparison, otherwise every tick would rewrite.
         if status_unchanged(&self.dir, status, env) {
             return Ok(TrayWrite::Unchanged);
         }
@@ -104,9 +104,9 @@ impl TraySink {
             "icon_16": "icon-16.png",
             "icon_24": "icon-24.png",
             "updated_at": chrono::Utc::now().to_rfc3339(),
-            // 本地面板（tray-host `panel` 模块）的展示字段：版本 + 桌面会话探测。
-            // 两者都是本进程已有的读数，不新增采集；`status_unchanged` 把它们
-            // 一并比较——旧文件在升级后首次发布即补全，之后不会每轮重写。
+            // Display fields for the local panel (tray-host `panel` module): version + desktop session probe.
+            // Both are readings this process already has, so no new collection is added; `status_unchanged` compares
+            // them together - a legacy file is backfilled at the first publish after an upgrade, and then is not rewritten every tick.
             "version": env!("CARGO_PKG_VERSION"),
             "env": env_json(env),
         });
@@ -120,8 +120,8 @@ fn read_file(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// EnvProbe → `status.json` 的 `env` 对象（发布与幂等比较共用同一构造，
-/// 保证两边逐字段可比）。
+/// EnvProbe -> the `env` object of `status.json` (published and idempotency comparison share the same
+/// construction, guaranteeing the two sides are field-for-field comparable).
 fn env_json(env: &EnvProbe) -> serde_json::Value {
     serde_json::json!({
         "display": env.display.clone(),
@@ -132,12 +132,13 @@ fn env_json(env: &EnvProbe) -> serde_json::Value {
     })
 }
 
-/// 上一份 `status.json` 的语义字段（state + tooltip + version + EnvProbe）是否
-/// 与本次一致。
+/// Whether the previous `status.json`'s semantic fields (state + tooltip + version + EnvProbe)
+/// match this one.
 ///
-/// `version` / `env` 参与比较：升级前写出的旧文件在**升级后首次发布**即被补全
-/// （否则 state/tooltip 未变就永远轮不到重写，本地面板会长期缺这两项）；补全后
-/// 只要四者都不变就仍按幂等跳过，不会每轮 tick 重写。
+/// `version` / `env` take part in the comparison: a legacy file written before the upgrade is backfilled at the
+/// **first publish after upgrading** (otherwise, with state/tooltip unchanged, the rewrite would never come around and
+/// the local panel would lack both fields for a long time); after backfilling, as long as all four stay unchanged it
+/// still skips idempotently and does not rewrite every tick.
 fn status_unchanged(dir: &Path, status: &TrayStatus, env: &EnvProbe) -> bool {
     read_file(&dir.join("status.json"))
         .and_then(|prev| serde_json::from_str::<serde_json::Value>(&prev).ok())
@@ -159,7 +160,7 @@ mod tests {
     use super::super::state::all_states;
     use super::*;
 
-    // ── 纪律二/三：文本等价物，不靠颜色 ──────────────────────────────────
+    // -- Disciplines two/three: text equivalents, never color alone ----------------------------
 
     #[test]
     fn every_state_has_a_nonempty_text_equivalent() {
@@ -178,8 +179,8 @@ mod tests {
         }
     }
 
-    /// ① 用户要求：托盘 tooltip / 菜单首行 = 设备名 + 虚拟 IPv4 + 状态。
-    /// 虚拟 IP 从计划隧道地址注入（`plan.tunnel.address`，与 `info` 同一链路）。
+    /// (1) User requirement: tray tooltip / first menu line = device name + virtual IPv4 + state.
+    /// The virtual IP is injected from the plan's tunnel address (`plan.tunnel.address`, the same path as `info`).
     #[test]
     fn tooltip_carries_device_name_and_virtual_ip() {
         let status = TrayStatus::new(
@@ -192,11 +193,11 @@ mod tests {
             .tooltip
             .starts_with("Meshlet「office-laptop」 10.240.0.5："));
         assert!(status.tooltip.contains("在线"));
-        // 无设备名：回退接口名；无 IP（待审批）：不出现空占位。
+        // No device name: fall back to the interface name; no IP (pending approval): no empty placeholder.
         let no_name = TrayStatus::new(TrayState::Offline, None, None, "mesh0");
         assert!(no_name.tooltip.starts_with("Meshlet接口 mesh0："));
         assert!(!no_name.tooltip.contains("： "));
-        // 无设备名但有 IP。
+        // No device name but an IP present.
         let ip_only = TrayStatus::new(
             TrayState::TunnelOnly,
             None,
@@ -208,14 +209,14 @@ mod tests {
             .starts_with("Meshlet接口 mesh0 10.240.0.5："));
     }
 
-    // ── headless no-op（纪律四）─────────────────────────────────────────
+    // -- Headless no-op (discipline four) --------------------------------------------------
 
     #[test]
     fn headless_publish_is_a_noop_without_touching_the_filesystem() {
         let dir = std::env::temp_dir().join("meshlet-tray-headless");
         let _ = std::fs::remove_dir_all(&dir);
         let sink = TraySink::new(&dir);
-        let env = EnvProbe::default(); // 全空 = tty / CI
+        let env = EnvProbe::default(); // everything empty = tty / CI
         assert!(!env.has_desktop_session());
 
         let write = sink
@@ -249,13 +250,13 @@ mod tests {
             sink.publish_with(&first, &env).expect("desktop publish"),
             TrayWrite::Written
         );
-        // 同内容再发 = 不重写（幂等）。
+        // Publishing the same content again = no rewrite (idempotent).
         assert_eq!(
             sink.publish_with(&first, &env).unwrap(),
             TrayWrite::Unchanged
         );
 
-        // 状态变化 = 换图。
+        // A state change = a new set of icons.
         let second = TrayStatus::new(TrayState::Offline, Some("laptop"), None, "meshlet0");
         assert_eq!(
             sink.publish_with(&second, &env).expect("state change"),
@@ -281,9 +282,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 升级回归：旧 agent 写出的 `status.json`（无 `version`/`env`）在升级后
-    /// **首次发布**必须被补全——否则 state/tooltip 未变就永远轮不到重写，本地
-    /// 面板会长期缺这两项；补全后仍按幂等跳过，EnvProbe 变了才再写一次。
+    /// Upgrade regression: a `status.json` written by an older agent (without `version`/`env`) must be
+    /// backfilled at the **first publish after upgrading** - otherwise, with state/tooltip unchanged, the rewrite
+    /// would never come around and the local panel would lack both fields for a long time; after backfilling it still
+    /// skips idempotently, and writes once more only when the EnvProbe changes.
     #[test]
     fn status_upgrade_backfills_version_and_env_without_rewriting_every_tick() {
         let dir = std::env::temp_dir().join("meshlet-tray-status-upgrade");
@@ -295,7 +297,7 @@ mod tests {
         };
         let status = TrayStatus::new(TrayState::Online, Some("laptop"), None, "meshlet0");
         std::fs::create_dir_all(sink.dir()).unwrap();
-        // 旧 agent 的文件：state/tooltip 已是最新，但没有 version/env。
+        // The older agent's file: state/tooltip are already current, but version/env are missing.
         let legacy = serde_json::json!({
             "state": status.state.accessible_name(),
             "tooltip": status.tooltip,
@@ -314,12 +316,12 @@ mod tests {
                 .unwrap();
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["env"]["display"], ":0");
-        // 补全后同内容 → 仍幂等（不会每轮 tick 重写）。
+        // After backfilling, the same content -> still idempotent (no rewrite every tick).
         assert_eq!(
             sink.publish_with(&status, &env).unwrap(),
             TrayWrite::Unchanged
         );
-        // EnvProbe 变化 → 再写一次（比较确实覆盖 env）。
+        // EnvProbe changes -> one more write (the comparison really does cover env).
         let moved = EnvProbe {
             display: Some(":1".into()),
             ..EnvProbe::default()

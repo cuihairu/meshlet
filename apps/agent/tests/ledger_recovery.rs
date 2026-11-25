@@ -375,9 +375,9 @@ fn route_to(destination: &str) -> RouteConfig {
     }
 }
 
-/// M3 场景 2「Agent 重启不信账本单独判断」的锋利形态：账本完好、哈希与期望
-/// 一致（重启后读到的正是「上次成功应用」的记录），但内核不是账本描述的状态。
-/// 判定必须来自内核观测——账本说“已应用”不能替内核作证。
+/// The sharp form of M3 scenario 2, "an agent restart must not judge on the ledger alone": the ledger
+/// is intact and its hash matches (after restart it reads exactly the "last successfully applied" record),
+/// but the kernel is not in the state the ledger describes. The verdict must come from kernel observation — a ledger saying "applied" cannot vouch for the kernel.
 #[test]
 fn a_matching_ledger_does_not_shield_kernel_drift() {
     if !prerequisites() {
@@ -386,14 +386,14 @@ fn a_matching_ledger_does_not_shield_kernel_drift() {
     let case = Case::new("stale-ledger");
     let desired = plan("rev-7", vec![route_to("10.241.1.0/24")]);
 
-    // 先由真实 apply 把内核带到与计划一致的状态并留下账本——对照组：账本与
-    // 内核都一致时，tick 必须安静。这证明下面检出的漂移只能来自内核。
+    // First let a real apply bring the kernel to the planned state and leave the ledger — the control
+    // group: when ledger and kernel agree the tick must stay quiet, proving the drift below is kernel-only.
     case.agent().reconcile(&desired).expect("first install");
     let control = case.agent().reconcile(&desired).expect("control tick");
     assert_eq!(control.reason, meshlet_agent::Reason::UpToDate);
 
-    // 有人把受管路由整条换成另一条同标记路由：条数仍是 1，身份变了。数量检查
-    // 会漏过这种替换，只有身份比对能抓到。
+    // Someone swapped the whole managed route for another route with the same marker: the count is
+    // still 1, the identity changed. A count check misses this swap; only identity comparison catches it.
     case.ns.run(
         &["ip", "route", "del", "10.241.1.0/24"],
         "remove the desired route",
@@ -438,18 +438,18 @@ fn a_matching_ledger_does_not_shield_kernel_drift() {
     assert_eq!(steady.reason, meshlet_agent::Reason::UpToDate);
 }
 
-/// M3 场景 3「改路由时进程被杀」：计划 A 已应用并记账，向计划 B 的切换中途
-/// 被杀——内核停在半途状态。下一轮 tick 必须从内核实际状态收敛到 B，既不
-/// 留下 A 的残余，也不动外部路由；账本最终描述 B。
+/// M3 scenario 3, "the process is killed mid route change": plan A was applied and recorded, and the
+/// switch to plan B was killed halfway — the kernel is left in a half-done state. The next tick must
+/// converge from the kernel's actual state to B, leaving no residue of A and touching no external routes; the ledger ends up describing B.
 #[test]
 fn a_half_applied_route_change_from_a_killed_apply_converges() {
     if !prerequisites() {
         return;
     }
-    // 路由切换的三个被杀断点，每个都种下真实的半途内核状态：
-    // - after-add：加了新、旧还没删 → {old, new} 同时在场；
-    // - between：删了旧、新还没加 → 两者都不在场；
-    // - before-write：一条都没动 → {old}。
+    // The three kill points of a route switch, each planting a real half-done kernel state:
+    // - after-add: the new route was added but the old one not yet deleted -> {old, new} both present;
+    // - between: the old one was deleted but the new one not yet added -> neither is present;
+    // - before-write: nothing was touched at all -> {old}.
     for (suffix, has_old, has_new) in [
         ("killed-after-add", true, true),
         ("killed-between-remove-and-add", false, false),
@@ -458,7 +458,7 @@ fn a_half_applied_route_change_from_a_killed_apply_converges() {
         let case = Case::new(suffix);
         let old = plan("rev-a", vec![route_to("10.241.1.0/24")]);
         let new = plan("rev-b", vec![route_to("10.241.2.0/24")]);
-        // 计划 A 真实应用并记账，之后才按断点制造半途状态。
+        // Plan A is really applied and recorded; only then is the half-done state planted at the breakpoint.
         case.agent().reconcile(&old).expect("apply plan A");
         case.ns.run(
             &["ip", "route", "add", "198.51.100.0/24", "dev", "wg0"],
@@ -511,7 +511,7 @@ fn a_half_applied_route_change_from_a_killed_apply_converges() {
             "{suffix}: the ledger must describe the new plan"
         );
 
-        // 收敛之后稳态：再 tick 不动作。
+        // Steady state after convergence: another tick takes no action.
         let decision = case.agent().reconcile(&new).expect("steady-state tick");
         assert_eq!(
             decision.reason,

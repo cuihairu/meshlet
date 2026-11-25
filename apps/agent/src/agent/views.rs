@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use meshlet_domain::DirectLinkStatus;
 use meshlet_network::dial::DirectPeerView;
 
-/// 候选集 + 链路状态 → 直连对端视图（纯函数，可测）。候选已直连/待握手取
-/// 链路状态；候选无路径（不在链路状态里）标 `hub_relay`（可拨号目标）。
+/// Candidate set + link status -> direct peer view (pure function, testable).
+/// Candidates that are direct or pending-handshake take the link status; candidates
+/// without a path (absent from the link status) are marked `hub_relay` (dialable target).
 pub(super) fn direct_peer_views(
     wanted: &[meshlet_domain::PeerEndpoints],
     links: &[DirectLinkStatus],

@@ -23,28 +23,28 @@ use crate::direct_rtt::{RttCandidate, RttProbe};
 use crate::server;
 
 impl super::Agent {
-    /// §12 P2P 直连探测循环（30s 节流）：拉候选 → 域层状态机 → `wg set` 下发。
+    /// §12 P2P direct-connect probe loop (30s throttle): fetch candidates →
+    /// domain state machine → `wg set` apply.
     ///
-    /// 直连是**增益**：所有失败（拉候选失败 / LAN 枚举失败 / 握手读数失败 /
-    /// `wg set` 失败）只记日志，绝不打断 hub 中继路径——对端仍按 hub 整段
-    /// 路由可达，下一周期重试。开关关闭时清空已建立的直连（交还 hub，由
-    /// 内核对账的漂移清理兜底）。
+    /// Direct connect is a **gain**: every failure (candidate fetch / LAN
+    /// enumeration / handshake reading / `wg set`) is logged only and never
+    /// interrupts the hub relay path — the peer stays reachable by the hub
+    /// full route and is retried next cycle; switch off clears established
+    /// direct connects (handed to the hub; kernel drift reconciliation covers).
     ///
-    /// `peer dial` 意图（[`dial::DirectDialRequest`]）：CLI 写在
-    /// `{state_dir}/direct-dial.json`。有意图时**跳过 30s 节流**立刻探测一轮
-    /// （拨号不等下个周期），把目标候选喂给状态机并经
-    /// [`crate::agent::Agent::apply_direct_update`] 调 `wg set`（executor 经
-    /// `meshlet-network` 发起直连拨号）；随后把结果写回
-    /// `{state_dir}/direct-dial-result.json` 并清除意图。拨号失败/无路径/
-    /// 非候选都如实写失败结果——绝不静默。
+    /// `peer dial` intent ([`dial::DirectDialRequest`]): the CLI writes it to
+    /// `{state_dir}/direct-dial.json`. With intent present, **skip the 30s
+    /// throttle** and probe one round at once (dialing does not wait for the
+    /// next cycle): feed the target candidates to the state machine and call
+    /// `wg set` via [`crate::agent::Agent::apply_direct_update`] (executor dials through `meshlet-network`); then write the result back to `{state_dir}/direct-dial-result.json` and clear the intent. Dial failure / no path / non-candidate is always written as a failure result — never silently.
     ///
-    /// 生产由 [`Agent::tick`] 在心跳之后调度（服务端先看到本机直连候选）；
-    /// netns 集成测试可直接驱动一轮。
+    /// In production, scheduled by [`Agent::tick`] after the heartbeat (the server sees our direct candidates first);
+    /// netns integration tests can drive one round directly.
     pub fn reconcile_direct(&mut self, plan: &DevicePlan) {
         let request = dial::load_request(Path::new(&self.state_dir));
         if !self.dataplane.direct_connect.enabled {
-            // 直连关 → 无候选可探：清空探测候选缓存与候选表（探测线程下一轮
-            // no-op；roaming 面证据一并丢弃，开关重开后从服务端口径重建）。
+            // Direct off → nothing to probe: clear the probe candidate cache and candidate table
+            // (probe thread no-ops next round; roaming evidence dropped, rebuilt from the server view once re-enabled).
             self.probe.update_candidates(&[]);
             self.candidates = crate::candidates::CandidateTable::new();
             let updates = self.direct.demote_all();
@@ -69,8 +69,8 @@ impl super::Agent {
             .last_direct_probe
             .map(|last| last.elapsed().as_secs() >= DIRECT_PROBE_INTERVAL_SECS)
             .unwrap_or(true);
-        // 有拨号意图即强制本轮（不等节流）；无意图按正常节流。换网事件的
-        // 「立即探测」由 run() 在网络事件唤醒处重置 last_direct_probe 实现。
+        // A dial intent forces this round (no waiting for the throttle); without one, normal throttle.
+        // "Probe immediately" for a network-change event comes from run() resetting last_direct_probe at the network-event wakeup.
         if !due && request.is_none() {
             return;
         }
@@ -94,10 +94,10 @@ impl super::Agent {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        // scope / LAN 子网**提前**到候选表对账之前：AGENT-ISO-3 要在源头滤掉
-        // 不可用的 endpoint，否则候选表、探测窗口与 SEL-002 切换三条路径都会
-        // 拿到坏面——逐处补滤必然漏（2026-11-23 实录：决策层已滤，探测切换
-        // 仍把对端 ZeroTier 地址选成现役面）。
+        // scope / LAN subnets **before** candidate table reconciliation: AGENT-ISO-3 filters unusable endpoints at the source,
+        // else the candidate table, the probe window and the SEL-002 switch paths all get a bad face — patching them
+        // one by one is bound to miss (2026-11-23 incident: the decision layer had already filtered, yet the probe
+        // switch still picked the peer's ZeroTier address as the active face).
         let Some(scope) = direct_scope(plan) else {
             tracing::warn!("direct probe: no routable scope in the plan; keeping hub relay");
             if let Some(req) = request {
@@ -112,29 +112,29 @@ impl super::Agent {
                 Vec::new()
             }
         };
-        // AGENT-ISO-3：源头过滤——只留「同网段可达 或 公网可打洞」的面。对端
-        // 自己的 overlay 地址（hairpin）与外来网段地址（如其 ZeroTier 地址）
-        // 一律出局；peer 本身保留（无可用面 = 走中继，与无候选同语义）。
+        // AGENT-ISO-3: source filtering — keep only faces "reachable in the same subnet or punchable
+        // on the public internet". The peer's own overlay address (hairpin) and foreign-subnet
+        // addresses (e.g. its ZeroTier address) are all excluded; the peer itself is retained (no usable face = relay, same semantics as no candidate).
         for peer in &mut wanted {
             peer.endpoints
                 .retain(|c| is_viable_endpoint(c, &my_lan_subnets, scope));
         }
-        // FLIP-001 候选表对账：config 面（服务端权威）插入/保鲜 → 回收出集
-        // 对端与过期 roaming 面 → 合并成有效候选集（config 原序在前，表内
-        // 新增面按地址排序追加）。SEL-001 自此探测**全部已知面**（含内核
-        // roaming 面），不再只盯服务端单一 endpoint 等它劣化。
+        // FLIP-001 candidate table reconciliation: insert/refresh the config faces (server authoritative) → reap peers
+        // that left the set and expired roaming faces → merge into the effective candidate set (config order first,
+        // then new table faces appended sorted by address). SEL-001 hence probes **every known face** (including kernel
+        // roaming faces), instead of watching only the server's single endpoint for degradation.
         self.candidates.sync_config(&wanted, now_secs);
         self.candidates.retain_peers(&wanted);
         self.candidates.expire(now_secs);
-        // 表内还可能留着过滤上线**之前**存下的坏面（config 面已滤，但 roaming
-        // 面是历史积累、TTL 内不过期）——合并后再滤一次，探测窗口才拿不到它们，
-        // SEL-002 也就无从把它们选成现役面。
+        // The table may still hold bad faces saved **before** filtering went live
+        // (config faces were filtered, but roaming faces are a historical
+        // accumulation and do not expire within the TTL) — filtering once more after the merge keeps them out of the probe window, so SEL-002 has no way to pick them as the active face.
         let mut effective = self.candidates.merge_into(&wanted);
         for peer in &mut effective {
             peer.endpoints
                 .retain(|c| is_viable_endpoint(c, &my_lan_subnets, scope));
         }
-        // SEL-001：候选集刷新（探测线程复用，不额外请求 server——零控制面负载）。
+        // SEL-001: candidate set refresh (reused by the probe thread; no extra server request — zero control-plane load).
         self.probe.update_candidates(&effective);
         let handshake_ages = match self.backend.handshake_ages_sync() {
             Ok(ages) => ages,
@@ -143,10 +143,10 @@ impl super::Agent {
                 BTreeMap::new()
             }
         };
-        // 诊断快照一次采集、多处复用（直连 enrich + 晋升门槛的握手兜底）：
-        // `wg dump` 与 latest-handshakes 是同一次内核读数的两投影——Windows
-        // 隧道抖动期 latest-handshakes 不可读时，dump 里的握手时间仍是晋升
-        // 门槛的合法输入（缺失则 pending 拿不到握手证据，永卡「拨号中」）。
+        // Diagnostic snapshot collected once, reused in several places (direct enrich + the handshake
+        // fallback of the promotion gate): `wg dump` and latest-handshakes are two projections of the
+        // same kernel reading — when latest-handshakes is unreadable during a Windows tunnel flap, the
+        // dump's handshake time is still a legitimate promotion-gate input (without it pending never gets handshake evidence and is stuck "dialing" forever).
         let net = match self.backend.diagnostics_sync() {
             Ok(net) => Some(net),
             Err(e) => {
@@ -156,11 +156,11 @@ impl super::Agent {
         };
         let handshake_ages =
             merge_handshake_ages(handshake_ages, dump_handshake_ages(net.as_ref(), now_secs));
-        // FLIP-001 内核 roaming 观测：wg dump 里各在管对端的当前 endpoint
-        // （内核收到新源面的合法认证包即漫游——对端换网 / 新 face 的最强
-        // 证据，常不在服务端候选表）。灌入候选表（TTL 内有效）；新面出现即
-        // 重合并 + 刷新探测缓存（探测线程一个周期内即采样新面）。hub peer
-        // 与内核漂移 peer 不在候选集，不收。
+        // FLIP-001 kernel roaming observation: the current endpoint of each managed peer in the wg
+        // dump (the kernel roams as soon as it receives a legitimate authenticated packet from a new
+        // source face — the strongest evidence of a peer network change / new face, often absent
+        // from the server candidate table). Feed it into the candidate table (valid within TTL); a
+        // new face triggers re-merge + probe-cache refresh (the probe thread samples it in one cycle). hub peers and kernel-drift peers are not in the candidate set and not collected.
         let wanted_keys: std::collections::BTreeSet<&str> =
             wanted.iter().map(|p| p.public_key.as_str()).collect();
         if let Some(net) = &net {
@@ -184,20 +184,20 @@ impl super::Agent {
             }
         }
         drop(wanted_keys);
-        // 本轮统一用含 roaming 面的有效候选集（观测后重合并 + 刷新探测缓存）。
-        // 同样过一遍 AGENT-ISO-3：内核漫游回来的面可能是对端借道其 ZeroTier
-        // 发包的源地址（对端未升级时的常态），灌进探测窗口就会被 SEL-002 选中，
-        // 等于我们主动挑了一条借道面。漫游照观测、照记录，但**不进可选集**。
+        // This round uniformly uses the effective candidate set with roaming faces (re-merge + probe-cache
+        // refresh after observation). AGENT-ISO-3 is applied again: a face the kernel roamed back may be
+        // the source address the peer used to route through its ZeroTier (the norm while the peer is not
+        // upgraded); feeding it into the probe window lets SEL-002 pick it — i.e. we would actively choose a borrowed path. Roaming is observed and recorded as usual, but **never enters the selectable set**.
         let mut effective = self.candidates.merge_into(&wanted);
         for peer in &mut effective {
             peer.endpoints
                 .retain(|c| is_viable_endpoint(c, &my_lan_subnets, scope));
         }
         self.probe.update_candidates(&effective);
-        // SEL-003：从探测窗口推导各对端**当前直连路径**是否劣化（丢包尖峰/
-        // 超时/RTT 深劣化——中位数 ≥ degrade_rtt_ms）。只看现役 endpoint 的
-        // 窗口：候选列表里常年 ICMP 不达的备份候选（公网 NAT / 异网 LAN）
-        // 与现役路径无关，任一候选劣化就整 peer 劣化会把健康直连误降级。
+        // SEL-003: derive from the probe window whether each peer's **current direct path** is degraded
+        // (loss spikes / timeouts / deep RTT degradation — median ≥ degrade_rtt_ms). Only the active
+        // endpoint's window counts: backup candidates in the candidate list that never answer ICMP
+        // (public NAT / off-subnet LAN) are unrelated to the active path; degrading the whole peer on any candidate's degradation would wrongly demote healthy direct links.
         let current_paths: BTreeMap<_, _> = self
             .direct
             .link_statuses()
@@ -206,17 +206,17 @@ impl super::Agent {
             .filter_map(|s| parse_endpoint_candidate(&s.endpoint).map(|c| (s.public_key, c)))
             .collect();
         let degraded = self.probe.degraded_map(&current_paths);
-        // promote 偏好健康面：当前探测窗口劣化的面集合（晋升选路前置过滤，
-        // 见 plan_updates_logged——劣化面上 re-promote 只会立刻再降级）。
+        // promote prefers healthy faces: the set of faces degraded in the current probe window
+        // (a pre-filter for promotion routing; see plan_updates_logged — re-promoting on a degraded face would only demote it again immediately).
         let unhealthy_faces = self.probe.degraded_faces();
-        // FLIP-001 探测证据刷新：单快照批量取「探测证实健康」面集——候选表
-        // 保鲜（roaming→discovered 升级、last_seen 前移）与恢复门 bypass
-        // 共用同一轮读数。
+        // FLIP-001 probe-evidence refresh: a single snapshot batch-collects the set of
+        // "probe-confirmed healthy" faces — candidate-table refresh (roaming→discovered
+        // promotion, last_seen moved forward) and recovery-gate bypass share one round of readings.
         let healthy_faces = self.probe.healthy_faces();
         self.candidates
             .refresh_probe_evidence(&healthy_faces, now_secs);
-        // FLIP-002 健康证据记账：对端本轮有任一探测健康面 → 健康轮 +1（连续
-        // M 轮清零退避）；无健康面 → 健康轮清零（连续性打破，抑制保持）。
+        // FLIP-002 health-evidence accounting: the peer has any probe-healthy face this round →
+        // healthy rounds +1 (M consecutive rounds clears the backoff); no healthy face → healthy rounds reset to zero (continuity broken, suppression holds).
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -228,15 +228,15 @@ impl super::Agent {
             self.backoff
                 .note_health(&peer.public_key, peer_has_healthy_face, now_ms);
         }
-        // FLIP-002 抑制表：抑制中的对端本轮不 promote（域层 hold_relay 之后
-        // 检查，保记忆面留中继）。
+        // FLIP-002 suppression table: a suppressed peer is not promoted this round (checked after the
+        // domain-layer hold_relay, keeping the remembered face on relay).
         let suppress_promote = self.backoff.suppress_map(now_ms);
-        // SEL-003 恢复门：对处于直连状态的对端记录本轮健康度；回中继后连续
-        // N 轮健康才放行切回。健康 = 未劣化且握手年龄在健康窗口内。
-        // FLIP-001 bypass：候选表里存在探测健康面时不等门——换网后新面已
-        // 可达即回直连，不经过「先 demote 再等恢复门」旧路径（门只兜底
-        // 「没有任何健康面证据」的场景）。FLIP-002 抑制优先——退避期内
-        // 即便有健康面也不 promote（拉开重试间隔）。
+        // SEL-003 recovery gate: record this round's health for peers in the direct state; after
+        // returning to relay, only N consecutive healthy rounds allow switching back. Healthy =
+        // not degraded and handshake age inside the health window. FLIP-001 bypass: when the candidate
+        // table holds a probe-healthy face, do not wait for the gate — once the new face is reachable
+        // after a network change, go direct, skipping the old "demote first, then wait for the recovery
+        // gate" path (the gate only covers "no healthy-face evidence at all"). FLIP-002 suppression wins — during backoff nothing is promoted even with a healthy face (retry interval widened).
         let mut hold_relay = std::collections::BTreeSet::new();
         let mut gate_bypassed: Vec<(String, String)> = Vec::new();
         for peer in &effective {
@@ -266,14 +266,14 @@ impl super::Agent {
                         gate_bypassed.push((peer.public_key.clone(), face.socket().to_string()));
                     }
                     _ => {
-                        // 已回中继且无健康面证据（或退避抑制中）：保持中继
-                        // （防抖切回 / 拉开重试间隔）。
+                        // Back on relay with no healthy-face evidence (or suppressed by backoff):
+                        // keep relay (anti-flap switching back / widening the retry interval).
                         hold_relay.insert(peer.public_key.clone());
                     }
                 }
             }
         }
-        // 回收不在候选集里的恢复计数。
+        // Reap recovery counters for peers no longer in the candidate set.
         let live_keys: Vec<String> = wanted.iter().map(|p| p.public_key.clone()).collect();
         self.recovery.retain(&live_keys);
         self.backoff.retain(&live_keys);
@@ -291,9 +291,9 @@ impl super::Agent {
         if !updates.is_empty() {
             for update in &updates {
                 self.apply_direct_update(update);
-                // FLIP-002：劣化/握手判定产生的 demote 计入退避（连续 demote
-                // 指数拉开重试间隔）。候选集之外的逐出与开关关闭的清场不计
-                // ——那是行政性移除，不是链路质量信号。
+                // FLIP-002: demotes produced by degradation/handshake verdicts count toward backoff
+                // (consecutive demotes widen the retry interval exponentially). Evictions outside
+                // the candidate set and clearing when the switch is turned off do not count — those are administrative removals, not link-quality signals.
                 if let DirectUpdate::Demote { public_key } = update {
                     if live_keys.contains(public_key) {
                         self.backoff.on_demote(public_key, now_ms);
@@ -302,37 +302,37 @@ impl super::Agent {
             }
             self.save_direct_ledger();
         }
-        // 决策落盘（2026-11-14 巡检单观测性欠账）：classify / 切换闸判定逐条
-        // 写决策日志，模式翻转另记 `mode_flip` 切换事件——无控制台上下文
-        // （Windows 服务 / schtasks SYSTEM）也能事后回放降级/晋升原因。
-        // 判据输入摘要（探测窗口）按**本轮**现役路径查窗口快照。
+        // Decision journal (2026-11-14 inspection-sheet observability debt): every classify /
+        // switch-gate verdict is appended to the decision log, and a mode flip additionally records
+        // a `mode_flip` switch event — degradation/promotion reasons can be replayed afterwards even
+        // without a console context (Windows service / schtasks SYSTEM). The verdict input summary (probe window) is looked up against the window snapshot of **this round's** active path.
         self.record_decisions(&decisions, &current_paths);
-        // FLIP-001 观测面：恢复门 bypass 逐条入决策日志（无控制台上下文也
-        // 能回放「为什么没等门」）。
+        // FLIP-001 observation face: recovery-gate bypasses are appended one by one to the decision log
+        // (so even without a console context one can replay "why the gate was not waited for").
         self.record_bypass_events(&gate_bypassed, &handshake_ages);
-        // R-DIAG-2：对处于直连状态的对端刷新读数（wg 端点/握手/流量）+ 实测
-        // 直连路径 RTT——即使本周期无动作也要刷新，供心跳与控制台/CLI 展示。
+        // R-DIAG-2: refresh readings (wg endpoint/handshake/traffic) for peers in the direct state +
+        // measured direct-path RTT — refreshed even when this cycle takes no action, for heartbeat and console/CLI display.
         self.enrich_direct_peers(net.as_ref(), now_secs);
-        // SEL-002：迟滞切换。已建立直连的对端，若其候选窗口中另有路径连续 N
-        // 采样且优于现路径 ≥30%，则 `wg set endpoint` 漫游过去（零断线），
-        // 并追加切换事件（事件可查）。探测未启用 / 无直连 / 无更优路径都
-        // 是 no-op——绝不影响数据面循环。
+        // SEL-002: hysteresis switching. For a peer with an established direct link, if another
+        // path in its candidate window is better for N consecutive samples and ≥30% better than the
+        // current path, roam via `wg set endpoint` (zero disconnection) and append a switch event
+        // (queryable). Probe disabled / no direct link / no better path are all no-ops — never touching the data-plane loop.
         self.apply_switch_decisions();
-        // 发布直连对端视图（`direct-peers.json`）：托盘「直连节点 / 连接节点…」
-        // 子菜单与 CLI `peer dial` 解析 `<node>` 的数据源（含候选表 roaming 面）。
+        // Publish the direct-peer view (`direct-peers.json`): the data source for the tray's
+        // "direct nodes / connected nodes…" submenu and for CLI `peer dial` resolving `<node>` (including candidate-table roaming faces).
         self.publish_direct_peers(&effective);
         if let Some(req) = request {
             self.finish_dial_for_request(&req);
         }
     }
 
-    /// 按拨号意图确定结果：状态机已跑完本轮，目标对端当前状态即判定依据。
+    /// Resolve the dial outcome from the intent: the state machine finished this round; the target peer's current state is the verdict basis.
     fn finish_dial_for_request(&self, req: &DirectDialRequest) {
         let (ok, mode, message) = dial_verdict(self.direct.status_of(&req.public_key));
         self.finish_dial(req, ok, mode, message);
     }
 
-    /// 写拨号结果并清除意图。结果文件常驻（CLI 轮询它），下次拨号覆盖。
+    /// Write the dial result and clear the intent. The result file persists (the CLI polls it); the next dial overwrites it.
     fn finish_dial(&self, req: &DirectDialRequest, ok: bool, mode: &str, message: &str) {
         let result = DirectDialResult {
             request_id: req.request_id.clone(),
@@ -349,8 +349,8 @@ impl super::Agent {
         }
     }
 
-    /// 发布直连对端视图：服务端候选集 + 当前链路状态合并（`direct-peers.json`）。
-    /// 候选已直连/待握手取链路状态；候选无路径（Relay）标 `hub_relay`（可拨号）。
+    /// Publish the direct-peer view: server candidate set merged with current link state (`direct-peers.json`).
+    /// Candidates already direct / pending handshake take the link state; candidates with no path (Relay) are marked `hub_relay` (dialable).
     fn publish_direct_peers(&self, wanted: &[meshlet_domain::PeerEndpoints]) {
         let views = direct_peer_views(wanted, &self.direct.link_statuses());
         if let Err(e) = dial::write_direct_peers(Path::new(&self.state_dir), &views) {
@@ -358,26 +358,26 @@ impl super::Agent {
         }
     }
 
-    /// R-DIAG-2：从内核刷新各直连对端的实际状态（endpoint / 最近握手 /
-    /// 累计流量），RTT 取**后台运行时**的最新实测值（绝不内联 `ping`）。
+    /// R-DIAG-2: refresh each direct peer's real state from the kernel (endpoint / last handshake /
+    /// cumulative traffic); RTT takes the newest **runtime background** measured value (never inline `ping`).
     ///
-    /// 探测候选带对端 endpoint 的 underlay 地址：overlay VIP 不答 ICMP
-    /// （WireGuard 接口 / 防火墙常弃包，链路可能完全活着）时，后台线程回退
-    /// ping endpoint——两路都无响应才「实测失败」，rtt_source 随 RTT 如实记录
-    /// （实测成功 probe_ok；不可测但握手新鲜 handshake_fresh；两路无响应且
-    /// 握手也不新鲜 probe_failed；探测在途 unprobed），供面板/控制台标注。
+    /// Probe candidates carry the underlay address of the peer's endpoint: when the overlay VIP
+    /// does not answer ICMP (the WireGuard interface / firewall often drops packets while the
+    /// link is fully alive), the background thread falls back to pinging the endpoint; "measured
+    /// failure" only when both paths are unresponsive. rtt_source records the RTT honestly for the
+    /// panel/console (probe_ok measured ok; handshake_fresh unmeasurable but fresh; probe_failed both unresponsive and handshake stale; unprobed in flight).
     ///
-    /// 读数失败只记日志——展示数据源是「最后已知态」，绝不让诊断采集干扰
-    /// 数据面；对端已不在管（本周期被 Demote）则各 record_* no-op。
+    /// Read failures are logged only — the display data source is "last known state", never letting
+    /// diagnostics disturb the data plane; each record_* no-ops once the peer is no longer managed (demoted this cycle).
     fn enrich_direct_peers(&mut self, net: Option<&NetworkDiagnostics>, now_secs: u64) {
         let candidates = self.direct.direct_candidates();
         if candidates.is_empty() {
-            // 无直连对端：清空 RTT 候选（后台线程下一轮 no-op）。
+            // No direct peers: clear the RTT candidates (the background thread no-ops next round).
             self.direct_rtt.update_candidates(Vec::new());
             return;
         }
-        // net 由调用方传入（reconcile 已采集一次，避免重复 `wg dump`）；None =
-        // 读数失败则没有回退路径可用，仅按 overlay 探测（与旧行为一致）。
+        // net is passed in by the caller (reconcile already collected it once, avoiding a duplicate `wg dump`);
+        // None = the read failed, so no fallback path is available and only overlay probing runs (same as the old behaviour).
         let probed: Vec<RttCandidate> = candidates
             .into_iter()
             .map(|(public_key, vip)| {
@@ -393,7 +393,7 @@ impl super::Agent {
                 (public_key, vip, endpoint_ip)
             })
             .collect();
-        // 后台线程按最新候选集 ping；主循环只读快照，不等任何 ping。
+        // The background thread pings per the latest candidate set; the main loop only reads the snapshot, never waiting on any ping.
         self.direct_rtt.update_candidates(probed.clone());
         let rtts = self.direct_rtt.snapshot();
         for (public_key, vip, _endpoint_ip) in probed {
@@ -404,8 +404,8 @@ impl super::Agent {
             let last_handshake_at =
                 wg_peer.and_then(|p| (p.last_handshake > 0).then_some(p.last_handshake));
             let (rx_bytes, tx_bytes) = wg_peer.map(|p| (p.rx_bytes, p.tx_bytes)).unwrap_or((0, 0));
-            // 读快照：刚更新候选集的第一次读可能尚未有实测值（None=未知，
-            // 与「读数失败」一致，展示数据源最后已知态）。`vip` 仅供记录日志。
+            // Read the snapshot: the first read right after updating the candidate set may have no measured value
+            // yet (None = unknown, consistent with "read failed", the display source being last known state). `vip` exists only to be logged.
             let probe = rtts
                 .get(&public_key)
                 .copied()
@@ -422,37 +422,37 @@ impl super::Agent {
             if !endpoint.is_empty() {
                 self.direct.record_endpoint(&public_key, endpoint.clone());
             }
-            // SEL-004：汇总候选端点详情（端点/RTT/丢包/当前选中与原因），
-            // 供心跳上报 → console peer 详情渲染。
+            // SEL-004: aggregate candidate endpoint details (endpoint / RTT / loss / current selection and reason),
+            // for the heartbeat report → console peer detail rendering.
             let statuses = self.probe.candidate_statuses(&public_key, &endpoint);
             self.direct.record_candidates(&public_key, statuses);
         }
     }
 
-    /// SEL-002：对每个已建立直连的对端评估迟滞闸，需要时漫游 endpoint。
+    /// SEL-002: evaluate the hysteresis gate for every peer with an established direct link, roaming the endpoint when needed.
     ///
-    /// 只作用于 `direct` 状态的对端（`direct_pending` 尚未验证、`Relay` 无直连
-    /// 链路，切换无意义）。`wg set endpoint` 失败只记日志——直连仍是增益，
-    /// 保持当前 endpoint 下一周期再试；成功才记录切换事件（[`dial`] 追加）。
+    /// Only peers in the `direct` state are touched (`direct_pending` is not yet verified and `Relay`
+    /// has no direct link, so switching is meaningless). A failed `wg set endpoint` is logged only —
+    /// direct is still a gain: keep the current endpoint and retry next cycle; only on success is a switch event recorded (appended by [`dial`]).
     fn apply_switch_decisions(&mut self) {
         if !self.dataplane.probe.enabled {
             return;
         }
-        // 现路径候选（endpoint）解析 + 直连对端集合：只评估非 Relay。
+        // Current-path candidate (endpoint) parsing + the direct-peer set: only non-Relay peers are evaluated.
         let statuses = self.direct.link_statuses();
         for status in statuses {
             if status.link_state != "direct" {
                 continue;
             }
             let Some(current) = parse_endpoint_candidate(&status.endpoint) else {
-                // 尚无已下发的直连 endpoint（异常态）：不切换。
+                // No direct endpoint applied yet (anomalous state): no switching.
                 continue;
             };
-            // 方案 8：切换宽限内的旧 endpoint 一次性回滚——新面「由好变坏后
-            // 持续全暗」（窗口有 RTT 基线 + 末尾连续 Lost）即回退到切换前的
-            // 旧面，省掉 demote→恢复门→re-promote 的中继绕行。许可（宽限内 +
-            // 一次性，回滚也过宽限）统一在闸内；`wg set` 失败只记日志
-            // （一次性已消耗，下周期按常规闸重判）。
+            // Plan 8: one-shot rollback of the old endpoint within the switch grace window — when the
+            // new face goes "from good to persistently fully dark" (the window has an RTT baseline
+            // plus consecutive Lost at the end), fall back to the pre-switch old face, saving the relay
+            // detour of demote→recovery gate→re-promote. Permission (within grace + one-shot, the rollback
+            // also passes grace) is decided uniformly inside the gate; a `wg set` failure is logged only (the one-shot is consumed; the next cycle re-judges by the normal gate).
             if let Some(old) = self.probe.switch_rollback(&status.public_key, current) {
                 if let Err(e) = self
                     .backend
@@ -525,17 +525,17 @@ impl super::Agent {
                 reason = %event.reason,
                 "direct endpoint switched (SEL-002)"
             );
-            // 更新直连管理器记录的 endpoint（下一轮以此为现路径基准）。
+            // Update the endpoint recorded by the direct-connect manager (the next round uses it as the current-path baseline).
             self.direct
                 .record_endpoint(&status.public_key, event.to.clone());
         }
     }
 
-    /// 决策落盘（2026-11-14 巡检单：无控制台上下文的事后回放）：状态机每条
-    /// 判定追加决策日志（`{state_dir}/agent-decisions.jsonl`，超限滚动）；
-    /// 模式翻转（`from_mode ≠ to_mode`）另记一条 `mode_flip` 切换事件到
-    /// `direct-switch-events.json`（旧字段不动，向后兼容）。写失败只记日志
-    /// ——观测是增益，绝不干扰数据面循环。
+    /// Decision journal (2026-11-14 inspection sheet: post-hoc replay without a console context):
+    /// every state-machine verdict is appended to the decision log (`{state_dir}/agent-decisions.jsonl`,
+    /// rolling on overflow); a mode flip (`from_mode ≠ to_mode`) additionally records a `mode_flip`
+    /// switch event into `direct-switch-events.json` (old fields untouched, backward compatible).
+    /// Write failures are logged only — observation is a gain and never disturbs the data-plane loop.
     fn record_decisions(
         &self,
         decisions: &[PeerDecisionRecord],
@@ -590,9 +590,9 @@ impl super::Agent {
         }
     }
 
-    /// FLIP-001：恢复门 bypass 逐条入决策日志（`agent-decisions.jsonl`，
-    /// action=`probe`、reason 标注 FLIP-001，endpoint 即 bypass 凭据的健康面）。
-    /// 写失败只记日志——观测是增益，绝不干扰数据面循环。
+    /// FLIP-001: recovery-gate bypasses are appended one by one to the decision log (`agent-decisions.jsonl`,
+    /// action=`probe` with the reason tagged FLIP-001, the endpoint being the healthy face that served as bypass evidence).
+    /// Write failures are logged only — observation is a gain and never disturbs the data-plane loop.
     fn record_bypass_events(
         &self,
         bypassed: &[(String, String)],
@@ -625,8 +625,8 @@ impl super::Agent {
         }
     }
 
-    /// 持久化直连 keep set（§12 重启恢复）：失败只记日志——ledger 丢失顶多
-    /// 多一个探测周期重建直连，绝不影响数据面循环。
+    /// Persist the direct keep set (§12 restart recovery): failures are logged only — losing the ledger costs
+    /// at most one probe cycle to rebuild the direct link, never affecting the data-plane loop.
     fn save_direct_ledger(&self) {
         if let Err(e) = self.direct.save(&self.direct_ledger) {
             tracing::warn!(
@@ -636,9 +636,9 @@ impl super::Agent {
         }
     }
 
-    /// 应用单个直连动作（`wg set`）：失败只记日志——直连是增益，绝不回滚
-    /// hub（对端仍按 hub 整段路由可达）。成功时记录/清空对端 endpoint
-    /// （§12.3 状态上报与控制台/CLI 直连 peers 展示的数据源）。
+    /// Apply a single direct-connect action (`wg set`): failures are logged only — direct is a gain, never
+    /// rolling back the hub (the peer stays reachable via the hub full route). On success, record/clear the peer's
+    /// endpoint (the data source for §12.3 status reporting and the console/CLI direct-peers display).
     fn apply_direct_update(&mut self, update: &DirectUpdate) {
         match update {
             DirectUpdate::Promote {

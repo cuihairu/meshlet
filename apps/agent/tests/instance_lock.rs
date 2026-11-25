@@ -1,10 +1,11 @@
-//! Single-instance guard coverage（P0，2026-11-12 imac 实锤：3 个 meshlet-agent
-//! 并存互踢同一个 device_id，server 侧 0 条断连日志）。
+//! Single-instance guard coverage (P0, confirmed on the 2026-11-12 imac: three meshlet-agent
+//! processes coexisted and kicked each other off the same device_id, with 0 disconnect logs on the server).
 //!
-//! 这里测的是**真实进程**的行为，不是库函数：第一个进程持有锁，第二个进程必须
-//! 以失败退出码启动不了、并把原因打到 stderr。互斥本身由 OS 做（flock /
-//! LockFileEx，锁挂在打开的文件描述上、进程崩溃自动释放）；库层
-//! [`meshlet_agent::instance_lock`] 的单测另覆盖双路 open 的拒绝与释放。
+//! This exercises **real process** behaviour, not library functions: the first process holds the
+//! lock, and the second must fail to start with a nonzero exit code and print the reason to
+//! stderr. The mutual exclusion itself is the OS's job (flock / LockFileEx — the lock attaches to
+//! the open file description and is released automatically on process crash); the library-level
+//! unit tests for [`meshlet_agent::instance_lock`] separately cover rejection and release across two opens.
 
 use std::fs;
 use std::io::Read as _;
@@ -28,10 +29,9 @@ fn bin() -> PathBuf {
     PathBuf::from(exe)
 }
 
-/// 写一份**最小可启动**的配置：数据面打开（才会走到抢锁那一步）；带一个
-/// `device_token` 但 server 指到必然连不上的地址。持有者因此不会在凭证解析上
-/// 立刻退出，而是留在轮询循环里——**它必须活着**，否则一退出就释放锁，
-/// 第二个进程会抢空锁，这个测试就退化成假绿。
+/// Write a **minimally bootable** config: the data plane is enabled (so it reaches the
+/// lock-acquisition step), and it carries a `device_token` while the server points at an address
+/// that can never connect. The holder therefore does not bail out during credential resolution, but stays in its poll loop — **it must stay alive**, otherwise exiting releases the lock, the second process grabs an empty lock, and this test degrades to a false green.
 fn write_config(root: &Path, state_dir: &Path) -> PathBuf {
     let path = root.join("agent.toml");
     let toml = format!(
@@ -72,7 +72,7 @@ fn stderr_text(child: &mut Child) -> String {
     String::new()
 }
 
-/// 等进程把锁文件落下来（它自己 `create_dir_all` + 开锁）。
+/// Wait for the process to drop the lock file (it does its own `create_dir_all` plus lock open).
 fn wait_for_lock_file(lock_file: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !lock_file.is_file() {
@@ -85,8 +85,8 @@ fn wait_for_lock_file(lock_file: &Path) {
     }
 }
 
-/// 双进程互斥：持有者活着时，第二个进程必须失败退出并说清原因；持有者退出
-/// （释放锁）后，第三个进程必须能正常拿到锁——守卫不能把正常重启也挡住。
+/// Two-process mutual exclusion: while the holder is alive, the second process must exit with
+/// failure and state the reason; after the holder exits (releasing the lock), a third process must acquire it normally — the guard must not block ordinary restarts.
 #[test]
 fn second_process_is_rejected_while_the_first_holds_the_lock() {
     let root = std::env::temp_dir().join(format!(
@@ -99,17 +99,17 @@ fn second_process_is_rejected_while_the_first_holds_the_lock() {
     let config = write_config(&root, &state_dir);
     let lock_file = state_dir.join("agent.lock");
 
-    // 阶段一：持有者拿到锁并留在循环里。
+    // Phase 1: the holder grabs the lock and stays in the loop.
     let mut first = spawn(&config);
     wait_for_lock_file(&lock_file);
-    // 留一点时间让它走完初始化（初始化途中退出会释放锁，把测试变成假绿）。
+    // Give it a moment to finish initializing (bailing out mid-init would release the lock and make this test falsely green).
     std::thread::sleep(Duration::from_millis(500));
     assert!(
         first.try_wait().expect("peek at the holder").is_none(),
         "the holder must stay alive while holding the lock, otherwise there is no contention to measure"
     );
 
-    // 阶段二：第二个进程必须立刻被拒，且说清是锁被占。
+    // Phase 2: the second process must be rejected immediately, naming the held lock as the reason.
     let mut second = spawn(&config);
     let start = Instant::now();
     let status = second.wait().expect("the second process exits");
@@ -132,12 +132,12 @@ fn second_process_is_rejected_while_the_first_holds_the_lock() {
         "stderr must point at the lock file, got: {rejected}"
     );
 
-    // 阶段三：持有者退出即释放锁，下一个进程可以正常启动。
+    // Phase 3: the holder exiting releases the lock, so the next process can start normally.
     let _ = first.kill();
     let _ = first.wait();
 
     let mut third = spawn(&config);
-    // 被拒的进程会**立刻**退出；正常的进程会留下来轮询。2 秒内退出即判失败。
+    // A rejected process exits **immediately**; a healthy one stays polling. Exiting within 2s counts as failure.
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if third

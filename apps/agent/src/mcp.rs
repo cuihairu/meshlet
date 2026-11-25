@@ -1,25 +1,25 @@
-//! MCP 本地服务：AI 客户端经 loopback HTTP 查询本机 mesh 事实。
+//! MCP local service: AI clients query this machine's mesh facts over loopback HTTP.
 //!
-//! 定案（2026-11-08 用户）：meshlet 的本地查询功能做成 **MCP**，本地开启后
-//! AI 客户端即可快速访问不同机器（每台机器跑一个 agent 的 MCP 端点）。
-//! 取代 2026-10-19 `docs/analysis/agent-local-api-2026-10-19.md` 中面向
-//! 脚本/CLI/控制台的 OS 主体 IPC 提案——消费方改为 AI，传输改为 MCP。
+//! Decision (2026-11-08, user): meshlet's local query feature is built as **MCP**; once
+//! enabled locally, AI clients can quickly reach different machines (each machine runs
+//! one agent MCP endpoint). Supersedes the script/CLI/console-facing OS-level IPC proposal in
+//! 2026-10-19 `docs/analysis/agent-local-api-2026-10-19.md` — AI consumes, MCP transports.
 //!
-//! 安全边界（与 2026-10-19 研究的风险清单一致）：
-//! - **仅 loopback**：绑定 `127.0.0.1`，绝不绑定外部接口；
-//! - **只读**：工具集为查询（status/info/peers/routes/networks/diag），
-//!   无写操作，无 Shell 命令，无私钥读取；
-//! - **无机密**：`agent.toml` 的 `device_token` / `bootstrap_token` 永不输出；
-//! - **默认全关**：`[mcp] enabled = false`，显式开启才监听。
+//! Security boundary (same risk list as the 2026-10-19 research):
+//! - **Loopback only**: bound to `127.0.0.1`, never an external interface;
+//! - **Read-only**: tool set is queries (status/info/peers/routes/networks/diag),
+//!   no writes, no shell commands, no private-key reads;
+//! - **No secrets**: `device_token` / `bootstrap_token` in `agent.toml` are never emitted;
+//! - **Off by default**: `[mcp] enabled = false`; listens only when explicitly enabled.
 //!
-//! 传输：rmcp streamable HTTP（`StreamableHttpService`），端点
-//! `POST /mcp`。端口写 `{state_dir}/mcp.json`（`{url, port, pid}`）交接文件，
-//! 与 local-panel.json 同款原子发布（.tmp + rename），托盘/CI/客户端据此拿
-//! 端点。
+//! Transport: rmcp streamable HTTP (`StreamableHttpService`), endpoint
+//! `POST /mcp`. The port writes the `{state_dir}/mcp.json` (`{url, port, pid}`) handoff file,
+//! atomic publish like local-panel.json (.tmp + rename); tray/CI/clients get the
+//! endpoint from it.
 //!
-//! 数据源与本地面板/CLI 同一链路（`{state_dir}` 下的
-//! `tray/status.json`、`direct-peers.json`、`applied.json` 与 `agent.toml`），
-//! 一源三面，不重复实现读取逻辑。
+//! Data sources share the local panel/CLI pipeline (`tray/status.json`,
+//! `direct-peers.json`, `applied.json` and `agent.toml` under `{state_dir}`):
+//! one source, three faces, no duplicated read logic.
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -37,14 +37,14 @@ use rmcp::{
     ServerHandler,
 };
 
-/// MCP 端点路径（streamable HTTP 常规）。
+/// MCP endpoint path (streamable HTTP convention).
 pub const MCP_PATH: &str = "/mcp";
-/// 交接文件名（`{state_dir}/mcp.json`）。
+/// Handoff file name (`{state_dir}/mcp.json`).
 pub const MCP_URL_FILE: &str = "mcp.json";
-/// 单请求体上限（rmcp 默认 4 MiB，足够工具参数）。
+/// Per-request body limit (rmcp default 4 MiB, plenty for tool arguments).
 const REQUEST_BODY_LIMIT: usize = 4 * 1024 * 1024;
 
-/// MCP 服务状态（交接文件内容）。
+/// MCP service state (handoff file content).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct McpEndpoint {
     pub url: String,
@@ -52,11 +52,11 @@ pub struct McpEndpoint {
     pub pid: u32,
 }
 
-/// 启动 MCP 服务：绑定 loopback 随机/指定端口，写 `{state_dir}/mcp.json`，
-/// 返回端点信息。**调用方负责保存 `McpServer` 句柄**（drop 即停、清交接文件）。
+/// Start the MCP service: bind loopback on a random/specified port, write `{state_dir}/mcp.json`,
+/// return endpoint info. **The caller owns the `McpServer` handle** (drop stops it and clears the handoff file).
 ///
-/// 绑定失败返回 `Err`（端口占用等），不 panic——调用方决定是否降级为
-/// 「MCP 未启动」并如实记录。
+/// Bind failure returns `Err` (port in use etc.), no panic — the caller decides whether to degrade to
+/// "MCP not started" and record it honestly.
 pub fn start(state_dir: &Path, port: u16) -> std::io::Result<McpServer> {
     let state_dir = state_dir.to_path_buf();
     let handler = McpHandler::new(state_dir.clone());
@@ -102,9 +102,9 @@ pub fn start(state_dir: &Path, port: u16) -> std::io::Result<McpServer> {
     let shutdown = tokio_util::sync::CancellationToken::new();
     let serve_shutdown = shutdown.clone();
     let serve_runtime = runtime.clone();
-    // current_thread runtime 必须被 block_on 驱动才能 poll 任务；用专用线程
-    // 跑 `block_on(axum::serve(...))`，否则 spawn 的任务永远不被调度，
-    // 服务端口可 bind 但永不响应（2026-11-08 实测踩坑）。
+    // A current_thread runtime only polls tasks while driven by block_on; run
+    // `block_on(axum::serve(...))` on a dedicated thread, otherwise spawned tasks are never
+    // scheduled and the port binds but never responds (verified pitfall, 2026-11-08).
     let handle = std::thread::Builder::new()
         .name("meshlet-mcp".into())
         .spawn(move || {
@@ -124,7 +124,7 @@ pub fn start(state_dir: &Path, port: u16) -> std::io::Result<McpServer> {
     })
 }
 
-/// MCP 服务句柄：drop 时停止监听并清交接文件。
+/// MCP service handle: dropping stops the listener and clears the handoff file.
 pub struct McpServer {
     _runtime: std::sync::Arc<tokio::runtime::Runtime>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -133,19 +133,19 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    /// 监听端口（交接文件写入值；启动后可用）。
+    /// Listening port (the value written to the handoff file; available after start).
     pub fn port(&self) -> u16 {
         crate::mcp::read_url_file(&self.state_dir)
             .map(|e| e.port)
             .unwrap_or(0)
     }
 
-    /// 停止服务并清交接文件（幂等）。
+    /// Stop the service and clear the handoff file (idempotent).
     pub fn stop(&mut self) {
         self.shutdown.cancel();
         if let Some(handle) = self.handle.take() {
-            // MCP 线程在 `block_on(axum::serve)` 上，cancel 触发优雅关停后
-            // 线程自然退出；join 等待它结束（带超时兜底，防极端卡死）。
+            // The MCP thread sits in `block_on(axum::serve)`; once cancel triggers graceful shutdown
+            // the thread exits on its own; join waits for it (timeout fallback against a worst-case hang).
             let _ = handle.join();
         }
         remove_url_file(&self.state_dir);
@@ -158,32 +158,32 @@ impl Drop for McpServer {
     }
 }
 
-/// axum 处理器：把请求转给 rmcp 的 `StreamableHttpService`。
+/// axum handler: forwards requests to rmcp's `StreamableHttpService`.
 ///
-/// **必须流式转发**：MCP 的响应可能是 `text/event-stream` 长连接，
-/// `BodyExt::collect` 会一直等 body 结束 → 请求永不返回。这里把 rmcp 的
-/// `BoxBody<Bytes, Infallible>` 原样转成 axum `Body`（两者都是 body 流）。
+/// **Streaming forward is mandatory**: MCP responses may be `text/event-stream` long-lived
+/// connections; `BodyExt::collect` waits for the body to end → the request never returns. Here
+/// rmcp's `BoxBody<Bytes, Infallible>` is passed through as an axum `Body` (both are body streams).
 ///
-/// 注意：`StreamableHttpService::handle` 是 `pub async` 且接受任意
-/// `Body + Send`，直接调它比 tower `oneshot` 更稳（oneshot 对请求体
-/// 的泛型约束在 axum 的 `Body` 下可能不满足）。
+/// Note: `StreamableHttpService::handle` is `pub async` and accepts any `Body + Send`;
+/// calling it directly is sturdier than tower `oneshot` (oneshot's generic bounds on the
+/// request body may not hold under axum's `Body`).
 async fn mcp_handler(
     State(service): State<Arc<StreamableHttpService<McpHandler, LocalSessionManager>>>,
     request: Request<Body>,
 ) -> axum::response::Response {
     let response = service.handle(request).await;
     let (parts, body) = response.into_parts();
-    // BoxBody<Bytes, Infallible> → axum::body::Body 的流式包装。
+    // Streaming wrapper from BoxBody<Bytes, Infallible> to axum::body::Body.
     let body = Body::new(body);
     axum::http::Response::from_parts(parts, body)
 }
 
-/// 健康检查（`GET /`）——MCP 客户端/托盘探活用。
+/// Health check (`GET /`) — used by MCP clients/tray for liveness probes.
 async fn health() -> &'static str {
     "ok"
 }
 
-/// 写 MCP 端点交接文件（原子发布：.tmp + rename，与 local-panel.json 同款）。
+/// Write the MCP endpoint handoff file (atomic publish: .tmp + rename, same as local-panel.json).
 pub fn write_url_file(state_dir: &Path, endpoint: &McpEndpoint) -> std::io::Result<()> {
     let body = serde_json::to_vec(endpoint).map_err(|e| std::io::Error::other(e.to_string()))?;
     let tmp = state_dir.join(format!("{MCP_URL_FILE}.tmp"));
@@ -191,18 +191,18 @@ pub fn write_url_file(state_dir: &Path, endpoint: &McpEndpoint) -> std::io::Resu
     std::fs::rename(&tmp, state_dir.join(MCP_URL_FILE))
 }
 
-/// 读 MCP 端点交接文件。
+/// Read the MCP endpoint handoff file.
 pub fn read_url_file(state_dir: &Path) -> Option<McpEndpoint> {
     let text = std::fs::read_to_string(state_dir.join(MCP_URL_FILE)).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-/// 删除 MCP 端点交接文件（best-effort；残留只影响下一次读到旧端点）。
+/// Delete the MCP endpoint handoff file (best-effort; leftovers only mean the next read sees a stale endpoint).
 pub fn remove_url_file(state_dir: &Path) {
     let _ = std::fs::remove_file(state_dir.join(MCP_URL_FILE));
 }
 
-/// MCP 处理器：持有 state_dir，工具从本地状态文件读事实。
+/// MCP handler: holds state_dir; tools read facts from local state files.
 #[derive(Debug, Clone)]
 pub struct McpHandler {
     state_dir: PathBuf,
@@ -223,8 +223,8 @@ impl ServerHandler for McpHandler {}
 
 #[tool_router(router = tool_router)]
 impl McpHandler {
-    /// 当前节点状态：agent 状态、设备名、虚拟 IP、版本、环境关键项
-    /// （来源 `{state_dir}/tray/status.json`，与本地面板同一链路）。
+    /// Current node state: agent state, device name, virtual IP, version, key environment
+    /// items (from `{state_dir}/tray/status.json`, same pipeline as the local panel).
     #[tool(
         name = "status",
         description = "Meshlet agent status: state, device name, virtual IP, version, environment"
@@ -234,8 +234,8 @@ impl McpHandler {
         pretty_json(&status)
     }
 
-    /// 本机 mesh 信息：设备名、server URL、状态
-    /// （来源 `agent.toml` 顶层键 + status.json，与 `meshlet info` 同链路）。
+    /// This machine's mesh info: device name, server URL, state
+    /// (from `agent.toml` top-level keys + status.json, same pipeline as `meshlet info`).
     #[tool(name = "info", description = "Device info: name, server URL, state")]
     pub async fn info(&self) -> String {
         let cfg = read_config_top(&self.state_dir);
@@ -264,8 +264,8 @@ impl McpHandler {
         .to_string()
     }
 
-    /// 直连对端表：名字、overlay IP、连接模式、RTT、端点、最近握手、公钥
-    /// （来源 `{state_dir}/direct-peers.json`，与本地面板同一链路）。
+    /// Direct-peer table: name, overlay IP, connection mode, RTT, endpoint, last handshake, public key
+    /// (from `{state_dir}/direct-peers.json`, same pipeline as the local panel).
     #[tool(
         name = "peers",
         description = "Direct peers: name, overlay IP, mode, RTT, endpoint, handshake, public key"
@@ -280,9 +280,9 @@ impl McpHandler {
         }
     }
 
-    /// 本地路由：目标网段、下一跳、接口、来源
-    /// （来源 `{state_dir}/applied.json` 的 `last_good_plan.routes`，缺省回落
-    /// 账本 `routes` 前缀，与本地面板同一链路）。
+    /// Local routes: destination prefix, next hop, interface, source
+    /// (from `last_good_plan.routes` in `{state_dir}/applied.json`, falling back to the
+    /// ledger `routes` prefix, same pipeline as the local panel).
     #[tool(
         name = "routes",
         description = "Local routes: destination, next-hop, interface, source"
@@ -303,19 +303,19 @@ impl McpHandler {
         }
     }
 
-    /// 网络/子网列表：本机路由表目的地 + 接口。
+    /// Network/subnet list: local route-table destinations + interfaces.
     #[tool(
         name = "networks",
         description = "Subnets/routes: destination and interface"
     )]
     pub async fn networks(&self) -> String {
-        // P1：Windows 的 wg 路由读取在 CLI（`meshlet networks`）；agent 侧
-        // 不引入命令行依赖，P1 先如实返回空并注明来源。
+        // P1: Windows wg route reading lives in the CLI (`meshlet networks`); the agent side
+        // avoids a command-line dependency, so for now P1 returns empty honestly and notes the source.
         "[]".to_string()
     }
 
-    /// 网络诊断快照：接口、隧道、路由（与 `meshlet agent diag` 同链路，
-    /// 各平台尽力而为）。
+    /// Network diagnostics snapshot: interfaces, tunnels, routes (same pipeline as
+    /// `meshlet agent diag`, best-effort per platform).
     #[tool(
         name = "diag",
         description = "Network diagnostics: interfaces, tunnels, routes"
@@ -323,10 +323,10 @@ impl McpHandler {
     pub async fn diag(&self) -> String {
         #[cfg(not(target_os = "windows"))]
         {
-            // Linux 后端：`inspect` 读真实状态（接口/隧道/路由）。数据面关闭时
-            // 无接口，返回空字段；读失败如实返回空对象，不 panic。
-            // NetworkSnapshot 不派生 Serialize（避免为诊断改共享类型），此处
-            // 映射为普通 JSON 对象。
+            // Linux backend: `inspect` reads real state (interfaces/tunnels/routes). With the data
+            // plane off there are no interfaces; return empty fields. On read failure return an
+            // empty object honestly, no panic. NetworkSnapshot does not derive Serialize (avoid changing
+            // a shared type for diagnostics), so it is mapped to a plain JSON object here.
             use meshlet_network::NetworkBackend;
             let backend = meshlet_network::SystemBackend::new();
             let snapshot = backend.inspect().await;
@@ -349,25 +349,25 @@ impl McpHandler {
         }
         #[cfg(target_os = "windows")]
         {
-            // P1：Windows 诊断快照在 CLI（`meshlet agent diag`）；agent 侧
-            // 不引入命令行依赖，P1 先如实返回空并注明来源。
+            // P1: the Windows diagnostics snapshot lives in the CLI (`meshlet agent diag`); the agent
+            // side avoids a command-line dependency, so for now P1 returns empty honestly and notes the source.
             "{}".to_string()
         }
     }
 
-    /// AGENT-DOC-1：外来 overlay（ZeroTier 类）共存体检（与
-    /// `meshlet agent doctor` 同链路，见 [meshlet_network::doctor]）。
+    /// AGENT-DOC-1: coexistence health check with foreign overlays (ZeroTier-like; same
+    /// pipeline as `meshlet agent doctor`, see [meshlet_network::doctor]).
     ///
-    /// agent 以特权进程运行，采集不经 sudo；`has_failure=true` 即存在 FAIL，
-    /// 调用方应据此告警。**只读**——体检不改任何内核状态。
+    /// The agent runs privileged, so collection needs no sudo; `has_failure=true` means a FAIL
+    /// exists and the caller should alert on it. **Read-only** — the check never changes kernel state.
     #[tool(
         name = "doctor",
         description = "Coexistence health: tunnel amplification, cross-overlay paths, isolation rules, MTU"
     )]
     pub async fn doctor(&self) -> String {
         use meshlet_network::NetworkBackend;
-        // 受管接口按链路类型现探（配置默认 wg0、真机常叫 wg-mlt，按默认名读
-        // 会读空）；探不到回落默认，由判定层报 not_assessed。
+        // Detect the managed interface at runtime by link type (config default wg0; real machines
+        // often name it wg-mlt, so the default name reads empty); on miss fall back, verdict layer reports not_assessed.
         let backend = match meshlet_network::detect_wireguard_interface() {
             Some(interface) => meshlet_network::SystemBackend::new().with_interface(interface),
             None => meshlet_network::SystemBackend::new(),
@@ -393,9 +393,9 @@ impl McpHandler {
     }
 }
 
-/// 读 `{state_dir}/../<file>` 单个**顶层**键（`agent.toml` / 旧 `config.toml`），
-/// 与 tray-host `config_value` 同款逻辑：段内键一律跳过，绝不把段内配置误当
-/// 节点信息展示。
+/// Read a single **top-level** key from `{state_dir}/../<file>` (`agent.toml` / legacy `config.toml`),
+/// same logic as tray-host `config_value`: keys inside sections are always skipped — section
+/// config is never mistaken for node info.
 fn read_config_top(state_dir: &Path) -> serde_json::Value {
     let parent = state_dir.parent().unwrap_or(Path::new("."));
     let mut map = serde_json::Map::new();
@@ -415,7 +415,7 @@ fn read_config_top(state_dir: &Path) -> serde_json::Value {
             }
             if let Some((k, v)) = line.split_once('=') {
                 let key = k.trim();
-                // 机密字段永不输出（安全边界）。
+                // Secret fields are never emitted (security boundary).
                 if matches!(key, "device_token" | "bootstrap_token") {
                     continue;
                 }
@@ -432,14 +432,14 @@ fn read_config_top(state_dir: &Path) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-/// 读一个 JSON 文件；缺失/损坏 → `None`。
+/// Read a JSON file; missing/corrupt → `None`.
 fn read_json(path: &Path) -> Option<serde_json::Value> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
 }
 
-/// JSON → 美化文本（失败 → 空对象，不 panic）。
+/// JSON → pretty text (failure → empty object, no panic).
 fn pretty_json(value: &Option<serde_json::Value>) -> String {
     match value {
         Some(v) => serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".into()),

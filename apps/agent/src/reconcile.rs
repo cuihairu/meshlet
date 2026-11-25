@@ -1,14 +1,14 @@
-//! 对账决策（**纯逻辑**：不碰内核，可无特权单测）。
-//!
-//! agent 只消费服务端下发的结构化计划（§16.4），需要判断的是「现在要不要重放」：
-//! - 期望配置哈希变了（服务端有新修订）→ 改；
-//! - 本机没有账本（首次安装 / 状态文件丢失）→ 改；
-//! - 内核实际对象与期望不符（隧道没了 / 路由少了一条 / NAT 规则不见了）→ 改，
-//!   这正是「主机重启后隧道消失但账本仍记 applied」（TODO #32）的修复路径；
-//! - 三者都不成立 → 不改（有变更才重放，§10.1，幂等且不打扰现网）。
-//!
-//! NAT 清理按**所有权注释**（`meshlet alias {id}`，§12.6）：账本里装过、计划里
-//! 不再出现的单元才移除——绝不触碰非 Meshlet 规则，也绝不误删计划里还在的规则。
+//! Reconciliation decisions (**pure logic**: never touches the kernel, unit-testable without
+//! privileges). The agent only consumes the structured plan published by the server (§16.4);
+//! the question is "replay now or not": - the desired config hash changed (the server has a
+//! new revision) → apply; - no local ledger (first install / state file lost) → apply; -
+//! actual kernel objects don't match the expectation (tunnel gone / a route missing / a NAT
+//! rule gone) → apply — exactly the fix path for "tunnel vanished after a host reboot while
+//! the ledger still says applied" (TODO #32); - none of the above → don't apply (replay only
+//! on change, §10.1 — idempotent and leaves the live network undisturbed). NAT cleanup goes
+//! by the **ownership comment** (`meshlet alias {id}`, §12.6): only units installed per the
+//! ledger and absent from the plan are removed — never touches non-Meshlet rules, never
+//! deletes rules still in the plan.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -17,31 +17,39 @@ use meshlet_network::nat::NatRule;
 use meshlet_network::{DevicePlan, NetworkSnapshot};
 use serde::{Deserialize, Serialize};
 
-/// 账本状态文件（`{state_dir}/applied.json`）：上次**真正应用成功**的计划
-/// 摘要。文件损坏或缺失按「无账本」处理（触发重放，而不是假装已生效）。
+/// Ledger state file (`{state_dir}/applied.json`): a summary of the plan
+/// last **actually applied successfully**. A corrupt or missing file is
+/// treated as "no ledger" (triggering a replay instead of pretending it is
+/// applied).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentState {
-    /// 已应用的 `desired_config_hash`（与修订簿记同一来源）。
+    /// Applied `desired_config_hash` (same source as revision bookkeeping).
     pub desired_config_hash: String,
-    /// 已应用的隧道地址（`a.b.c.d`）：隧道是否还是那一条的直接证据。
+    /// Applied tunnel address (`a.b.c.d`): direct evidence whether the
+    /// tunnel is still the same one.
     #[serde(default)]
     pub tunnel_address: String,
-    /// 已应用的路由目的前缀。
+    /// Applied route destination prefixes.
     #[serde(default)]
     pub routes: Vec<String>,
-    /// 已应用的 NAT 规则指纹集合（`chain|match|action|owner`，与顺序无关）——
-    /// 与计划不一致即触发按所有权注释的整单元清理 + 重新下发。
+    /// Applied NAT rule fingerprint set (`chain|match|action|owner`,
+    /// order-independent) — a mismatch with the plan triggers a whole-unit
+    /// cleanup by ownership comment + re-issue.
     #[serde(default)]
     pub nat_rules: Vec<String>,
-    /// 已应用的 NAT 所有权单元（`meshlet alias {id}`）：删除映射时按它精确清理。
+    /// Applied NAT ownership units (`meshlet alias {id}`): the precise
+    /// cleanup key when a mapping is deleted.
     #[serde(default)]
     pub nat_owners: Vec<String>,
-    /// 最近一次应用成功时刻（ISO-8601 UTC，排查用；不影响决策）。
+    /// Time of the last successful apply (ISO-8601 UTC, for troubleshooting;
+    /// does not affect decisions).
     #[serde(default)]
     pub applied_at: String,
-    /// 应用时本机的 WireGuard 公钥指纹（`wg pubkey` 推导；BUG② 修复）。
-    /// 漂移判定据此识别「peer 恰与计划一致但本机私钥被换」的手动隧道。
-    /// 旧账本无此字段（空串 = 不判，重放一次后自然补齐）。
+    /// WireGuard public-key fingerprint of this host at apply time (derived
+    /// via `wg pubkey`; BUG② fix). Drift detection uses it to recognize a
+    /// hand-rebuilt tunnel where the peers happen to match the plan but the
+    /// local private key was swapped. Older ledgers lack the field (empty
+    /// string = don't judge; naturally filled after one replay).
     #[serde(default)]
     pub local_public_key: String,
     /// The full plan last applied to the kernel. It is the rollback source for
@@ -50,13 +58,14 @@ pub struct AgentState {
     pub last_good_plan: Option<DevicePlan>,
 }
 
-/// 账本路径：`{state_dir}/applied.json`。
+/// Ledger path: `{state_dir}/applied.json`.
 pub fn state_path(state_dir: &str) -> PathBuf {
     Path::new(state_dir).join("applied.json")
 }
 
 impl AgentState {
-    /// 由一份计划生成「已应用」账本（应用成功后才写）。
+    /// Build an "applied" ledger from a plan (written only after a
+    /// successful apply).
     pub fn from_plan(plan: &DevicePlan) -> Self {
         Self {
             desired_config_hash: plan.desired_config_hash.clone(),
@@ -70,13 +79,15 @@ impl AgentState {
         }
     }
 
-    /// 读账本（不存在或损坏 → 默认空账本，调用方据此重放）。
+    /// Read the ledger (missing or corrupt → default empty ledger; callers
+    /// replay accordingly).
     pub fn load(path: &Path) -> Result<Self, String> {
         let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))
     }
 
-    /// 原子落盘：先写临时文件再 rename——进程被杀不会留下半个 JSON。
+    /// Atomic persist: write a temp file then rename — a killed process never
+    /// leaves half a JSON behind.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -89,25 +100,29 @@ impl AgentState {
     }
 }
 
-/// 是否需要重放 + 判定原因（可观测，不只给 yes/no）。
+/// Whether a replay is needed + the reason (observable, not just yes/no).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decision {
+    /// Whether the kernel must be replayed.
     pub needs_apply: bool,
+    /// Why (observable, logged).
     pub reason: Reason,
 }
 
-/// 重放原因：出现任意一条即必须重放。
+/// Replay reason: any one of these forces a replay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    /// 无需变更（有变更才重放，§10.1）。
+    /// No change needed (replay only on change, §10.1).
     UpToDate,
-    /// 期望配置哈希变了：服务端有新修订。
+    /// Desired config hash changed: the server has a new revision.
     DesiredConfigChanged,
-    /// 本机无账本（首装 / 状态文件丢失）。
+    /// No local ledger (first install / state file lost).
     NoLocalLedger,
-    /// 内核实际对象与账本不符：隧道/路由/NAT 漂移或丢失（TODO #32）。
+    /// Actual kernel objects don't match the ledger: tunnel/route/NAT drift
+    /// or loss (TODO #32).
     KernelDrift,
-    /// hub 多端点 failover：现役端点死亡，轮换到下一个候选（重放隧道）。
+    /// Hub multi-endpoint failover: the active endpoint died, rotate to the
+    /// next candidate (replay the tunnel).
     HubEndpointRotated,
 }
 
@@ -122,14 +137,16 @@ impl Reason {
         }
     }
 }
-
-/// 对账：账本 vs 内核实际 vs 服务端期望。
 ///
-/// `extra_peer_keys`：P2P 直连对端公钥集（§12）——由 agent 直连管理器单独
-/// 增删，不属于服务端计划；它们的存在**不算**漂移（纯增益，缺失也不算——
-/// 直连态由管理器自己收敛，绝不因「直连 peer 还没加上」而反复重放计划）。
+/// Reconcile: ledger vs actual kernel vs server expectation.
 ///
-/// 判定顺序：先看期望哈希（真变更优先说真变更），再看账本，最后看内核漂移。
+/// `extra_peer_keys`: public keys of P2P direct peers (§12) — added/removed separately by the agent's direct manager, not part of the server plan;
+/// their presence is **not** drift (pure gain, and neither is their absence —
+/// direct state converges via the manager itself; the plan is never replayed
+/// repeatedly just because "the direct peer isn't added yet").
+///
+/// Order of judgment: desired hash first (a real change gets reported as one),
+/// then the ledger, then kernel drift.
 pub fn needs_apply(
     state: &AgentState,
     snapshot: &NetworkSnapshot,
@@ -151,20 +168,29 @@ pub fn needs_apply(
     }
 }
 
-/// Kernel state versus desired drift（身份级，非数量级）。
+/// Kernel state versus desired drift (identity-level, not count-level).
 ///
-/// 每一项都按**对象身份**判，不按计数——「数量相同」不代表「身份相同」：
-/// - 隧道：不存在，或适配器实际地址与期望不是同一个 → 漂移（重启后接口消失
-///   是常态；账本地址与计划地址同源过时，内核实际读数才是事实）；
-/// - 本机私钥：账本记录的应用公钥与内核 dump 读出的本机公钥不同 → 漂移
-///   （手动换钥的隧道即便 peer 恰与计划一致也必须重放纠回，BUG②）；
-/// - peer：期望与实际按 `公钥 → allowed-ips` 集合逐项比对。少一个（手工删
-///   peer）、多一个（受管接口上多装的本 meshlet peer）、allowed-ips 被改宽，
-///   三条都判漂移；
-/// - 路由：期望里有的目的前缀没装上，或受管接口上出现带 Meshlet 标记但不
-///   再期望的路由 → 漂移（未标记路由属他人，不进观测集合）；
-/// - NAT：期望与实际按规则指纹集合精确比对（所有权注释认领，重启清空
-///   iptables 后两边都空也一致）。
+/// Every item is judged by **object identity**, not counts — "same count"
+/// does not mean "same identity":
+/// - Tunnel: absent, or the adapter's actual address differs from the
+///   expectation → drift (an interface vanishing after reboot is routine;
+///   the ledger address and plan address go stale from the same source — the
+///   actual kernel reading is the truth);
+/// - Local private key: the applied public key recorded in the ledger
+///   differs from the local public key read from the kernel dump → drift
+///   (a hand-rekeyed tunnel must be replayed to correct even if the peers
+///   happen to match the plan, BUG②);
+/// - Peers: expected vs actual compared item by item on the `public key →
+///   allowed-ips` set. One missing (peer hand-deleted), one extra (an extra
+///   meshlet peer on the managed interface), or widened allowed-ips — all
+///   three are drift;
+/// - Routes: an expected destination prefix not installed, or a
+///   Meshlet-marked but no-longer-expected route on the managed interface →
+///   drift (unmarked routes belong to others and never enter the observed
+///   set);
+/// - NAT: expected vs actual compared exactly as rule fingerprint sets
+///   (claimed via ownership comments; both sides empty after a reboot
+///   flushed iptables also counts as consistent).
 fn drifted(
     state: &AgentState,
     snapshot: &NetworkSnapshot,
@@ -177,19 +203,25 @@ fn drifted(
     if !state.tunnel_address.is_empty() && state.tunnel_address != plan.tunnel.address.to_string() {
         return true;
     }
-    // 适配器实际地址（BUG②）：内核读数与计划不一致（手动换址 / 半途失败）
-    // → 漂移。旧检查只比「账本地址 vs 计划地址」，两者都过时（同一来源），
-    // 手动隧道换了地址也不会被看见；这里比的是**内核实际读数**。读数缺失
-    // （None）不判——证据缺失不假装一致，也不进重放死循环。
+    // Adapter actual address (BUG②): kernel reading differs from the plan
+    // (hand-readdressed / half-failed apply) → drift. The old check compared
+    // "ledger address vs plan address", both stale (same source), so a manual
+    // tunnel readdressing went unseen; this compares the **actual kernel
+    // reading**. A missing reading (None) is not judged — missing evidence
+    // neither pretends consistency nor enters a replay loop.
     if let Some(actual) = snapshot.tunnel_address {
         if actual != plan.tunnel.address {
             return true;
         }
     }
-    // 本机私钥指纹（BUG②）：账本记录了应用时的公钥，而内核 dump 读出的
-    // 本机公钥不同 → 有人换了私钥（手动重建 / 密钥轮换旁路），必须重放纠回。
-    // peer 集合恰与计划一致的经典误判（判 UpToDate 跳过 apply、报 applied
-    // 成功但内核未变）正是漏了这一项。账本无指纹（旧账本）或读数缺失都不判。
+    // Local private-key fingerprint (BUG②): the ledger recorded the public
+    // key at apply time, and the local public key read from the kernel dump
+    // differs → someone swapped the private key (hand rebuild / key-rotation
+    // bypass); must replay to correct. The classic misjudgment — peer set
+    // happens to match the plan (UpToDate, skip apply, report applied success
+    // while the kernel is unchanged) — is exactly this missing check. Not
+    // judged when the ledger has no fingerprint (older ledger) or the reading
+    // is missing.
     if !state.local_public_key.is_empty() {
         if let Some(actual) = &snapshot.local_public_key {
             if actual != &state.local_public_key {
@@ -197,15 +229,19 @@ fn drifted(
             }
         }
     }
-    // MTU：计划显式配置而内核读数不符 → 漂移（手工改动 / 半途失败的纠回）。
-    // 计划未配置 MTU 时不判：内核默认值或管理员有意设置都不算违背计划。
+    // MTU: explicitly configured in the plan but the kernel reading differs →
+    // drift (correction of hand edits / half-failed applies). When the plan
+    // sets no MTU, don't judge: the kernel default or an admin's deliberate
+    // setting is not a plan violation.
     if plan.tunnel.mtu.is_some() && snapshot.tunnel_mtu != plan.tunnel.mtu {
         return true;
     }
-    // Peer 身份（不是条数）：公钥 → allowed-ips 两侧逐项比对。数量相同但换了
-    // 一个 peer、或某个 peer 的 allowed-ips 被改宽，与「少一个 peer」同样必须
-    // 重放纠回。受管接口上的 peer 都是 Meshlet 自有对象，但 P2P 直连对端
-    // （`extra_peer_keys`）由管理器单独增删——它们的存在不算漂移。
+    // Peer identity (not counts): compare public key → allowed-ips item by
+    // item on both sides. Same count but a substituted peer, or a widened
+    // allowed-ips on some peer, forces a corrective replay just like "one
+    // peer missing". Peers on the managed interface are all Meshlet-owned,
+    // but P2P direct peers (`extra_peer_keys`) are added/removed separately
+    // by the manager — their presence is not drift.
     let ips = |cidrs: &[meshlet_domain::Ipv4Cidr]| -> BTreeSet<String> {
         cidrs.iter().map(ToString::to_string).collect()
     };
@@ -220,26 +256,31 @@ fn drifted(
         .iter()
         .map(|peer| (peer.public_key.clone(), ips(&peer.allowed_ips)))
         .collect::<BTreeMap<_, _>>();
-    // 计划 peer 必须与内核一一对应（直连对端不在计划侧比较里）。
+    // Plan peers must correspond one-to-one with the kernel (direct peers
+    // are excluded from the plan-side comparison).
     for (key, wanted_ips) in &expected_peers {
         if observed_peers.get(key) != Some(wanted_ips) {
             return true;
         }
     }
-    // 内核里不得出现既非计划、也非直连保留的 peer（未受管对象 → 漂移）。
-    // 直连保留的 peer 缺失不算漂移（管理器会补上），避免死循环。
+    // The kernel must not contain a peer that is neither in the plan nor in
+    // the direct keep set (unmanaged object → drift). A missing keep-set
+    // direct peer is not drift (the manager adds it back) — avoids a loop.
     if observed_peers
         .keys()
         .any(|key| !expected_peers.contains_key(key) && !extra_peer_keys.contains(key))
     {
         return true;
     }
-    // 路由对照只对「路由独立于 peer 下发」的后端成立（service 模型：netsh
-    // 独立 apply plan.routes）。peer allowed-ips 装配路由的后端（nt 模型：
-    // adapter set_default_route）不走此处——路由已由上面的 peer 身份级比对
-    // （公钥 → allowed-ips 逐项）完全决定；再按 plan.routes 判「计划外路由」
-    // 会把 hub `/16` 在叶节点 `routes=[]` 下恒判漂移，KernelDrift 每轮重放
-    // 死循环（2026-11-22 imac 实锤：旧二进制 pre 边界 185 次）。
+    // Route comparison only applies to backends where routes are issued
+    // independently of peers (service model: netsh applies plan.routes
+    // separately). Backends that assemble routes from peer allowed-ips (nt
+    // model: adapter set_default_route) skip this — routes are fully
+    // determined by the peer identity-level comparison above (public key →
+    // allowed-ips item by item); judging "out-of-plan routes" by plan.routes
+    // on top would permanently flag the hub `/16` as drift on leaf nodes with
+    // `routes=[]`, looping KernelDrift replays every round (2026-11-22 imac,
+    // confirmed: 185 hits on the pre boundary with the old binary).
     if !snapshot.routes_from_peers {
         let installed: BTreeSet<String> = snapshot
             .installed_routes
@@ -267,26 +308,35 @@ fn drifted(
             return true;
         }
     }
-    // NAT 身份：规则指纹集合精确比对（不是「有没有 NAT 规则」）。少一条要装的
-    // DNAT/SNAT、或多出一条 Meshlet 注释下的规则（下发只增不删，旧单元残留），
-    // 都必须重放；计划里已无 NAT 而内核里还有 Meshlet 规则（网关降级、映射被
-    // 删但清理失败）同样命中。观测集合只含注释前缀认领的规则，非本 meshlet
-    // 规则在此不可见，永远不会被判成漂移。
+    // NAT identity: exact comparison of rule fingerprint sets (not "are
+    // there any NAT rules"). A missing DNAT/SNAT that should be installed, or
+    // an extra rule under a Meshlet comment (issue paths only add, never
+    // remove; leftover old unit), both force a replay; NAT gone from the plan
+    // while Meshlet rules remain in the kernel (gateway demoted, mapping
+    // deleted but cleanup failed) hits too. The observed set only contains
+    // rules claimed by the comment prefix — non-meshlet rules are invisible
+    // here and never judged as drift.
     let expected_nat: BTreeSet<String> =
         plan.nat_rules.iter().map(|rule| rule.signature()).collect();
     let observed_nat: BTreeSet<String> = snapshot.nat_rules.iter().cloned().collect();
     expected_nat != observed_nat
 }
 
-/// 本轮重放前要按所有权注释清理的 NAT 单元（§12.6 精确清理）。
+/// NAT units to clean up by ownership comment before this replay (§12.6 /
+/// precise cleanup).
 ///
-/// 判据是**规则集合是否还一致**，不是「owner 是否还在」：
-/// - 账本装过、计划里整个映射消失 → 该 owner 全部规则清理；
-/// - 映射还在但规则集合变了（翻译模式 `dnat_snat` ↔ `dnat_only` 等）→ 同样
-///   先整单元清理，随后 [`apply_device_plan_sync`] 按计划重新下发，避免
-///   旧规则残留（backend 的下发只增不删，残留不会被自动发现）。
+/// The criterion is **whether the rule set is still consistent**, not
+/// "whether the owner is still there":
+/// - installed per the ledger, whole mapping gone from the plan → clean up
+///   all rules of that owner;
+/// - mapping still there but the rule set changed (translation mode
+///   `dnat_snat` ↔ `dnat_only` etc.) → likewise clean the whole unit first,
+///   then [`apply_device_plan_sync`] re-issues per the plan, avoiding stale
+///   rules (the backend's issue path only adds, never removes; leftovers are
+///   never discovered automatically).
 ///
-/// 只按 `meshlet alias {id}` 注释删规则，绝不触碰非 Meshlet 规则。
+/// Rules are deleted only by the `meshlet alias {id}` comment; non-Meshlet
+/// rules are never touched.
 pub fn stale_owners(
     state: &AgentState,
     plan: &DevicePlan,
@@ -297,12 +347,15 @@ pub fn stale_owners(
         return kernel_owners.to_vec();
     }
     if rule_signatures(&plan.nat_rules) == state.nat_rules {
-        // 规则集合一致：不动任何自有规则（幂等，§10.3）。
+        // Rule sets consistent: leave all owned rules alone (idempotent,
+        // §10.3).
         return Vec::new();
     }
-    // 账本丢失/损坏时，内核现存的 Meshlet 所有权清单是权威来源：
-    // 枚举所有带 `meshlet alias *` 注释的规则 owner，排除计划仍期望的
-    // 单元，余者全量清理；绝不触碰非 Meshlet 规则。
+    // When the ledger is lost/corrupt, the kernel's existing Meshlet
+    // ownership inventory is the authoritative source: enumerate all rule
+    // owners carrying a `meshlet alias *` comment, exclude units still
+    // expected by the plan, and clean up the rest; non-Meshlet rules are
+    // never touched.
     let planned: std::collections::BTreeSet<_> = owners(&plan.nat_rules).into_iter().collect();
     let kernel_only: std::collections::BTreeSet<_> = kernel_owners.iter().cloned().collect();
     if state.nat_owners.is_empty() {
@@ -315,14 +368,18 @@ pub fn stale_owners(
     if !stale.is_empty() {
         return stale;
     }
-    // 规则集合变了但内核侧没有额外对象：账本记录的旧单元整体清掉，
-    // 随后由计划重新下发——只增不删的下发路径不会自动发现「旧规则已不该存在」。
+    // Rule set changed but the kernel has no extra objects: clear the whole
+    // old unit recorded in the ledger, then re-issue from the plan — the
+    // add-only issue path never discovers "the old rules should no longer
+    // exist" on its own.
     state.nat_owners.clone()
 }
 
-/// 计划 NAT 规则的指纹集合（`chain|目的|动作|所有权|源|入向接口`，去重且与
-/// 顺序无关）：集合相同即认为内核里的规则无需重刷。指纹来自
-/// [`NatRule::signature`]——内核侧解析出的指纹同一形状，两侧据此集合比对。
+/// Fingerprint set of the plan's NAT rules (`chain|dest|action|ownership|
+/// source|incoming interface`, deduplicated and order-independent): an equal
+/// set means the kernel rules need no refresh. Fingerprints come from
+/// [`NatRule::signature`] — the kernel-side parsed fingerprints share the same
+/// shape, so both sides compare as sets.
 fn rule_signatures(rules: &[NatRule]) -> Vec<String> {
     rules
         .iter()
@@ -332,7 +389,8 @@ fn rule_signatures(rules: &[NatRule]) -> Vec<String> {
         .collect()
 }
 
-/// 计划里的 NAT 所有权单元集合（去重、排序，保证确定性）。
+/// Set of NAT ownership units in the plan (deduplicated, sorted,
+/// deterministic).
 fn owners(rules: &[NatRule]) -> Vec<String> {
     rules
         .iter()
@@ -345,13 +403,12 @@ fn owners(rules: &[NatRule]) -> Vec<String> {
 fn prefixes(dests: impl Iterator<Item = meshlet_domain::Ipv4Cidr>) -> Vec<String> {
     dests.map(|c| c.to_string()).collect()
 }
-
 fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 // ---------------------------------------------------------------------------
-// 测试（纯逻辑，无需内核/网络）
+// Tests (pure logic, no kernel/network needed)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -362,7 +419,8 @@ mod tests {
     use meshlet_network::{PeerConfig, PeerObserved, RouteConfig, TunnelConfig};
     use std::net::Ipv4Addr;
 
-    /// 测试便捷包装：不关心直连对端的用例走空保留集。
+    /// Test convenience wrapper: cases that don't care about direct peers use
+    /// an empty keep set.
     fn apply(state: &AgentState, snapshot: &NetworkSnapshot, plan: &DevicePlan) -> Decision {
         needs_apply(state, snapshot, plan, &BTreeSet::new())
     }
@@ -421,9 +479,11 @@ mod tests {
         }
     }
 
-    /// 与该计划一致的内核快照（“已按计划装好”）。peer 身份、路由与 NAT 指纹
-    /// 全部**从计划派生**，而不是手写一份相似值——快照与计划本就应当同源，
-    /// 手写容易悄悄漂移（那正是被改掉的旧测试）。
+    /// Kernel snapshot consistent with the plan ("installed as planned").
+    /// Peer identity, routes and NAT fingerprints are all **derived from the
+    /// plan** rather than hand-written lookalikes — snapshot and plan are
+    /// supposed to share a source, and hand-written values drift quietly
+    /// (exactly what the old, replaced test did).
     fn healthy(plan: &DevicePlan) -> NetworkSnapshot {
         NetworkSnapshot {
             tunnel_exists: true,
@@ -462,7 +522,8 @@ mod tests {
 
     #[test]
     fn missing_ledger_triggers_apply() {
-        // 首次安装：没有账本必须重放，不能凭“内存是空的”推断已生效。
+        // First install: no ledger must replay; "memory is empty" must not be
+        // read as already-applied.
         let p = plan("hash-a", false);
         let d = apply(&AgentState::default(), &healthy(&p), &p);
         assert!(d.needs_apply);
@@ -480,7 +541,8 @@ mod tests {
 
     #[test]
     fn host_reboot_losing_the_tunnel_triggers_replay() {
-        // TODO #32：账本记着 hash-a，内核里的接口没了（主机重启）→ 必须重放。
+        // TODO #32: ledger says hash-a, the kernel interface is gone (host
+        // reboot) → must replay.
         let p = plan("hash-a", false);
         let rebooted = NetworkSnapshot {
             tunnel_exists: false,
@@ -493,44 +555,49 @@ mod tests {
 
     #[test]
     fn peer_consistent_but_local_key_rotated_is_drift() {
-        // BUG② 回归（todo.md「Windows 部署发现」第二项）：手动重建的隧道 peer
-        // 恰与计划一致，但本机私钥被换 → 此前判 UpToDate 跳过 apply（报
-        // applied 成功但内核未变），现在必须判 KernelDrift。
+        // BUG② regression (second item of todo.md "Windows deployment
+        // findings"): a hand-rebuilt tunnel whose peers happen to match the
+        // plan but whose local private key was swapped → previously judged
+        // UpToDate and skipped apply (reported applied success while the
+        // kernel was unchanged); now must judge KernelDrift.
         let p = plan("hash-a", false);
         let mut state = state_of(&p);
         state.local_public_key = "K".repeat(43) + "=";
 
-        // peer 一致、本机公钥不同 → 漂移。
+        // Peers match, local public key differs → drift.
         let mut hand_rebuilt = healthy(&p);
         hand_rebuilt.local_public_key = Some("M".repeat(43) + "=");
         assert_eq!(apply(&state, &hand_rebuilt, &p).reason, Reason::KernelDrift);
 
-        // 本机公钥一致（正常 re-apply 后的内核）→ 不漂移。
+        // Local public key matches (kernel after a normal re-apply) → no
+        // drift.
         let mut matching = healthy(&p);
         matching.local_public_key = Some(state.local_public_key.clone());
         assert!(!apply(&state, &matching, &p).needs_apply);
 
-        // 读数缺失（dump 不可读）→ 不判（证据缺失不进重放死循环）。
+        // Missing reading (dump unreadable) → don't judge (missing evidence
+        // must not enter a replay loop).
         let mut unreadable = healthy(&p);
         unreadable.local_public_key = None;
         assert!(!apply(&state, &unreadable, &p).needs_apply);
 
-        // 旧账本（无指纹字段）→ 不判，重放一次后自然补齐。
-        let old_ledger = state_of(&p); // local_public_key 默认空
+        // Old ledger (no fingerprint field) → don't judge; naturally filled
+        // after one replay.
+        let old_ledger = state_of(&p); // local_public_key defaults to empty
         assert!(!apply(&old_ledger, &hand_rebuilt, &p).needs_apply);
     }
 
     #[test]
     fn adapter_address_different_from_plan_is_drift() {
-        // BUG② 回归：手动隧道换了地址（peer 一致）。旧检查只比「账本地址 vs
-        // 计划地址」（同源过时），内核实际读数不一致现在必须命中。
+        // // BUG② regression: a manual tunnel readdressed (peers match). The old // check compared "ledger address vs plan address" (stale, same
+        // source); an actual-kernel-reading mismatch must now be caught.
         let p = plan("hash-a", false);
         let state = state_of(&p);
         let mut moved = healthy(&p);
         moved.tunnel_address = Some("10.240.0.99".parse().unwrap());
         assert_eq!(apply(&state, &moved, &p).reason, Reason::KernelDrift);
 
-        // 读数缺失 → 不判。
+        // Missing reading → don't judge.
         let mut unreadable = healthy(&p);
         unreadable.tunnel_address = None;
         assert!(!apply(&state, &unreadable, &p).needs_apply);
@@ -562,13 +629,16 @@ mod tests {
 
     #[test]
     fn nt_peer_implied_routes_are_not_route_drift() {
-        // nt 模型（wireguard-nt adapter set_default_route）的内核路由完全由
-        // peer allowed-ips 装配，plan.routes 不经独立路径下发。漂移判定据此
-        // 跳过 plan.routes 对照——hub `/16` 不得因「不在 plan.routes」被判
-        // 计划外路由（叶节点 routes=[] 下每轮重放死循环；2026-11-22 imac
-        // 实锤：旧二进制 pre 边界 KernelDrift 185 次）。
+        // Under the nt model (wireguard-nt adapter set_default_route), kernel
+        // routes are assembled entirely from peer allowed-ips; plan.routes is
+        // not issued via a separate path. Drift detection therefore skips the
+        // plan.routes comparison — the hub `/16` must not be judged an
+        // out-of-plan route just because it isn't in plan.routes (a replay
+        // loop every round on leaf nodes with routes=[]; 2026-11-22 imac,
+        // confirmed: KernelDrift hit the pre boundary 185 times on the old
+        // binary).
         let mut p = plan("hash-a", false);
-        p.routes = Vec::new(); // 叶节点：无显式路由计划（imac 实况 routes=[]）
+        p.routes = Vec::new(); // leaf node: no explicit route plan (imac has routes=[])
         let state = state_of(&p);
         let peer_routes: Vec<Ipv4Cidr> = p.tunnel.peers[0].allowed_ips.clone();
         assert!(
@@ -576,8 +646,9 @@ mod tests {
             "test plan must carry peer allowed-ips to model the nt route set"
         );
 
-        // nt 口径：已装路由=peer allowed-ips（hub `/16`），跳过 plan.routes 对照
-        // → 不判漂移（修复后收敛）。
+        // nt semantics: installed routes = peer allowed-ips (hub `/16`);
+        // skipping the plan.routes comparison → no drift (converges after the
+        // fix).
         let nt_snapshot = NetworkSnapshot {
             installed_routes: peer_routes.clone(),
             routes_from_peers: true,
@@ -585,9 +656,11 @@ mod tests {
         };
         assert_eq!(apply(&state, &nt_snapshot, &p).reason, Reason::UpToDate);
 
-        // 同一快照按 service 模型口径（路由独立于 peer、按 plan.routes 对照）
-        // 判：hub `/16` 不在空 plan.routes → 计划外路由 → 必须判漂移。
-        // 这是 pre-fix 实况（routes_from_peers 未引入），作为修复的回归守卫。
+        // The same snapshot judged under service-model semantics (routes
+        // independent of peers, compared against plan.routes): the hub `/16`
+        // isn't in the empty plan.routes → out-of-plan route → must be drift.
+        // This is the pre-fix reality (routes_from_peers not yet introduced),
+        // kept as a regression guard for the fix.
         let service_snapshot = NetworkSnapshot {
             installed_routes: peer_routes,
             routes_from_peers: false,
@@ -601,10 +674,12 @@ mod tests {
 
     #[test]
     fn direct_peer_in_the_keep_set_is_not_drift_but_its_absence_is_not_either() {
-        // §12：直连对端由 agent 直连管理器单独增删。计划重放对账时：
-        // - 在内核里 → 不算漂移（保留，不触发重放）；
-        // - 不在内核里 → 也不算漂移（管理器会自己补上——若按漂移重放，
-        //   重放并不会装直连 peer，会陷入「重放也修不好」的死循环）。
+        // §12: direct peers are added/removed separately by the agent's direct
+        // manager. During plan-replay reconciliation:
+        // - present in the kernel → not drift (kept, no replay triggered);
+        // - absent from the kernel → also not drift (the manager adds it back
+        //   — a drift-triggered replay would not install the direct peer
+        //   anyway, deadlocking in "replay can't fix it").
         let p = plan("hash-a", false);
         let state = state_of(&p);
         let direct_key = "direct-peer-pubkey==".to_string();
@@ -628,22 +703,26 @@ mod tests {
             "a kept direct peer must not read as drift"
         );
 
-        // 保留集之外的多余 peer 仍然是漂移（未受管对象）。
+        // An extra peer outside the keep set is still drift (unmanaged
+        // object).
         let keep: BTreeSet<String> = BTreeSet::new();
         assert_eq!(
             needs_apply(&state, &with_direct, &p, &keep).reason,
             Reason::KernelDrift
         );
 
-        // 直连 peer 声明在保留集但内核没有：不算漂移（管理器负责补上）。
+        // A direct peer declared in the keep set but absent from the kernel:
+        // not drift (the manager is responsible for adding it).
         let keep: BTreeSet<String> = [direct_key].into_iter().collect();
         assert!(!needs_apply(&state, &healthy(&p), &p, &keep).needs_apply);
     }
 
     #[test]
     fn a_substituted_or_extra_peer_is_drift_with_an_equal_count() {
-        // 数量相同、身份不同（受管接口上被换了 peer）→ 必须重放。旧检查只看
-        // `peer_count`，对这种注入判「未漂移」——这正是升级到身份级的动因。
+        // Same count, different identity (a peer swapped on the managed
+        // interface) → must replay. The old check only looked at
+        // `peer_count` and judged such injections "not drifted" — exactly why
+        // identity-level comparison was introduced.
         let p = plan("hash-a", false);
         let swapped = NetworkSnapshot {
             peers: vec![PeerObserved {
@@ -656,9 +735,9 @@ mod tests {
             apply(&state_of(&p), &swapped, &p).reason,
             Reason::KernelDrift
         );
-
-        // 不替换、只是多一个 peer：本接口上的 peer 都是 Meshlet 自有对象，
-        // 多出即漂移（同样会绕过错位的 peer_count 判定）。
+        // No substitution, just one extra peer: peers on this interface are
+        // all Meshlet-owned, so an extra one is drift (it equally bypassed
+        // the misplaced peer_count check).
         let extra = {
             let mut snapshot = healthy(&p);
             snapshot.peers.push(PeerObserved {
@@ -672,7 +751,8 @@ mod tests {
 
     #[test]
     fn peer_allowed_ips_widened_is_drift_and_order_is_ignored() {
-        // 身份相同、allowed-ips 被改宽（放行全网段）→ 必须重放纠回。
+        // Same identity, widened allowed-ips (allowing the whole range) →
+        // must replay to correct.
         let p = plan("hash-a", false);
         let widened = NetworkSnapshot {
             peers: vec![PeerObserved {
@@ -686,7 +766,8 @@ mod tests {
             Reason::KernelDrift
         );
 
-        // 集合相同、顺序不同不算漂移（内核枚举顺序不由我们决定）。
+        // Same set, different order is not drift (kernel enumeration order is
+        // not ours to dictate).
         let mut multi = plan("hash-a", false);
         multi.tunnel.peers[0].allowed_ips = vec![
             "10.240.0.0/16".parse().unwrap(),
@@ -707,8 +788,9 @@ mod tests {
 
     #[test]
     fn missing_or_extra_nat_fingerprint_is_drift() {
-        // 少一条：DNAT 被手工删掉、SNAT 还在 → 集合不一致。旧的
-        // `nat_rules_present` 布尔值对此判「未漂移」——有一条在就等于全在。
+        // One missing: DNAT hand-deleted while SNAT remains → set mismatch.
+        // The old `nat_rules_present` boolean judged this "not drifted" — one
+        // rule present was taken as all present.
         let p = plan("hash-a", true);
         let mut dnat_missing = healthy(&p);
         dnat_missing.nat_rules = vec![p.nat_rules[1].signature()];
@@ -717,7 +799,9 @@ mod tests {
             Reason::KernelDrift
         );
 
-        // 多一条：下发只增不删，旧映射单元的残留必须被检出（不能等它自己消失）。
+        // One extra: the issue path only adds, never removes, so leftover
+        // rules from an old mapping unit must be detected (they will not
+        // vanish on their own).
         let mut stale_rule = p.nat_rules[0].clone();
         stale_rule.match_dest = "10.241.8.0/24".parse().unwrap();
         stale_rule.action = NatAction::NetMap {
@@ -734,9 +818,10 @@ mod tests {
 
     #[test]
     fn orphan_nat_rules_on_a_demoted_gateway_are_drift() {
-        // 计划已无 NAT（网关降级 / 映射被删），内核里还留着 Meshlet 注释的规则
-        // → 必须重放以走所有权清理。旧逻辑对「计划无 NAT」直接放行，残留会
-        // 一直留到有人手动清理。
+        // NAT gone from the plan (gateway demoted / mapping deleted) while
+        // Meshlet-commented rules remain in the kernel → must replay to run
+        // the ownership cleanup. The old logic waved "no NAT in plan" through,
+        // leaving leftovers until someone cleaned them by hand.
         let p = plan("hash-a", false);
         let orphan = NatRule {
             source_cidr: None,
@@ -756,7 +841,8 @@ mod tests {
 
     #[test]
     fn planned_mtu_mismatch_counts_as_drift() {
-        // 内核读数与计划不符（手工改动 / 半途失败）→ 必须重放纠回（#51）。
+        // Kernel reading differs from the plan (hand edit / half-failed
+        // apply) → must replay to correct (#51).
         let mut p = plan("hash-a", false);
         p.tunnel.mtu = Some(1380);
 
@@ -775,7 +861,8 @@ mod tests {
 
     #[test]
     fn kernel_mtu_is_not_judged_when_plan_leaves_it_unset() {
-        // 计划未配置 MTU：内核读多少都行（默认 1420 或管理员有意设置）。
+        // Plan sets no MTU: whatever the kernel reads is fine (the 1420
+        // default or a deliberate admin setting).
         let p = plan("hash-a", false);
         let other = NetworkSnapshot {
             tunnel_mtu: Some(1300),
@@ -786,7 +873,8 @@ mod tests {
 
     #[test]
     fn no_nat_in_plan_does_not_require_nat_rules_in_kernel() {
-        // 非网关设备：内核本来就没有 Meshlet NAT 规则，不算漂移。
+        // Non-gateway device: the kernel has no Meshlet NAT rules by design;
+        // not drift.
         let p = plan("hash-a", false);
         let no_nat = NetworkSnapshot {
             nat_rules: Vec::new(),
@@ -804,7 +892,8 @@ mod tests {
             "an unchanged plan has nothing stale"
         );
 
-        // 映射被删（整单元清理，§12.6）：规则集合为空 → 账本单元全部清理。
+        // Mapping deleted (whole-unit cleanup, §12.6): empty rule set → clean
+        // up all ledger units.
         let mut without_alias = p.clone();
         without_alias.nat_rules.clear();
         assert_eq!(
@@ -812,7 +901,8 @@ mod tests {
             vec!["meshlet alias al-1"]
         );
 
-        // 另一个映射接管：旧单元清理，新单元随计划下发。
+        // Another mapping takes over: clean up the old unit; the new unit is
+        // issued with the plan.
         let mut other = p.clone();
         other.nat_rules[0].owner = "meshlet alias al-2".into();
         other.nat_rules[1].owner = "meshlet alias al-2".into();
@@ -821,8 +911,9 @@ mod tests {
             vec!["meshlet alias al-1"]
         );
 
-        // 映射还在但规则少了（dnat_snat → dnat_only）：下发只增不删，必须先清
-        // 再重刷，否则旧规则残留（白名单外的东西绝不动）。
+        // // Mapping still there but a rule is gone (dnat_snat → dnat_only): the // issue path only
+        // adds, so clean first, then refresh — otherwise old // rules linger (anything outside the
+        // whitelist is never touched). let mut dnat_only = p.clone();
         let mut dnat_only = p.clone();
         dnat_only.nat_rules.pop();
         assert_eq!(
@@ -830,7 +921,8 @@ mod tests {
             vec!["meshlet alias al-1"]
         );
 
-        // 顺序变化不算变更（指纹集合与顺序无关）。
+        // Reordering is not a change (the fingerprint set is
+        // order-independent).
         let mut reordered = p.clone();
         reordered.nat_rules.reverse();
         assert!(stale_owners(&state, &reordered, &state.nat_owners, true).is_empty());
@@ -843,6 +935,7 @@ mod tests {
         assert_eq!(
             stale_owners(
                 &AgentState::default(),
+                // &p, &["meshlet alias kept".into(), "meshlet alias old".into()],
                 &p,
                 &["meshlet alias kept".into(), "meshlet alias old".into()],
                 false
@@ -864,6 +957,7 @@ mod tests {
 
         state.save(&path).expect("save state");
         let loaded = AgentState::load(&path).expect("load state");
+        // assert_eq!(loaded, state); assert_eq!(loaded.desired_config_hash, "hash-a");
         assert_eq!(loaded, state);
         assert_eq!(loaded.desired_config_hash, "hash-a");
         assert_eq!(loaded.nat_owners, vec!["meshlet alias al-1"]);
@@ -877,8 +971,8 @@ mod tests {
             "fingerprints carry the ownership comment: {:?}",
             loaded.nat_rules
         );
-
-        // 计划本身不含私钥：账本也不会意外持久化私钥。
+        // // The plan carries no private key: the ledger will not accidentally
+        // persist one either.
         assert!(!state.tunnel_address.contains("key"));
 
         std::fs::remove_file(&path).ok();
@@ -887,7 +981,8 @@ mod tests {
 
     #[test]
     fn corrupt_state_file_reads_as_empty_ledger() {
-        // 损坏的账本按“无账本”处理（触发重放），不让 agent 卡死或假装已生效。
+        // A corrupt ledger is treated as "no ledger" (triggering a replay);
+        // the agent must neither stall nor pretend the plan is applied.
         let dir = std::env::temp_dir().join("meshlet-agent-state-corrupt");
         std::fs::create_dir_all(&dir).unwrap();
         let path = state_path(dir.to_str().unwrap());

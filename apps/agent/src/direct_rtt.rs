@@ -11,7 +11,7 @@
 //! while the tunnel is perfectly alive — fresh handshake proves it), the probe
 //! falls back to the peer's endpoint underlay address. Only when both paths
 //! stay silent is the peer reported unprovable (`RttSource::Unreachable`);
-//! 「最近握手」 remains the primary liveness evidence in the UI.
+//! the latest handshake remains the primary liveness evidence in the UI.
 //!
 //! Results are best-effort (a probe in flight when the tick reads may be missing;
 //! the tick uses the last known value, same as before). No control-plane load is
@@ -29,21 +29,23 @@ use meshlet_network::SystemBackend;
 /// Worker idle timeout between rounds when no candidate refresh happens.
 const RTT_IDLE_TIMEOUT_SECS: u64 = 5;
 
-/// 单对端一次探测的结论：RTT 读数 + 来源。
+/// The verdict of one probe for a single peer: the RTT reading + its source.
 ///
-/// WireGuard 接口 / 防火墙常不答 overlay VIP 的 ICMP（真机 imac 100% 丢包
-/// 但握手新鲜 = 链路活），所以 overlay 不通时回退 ping 对端 endpoint 的
-/// underlay 地址——两路都无响应才判「不可测」；「最近握手」仍是活性主证据。
+/// WireGuard interfaces / firewalls often do not answer ICMP to the overlay VIP (a real
+/// imac lost 100% of packets while the handshake was fresh = the link is alive), so when the
+/// overlay is unreachable the probe falls back to pinging the peer endpoint's underlay
+/// address - only when both paths are silent is it ruled "unmeasurable"; the latest handshake
+/// remains the primary liveness evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RttProbe {
-    /// 实测往返毫秒；`None` = 两路都无响应（不可测）。
+    /// Measured round-trip milliseconds; `None` = both paths unresponsive (unmeasurable).
     pub rtt_ms: Option<u64>,
-    /// 读数来源。
+    /// The source of the reading.
     pub source: RttSource,
 }
 
 impl RttProbe {
-    /// 快照里还没有该对端的读数（探测在途）时的占位：未测。
+    /// Placeholder used when the snapshot has no reading for this peer yet (probe in flight): not probed.
     pub fn unknown() -> Self {
         Self {
             rtt_ms: None,
@@ -52,24 +54,24 @@ impl RttProbe {
     }
 }
 
-/// RTT 读数来源（面板/控制台 RTT 列的 tooltip 依据），**如实四态**：
-/// 实测成功、握手新鲜兜底、实测失败、没轮到——不把「没测到」谎报成
-/// 「链路死了」，也不把「握手新鲜链路活着」谎报成「未测」。
+/// The source of an RTT reading (the tooltip basis for the panel/console RTT column), an **honest four-way**:
+/// measured successfully, handshake-fresh fallback, measurement failed, not yet in turn - never misreporting
+/// "not measured" as "the link is dead", nor "handshake fresh, link alive" as "unmeasured".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RttSource {
-    /// 直连路径实测成功（overlay VIP 通，或回退 underlay endpoint 通）。
+    /// The direct path measured successfully (overlay VIP up, or the underlay endpoint fallback up).
     Overlay,
-    /// overlay 与 endpoint 均无响应，且无新鲜握手可兜底：实测失败。
+    /// Both the overlay and the endpoint unresponsive, with no fresh handshake to fall back on: measurement failed.
     Unreachable,
-    /// 探测尚未出结果（快照无记录）：没轮到，不是结论。
+    /// The probe has not produced a result yet (no snapshot record): not in turn, not a verdict.
     Unprobed,
 }
 
 impl RttSource {
-    /// 稳定字符串键（进 ledger / `direct-peers.json` / 心跳，展示层再翻译）。
-    /// 如实四态：实测成功 = `probe_ok`；不可测但有新鲜握手 = `handshake_fresh`
-    /// （由 agent 侧按握手读数覆盖标注）；两路均无响应且握手不新鲜 =
-    /// `probe_failed`；探测在途 = `unprobed`。
+    /// Stable string key (goes into the ledger / `direct-peers.json` / the heartbeat; the display layer translates).
+    /// Honest four-way: measured successfully = `probe_ok`; unmeasurable but a fresh handshake exists =
+    /// `handshake_fresh` (overridden and annotated on the agent side from the handshake reading); both paths
+    /// unresponsive and the handshake stale = `probe_failed`; probe in flight = `unprobed`.
     pub fn as_str(self) -> &'static str {
         match self {
             RttSource::Overlay => "probe_ok",
@@ -79,9 +81,9 @@ impl RttSource {
     }
 }
 
-/// 纯选择逻辑（可单测）：overlay 通 → overlay 读数；不通 → 回退 endpoint
-/// （有 endpoint 且 ping 通才成功）；两路都不通 / 无 endpoint 可回退 → 实测
-/// 失败（rtt_source 是否兜底为 handshake_fresh 由 agent 侧按握手读数标注）。
+/// Pure selection logic (unit-testable): overlay up -> the overlay reading; down -> fall back to the
+/// endpoint (succeeds only if an endpoint exists and pings through); both down / no endpoint to fall back to
+/// -> measurement failed (whether rtt_source falls back to handshake_fresh is annotated on the agent side from the handshake reading).
 fn resolve_rtt(
     overlay_ms: Option<u128>,
     endpoint_ip: Option<Ipv4Addr>,
@@ -107,8 +109,8 @@ fn resolve_rtt(
 }
 
 type Rtts = BTreeMap<String, RttProbe>;
-/// 一个探测候选：公钥 + overlay VIP + 对端 endpoint 的 underlay 地址
-/// （无直连 endpoint / 解析失败为 `None`，该对端没有回退路径）。
+/// One probe candidate: public key + overlay VIP + the peer endpoint's underlay address
+/// (`None` when there is no direct endpoint or parsing failed, meaning the peer has no fallback path).
 pub type RttCandidate = (String, Ipv4Addr, Option<Ipv4Addr>);
 
 /// Dedicated RTT probe worker. Candidate set and RTT snapshot are shared with
@@ -147,7 +149,7 @@ impl DirectRttRuntime {
                         }
                         let overlay = backend.ping_rtt_ms(vip);
                         let endpoint = match overlay {
-                            Some(_) => None, // overlay 通，endpoint 无需再花 2s。
+                            Some(_) => None, // overlay is up, so the endpoint costs no further 2s.
                             None => endpoint_ip.and_then(|ip| backend.ping_rtt_ms(ip)),
                         };
                         next.insert(public_key, resolve_rtt(overlay, endpoint_ip, endpoint));
@@ -167,8 +169,8 @@ impl DirectRttRuntime {
 
     /// Replace candidates and wake the worker to probe immediately (background;
     /// the caller never waits). Empty set clears the snapshot on the next round.
-    /// 元组第三项 = 对端 endpoint 的 underlay 地址（`ip:port` 去端口；无直连
-    /// endpoint / 解析失败为 `None`，该对端没有回退路径）。
+    /// The tuple's third element = the peer endpoint's underlay address (the port stripped off `ip:port`;
+    /// `None` when there is no direct endpoint or parsing failed, meaning the peer has no fallback path).
     pub fn update_candidates(&self, candidates: Vec<RttCandidate>) {
         *self.candidates.lock().unwrap_or_else(|e| e.into_inner()) = candidates;
         self.kick
@@ -221,14 +223,14 @@ fn wait_kick_or_timeout(kick: &Mutex<VecDeque<()>>, stop: &AtomicBool, timeout_s
 mod tests {
     use super::*;
 
-    /// 回退选择逻辑（门禁测试）：overlay 通 = 实测读数；overlay 不通 →
-    /// 回退 endpoint；两路都不通（或无 endpoint 可回退）= 实测失败。来源键
-    /// 如实四态（probe_ok / probe_failed / unprobed + agent 侧 handshake_fresh）。
+    /// Fallback selection logic (gate test): overlay up = measured reading; overlay down ->
+    /// fall back to the endpoint; both paths down (or no endpoint to fall back to) = measurement failed. The source
+    /// key is an honest four-way (probe_ok / probe_failed / unprobed + agent-side handshake_fresh).
     #[test]
     fn rtt_fallback_prefers_overlay_then_endpoint_then_unreachable() {
         let underlay: Ipv4Addr = "203.0.113.7".parse().unwrap();
 
-        // overlay 通：直接用 overlay 读数，不花第二次探测。
+        // Overlay up: use the overlay reading directly, spending no second probe.
         assert_eq!(
             resolve_rtt(Some(12), Some(underlay), None),
             RttProbe {
@@ -236,7 +238,7 @@ mod tests {
                 source: RttSource::Overlay
             }
         );
-        // overlay 不通、endpoint 通：回退 endpoint 读数——同为实测成功（probe_ok）。
+        // Overlay down, endpoint up: fall back to the endpoint reading - likewise a measured success (probe_ok).
         assert_eq!(
             resolve_rtt(None, Some(underlay), Some(35)),
             RttProbe {
@@ -244,8 +246,8 @@ mod tests {
                 source: RttSource::Overlay
             }
         );
-        // overlay 不通、endpoint 也不通：实测失败（面板显示「—」+ 如实来源；
-        // 若握手新鲜，agent 侧覆盖标注为 handshake_fresh）。
+        // Overlay down and endpoint down too: measurement failed (the panel shows an em dash + the honest source;
+        // if the handshake is fresh, the agent side overrides the annotation to handshake_fresh).
         assert_eq!(
             resolve_rtt(None, Some(underlay), None),
             RttProbe {
@@ -253,7 +255,7 @@ mod tests {
                 source: RttSource::Unreachable
             }
         );
-        // overlay 不通、也没有 endpoint 可回退（无直连路径）：同样实测失败。
+        // Overlay down and no endpoint to fall back to either (no direct path): likewise measurement failed.
         assert_eq!(
             resolve_rtt(None, None, None),
             RttProbe {
@@ -261,7 +263,7 @@ mod tests {
                 source: RttSource::Unreachable
             }
         );
-        // 来源键是稳定字符串（进 ledger / direct-peers.json / 心跳）。
+        // The source key is a stable string (goes into the ledger / direct-peers.json / the heartbeat).
         assert_eq!(RttSource::Overlay.as_str(), "probe_ok");
         assert_eq!(RttSource::Unreachable.as_str(), "probe_failed");
         assert_eq!(RttSource::Unprobed.as_str(), "unprobed");

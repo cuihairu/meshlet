@@ -1,20 +1,20 @@
-//! 任务执行（MT-002 下发与回执）：agent 拉取服务端下发的待办任务，ack →
-//! 执行 → 回执结果。
+//! Task execution (MT-002 dispatch and reporting): the agent pulls pending tasks
+//! dispatched by the server, acks → executes → reports results.
 //!
-//! 这是既有「绝不执行服务端下发的任意 Shell 命令」纪律的**显式例外**（MT-002
-//! 用户令）：任务由控制台用户经 `task.assigned` 审计显式派发，agent 端点一律
-//! Bearer 凭证认证（[`crate::server`] 同一认证边界）。
+//! This is an **explicit exception** to the existing "never execute arbitrary
+//! shell commands dispatched by the server" discipline (MT-002 user mandate):
+//! tasks are explicitly dispatched by console users via `task.assigned` audit, and agent endpoints always authenticate with Bearer credentials (the same auth boundary as [`crate::server`]).
 //!
-//! 幂等语义（断线补派不重复执行，对齐服务端 `task id` 幂等键）：
-//! - 本地账本 `{state_dir}/tasks.json` 记录**已执行**任务 id → 结果；
-//! - 账本里已有的 id 只**补报结果、绝不重跑**（服务端对重复回执幂等：终态
-//!   重复回执只更新日志尾部，不改变终态）；
-//! - 执行顺序：ack（失败本轮不跑，下轮重试）→ 跑命令 → **先落账本** → 回执。
-//!   崩溃在「跑完未回执」间隙 → 账本已落 → 重连补报不重跑；崩溃在「ack 后
-//!   未跑完」→ 账本没有 → 服务端重派 → 重跑（上次未跑完，重跑正确）。
+//! Idempotency semantics (re-dispatch after a disconnect never re-executes; aligned with the server's `task id` idempotency key):
+//! - The local ledger `{state_dir}/tasks.json` records **executed** task ids → results;
+//! - An id already in the ledger only **re-reports the result, never re-runs**
+//!   (the server is idempotent about duplicate reports: a duplicate terminal report only updates the log tail, never the terminal state);
+//! - Execution order: ack (on failure skip this round, retry next round) → run the command → **persist the ledger first** → report.
+//!   A crash in the "ran but not yet reported" gap → ledger already written → re-report on reconnect without re-running; a crash after ack but
+//!   before finishing → no ledger entry → the server re-dispatches → re-run (the previous run never finished, so re-running is correct).
 //!
-//! 边界：任务在 agent 主循环内联执行（同步 tick），长任务会暂时挡住心跳——
-//! MT-005 再引入并发排程/超时重派；本版只保证「执行 + 幂等 + 回执」。
+//! Boundary: tasks run inline in the agent main loop (synchronous tick), so a long task temporarily blocks heartbeats —
+//! MT-005 will introduce concurrent scheduling/timeout re-dispatch; this version only guarantees "execute + idempotency + report".
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
@@ -29,42 +29,42 @@ use meshlet_domain::{Task, TaskPayload};
 
 use crate::server;
 
-/// 账本容量上限：超出剔除最旧（按**真实执行完成序**淘汰，绝不按 task id
-/// 字典序——`task-10` < `task-2` 且重派 id `task-1-r2` 更乱序，字典序≠时间序）。
+/// Ledger capacity cap: on overflow evict the oldest (by **actual execution completion order**, never by task id
+/// lexicographic order — `task-10` < `task-2`, and the re-dispatch id `task-1-r2` is even more out of order; lexicographic ≠ chronological).
 const LEDGER_CAP: usize = 512;
-/// 命令输出尾部保留字节数（超出丢弃头部，保留最近段）。
+/// Bytes of command output tail to keep (drop the head beyond this, keep the most recent part).
 const TAIL_BYTES: usize = 4096;
-/// 进程状态轮询间隔（毫秒）。
+/// Process status polling interval (milliseconds).
 const POLL: Duration = Duration::from_millis(20);
-/// 命令无法启动的退出码（shell 惯例 127 = command not found）。
+/// Exit code when the command cannot start (shell convention 127 = command not found).
 const SPAWN_FAIL_EXIT: i32 = 127;
-/// 未显式指定超时时的默认超时（秒，`TaskPayload.timeout_secs` 契约值）。
+/// Default timeout when none is specified (seconds, the `TaskPayload.timeout_secs` contract value).
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
-/// 任务后台 worker 轮询间隔（秒）：tick 不再同步跑任务，后台线程按此间隔
-/// 拉取待办；对端新任务最迟一个间隔内开始执行。
+/// Background task worker polling interval (seconds): the tick no longer runs tasks synchronously; the background thread pulls pending
+/// work at this interval; a newly dispatched task starts executing within at most one interval.
 const TASK_POLL_INTERVAL_SECS: u64 = 5;
 
-/// 一次执行的结果（与服务端 `TaskResultReport` 同构：exit_code + log_tail）。
+/// The result of one execution (isomorphic to the server's `TaskResultReport`: exit_code + log_tail).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TaskResult {
-    /// 进程退出码（0 = 成功，非 0 = 失败）。
+    /// Process exit code (0 = success, non-zero = failure).
     pub exit_code: i32,
-    /// 命令输出尾部（stdout+stderr 合并后的最后若干字节）。
+    /// Command output tail (last bytes of merged stdout+stderr).
     pub log_tail: String,
 }
 
-/// 已执行任务账本：task id → 结果。断线重连后据此**补报**，绝不重跑。
+/// Executed-task ledger: task id → result. Used to **re-report** after a reconnect, never to re-run.
 #[derive(Debug, Default)]
 pub struct TaskLedger {
     entries: BTreeMap<String, TaskResult>,
-    /// 真实执行完成序（FIFO）：淘汰按队头（最早完成），与 id 拼写无关。
-    /// 持久化在 [`LedgerFile`]，重启后仍按真实时间序淘汰。
+    /// Actual execution completion order (FIFO): eviction takes the queue head (earliest completed), independent of id spelling.
+    /// Persisted in [`LedgerFile`]; after a restart eviction still follows real time order.
     order: VecDeque<String>,
 }
 
-/// 账本持久化格式：entries + 插入序。旧版只存裸 `BTreeMap`（不记插入序），
-/// [`TaskLedger::load`] 回退解析并按其字典序重建（旧数据最佳努力；新记录
-/// 继续按真实插入序淘汰）。
+/// Ledger persistence format: entries + insertion order. The legacy version stored a bare `BTreeMap` (no insertion order);
+/// [`TaskLedger::load`] falls back to parsing it and rebuilds from its lexicographic order (best effort for old data; new records
+/// keep evicting by real insertion order).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct LedgerFile {
     entries: BTreeMap<String, TaskResult>,
@@ -72,8 +72,8 @@ struct LedgerFile {
 }
 
 impl TaskLedger {
-    /// 从 `{state_dir}/tasks.json` 载入；缺失/损坏按空账本处理（损坏要显式
-    /// 告警，绝不静默——空账本意味着「全部任务可重跑」，这是安全边界）。
+    /// Load from `{state_dir}/tasks.json`; missing/corrupt files are treated as an empty ledger (corruption must be logged
+    /// loudly, never silently — an empty ledger means "every task may re-run"; that is the safety boundary).
     pub fn load(path: &Path) -> Self {
         match std::fs::read(path) {
             Ok(bytes) => {
@@ -99,7 +99,7 @@ impl TaskLedger {
         }
     }
 
-    /// 落盘（先建父目录；失败显式报出，由调用方决定）。
+    /// Persist (create the parent directory first; failures are reported explicitly for the caller to decide).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let file = LedgerFile {
             entries: self.entries.clone(),
@@ -112,23 +112,23 @@ impl TaskLedger {
         std::fs::write(path, bytes)
     }
 
-    /// 是否已执行过（幂等：已执行的只补报，不重跑）。
+    /// Whether it has already executed (idempotent: executed tasks only re-report, never re-run).
     pub fn has(&self, id: &str) -> bool {
         self.entries.contains_key(id)
     }
 
-    /// 已执行任务的结果。
+    /// Result of an executed task.
     pub fn result(&self, id: &str) -> Option<&TaskResult> {
         self.entries.get(id)
     }
 
-    /// 记录一次执行结果；超出容量剔除**最早完成**（真实插入序，与 id
-    /// 拼写无关）。重复记录同一 id 只更新结果，不改变其淘汰位置。
+    /// Record one execution result; beyond capacity evict the **earliest completed** (real insertion order, independent of
+    /// id spelling). Re-recording the same id only updates the result, never its eviction position.
     pub fn record(&mut self, id: String, result: TaskResult) {
         self.record_with_cap(id, result, LEDGER_CAP);
     }
 
-    /// [record] 的容量参数化实现（测试直接以小容量验证淘汰序）。
+    /// Capacity-parameterized implementation of [record] (tests verify the eviction order with a small capacity directly).
     fn record_with_cap(&mut self, id: String, result: TaskResult, cap: usize) {
         if self.entries.insert(id.clone(), result).is_none() {
             self.order.push_back(id);
@@ -143,16 +143,16 @@ impl TaskLedger {
     }
 }
 
-/// 纯决策（可单测）：账本已有该任务 → 补报结果；否则执行。
+/// Pure decision (unit-testable): task already in the ledger → re-report the result; otherwise execute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Decide {
-    /// 已执行过：断线补派只补报，绝不重跑。
+    /// Already executed: re-dispatch after a disconnect only re-reports, never re-runs.
     ReReport(TaskResult),
-    /// 未执行：ack → 跑 → 落账本 → 回执。
+    /// Not yet executed: ack → run → persist ledger → report.
     Execute,
 }
 
-/// 决策（幂等去重，纯函数，无 I/O）。
+/// Decision (idempotent dedup, pure function, no I/O).
 pub(crate) fn decide(ledger: &TaskLedger, task: &Task) -> Decide {
     match ledger.result(&task.id.to_string()) {
         Some(result) => Decide::ReReport(result.clone()),
@@ -160,7 +160,7 @@ pub(crate) fn decide(ledger: &TaskLedger, task: &Task) -> Decide {
     }
 }
 
-/// 拉取本设备待办（assigned / acked）。
+/// Fetch this device's pending tasks (assigned / acked).
 pub fn fetch_pending(server_url: &str, token: &str) -> Result<Vec<Task>, String> {
     let url = format!(
         "{}/api/v1/agent/tasks/pending",
@@ -171,7 +171,7 @@ pub fn fetch_pending(server_url: &str, token: &str) -> Result<Vec<Task>, String>
     serde_json::from_str(&body).map_err(|e| format!("parse pending tasks: {e}"))
 }
 
-/// 确认接收（幂等：已越过 assigned 时服务端仍返回 200，不跃迁不落库）。
+/// Acknowledge receipt (idempotent: once past assigned the server still returns 200, no state transition, no persistence).
 pub fn ack_task(server_url: &str, token: &str, id: &str) -> Result<(), String> {
     let url = format!(
         "{}/api/v1/agent/tasks/{id}/ack",
@@ -185,7 +185,7 @@ pub fn ack_task(server_url: &str, token: &str, id: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
-/// 回传结果（幂等：终态重复回执只更新日志尾部，不改变终态）。
+/// Report the result (idempotent: duplicate terminal reports only update the log tail, never the terminal state).
 pub fn report_result(
     server_url: &str,
     token: &str,
@@ -210,11 +210,11 @@ pub fn report_result(
     .map(|_| ())
 }
 
-/// 处理一个任务：账本已有 → 补报；否则 ack → 跑 → 落账本 → 回执。
-/// `on_arrival` 在 ack 成功后、执行前触发一次（MT-004：任务到达即托盘气泡；
-/// 断线补派的 ReReport 不是到达，不触发）。
-/// `Err` 表示本轮跳过（网络失败，下轮重试）；回执失败已在内部记日志并落账本，
-/// 不返回 `Err`（账本已记录，下轮补报，不触发外层退避）。
+/// Handle one task: already in the ledger → re-report; otherwise ack → run → persist ledger → report.
+/// `on_arrival` fires once after a successful ack, before execution (MT-004: tray bubble on task arrival;
+/// a ReReport from re-dispatch after a disconnect is not an arrival and does not fire it).
+/// `Err` means skip this round (network failure, retry next round); a failed report is already logged internally and the ledger
+/// written, so no `Err` is returned (the ledger has it; it re-reports next round without triggering the outer backoff).
 pub fn process_one(
     server_url: &str,
     token: &str,
@@ -231,11 +231,11 @@ pub fn process_one(
             Ok(())
         }
         Decide::Execute => {
-            // ack 失败本轮不跑：保证服务端状态机顺序（assigned → acked → ...）。
+            // On ack failure skip this round: preserves the server state machine order (assigned → acked → ...).
             ack_task(server_url, token, &id)?;
             on_arrival(task);
             let result = run_task(&task.payload);
-            // 先落账本再回执：崩溃在间隙 → 重连补报不重跑。
+            // Persist the ledger before reporting: a crash in the gap → re-report on reconnect without re-running.
             ledger.record(id.clone(), result.clone());
             ledger
                 .save(ledger_path)
@@ -249,8 +249,8 @@ pub fn process_one(
     }
 }
 
-/// 处理本设备全部待办。拉取失败 `Err`（下轮重试）；单任务失败只记日志，
-/// 不影响其余任务与数据面循环。`on_arrival` 对每个新到达任务触发一次。
+/// Handle all pending tasks for this device. A fetch failure returns `Err` (retry next round); a single-task failure is only logged,
+/// never affecting other tasks or the data-plane loop. `on_arrival` fires once per newly arrived task.
 pub fn process_pending(
     server_url: &str,
     token: &str,
@@ -267,25 +267,25 @@ pub fn process_pending(
     Ok(())
 }
 
-/// 任务后台运行时：独立 worker 线程按 [TASK_POLL_INTERVAL_SECS] 拉取待办并
-/// 逐个 ack → 执行 → 回执。主循环 tick 只**投递**（[TaskRuntime::kick]），
-/// 立即返回——单任务最长跑 [DEFAULT_TIMEOUT_SECS]，若内联执行会停心跳/
-/// 数据面对账；后台化后心跳与对账不再被单任务阻塞，任务生命周期/回执
-/// 语义（幂等账本 + 补报）保持不变。
+/// Background task runtime: a dedicated worker thread pulls pending tasks at [TASK_POLL_INTERVAL_SECS] and acks → executes →
+/// reports each one. The main loop tick only **posts** ([TaskRuntime::kick]) and returns immediately — a single task can run up to
+/// [DEFAULT_TIMEOUT_SECS], which would stall heartbeat/data-plane reconciliation if run inline; once backgrounded, heartbeats and
+/// reconciliation are never blocked by a single task, and the task lifecycle/reporting semantics (idempotent ledger + re-report)
+/// stay unchanged.
 ///
-/// `Drop` 只置停止位不 `join`：线程最长一个周期后自行退出，持有的是
-/// `Arc` 克隆，内存安全（与 [`crate::probe::ProbeRuntime`] 同一纪律）。
+/// `Drop` only sets the stop flag and does not `join`: the thread exits by itself within at most one cycle and holds `Arc` clones,
+/// so this is memory safe (same discipline as [`crate::probe::ProbeRuntime`]).
 pub struct TaskRuntime {
     ledger: Arc<Mutex<TaskLedger>>,
     stop: Arc<AtomicBool>,
-    /// 唤醒 worker 的 kick 信号（tick 拉完计划即触发，不等满一个轮询间隔）。
+    /// Kick signal that wakes the worker (fired as soon as the tick fetches the plan, without waiting a full polling interval).
     kick: Arc<Mutex<VecDeque<()>>>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl TaskRuntime {
-    /// 起后台 worker（独立线程）；`on_arrival` 为每次 ack 成功后的到达回调
-    /// （托盘气泡等，在 worker 线程内执行，绝不阻塞主循环）。
+    /// Start the background worker (dedicated thread); `on_arrival` is the arrival callback after each successful ack
+    /// (tray bubble etc., executed on the worker thread, never blocking the main loop).
     pub fn start(
         server_url: String,
         token: String,
@@ -304,7 +304,7 @@ impl TaskRuntime {
             std::thread::Builder::new()
                 .name("meshlet-task".into())
                 .spawn(move || loop {
-                    // 先等 kick 或周期超时；tick 投递后立即跑，否则按轮询间隔。
+                    // Wait for a kick or the period to elapse first; run immediately after a tick post, otherwise at the polling interval.
                     let waited = wait_kick_or_timeout(&kick, &stop, TASK_POLL_INTERVAL_SECS);
                     if stop.load(Ordering::Relaxed) {
                         return;
@@ -331,8 +331,8 @@ impl TaskRuntime {
         }
     }
 
-    /// 投递一轮处理请求（tick 调用，立即返回；worker 被唤醒后跑任务）。
-    /// worker 忙碌中重复 kick 只合并为一次唤醒。
+    /// Post one processing-round request (called by the tick, returns immediately; the worker wakes and runs the tasks).
+    /// Repeated kicks while the worker is busy coalesce into a single wakeup.
     pub fn kick(&self) {
         self.kick
             .lock()
@@ -340,12 +340,12 @@ impl TaskRuntime {
             .push_back(());
     }
 
-    /// 当前账本（重载/落盘等诊断用）。
+    /// Current ledger (for diagnostics such as reload/persist).
     pub fn ledger(&self) -> std::sync::MutexGuard<'_, TaskLedger> {
         self.ledger.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// worker 线程是否在跑。
+    /// Whether the worker thread is running.
     pub fn is_running(&self) -> bool {
         self.handle.is_some()
     }
@@ -358,7 +358,7 @@ impl Drop for TaskRuntime {
     }
 }
 
-/// 等 kick 信号或超时；`stop` 置位立即返回。返回是否因 kick 唤醒（诊断用）。
+/// Wait for a kick signal or timeout; returns immediately when `stop` is set. Returns whether the wakeup came from a kick (for diagnostics).
 fn wait_kick_or_timeout(kick: &Mutex<VecDeque<()>>, stop: &AtomicBool, timeout_secs: u64) -> bool {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
@@ -380,14 +380,14 @@ fn wait_kick_or_timeout(kick: &Mutex<VecDeque<()>>, stop: &AtomicBool, timeout_s
     }
 }
 
-/// 执行一次任务（MT-002 显式例外：运行服务端下发的命令）。
+/// Execute one task (the MT-002 explicit exception: run a server-dispatched command).
 ///
-/// 平台 shell：unix `sh -c`，Windows `cmd /C`。超时默认
-/// [DEFAULT_TIMEOUT_SECS]；超时 kill 子进程（退出码非 0 → 服务端判失败）。
+/// Platform shell: `sh -c` on unix, `cmd /C` on Windows. Timeout defaults to
+/// [DEFAULT_TIMEOUT_SECS]; on timeout the child is killed (non-zero exit code → the server judges it a failure).
 ///
-/// 隔离（MT-005）：`workdir` 缺省时命令跑在**每任务独立 scratch 目录**
-/// （跑完即删），任务产物不落在 agent 进程 cwd；显式 `workdir` 按下发值
-/// 执行。容器级隔离（nsjail/沙箱）不在本轮。
+/// Isolation (MT-005): when `workdir` is absent the command runs in a **per-task scratch directory** (deleted right
+/// after the run), so task artifacts never land in the agent process cwd; an explicit `workdir` runs as dispatched.
+/// Container-level isolation (nsjail/sandbox) is out of scope for this round.
 pub fn run_task(payload: &TaskPayload) -> TaskResult {
     let scratch = payload.workdir.is_none().then(unique_scratch_dir);
     if let Some(dir) = &scratch {
@@ -400,13 +400,13 @@ pub fn run_task(payload: &TaskPayload) -> TaskResult {
     }
     let result = run_task_in(payload, scratch.as_deref());
     if let Some(dir) = &scratch {
-        // 任务结束即清场（残留 = 泄漏临时盘，不重试不告警，静默尽力）。
+        // Clean up as soon as the task ends (a leftover means leaked temp disk; no retry, no warning, silent best effort).
         let _ = std::fs::remove_dir_all(dir);
     }
     result
 }
 
-/// 实际执行（scratch 目录由 [run_task] 创建/清理）。
+/// Actual execution (the scratch directory is created/cleaned by [run_task]).
 fn run_task_in(payload: &TaskPayload, scratch: Option<&std::path::Path>) -> TaskResult {
     let mut cmd = shell_command(&payload.cmd);
     match scratch {
@@ -419,9 +419,9 @@ fn run_task_in(payload: &TaskPayload, scratch: Option<&std::path::Path>) -> Task
             }
         }
     }
-    // unix：把子进程放进自己的进程组——shell 会 fork 子命令（如
-    // `sh -c "sleep 30"` 里 `sleep` 是直接子进程的孙进程），超时 kill 必须
-    // 杀掉整组，否则孤儿子进程会继续跑满超时并占着管道。
+    // unix: put the child in its own process group — the shell forks subcommands (e.g. in `sh -c "sleep 30"` the
+    // `sleep` is a grandchild of the direct child), so the timeout kill must take down the whole group, otherwise
+    // orphaned children keep running to the timeout and hold the pipes.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -436,8 +436,8 @@ fn run_task_in(payload: &TaskPayload, scratch: Option<&std::path::Path>) -> Task
             };
         }
     };
-    // 后台读 stdout/stderr 尾部（否则管道缓冲填满会阻塞子进程）。两类管道
-    // 类型不同（ChildStdout/ChildStderr），擦成 `Box<dyn Read + Send>` 统一处理。
+    // Read stdout/stderr tails in the background (otherwise a full pipe buffer blocks the child). The two pipe
+    // types differ (ChildStdout/ChildStderr); erase them to `Box<dyn Read + Send>` for uniform handling.
     let tail = Arc::new(Mutex::new(TailBuffer::new()));
     let mut readers = Vec::new();
     let pipes: [Option<Box<dyn Read + Send>>; 2] = [
@@ -478,15 +478,15 @@ fn run_task_in(payload: &TaskPayload, scratch: Option<&std::path::Path>) -> Task
     }
 }
 
-/// 每任务独立 scratch 目录（MT-005）：`temp/meshlet-task-{pid}-{seq}`，
-/// 进程内原子序号保证并发任务不共用目录。
+/// Per-task scratch directory (MT-005): `temp/meshlet-task-{pid}-{seq}`; an in-process atomic sequence number
+/// guarantees concurrent tasks never share a directory.
 fn unique_scratch_dir() -> std::path::PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!("meshlet-task-{}-{}", std::process::id(), n))
 }
 
-/// 平台 shell 命令构造。
+/// Platform shell command construction.
 fn shell_command(cmd: &str) -> Command {
     #[cfg(windows)]
     {
@@ -502,8 +502,8 @@ fn shell_command(cmd: &str) -> Command {
     }
 }
 
-/// 等待子进程退出，超过 `timeout_secs` kill 后收割。返回退出状态（kill 后
-/// `code()` 为 `None`，由调用方映射为失败）。
+/// Wait for the child to exit; past `timeout_secs` kill and reap it. Returns the exit status (after a kill `code()` is
+/// `None`; the caller maps that to failure).
 fn wait_with_timeout(child: &mut Child, timeout_secs: u64) -> std::process::ExitStatus {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
@@ -523,9 +523,9 @@ fn wait_with_timeout(child: &mut Child, timeout_secs: u64) -> std::process::Exit
     }
 }
 
-/// 终止子进程（含整组）：unix 先 `kill(-pid, SIGKILL)` 杀进程组（见
-/// `run_task` 的 `process_group(0)`），再兜底 `child.kill()` 杀直接子进程；
-/// Windows 无进程组，退化为 `child.kill()`。
+/// Terminate the child (and its whole group): on unix first `kill(-pid, SIGKILL)` the process group (see `run_task`'s
+/// `process_group(0)`), then fall back to `child.kill()` for the direct child; Windows has no process groups and
+/// degrades to `child.kill()`.
 fn kill_child(child: &mut Child) {
     #[cfg(unix)]
     {
@@ -537,7 +537,7 @@ fn kill_child(child: &mut Child) {
     let _ = child.kill();
 }
 
-/// 输出尾部缓冲：只保留最近 [TAIL_BYTES] 字节。
+/// Output tail buffer: keeps only the most recent [TAIL_BYTES] bytes.
 struct TailBuffer {
     bytes: Vec<u8>,
 }
@@ -630,7 +630,7 @@ mod tests {
             );
         }
         assert_eq!(ledger.entries.len(), LEDGER_CAP);
-        // 最旧的被剔除，最新的保留。
+        // The oldest is evicted, the newest kept.
         assert!(!ledger.has("task-0"));
         assert!(ledger.has(&format!("task-{}", LEDGER_CAP + 9)));
     }
@@ -642,9 +642,9 @@ mod tests {
             exit_code: 0,
             log_tail: String::new(),
         };
-        // 乱序 id：先记录 task-2，再记录 task-10（字典序 task-10 < task-2），
-        // 再记录重派 id task-1-r2（前缀也乱序）。容量 2，按**真实插入序**
-        // 淘汰最早完成的 task-2；若按字典序会错误淘汰 task-1-r2 / task-10。
+        // Out-of-order ids: record task-2 first, then task-10 (lexicographically task-10 < task-2),
+        // then the re-dispatch id task-1-r2 (its prefix is out of order too). With capacity 2, **real insertion
+        // order** evicts the earliest-completed task-2; lexicographic order would wrongly evict task-1-r2 / task-10.
         ledger.record_with_cap("task-2".into(), res(), 2);
         ledger.record_with_cap("task-10".into(), res(), 2);
         ledger.record_with_cap("task-1-r2".into(), res(), 2);
@@ -655,7 +655,7 @@ mod tests {
         );
         assert!(ledger.has("task-10"));
         assert!(ledger.has("task-1-r2"));
-        // 再插入一条 → 淘汰次早的 task-10（仍按插入序）。
+        // One more insert → evicts the next-oldest task-10 (still by insertion order).
         ledger.record_with_cap("task-3".into(), res(), 2);
         assert!(
             !ledger.has("task-10"),
@@ -678,7 +678,7 @@ mod tests {
         ledger.record("task-10".into(), res());
         ledger.save(&path).expect("save");
         let mut loaded = TaskLedger::load(&path);
-        // 重载后按持久化的插入序淘汰：先入的 task-2 先出（不是字典序最小）。
+        // After reload, eviction follows the persisted insertion order: task-2, inserted first, goes first (not the lexicographically smallest).
         loaded.record_with_cap("task-1-r2".into(), res(), 2);
         assert!(!loaded.has("task-2"));
         assert!(loaded.has("task-10"));
@@ -747,7 +747,7 @@ mod tests {
             let first = run_task(&p);
             assert_eq!(first.exit_code, 0);
             let first_dir = std::path::PathBuf::from(first.log_tail.trim());
-            // 跑在独立 scratch 目录，且跑完即删。
+            // Ran in a dedicated scratch dir, removed right after the run.
             assert!(
                 first_dir
                     .file_name()
@@ -757,7 +757,7 @@ mod tests {
             );
             assert!(!first_dir.exists(), "scratch dir must be removed after run");
 
-            // 第二个任务 → 不同 scratch 目录（每任务独立）。
+            // Second task → a different scratch dir (per-task isolation).
             let second = run_task(&p);
             assert_eq!(second.exit_code, 0);
             let second_dir = std::path::PathBuf::from(second.log_tail.trim());
@@ -797,14 +797,14 @@ mod tests {
                 required_labels: Default::default(),
             };
             let result = run_task(&p);
-            // 工作目录不存在 → 派生失败 → 127，失败可见。
+            // Nonexistent workdir → spawn failure → 127, failure is visible.
             assert_eq!(result.exit_code, SPAWN_FAIL_EXIT);
             assert!(result.log_tail.contains("spawn failed"));
         }
     }
 
-    /// 微型 HTTP mock（按路径应答脚本）。处理 `requests` 个连接后退出；
-    /// 返回 (base_url, join_handle)。
+    /// Tiny HTTP mock (answers by path from a route table). Exits after serving `requests` connections;
+    /// returns (base_url, join_handle).
     fn spawn_mock(
         routes: std::collections::HashMap<String, (u16, String)>,
         requests: usize,
@@ -864,9 +864,9 @@ mod tests {
         (base, handle)
     }
 
-    /// MT-004 验收「托盘通知触发测试」：真实 socket + 真实 ureq。新到达任务
-    /// ack 成功后 `on_arrival` 恰好触发一次（到达=ack 后、执行前）；账本已有
-    /// 的补派任务不是到达，不触发。
+    /// MT-004 acceptance "tray notification trigger test": real socket + real ureq. For a newly arrived task,
+    /// `on_arrival` fires exactly once after a successful ack (arrival = after ack, before execution); a re-dispatched
+    /// task already in the ledger is not an arrival and does not fire it.
     #[test]
     fn arrival_callback_fires_once_for_new_tasks_only() {
         let pending_body = serde_json::json!([{
@@ -893,7 +893,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let ledger_path = dir.join("tasks.json");
 
-        // 第一轮：新任务 → 触发一次。
+        // Round 1: new task → fires once.
         let (base, handle) = spawn_mock(routes.clone(), 3);
         let mut ledger = TaskLedger::default();
         let mut arrived: Vec<String> = Vec::new();
@@ -906,8 +906,8 @@ mod tests {
             "new task must trigger arrival exactly once"
         );
 
-        // 第二轮（补派同一任务）：账本已有 → 只补报（pending + result，无 ack），
-        // 不再触发。
+        // Round 2 (same task re-dispatched): already in the ledger → re-report only (pending + result, no ack),
+        // no re-trigger.
         let (base, handle) = spawn_mock(routes, 2);
         let mut arrived_again: Vec<String> = Vec::new();
         let mut on_arrival = |t: &Task| arrived_again.push(t.id.to_string());
@@ -920,12 +920,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// MT-002 后台化验收：`kick` 立即返回（不阻塞主循环），worker 线程随后
-    /// 拉取待办并 ack→执行→回执，账本最终落盘（幂等语义不变）。
+    /// MT-002 backgrounding acceptance: `kick` returns immediately (without blocking the main loop); the worker thread
+    /// then pulls pending tasks and acks → executes → reports, and the ledger ends up on disk (idempotency semantics unchanged).
     #[test]
     fn task_runtime_runs_in_background_and_kick_returns_immediately() {
-        // 任务命令按平台 shell 语法（shell_command 用 `sh -c` / `cmd /C`）：
-        // 各睡 1s 再回显——保住「后台执行」的可观测余量，Windows CI 才能真跑。
+        // Task command in per-platform shell syntax (shell_command uses `sh -c` / `cmd /C`):
+        // sleep 1s then echo — keeps observable margin for "ran in the background" so Windows CI actually exercises it.
         let bg_cmd = if cfg!(windows) {
             "timeout /t 1 /nobreak >nul & echo bg-done"
         } else {
@@ -968,7 +968,7 @@ mod tests {
             start.elapsed() < Duration::from_millis(200),
             "kick must return immediately, not run the task inline"
         );
-        // 等 worker 完成：轮询账本（任务 sleep 1s，给足余量）。
+        // Wait for the worker: poll the ledger (the task sleeps 1s; allow ample margin).
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let ledger = rt.ledger();

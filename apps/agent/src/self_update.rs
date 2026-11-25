@@ -1,5 +1,5 @@
-//! Agent self-update：manifest 拉取 → SHA-256 校验 → 原子落盘 → 替换本进程
-//! 二进制 → 标记 systemd/ supervisor 重启。
+//! Agent self-update: fetch manifest -> SHA-256 verify -> atomic write to disk ->
+//! replace the running binary -> mark systemd/supervisor for restart.
 
 use semver::Version;
 use sha2::{Digest, Sha256};

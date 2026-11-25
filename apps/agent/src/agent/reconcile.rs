@@ -22,33 +22,36 @@ impl super::Agent {
             .backend
             .inspect_sync()
             .map_err(|e| format!("inspect the local network state: {e}"))?;
-        // §12：直连保留集来自**ledger 恢复 + 探测周期状态机**，不从内核猜——
-        // 内核里非 hub 的 peer 若非自有直连，必须按漂移清掉（外来 peer 注入
-        // 的真机验收）。keep set 传给内核对账：直连对端被保留，不被重放冲掉。
+        // §12: the direct keep-set comes from **ledger recovery + the probe-cycle state machine**, never
+        // guessed from the kernel - a non-hub peer in the kernel that is not one of our own directs must be
+        // cleared as drift (real-machine acceptance of injected foreign peers). The keep set is passed to the
+        // kernel reconciliation: direct peers are preserved and not washed away by the replay.
         let direct_keys = self.direct.keep_keys();
-        // hub 端点兜底 + 多端点 failover（`hub_endpoint = "a:51820,b:51820"`）：
-        // 单/零端点行为与旧版逐字节一致（不查握手、不落账本、不强制重放）；
-        // 多端点时按现役握手年龄轮换候选（现役死亡 → 下一个），轮换强制重放。
+        // Hub endpoint fallback + multi-endpoint failover (`hub_endpoint = "a:51820,b:51820"`):
+        // with a single/zero endpoints the behavior is byte-identical to the old version (no handshake
+        // lookup, no ledger write, no forced replay); with multiple endpoints, rotate candidates by the
+        // incumbent's handshake age (incumbent dead -> next one), and a rotation forces a replay.
         let (hub_endpoint, hub_rotated) = self.select_hub_endpoint(plan);
         let mut local_plan = plan_with_hub_endpoint(plan, hub_endpoint.as_deref());
         local_plan.tunnel.name = self.dataplane.interface.clone();
-        // SEL-003 hub 兜底：hub peer 的 keepalive 永不掉——计划里低于常量
-        // （或旧版计划缺省 `None`）都强制抬到 [meshlet_network::HUB_KEEPALIVE_SECS]。
+        // SEL-003 hub fallback: the hub peer's keepalive never drops - any value in the plan below the constant
+        // (or an old-version plan's default `None`) is forcibly raised to [meshlet_network::HUB_KEEPALIVE_SECS].
         enforce_hub_keepalive(&mut local_plan);
-        // §12：直连开启时把 wg 接口钉到「生效监听端口」——conf 渲染、防火墙
-        // 放行（apply_device_plan_sync 内 ensure_direct_udp_firewall_sync）与
-        // direct_report 上报三处必须同一端口（WIN-PORT-1 B2 硬不变量）。生效
-        // 端口每轮在此解析（Windows 上配置端口被排除段/占用挡住时探测回退，
-        // 防 `WireGuardTunnel$` 0xc0000022 绑定失败；Linux 恒取配置端口，
-        // 行为不变）。本地改写不影响期望哈希（与 hub_endpoint 兜底同一口径）。
+        // §12: with direct connect on, pin the wg interface to the "effective listen port" - the conf rendering, the
+        // firewall allow (ensure_direct_udp_firewall_sync inside apply_device_plan_sync), and the direct_report
+        // report must all use the same port (the WIN-PORT-1 B2 hard invariant). The effective port is resolved
+        // here every round (on Windows, when the configured port is blocked by an excluded range or an occupant, a
+        // probe fallback kicks in to prevent a `WireGuardTunnel$` 0xc0000022 bind failure; Linux always takes the
+        // configured port, behavior unchanged). The local rewrite does not affect the desired hash (the same
+        // footing as the hub_endpoint fallback).
         //
-        // nt 模型（tunnel_backend="nt"）的 adapter 恒需一个具体监听端口：
-        // wireguard-nt 的 `SetInterface.listen_port: None` 不是"让 OS 选口"
-        // 而是落默认 51820（设计文档 §2.5），多网络（多 adapter）同落必撞。
-        // 故直连关闭时 nt 模型也经同一 probe-bind 解析分配 collision-free
-        // 端口；该端口不构成直连候选——direct_report 仍以
-        // direct_connect.enabled 为闸，防火墙放行本就是 adapter 收包（含
-        // hub 中继）的前提。Linux 行为不变（nt 仅 Windows 生效）。
+        // The nt model (tunnel_backend="nt") always needs a concrete listen port for its adapter:
+        // wireguard-nt's `SetInterface.listen_port: None` does not mean "let the OS choose" but lands on the
+        // default 51820 (design doc §2.5), and multiple networks (multiple adapters) landing there are guaranteed
+        // to collide. So even with direct connect off, the nt model goes through the same probe-bind resolution to
+        // allocate a collision-free port; that port does not become a direct candidate - direct_report is still
+        // gated on direct_connect.enabled, and the firewall allow was always a precondition for the adapter
+        // receiving packets (hub relay included). Linux behavior is unchanged (nt only applies to Windows).
         let nt_needs_port =
             cfg!(target_os = "windows") && self.dataplane.tunnel_backend == TunnelBackend::Nt;
         if self.dataplane.direct_connect.enabled || nt_needs_port {
@@ -63,8 +66,8 @@ impl super::Agent {
                 &direct_port::probe_bind,
             ) {
                 PortResolution::Port(port) => {
-                    // 账本只落 Windows（防 churn 的现役证据；Linux 行为不变），
-                    // 且只在解析结果变化时写——30s 轮询不重复落盘。
+                    // The ledger is written only on Windows (incumbency evidence against churn; Linux behavior
+                    // unchanged), and only when the resolution changes - the 30s poll does not write repeatedly.
                     if is_windows && persisted != Some(port) {
                         if let Err(error) = direct_port::save(&self.state_dir, Some(port)) {
                             tracing::warn!(error = %error, "direct-port ledger not saved");
@@ -79,9 +82,10 @@ impl super::Agent {
                     self.resolved_direct_port = Some(port);
                 }
                 PortResolution::Blocked => {
-                    // 显式报错（转入态记一次，绝不每轮刷屏）：直连关闸——计划
-                    // 不钉端口（hub 中继 overlay 不受影响），direct_report 不
-                    // 上报候选（报一个本机绑不上的口等于让对端拨死口）。
+                    // Report the error explicitly (recorded once when entering the state, never spammed every
+                    // round): direct connect is gated shut - the plan pins no port (the hub relay's overlay is
+                    // unaffected), and direct_report reports no candidates (reporting a port this machine cannot
+                    // bind just points the peer at a dead port).
                     if !self.direct_port_blocked {
                         tracing::error!(
                             configured,
@@ -105,8 +109,8 @@ impl super::Agent {
             route.interface = self.dataplane.interface.clone();
         }
         for rule in &mut local_plan.nat_rules {
-            // `-i` 只对 PREROUTING 生效（`iptables_args` 同一口径）；改写
-            // POSTROUTING 规则的惰性元数据只会让指纹对不上内核。
+            // `-i` only applies to PREROUTING (the same footing as `iptables_args`); rewriting the lazy
+            // metadata of POSTROUTING rules would only make the fingerprints disagree with the kernel.
             if rule.chain == meshlet_network::nat::NatChain::Prerouting {
                 rule.incoming_interface = Some(self.dataplane.interface.clone());
             }
@@ -124,8 +128,9 @@ impl super::Agent {
                 reason: crate::reconcile::Reason::KernelDrift,
             };
         }
-        // hub 端点轮换：本地兜底不参与期望哈希（与 hub_endpoint 兜底同口径），
-        // 账本漂移判定看不到新端点——轮换必须显式强制一次重放把新端点下到内核。
+        // Hub endpoint rotation: the local fallback takes no part in the desired hash (the same footing as the
+        // hub_endpoint fallback), so the ledger's drift verdict cannot see the new endpoint - the rotation must
+        // explicitly force one replay to push the new endpoint down to the kernel.
         if !decision.needs_apply && hub_rotated {
             decision = Decision {
                 needs_apply: true,
@@ -135,7 +140,7 @@ impl super::Agent {
         if !decision.needs_apply {
             return Ok(decision);
         }
-        // 先按所有权清理计划里已消失的映射单元（§12.6），再重放隧道/路由/NAT。
+        // First clean up mapping units that vanished from the plan, by ownership (§12.6), then replay tunnel/routing/NAT.
         let kernel_nat_owners = self
             .backend
             .meshlet_nat_owners_sync()
@@ -158,9 +163,9 @@ impl super::Agent {
                 format!("remove stale meshlet routes: {error}"),
             ));
         }
-        // hub 入口地址兜底（§16.4：服务端不下发 agent 的网络位置）：计划未带
-        // endpoint 时用本地 `[dataplane] hub_endpoint` 填充——只影响本次内核下
-        // 发，账本仍按服务端原计划记（desired_config_hash 不因此变化）。
+        // Hub entry-address fallback (§16.4: the server does not deliver the agent's network location): when the
+        // plan carries no endpoint, fill it from the local `[dataplane] hub_endpoint` - this only affects this
+        // kernel push; the ledger still records the server's original plan (desired_config_hash does not change because of it).
         let transition = self.backend.apply_device_plan_sync(
             &local_plan,
             self.private_key.clone(),
@@ -190,9 +195,10 @@ impl super::Agent {
         }
         let mut ledger_plan = local_plan;
         ledger_plan.tunnel.private_key = None;
-        // 本机公钥指纹入账本（BUG② 漂移判定）：对账据此识别「peer 一致但
-        // 本机私钥被换」的手动隧道。推导失败（wg 缺失等）按缺省留空——
-        // 漂移判定对空指纹不判，下轮重放成功后再补齐。
+        // The local public key fingerprint enters the ledger (BUG(2) drift detection): reconciliation uses it to
+        // recognize a manual tunnel where "the peers match but this machine's private key was swapped". On a
+        // derivation failure (missing wg, etc.), leave it empty - the drift verdict skips empty fingerprints and
+        // the value is backfilled after a successful replay next round.
         let mut ledger = AgentState::from_plan(&ledger_plan);
         if let Some(key) = &self.private_key {
             if let Ok(public_key) = self.backend.public_key_from_private(key) {
@@ -210,12 +216,13 @@ impl super::Agent {
         Ok(decision)
     }
 
-    /// hub 端点兜底选择（含多端点 failover，UI 批 B3）。
+    /// Hub endpoint fallback selection (with multi-endpoint failover, UI batch B3).
     ///
-    /// 返回 `(选中端点, 是否发生轮换)`。单/零端点：不查握手、不落账本，
-    /// 直接取配置值（与旧版 `plan_with_hub_endpoint(plan, hub_endpoint)` 行为
-    /// 逐字节一致）；多端点：读 hub 握手年龄、按 [`hub_failover::decide`]
-    /// 轮换，轮换/首选定落账本（`{state_dir}/hub-endpoint.json`）。
+    /// Returns `(selected endpoint, whether a rotation happened)`. Single/zero endpoints: no handshake
+    /// lookup, no ledger write, take the configured value directly (byte-identical to the old
+    /// `plan_with_hub_endpoint(plan, hub_endpoint)` behavior); multiple endpoints: read the hub handshake age
+    /// and rotate via [`hub_failover::decide`], persisting the rotation/preference in the ledger
+    /// (`{state_dir}/hub-endpoint.json`).
     fn select_hub_endpoint(&mut self, plan: &DevicePlan) -> (Option<String>, bool) {
         let endpoints = self.dataplane.hub_endpoints();
         if endpoints.is_empty() {
@@ -224,8 +231,8 @@ impl super::Agent {
         if endpoints.len() == 1 {
             return (Some(endpoints[0].clone()), false);
         }
-        // 多端点才查健康（单端点零额外开销——旧行为零变化）。hub peer 恒为
-        // 计划 tunnel.peers[0]（服务端计划单 hub peer 构造）。
+        // Health is only consulted with multiple endpoints (a single endpoint costs nothing extra - the old
+        // behavior is unchanged). The hub peer is always plan tunnel.peers[0] (the server plan is built with a single hub peer).
         let hub_public_key = plan.tunnel.peers.first().map(|p| p.public_key.clone());
         let hub_age = match hub_public_key {
             Some(key) => self
@@ -239,8 +246,8 @@ impl super::Agent {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        // 轮换后等首个握手的宽限：两个轮询周期（下限 60s）——fresh start
-        // 与首次 apply 后的握手留足余量，绝不误轮换。
+        // Grace period after a rotation while waiting for the first handshake: two polling periods (floor 60s)
+        // - enough margin for a fresh start and the handshake after the first apply, so a rotation is never spurious.
         let grace_ms = (2 * self.dataplane.poll_interval_secs * 1000).max(60_000);
         let current = hub_failover::load(&self.state_dir);
         let decision = hub_failover::decide(

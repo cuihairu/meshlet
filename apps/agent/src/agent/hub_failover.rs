@@ -1,52 +1,55 @@
-//! hub 多端点 failover（UI 批 B3 / todo「UI 四项收口」剩项）。
+//! Hub multi-endpoint failover (UI batch B3 / the remaining item of the todo "close out the four UI points").
 //!
-//! `[dataplane] hub_endpoint` 现支持逗号分隔多端点（[`crate::agent::agent::DataplaneConfig::hub_endpoints`]）。
-//! 服务端计划把 hub peer 的 endpoint 留空（§16.4：服务端不知道 agent 的
-//! 网络位置），agent 用本地配置填充才能主动握手。多端点时：现役端点与 hub
-//! 的握手超时（或从不握手超过宽限），就轮换到下一个候选并重新下发——hub
-//! 入口地址变更（VPS 迁移 / 备用 hub）无需改 agent 配置即可自愈。
+//! `[dataplane] hub_endpoint` now supports comma-separated multiple endpoints ([`crate::agent::agent::DataplaneConfig::hub_endpoints`]).
+//! The server plan leaves the hub peer's endpoint empty (§16.4: the server does not know the
+//! agent's network location), so the agent fills it from local configuration to be able to initiate
+//! the handshake. With multiple endpoints: when the incumbent endpoint's handshake with the hub
+//! times out (or never handshakes past the grace period), rotate to the next candidate and re-deliver
+//! - a hub entry-address change (VPS migration / a spare hub) self-heals with no agent config edit.
 //!
-//! 健康判据 = hub peer（计划 tunnel.peers[0]，服务端计划恒为单 hub peer）
-//! 的内核握手年龄（[`meshlet_network`] 各后端 `handshake_ages_sync`）：
-//! - `Some(age)` 且 `age <= stale` → 现役健康，保持；
-//! - `Some(age)` 且 `age > stale` → 现役死亡，轮换（hub 的 persistent
-//!   keepalive 被强制 ≥ 25s，[`enforce_hub_keepalive`]，健康握手不会断更，
-//!   超龄即路径已断，是可靠判据）；
-//! - `None`（从不握手）→ 给轮换后一次宽限（grace）等首个握手，超宽限仍无
-//!   握手才轮换——避免 fresh start 误轮换与全死端点无限快速 churn。
+//! Health criterion = the kernel handshake age of the hub peer (plan tunnel.peers[0]; the server plan
+//! always has a single hub peer) ([`meshlet_network`] backends' `handshake_ages_sync`):
+//! - `Some(age)` with `age <= stale` -> the incumbent is healthy, keep it;
+//! - `Some(age)` with `age > stale` -> the incumbent is dead, rotate (the hub's persistent
+//!   keepalive is forced >= 25s, [`enforce_hub_keepalive`], so a healthy handshake never stalls and
+//!   a stale age means the path is broken - a reliable criterion);
+//! - `None` (never handshook) -> give one grace period after a rotation to await the first handshake,
+//!   and only rotate once the grace expires without one - this avoids a spurious rotation on a fresh
+//!   start and endless fast churn over all-dead endpoints.
 //!
-//! 轮换结果落 `{state_dir}/hub-endpoint.json`（[`HubEndpointLedger`]，与
-//! `direct-port.json` 同一账本风格）：`index`（当前候选下标）+
-//! `selected_at_ms`（轮换时刻，grace 计时基准）。单/零端点不落账本
-//! （行为与旧版完全一致，零新文件）。
+//! The rotation result lands in `{state_dir}/hub-endpoint.json` ([`HubEndpointLedger`], the same
+//! ledger style as `direct-port.json`): `index` (the current candidate index) +
+//! `selected_at_ms` (the rotation time, the grace-period basis). Single/zero endpoints write no ledger
+//! (behavior identical to the old version, no new file).
 
-/// 现役 hub 端点握手年龄超此秒数判为「死亡」→ 轮换。hub keepalive 被抬到
-/// 25s（[`meshlet_network::HUB_KEEPALIVE_SECS`]），健康握手 25s 内必更新；
-/// 60s = 2.4 个 keepalive 周期，路径断了的余量给足，绝不误判健康握手。
+/// The incumbent hub endpoint is deemed "dead" and rotated once its handshake age exceeds this many
+/// seconds. The hub keepalive is raised to 25s ([`meshlet_network::HUB_KEEPALIVE_SECS`]), so a healthy
+/// handshake must refresh within 25s; 60s = 2.4 keepalive periods, leaving ample margin for a broken
+/// path and never misjudging a healthy handshake.
 pub(super) const HUB_HANDSHAKE_STALE_SECS: u64 = 60;
 
-/// 端点账本路径：`{state_dir}/hub-endpoint.json`。
+/// Endpoint ledger path: `{state_dir}/hub-endpoint.json`.
 pub(super) fn ledger_path(state_dir: &str) -> std::path::PathBuf {
     std::path::Path::new(state_dir).join("hub-endpoint.json")
 }
 
-/// hub 端点选择账本（`hub-endpoint.json`）。
+/// Hub endpoint selection ledger (`hub-endpoint.json`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct HubEndpointLedger {
-    /// 当前选中的 `hub_endpoints()` 候选下标。
+    /// The currently selected `hub_endpoints()` candidate index.
     pub index: usize,
-    /// 轮换/选定时刻（Unix 毫秒；grace 计时基准）。
+    /// The rotation/selection time (Unix milliseconds; the grace-period basis).
     pub selected_at_ms: u64,
 }
 
-/// 读账本：缺失/损坏按「无账本」处理（`None`，下一轮重新收敛；绝不拿坏
-/// 数据当现役选择）。
+/// Read the ledger: missing/corrupt is treated as "no ledger" (`None`, reconverging next round; corrupt
+/// data is never taken as the incumbent selection).
 pub(super) fn load(state_dir: &str) -> Option<HubEndpointLedger> {
     let raw = std::fs::read_to_string(ledger_path(state_dir)).ok()?;
     serde_json::from_str::<HubEndpointLedger>(&raw).ok()
 }
 
-/// 写账本（失败只由调用方记日志：账本是防 churn 优化，不阻塞数据面）。
+/// Write the ledger (a failure is only logged by the caller: the ledger is an anti-churn optimization and must not block the dataplane).
 pub(super) fn save(state_dir: &str, ledger: &HubEndpointLedger) -> Result<(), String> {
     let path = ledger_path(state_dir);
     if let Some(parent) = path.parent() {
@@ -57,29 +60,29 @@ pub(super) fn save(state_dir: &str, ledger: &HubEndpointLedger) -> Result<(), St
     std::fs::write(&path, raw).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-/// 一次 hub 端点选择决策（[`decide`]）。
+/// One hub endpoint selection decision ([`decide`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HubDecision {
-    /// 选中的候选下标（`0..configured.len()`）。
+    /// The selected candidate index (`0..configured.len()`).
     pub index: usize,
-    /// 选中的端点（`configured[index]`）。
+    /// The selected endpoint (`configured[index]`).
     pub endpoint: String,
-    /// 调用方应持久化账本（轮换或首选定）。
+    /// The caller should persist the ledger (a rotation or a first-time preference).
     pub save: bool,
-    /// 轮换发生：调用方应强制重新 apply（新端点需下到内核）。
+    /// A rotation happened: the caller should force a re-apply (the new endpoint must be pushed into the kernel).
     pub rotate: bool,
-    /// 要落盘的账本（`save == true` 时有效）。
+    /// The ledger to persist (valid when `save == true`).
     pub ledger: HubEndpointLedger,
 }
 
-/// hub 端点选择（纯函数，可测）。仅当 `configured.len() > 1` 才做 failover；
-/// 单端点恒选 `index 0`、零改动（`save=false, rotate=false`，行为与旧版一致）。
+/// Hub endpoint selection (pure function, testable). Failover only when `configured.len() > 1`;
+/// a single endpoint always selects `index 0` with no change (`save=false, rotate=false`, same as the old behavior).
 ///
-/// - `current`：上一轮账本（`None` = 首轮）；
-/// - `hub_age`：hub peer 握手年龄秒（`None` = 尚无握手）；
-/// - `now_ms`：当前 Unix 毫秒（grace 计时）；
-/// - `stale_secs`：握手超龄判死阈值（[`HUB_HANDSHAKE_STALE_SECS`]）；
-/// - `grace_ms`：轮换后等待首个握手的宽限（`None` 握手时）。
+/// - `current`: the previous round's ledger (`None` = first round);
+/// - `hub_age`: the hub peer's handshake age in seconds (`None` = no handshake yet);
+/// - `now_ms`: the current Unix milliseconds (for grace timing);
+/// - `stale_secs`: the handshake-staleness threshold for declaring death ([`HUB_HANDSHAKE_STALE_SECS`]);
+/// - `grace_ms`: the grace period after a rotation while awaiting the first handshake (when there is none).
 pub(super) fn decide(
     configured: &[String],
     current: Option<&HubEndpointLedger>,
@@ -90,7 +93,7 @@ pub(super) fn decide(
 ) -> HubDecision {
     debug_assert!(!configured.is_empty(), "caller gates on non-empty");
     if configured.len() == 1 {
-        // 单端点：恒选它，零状态、零轮换——旧行为逐字节不变。
+        // Single endpoint: always select it, zero state, zero rotation - the old behavior is unchanged byte for byte.
         return HubDecision {
             index: 0,
             endpoint: configured[0].clone(),
@@ -105,16 +108,16 @@ pub(super) fn decide(
 
     let current_index = current.map(|l| l.index.min(configured.len() - 1));
     let (index, rotate) = match current {
-        // 首轮：从第一个候选起（grace 从现在计时；启动 apply 会带它下去）。
+        // First round: start from the first candidate (the grace is timed from now; the startup apply carries it down).
         None => (0, false),
         Some(ledger) => {
             let cur = ledger.index.min(configured.len() - 1);
             match hub_age {
-                // 现役健康：保持（grace 计时不动，只认年龄判据）。
+                // The incumbent is healthy: keep it (grace timing untouched, only the age criterion counts).
                 Some(age) if age <= stale_secs => (cur, false),
-                // 现役死亡（超龄）：轮换下一个（回绕）。
+                // The incumbent is dead (stale): rotate to the next one (wrapping around).
                 Some(_) => ((cur + 1) % configured.len(), true),
-                // 尚无握手：轮换后给 grace 等首个握手，超宽限仍无才轮换。
+                // No handshake yet: after a rotation allow the grace period to await the first handshake, and rotate only if the grace expires without one.
                 None => {
                     if now_ms.saturating_sub(ledger.selected_at_ms) > grace_ms {
                         ((cur + 1) % configured.len(), true)
@@ -125,8 +128,8 @@ pub(super) fn decide(
             }
         }
     };
-    // 只在选择真的变化时落账本（首选定/轮换）；保持现役绝不写盘——30s 轮询
-    // 不得制造写盘 churn。
+    // The ledger is written only when the selection really changes (first-time preference / rotation); keeping the
+    // incumbent never writes to disk - the 30s poll must not create write churn.
     let save = current_index != Some(index);
     HubDecision {
         index,
@@ -163,7 +166,7 @@ mod tests {
         assert!(!d.save);
         assert!(!d.rotate);
 
-        // 即使现役死亡也不轮换（无第二候选）；零状态。
+        // Even a dead incumbent does not rotate (there is no second candidate); zero state.
         let d = decide(
             &eps(&["a:51820"]),
             Some(&ledger(0, 0)),
@@ -179,7 +182,7 @@ mod tests {
     #[test]
     fn fresh_handshake_keeps_current() {
         let cur = ledger(1, 10_000);
-        // 现役健康（年龄 ≤ 60）：保持下标 1，不落账本不轮换。
+        // The incumbent is healthy (age <= 60): keep index 1, no ledger write, no rotation.
         let d = decide(
             &eps(&["a:51820", "b:51821"]),
             Some(&cur),
@@ -196,7 +199,7 @@ mod tests {
 
     #[test]
     fn stale_handshake_rotates_to_next_and_wraps() {
-        // 现役死亡（年龄 61 > 60）：轮换到下一个候选，回绕。
+        // The incumbent is dead (age 61 > 60): rotate to the next candidate, wrapping around.
         let cur = ledger(0, 10_000);
         let d = decide(
             &eps(&["a:51820", "b:51821", "c:51822"]),
@@ -213,7 +216,7 @@ mod tests {
         assert_eq!(d.ledger.index, 1);
         assert_eq!(d.ledger.selected_at_ms, 20_000);
 
-        // 最后一个候选死亡：回绕到 0。
+        // The last candidate dies: wrap around to 0.
         let cur = ledger(2, 10_000);
         let d = decide(
             &eps(&["a:51820", "b:51821", "c:51822"]),
@@ -231,18 +234,18 @@ mod tests {
     #[test]
     fn no_handshake_rotates_only_after_grace() {
         let eps = eps(&["a:51820", "b:51821"]);
-        // 轮换后尚在 grace（< 90s）：保持，不轮换。
+        // Still within the grace after a rotation (< 90s): keep it, no rotation.
         let cur = ledger(1, 10_000);
         let d = decide(&eps, Some(&cur), None, 50_000, 60, 90_000);
         assert_eq!(d.index, 1);
         assert!(!d.rotate);
 
-        // 超宽限仍无握手：轮换。
+        // Past the grace with still no handshake: rotate.
         let d = decide(&eps, Some(&cur), None, 110_000, 60, 90_000);
         assert_eq!(d.index, 0);
         assert!(d.rotate);
 
-        // 首轮无握手（fresh start）：从候选 0 起，grace 计时从现在。
+        // First round with no handshake (fresh start): start from candidate 0, timing the grace from now.
         let d = decide(&eps, None, None, 30_000, 60, 90_000);
         assert_eq!(d.index, 0);
         assert!(!d.rotate);
@@ -259,7 +262,7 @@ mod tests {
         let l = ledger(2, 123_456_789);
         save(dir_str, &l).unwrap();
         assert_eq!(load(dir_str), Some(l));
-        // 损坏文件 → None（下一轮重新收敛）。
+        // A corrupt file -> None (reconverge next round).
         std::fs::write(ledger_path(dir_str), "not json").unwrap();
         assert_eq!(load(dir_str), None);
         let _ = std::fs::remove_dir_all(&dir);

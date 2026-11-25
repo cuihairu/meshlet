@@ -20,7 +20,7 @@ pub struct DesktopClient {
 }
 
 impl DesktopClient {
-    /// 会话总线连接（惰性建立）。失败 `None`（非致命，调用方降级）。
+    /// Session bus connection (established lazily). Failure yields `None` (non-fatal; the caller degrades).
     #[cfg(target_os = "linux")]
     fn ensure_session(&mut self) -> Option<zbus::Connection> {
         if self.connection.is_none() {
@@ -66,8 +66,7 @@ impl DesktopClient {
         }
     }
 
-    /// MT-004：任务到达托盘气泡。复用 notify 契约与连接；无桌面/无总线一律
-    /// 降级非致命（agent 循环不得因通知失败退避）。
+    /// MT-004: a task arrives as a tray bubble. Reuses the notify contract and connection; a missing desktop or bus always degrades non-fatally (the agent loop must never back off on notification failure).
     #[cfg(target_os = "linux")]
     pub fn notify_task(&mut self, call: &NotifyCall, env: &EnvProbe) -> DesktopPublish {
         if !env.has_desktop_session() {

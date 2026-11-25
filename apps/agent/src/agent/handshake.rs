@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 
 use meshlet_network::NetworkDiagnostics;
 
-/// 诊断 dump → 握手年龄（纯函数）：`wg dump` 每 peer 的最近握手 Unix 秒翻译
-/// 成「距今秒」。`last_handshake <= 0`（从未握手）或晚于当前时钟（时钟回拨）
-/// 的行丢弃——证据缺失不臆造。
+/// Diagnostic dump -> handshake age (pure function): translate each peer's
+/// most-recent-handshake Unix seconds from `wg dump` into "seconds ago". Rows
+/// with `last_handshake <= 0` (never handshook) or later than the current clock
+/// (clock rolled back) are dropped - missing evidence is never invented.
 pub(super) fn dump_handshake_ages(
     net: Option<&NetworkDiagnostics>,
     now_secs: u64,

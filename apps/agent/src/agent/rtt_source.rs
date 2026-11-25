@@ -2,14 +2,17 @@
 
 use crate::direct_rtt::RttProbe;
 
-/// rtt_source 如实标注（纯函数，四态）：
-/// - 实测成功（`probe_ok`）：RTT 有读数，来源就是实测；
-/// - 没测到读数但**最近握手新鲜**（≤ [`meshlet_domain::DIRECT_PROMOTE_FRESH_SECS`]）
-///   → `handshake_fresh`：活性证据是握手不是 ping——Windows 网格防火墙对
-///   wg 接口 ICMP 100% 丢包（imac 2026-11-07 取证），「不可测」谎报成链路
-///   结论会误导；
-/// - 其余（两路均无响应且握手也不新鲜 / 读数缺失且无握手）→ 探测线程的如实
-///   结论（`probe_failed` / `unprobed`）。
+/// rtt_source labeled honestly (pure function, four states):
+/// - measured successfully (`probe_ok`): the RTT has a reading, and its source is
+///   that measurement;
+/// - no reading obtained but **the last handshake is fresh**
+///   (<= [`meshlet_domain::DIRECT_PROMOTE_FRESH_SECS`]) -> `handshake_fresh`: the
+///   liveness evidence is the handshake, not a ping - the Windows mesh firewall
+///   drops ICMP to the wg interface 100% of the time (imac evidence 2026-11-07),
+///   so reporting "not measurable" as a link conclusion would mislead;
+/// - everything else (both paths unresponsive and the handshake is not fresh /
+///   no reading and no handshake) -> the probe thread's honest verdict
+///   (`probe_failed` / `unprobed`).
 pub(super) fn honest_rtt_source(
     probe: &RttProbe,
     last_handshake_at: Option<u64>,

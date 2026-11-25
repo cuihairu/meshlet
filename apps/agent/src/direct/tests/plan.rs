@@ -1,5 +1,6 @@
-//! plan_updates / merge_handshake_ages 纯函数用例：候选决策与 `/32` 边界、
-//! SEL-003 劣化回退与恢复门、pending 晋升门槛、握手年龄兜底合并。
+//! Pure-function cases for plan_updates / merge_handshake_ages: candidate
+//! decisions and `/32` boundaries, SEL-003 degradation fallback and recovery
+//! gate, the pending promotion threshold, and handshake-age fallback merge.
 
 use super::*;
 
@@ -55,8 +56,10 @@ fn peer_without_any_path_stays_relay_and_emits_nothing() {
 
 #[test]
 fn endpoint_inside_overlay_scope_is_rejected_as_hairpin() {
-    // AGENT-ISO-2：候选落在 overlay 范围内 = 拿隧道里的地址当隧道 endpoint，
-    // 包先进隧道才够得到它（imac 2026-11-23 实测该形态 1750ms，同网段直连 19ms）。
+    // AGENT-ISO-2: a candidate inside the overlay scope = using an in-tunnel
+    // address as the tunnel endpoint — packets must enter the tunnel first to
+    // reach it (measured on imac 2026-11-23: this shape took 1750ms vs 19ms
+    // for same-segment direct).
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("10.240.0.7", 51820)])];
     let mut current = BTreeMap::new();
     let updates = plan_updates(
@@ -83,8 +86,9 @@ fn endpoint_inside_overlay_scope_is_rejected_as_hairpin() {
 
 #[test]
 fn overlay_endpoint_does_not_shadow_a_physical_candidate() {
-    // 滤掉 overlay 面后，同 peer 的物理面照常晋升——过滤是**剔除坏面**，
-    // 不是把整个 peer 打成不可直连。
+    // After the overlay face is filtered out, the same peer's physical face
+    // still promotes — filtering **removes bad faces**, it does not mark the
+    // whole peer as undirectable.
     let wanted = vec![peer(
         "dev-b",
         "10.240.0.3",
@@ -118,8 +122,9 @@ fn overlay_endpoint_does_not_shadow_a_physical_candidate() {
 
 #[test]
 fn memory_face_inside_overlay_scope_is_not_reused() {
-    // 记忆面绕过 decide_direct_path 直接当选——历史遗留 / 内核漫游写进去的
-    // overlay 地址若不滤，会一直被选回（只滤候选拦不住它）。
+    // The memory face bypasses decide_direct_path and wins directly — a legacy
+    // / kernel-roamed overlay address written into it would be re-selected
+    // forever unless filtered (filtering candidates alone cannot stop it).
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     let mut seeded = direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay);
@@ -153,8 +158,10 @@ fn memory_face_inside_overlay_scope_is_not_reused() {
 
 #[test]
 fn memory_face_on_a_foreign_network_is_not_reused() {
-    // 对端的 ZeroTier 地址：本机 LAN 口径已不认它同网段（zt* 接口出局），
-    // 记忆面若不复核会一直被选回，永远切不到物理面（2026-11-23 实录）。
+    // The peer's ZeroTier address: our LAN scope no longer counts it as
+    // same-segment (zt* interfaces are out of scope) — an un-rechecked memory
+    // face would be selected forever, never switching to the physical face
+    // (recorded 2026-11-23).
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     let mut seeded = direct_peer("dev-b", "10.240.0.3", PeerLinkState::Relay);
@@ -215,7 +222,7 @@ fn healthy_direct_peer_is_kept_without_repromoting() {
 
 #[test]
 fn stale_handshake_demotes_but_stale_peer_removed_from_wanted_demotes_too() {
-    // 直连过期（握手年龄超过健康窗口）→ 回退。
+    // Direct link expired (handshake age beyond the health window) → fallback.
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     current.insert(
@@ -242,7 +249,8 @@ fn stale_handshake_demotes_but_stale_peer_removed_from_wanted_demotes_too() {
         Some(PeerLinkState::Relay)
     );
 
-    // 对端从候选集消失（撤销/下线）→ 即使健康也回退并移除。
+    // Peer disappears from the candidate set (revoke/offline) → fall back and
+    // remove even when healthy.
     let mut current2 = BTreeMap::new();
     current2.insert(
         "dev-b".into(),
@@ -266,7 +274,8 @@ fn stale_handshake_demotes_but_stale_peer_removed_from_wanted_demotes_too() {
 
 #[test]
 fn degraded_direct_peer_immediately_falls_back_to_relay() {
-    // SEL-003：直连路径劣化（丢包尖峰/超时）→ 立即 Demote 回中继。
+    // SEL-003: the direct path degrades (packet-loss spike / timeout) →
+    // immediate Demote back to relay.
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     current.insert(
@@ -297,7 +306,7 @@ fn degraded_direct_peer_immediately_falls_back_to_relay() {
 
 #[test]
 fn healthy_direct_peer_is_not_degraded() {
-    // 未标劣化 → 不触发回退。
+    // Not marked degraded → no fallback triggered.
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     current.insert(
@@ -327,9 +336,11 @@ fn healthy_direct_peer_is_not_degraded() {
 
 #[test]
 fn recovery_after_degradation_repromotes_via_state_machine() {
-    // SEL-003 恢复：回中继后，下一周期健康 → 状态机重新 Promote（按迟滞
-    // 闸切回）。这里验证 Relay→Promote 恢复路径（RecoveryGate 在 agent 侧
-    // 门控「连续 N 轮健康」后才允许再次进入候选决策）。
+    // SEL-003 recovery: back on relay, the next cycle healthy → the state
+    // machine re-Promotes (switching back through the hysteresis gate). This
+    // verifies the Relay→Promote recovery path (RecoveryGate gates on the
+    // agent side, only allowing entry back into candidate decisions after N
+    // consecutive healthy rounds).
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     current.insert(
@@ -360,8 +371,9 @@ fn recovery_after_degradation_repromotes_via_state_machine() {
 
 #[test]
 fn recovery_hold_keeps_relay_until_gate_is_ready() {
-    // SEL-003 恢复门：回中继后未连续健康 N 轮（hold_relay 含该对端）→
-    // 即使有直连路径也保持中继，不立即切回（防抖）。
+    // SEL-003 recovery gate: fewer than N consecutive healthy rounds after
+    // returning to relay (hold_relay contains this peer) → stay on relay even
+    // when a direct path exists; do not switch back immediately (debounce).
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     current.insert(
@@ -393,9 +405,11 @@ fn recovery_hold_keeps_relay_until_gate_is_ready() {
     );
 }
 
-/// 修复回归（用户实测：直连每次都是「拨号中」）：pending 已握上手（握手
-/// 新鲜）但 ICMP 探测永不成功（degraded 为空、探测读数不可用）→ 必须
-/// 当轮晋升 Direct，不再等满 attempts 超时回退。
+/// Regression fix (observed by the user: direct always stuck at "dialing"):
+/// pending has completed the handshake (handshake fresh) but ICMP probing never
+/// succeeds (degraded empty, probe readings unavailable) → must promote to
+/// Direct in this round, instead of waiting out the attempts timeout to fall
+/// back.
 #[test]
 fn pending_with_fresh_handshake_promotes_via_plan_updates() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -419,7 +433,7 @@ fn pending_with_fresh_handshake_promotes_via_plan_updates() {
         "10.240.0.2".parse().unwrap(),
         &mut current,
         &ages,
-        &BTreeMap::new(), // 探测全失败 → 无窗口 → degraded 为空
+        &BTreeMap::new(), // all probes failed → no window → degraded empty
         &BTreeSet::new(),
         &BTreeSet::new(),
         &BTreeMap::new(),
@@ -435,7 +449,8 @@ fn pending_with_fresh_handshake_promotes_via_plan_updates() {
     );
 }
 
-/// 握手过期（超过健康窗口）→ pending 判失效回退（降级口径不放松）。
+/// Handshake expired (beyond the health window) → pending is judged invalid
+/// and falls back (the degradation criterion is not relaxed).
 #[test]
 fn pending_with_stale_handshake_times_out_to_relay() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -474,30 +489,36 @@ fn pending_with_stale_handshake_times_out_to_relay() {
     );
 }
 
-/// 握手读数兜底合并：专项读数优先，dump 只补缺失键；专项全空（Windows
-/// 隧道抖动期 latest-handshakes 不可读）→ dump 独挑，晋升门槛仍有输入。
+/// Handshake-reading fallback merge: dedicated readings win, the dump only
+/// fills missing keys; if dedicated is entirely empty (latest-handshakes
+/// unreadable during Windows tunnel churn) → the dump carries it alone, so
+/// the promotion threshold still has input.
 #[test]
 fn merge_handshake_ages_fills_missing_keys_from_dump() {
     let mut dedicated = BTreeMap::new();
     dedicated.insert("hub".into(), 3u64);
     let mut dump = BTreeMap::new();
-    dump.insert("hub".into(), 99u64); // 专项已有 → 不覆盖
-    dump.insert("peer-b".into(), 12u64); // 专项缺失 → 补齐
+    dump.insert("hub".into(), 99u64); // dedicated has it → not overwritten
+    dump.insert("peer-b".into(), 12u64); // dedicated lacks it → filled in
     let merged = merge_handshake_ages(dedicated, dump.clone());
     assert_eq!(merged.get("hub"), Some(&3));
     assert_eq!(merged.get("peer-b"), Some(&12));
 
-    // 专项读数整体失败（空）→ dump 独挑。
+    // Dedicated readings failed wholesale (empty) → the dump carries it alone.
     let merged = merge_handshake_ages(BTreeMap::new(), dump);
     assert_eq!(merged.get("hub"), Some(&99));
     assert_eq!(merged.get("peer-b"), Some(&12));
 }
 
-/// SEL-003 验收：可注入时钟的完整回退/恢复时序单测（任务书允许 netns 不可
-/// 用时的替代）。模拟一轮轮「探测周期」（degraded / 健康 是注入的时钟信号）：
-/// ① 健康直连 → 保持；② 直连劣化（丢包尖峰/超时）→ 立即回中继（Demote）；
-/// ③ 回中继后未连续健康 N(=3) 轮 → 保持中继（不切回）；④ 连续 3 轮健康 →
-/// 恢复门放行 → 状态机重新 Promote（切回）。
+/// SEL-003 acceptance: a full fallback/recovery timeline unit test with an
+/// injectable clock (allowed by the task brief as a substitute when netns is
+/// unavailable). Simulates round after round of "probe cycles" (degraded /
+/// healthy are the injected clock signals):
+/// ① healthy direct → keep; ② direct degraded (loss spike/timeout) → immediately
+/// back to relay (Demote); ③ fewer than N(=3) consecutive healthy rounds after
+/// returning to relay → stay on relay (no switch back); ④ 3 consecutive
+/// healthy rounds → the recovery gate releases → the state machine re-Promotes
+/// (switch back).
 #[test]
 fn sel003_fallback_and_recovery_timeline() {
     use meshlet_network::probe::RecoveryGate;
@@ -505,7 +526,8 @@ fn sel003_fallback_and_recovery_timeline() {
     let mut current = BTreeMap::new();
     let mut recovery = RecoveryGate::new(3);
 
-    // 每轮跑：degraded 注入 → 恢复门记录 → hold 集合 → 状态机。
+    // Each round runs: inject degraded → record in the recovery gate →
+    // hold set → state machine.
     fn run_round(
         wanted: &[PeerEndpoints],
         current: &mut BTreeMap<String, DirectPeer>,
@@ -540,26 +562,27 @@ fn sel003_fallback_and_recovery_timeline() {
         )
     }
 
-    // ① 健康 → 首次 Promote（DirectPending）。
+    // ① healthy → first Promote (DirectPending).
     let updates = run_round(&wanted, &mut current, &mut recovery, false);
     assert!(
         matches!(&updates[0], DirectUpdate::Promote { .. }),
         "initial promote"
     );
-    // ② 劣化 → 立即 Demote 回中继。
+    // ② degraded → immediate Demote back to relay.
     let updates = run_round(&wanted, &mut current, &mut recovery, true);
     assert!(
         matches!(&updates[0], DirectUpdate::Demote { public_key } if public_key == "dev-b"),
         "degraded immediately falls back: {updates:?}"
     );
     assert_eq!(current.get("dev-b").unwrap().state, PeerLinkState::Relay);
-    // ③ 回中继后第 1、2 轮健康：恢复门未满 3 轮 → 保持中继（不切回）。
+    // ③ rounds 1 and 2 healthy after returning to relay: the recovery gate has
+    // fewer than 3 rounds → stay on relay (no switch back).
     let u1 = run_round(&wanted, &mut current, &mut recovery, false);
     assert!(u1.is_empty(), "round 1 healthy after fallback: hold {u1:?}");
     let u2 = run_round(&wanted, &mut current, &mut recovery, false);
     assert!(u2.is_empty(), "round 2 healthy after fallback: hold {u2:?}");
     assert_eq!(current.get("dev-b").unwrap().state, PeerLinkState::Relay);
-    // ④ 第 3 轮健康：恢复门放行 → 重新 Promote（切回）。
+    // ④ round 3 healthy: the recovery gate releases → re-Promote (switch back).
     let u3 = run_round(&wanted, &mut current, &mut recovery, false);
     assert!(
         matches!(&u3[0], DirectUpdate::Promote { .. }),
@@ -567,10 +590,13 @@ fn sel003_fallback_and_recovery_timeline() {
     );
 }
 
-/// 「握手新鲜短路」补口子（2026-11-13 SEL-002 双机验收实锤）：直连对端
-/// 握手证据新鲜（classify_probe 按 240s 健康窗口必判 Healthy）但探测窗口
-/// 持续深劣化（真机实录 1715ms probe_ok / hs 冻结 133–203s 钉直连）时，
-/// 劣化闸必须优先于 freshness——立即 Demote 回中继，探测参与判定。
+/// Closing the "fresh-handshake short-circuit" hole (proven by the 2026-11-13
+/// SEL-002 two-machine acceptance): the direct peer's handshake evidence is
+/// fresh (classify_probe judges Healthy under the 240s health window) yet the
+/// probe window stays deeply degraded (real-machine records: 1715ms probe_ok /
+/// handshake frozen 133–203s pinning the direct link) — in that case the
+/// degradation gate must take priority over freshness: Demote back to relay
+/// immediately, with probing taking part in the verdict.
 #[test]
 fn degraded_latency_demotes_even_with_fresh_handshake() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -579,10 +605,11 @@ fn degraded_latency_demotes_even_with_fresh_handshake() {
         "dev-b".into(),
         direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
     );
-    // 握手年龄 5s（远在 240s 健康窗口内——freshness 证据满分）。
+    // Handshake age 5s (far inside the 240s health window — full freshness evidence).
     let mut ages = BTreeMap::new();
     ages.insert("dev-b".to_string(), 5u64);
-    // 探测窗口持续深劣化（时延维度，is_degraded 的中位数规则命中）。
+    // Probe window stays deeply degraded (latency dimension; is_degraded's
+    // median rule hits).
     let mut degraded = BTreeMap::new();
     degraded.insert("dev-b".to_string(), true);
     let updates = plan_updates(
@@ -604,15 +631,19 @@ fn degraded_latency_demotes_even_with_fresh_handshake() {
     assert_eq!(current.get("dev-b").unwrap().state, PeerLinkState::Relay);
 }
 
-/// stranded 根修（2026-11-14 巡检单，候选表纳管 roaming 面的等价机制）：
-/// 回中继后的再晋升优先选回记忆面——上次直连实际在用的 endpoint（含内核
-/// 漫游出来的、不在服务端候选表的 roaming 面）。候选表按最低 IP 取 SameLan
-/// 会拿 10.x ZT 面压过 192.168.x 面（stranded 实锤：re-promote 只能挑表内
-/// ZT 面，回不到健康面，~1-5min direct↔hub 回收）。
+/// Root fix for stranded (2026-11-14 inspection item; the equivalent of the
+/// candidate table taking over roaming faces): re-promotion after falling back
+/// to relay prefers the memory face — the endpoint actually in use by the last
+/// direct link (including a roaming face written by the kernel that is absent
+/// from the server candidate table). Taking SameLan by lowest IP in the
+/// candidate table would let a 10.x ZT face outrank a 192.168.x face
+/// (stranded confirmed: re-promote could only pick the in-table ZT face, never
+/// getting back to the healthy face, ~1-5min of direct↔hub churn).
 #[test]
 fn repromote_returns_to_remembered_face_over_lower_ip_table_face() {
-    // 表内候选：ZT 面 10.x（SameLan 合格、IP 最低）+ 公网；记忆面 192.168.5.x
-    // （表外 roaming 面，健康且无探测窗口）。
+    // In-table candidates: the ZT face 10.x (SameLan-qualifying, lowest IP) +
+    // a public face; the memory face 192.168.5.x (an out-of-table roaming
+    // face, healthy with no probe window).
     let wanted = vec![peer(
         "dev-b",
         "10.240.0.3",
@@ -628,7 +659,8 @@ fn repromote_returns_to_remembered_face_over_lower_ip_table_face() {
     entry.last_direct = Some(remembered);
     current.insert("dev-b".into(), entry);
 
-    // SEL-003 劣化 → 立即回退；已建立的 Direct 保留记忆面。
+    // SEL-003 degradation → immediate fallback; the established Direct keeps
+    // the memory face.
     let mut degraded = BTreeMap::new();
     degraded.insert("dev-b".into(), true);
     let updates = plan_updates(
@@ -651,7 +683,8 @@ fn repromote_returns_to_remembered_face_over_lower_ip_table_face() {
         "degrade fallback from Direct keeps the remembered face"
     );
 
-    // 下一周期再晋升：选回记忆面，而不是表内 IP 最低的 ZT 面。
+    // Next cycle re-promotion: picks the memory face, not the in-table ZT face
+    // with the lowest IP.
     let updates = plan_updates(
         &wanted,
         &subnets,
@@ -671,8 +704,10 @@ fn repromote_returns_to_remembered_face_over_lower_ip_table_face() {
     );
 }
 
-/// 记忆面的死面逃生：pending 验证失败（3 拍无握手）的回退弃用记忆——
-/// 对端已漫游走（旧面真死了）时，再晋升退回候选表决策，不死锁旧面。
+/// Dead-face escape for the memory face: the fallback after pending
+/// verification fails (3 ticks without a handshake) drops the memory — when the
+/// peer has roamed away (the old face is really dead), re-promotion falls
+/// back to candidate-table decisions instead of deadlocking on the old face.
 #[test]
 fn pending_verify_failure_clears_memory_and_table_decision_wins() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.5.99", 51820)])];
@@ -707,7 +742,8 @@ fn pending_verify_failure_clears_memory_and_table_decision_wins() {
         "pending verify failure must drop the remembered face"
     );
 
-    // 下一周期：无记忆 → 表内 SameLan 面胜出（旧记忆面不再被选）。
+    // Next cycle: no memory → the in-table SameLan face wins (the old memory
+    // face is no longer picked).
     let updates = plan_updates(
         &wanted,
         &[cidr("192.168.5.0/24")],
@@ -727,7 +763,8 @@ fn pending_verify_failure_clears_memory_and_table_decision_wins() {
     );
 }
 
-/// 恢复门保持中继期间记忆面穿透：门放行后的再晋升仍优先选回它。
+/// The memory face survives the recovery gate's relay hold: re-promotion
+/// after the gate releases still prefers returning to it.
 #[test]
 fn hold_relay_preserves_remembered_face() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("10.147.19.49", 51820)])];
@@ -757,8 +794,10 @@ fn hold_relay_preserves_remembered_face() {
     );
 }
 
-/// 首次晋升（无记忆）与已建立直连的周期不受影响：表决策原样（既有回归
-/// 不松动）；promote 动作把要拨的面记入记忆，供下次回退后选回。
+/// First promotion (no memory) and established-direct cycles are unaffected:
+/// table decisions stay as-is (existing regressions do not loosen); the
+/// promote action records the dialed face into memory so the next fallback
+/// can pick it back.
 #[test]
 fn first_promote_records_the_dialed_face_as_memory() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.5.99", 51820)])];
@@ -785,12 +824,14 @@ fn first_promote_records_the_dialed_face_as_memory() {
 }
 
 // ---------------------------------------------------------------------------
-// 决策记录（plan_updates_logged；2026-11-14 观测性欠账：无控制台上下文的
-// 事后回放——每条迁移/动作带 mode、reason、判据输入）
+// Decision records (plan_updates_logged; the 2026-11-14 observability debt:
+// after-the-fact replay without console context — every transition/action
+// carries mode, reason, and judgement inputs)
 // ---------------------------------------------------------------------------
 
-/// 劣化降级：决策记录带 mode 迁移方向、劣化标记、判据（握手年龄）与
-/// 涉事 endpoint（降级前的现役面）。
+/// Degraded demotion: the decision record carries the mode transition
+/// direction, the degraded flag, the judgement input (handshake age), and the
+/// endpoint involved (the active face before the demotion).
 #[test]
 fn degraded_demote_records_decision_with_judgement_inputs() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -828,8 +869,10 @@ fn degraded_demote_records_decision_with_judgement_inputs() {
     assert!(r.reason.contains("sel003 degraded"));
 }
 
-/// 记忆面再晋升（880b49a 语义）：候选表为空、仅 last_direct 可行 → 决策
-/// 记录写明来源是记忆面（回放时能区分「候选表选路」与「选回上次的面」）。
+/// Memory-face re-promotion (880b49a semantics): the candidate table is empty
+/// and only last_direct is viable → the decision record states the source is
+/// the memory face (replay can distinguish "candidate-table routing" from
+/// "returning to the last face").
 #[test]
 fn memory_face_promote_records_its_source() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[])];
@@ -859,7 +902,8 @@ fn memory_face_promote_records_its_source() {
     assert_eq!(records[0].endpoint, "192.168.1.77:51821");
 }
 
-/// 候选表首次晋升（无记忆）：来源标 candidate table。
+/// First promotion from the candidate table (no memory): the source is
+/// marked candidate table.
 #[test]
 fn candidate_table_promote_records_its_source() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -884,8 +928,9 @@ fn candidate_table_promote_records_its_source() {
     assert_eq!(records[0].endpoint, "192.168.1.50:51821");
 }
 
-/// pending 验成（Keep 动作但状态迁移 direct_pending → p2p_direct）：
-/// 也记 promote——mode_flip 事件靠 from_mode ≠ to_mode 触发，不漏这次翻转。
+/// pending verified (a Keep action but the state transitions direct_pending →
+/// p2p_direct): also records promote — the mode_flip event fires on
+/// from_mode ≠ to_mode, so this flip must not be missed.
 #[test]
 fn pending_verified_promotion_records_the_flip_transition() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -923,8 +968,9 @@ fn pending_verified_promotion_records_the_flip_transition() {
     assert_eq!(records[0].handshake_age_secs, Some(30));
 }
 
-/// pending 等待轮（attempts+1，模式不变）：决策记录逐轮入账（回放等待
-/// 过程），但 from_mode = to_mode 不产生 mode_flip 事件。
+/// pending waiting round (attempts+1, mode unchanged): decision records are
+/// written each round (replaying the waiting process), but from_mode =
+/// to_mode produces no mode_flip event.
 #[test]
 fn waiting_round_records_probe_without_mode_change() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -957,7 +1003,8 @@ fn waiting_round_records_probe_without_mode_change() {
     assert!(records[0].reason.contains("attempt 2"));
 }
 
-/// 恢复门 hold_relay：逐轮入账（回放「为什么还不切回」），模式不变。
+/// Recovery-gate hold_relay: recorded each round (replaying "why it has not
+/// switched back yet"), mode unchanged.
 #[test]
 fn hold_relay_records_the_recovery_gate_verdict() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -992,8 +1039,9 @@ fn hold_relay_records_the_recovery_gate_verdict() {
     );
 }
 
-/// 对端离开候选集（撤销/下线/换段）：决策记录留痕（from_mode 取迁移前
-/// 状态），管理状态移除。
+/// The peer leaves the candidate set (revoked/offline/segment change): the
+/// decision record leaves a trace (from_mode takes the pre-transition state)
+/// and the management state is removed.
 #[test]
 fn peer_leaving_candidates_records_a_demote_decision() {
     let wanted = vec![];
@@ -1023,8 +1071,10 @@ fn peer_leaving_candidates_records_a_demote_decision() {
     assert!(current.is_empty());
 }
 
-/// 稳态不刷屏：健康直连保持、无路径中继保持都是 Keep 且状态不变 →
-/// 零决策记录（决策日志只收迁移与动作，不给每对端每周期一条噪声）。
+/// Steady state does not spam: a healthy-direct keep and a no-path relay
+/// keep are both Keeps with an unchanged state → zero decision records (the
+/// decision log only collects transitions and actions, not one noise line
+/// per peer per cycle).
 #[test]
 fn steady_state_keeps_emit_no_decision_records() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -1049,7 +1099,7 @@ fn steady_state_keeps_emit_no_decision_records() {
     );
     assert!(records.is_empty(), "healthy keep: no records");
 
-    // 无可行路径的中继保持：同样零记录。
+    // A relay keep without a viable path: also zero records.
     let mut current = BTreeMap::new();
     let (updates, records) = plan_updates_logged(
         &[peer("dev-c", "10.240.0.4", &[])],
@@ -1068,12 +1118,16 @@ fn steady_state_keeps_emit_no_decision_records() {
 }
 
 // ---------------------------------------------------------------------------
-// promote 偏好健康面（unhealthy_faces 前置过滤；巡检单 nov14-1410 三选一
-// 之二：劣化面上 re-promote 只会立刻再降级——翻转循环的客户端侧断路器）
+// promote prefers healthy faces (unhealthy_faces pre-filter; inspection item
+// nov14-1410, option 2 of 3: re-promoting onto a degraded face would only be
+// demoted again immediately — the client-side circuit breaker for the flip
+// loop)
 // ---------------------------------------------------------------------------
 
-/// 候选表唯一面正处劣化窗口 → 本轮 defer：零动作（不上劣化面）、决策记录
-/// 留痕（劣化面 endpoint 可回放）、状态保持中继、记忆面保留。
+/// The candidate table's only face is inside the degraded window → defer this
+/// round: zero actions (do not go onto the degraded face), the decision
+/// record leaves a trace (the degraded face's endpoint is replayable), the
+/// state stays relay, the memory face is kept.
 #[test]
 fn degraded_only_candidate_defers_promotion() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -1109,8 +1163,9 @@ fn degraded_only_candidate_defers_promotion() {
     );
 }
 
-/// 两个公网候选、低地址面劣化 → 选高地址健康面（健康面偏好，不是一刀切
-/// defer：有健康替代就照常晋升）。
+/// Two public candidates, the low-address face degraded → pick the
+/// high-address healthy face (healthy-face preference, not a blanket defer:
+/// promotion proceeds as usual when a healthy alternative exists).
 #[test]
 fn healthy_alternative_is_preferred_over_degraded_low_ip_face() {
     let wanted = vec![peer(
@@ -1144,8 +1199,9 @@ fn healthy_alternative_is_preferred_over_degraded_low_ip_face() {
     assert_eq!(records[0].endpoint, "203.0.113.9:51820");
 }
 
-/// 记忆面正处劣化窗口 → 不选回劣化记忆面：健康候选面照常晋升（reason 标
-/// candidate table），promote 把新面记入记忆。
+/// The memory face is inside the degraded window → do not return to the
+/// degraded memory face: a healthy candidate face promotes as usual (reason
+/// marked candidate table), and promote records the new face into memory.
 #[test]
 fn degraded_memory_face_is_skipped_for_healthy_candidate() {
     let wanted = vec![peer(
@@ -1182,15 +1238,18 @@ fn degraded_memory_face_is_skipped_for_healthy_candidate() {
         "memory face was skipped: {}",
         records[0].reason
     );
-    // promote 把要拨的新面记入记忆（旧面让位）。
+    // promote records the newly dialed face into memory (the old face steps
+    // aside).
     assert_eq!(
         current.get("dev-b").unwrap().last_direct,
         Some(lan("192.168.1.60", 51821))
     );
 }
 
-/// 记忆面劣化且候选表无路 → defer 点名记忆面（唯一坏点可回放），记忆面
-/// 不清（面恢复后照常优先选回）。
+/// The memory face is degraded and the candidate table has no path → defer
+/// names the memory face (the only bad point is replayable), and the memory
+/// face is not cleared (once the face recovers it is preferred again as
+/// usual).
 #[test]
 fn degraded_memory_face_without_table_path_defers_naming_it() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[])];
@@ -1223,8 +1282,9 @@ fn degraded_memory_face_without_table_path_defers_naming_it() {
     );
 }
 
-/// 无基线/探测关（unhealthy 集为空）→ 过滤不生效，与旧口径完全一致
-/// （9 参数版直呼；等价于 8 参数 wrapper 传空集）。
+/// No baseline / probes off (the unhealthy set is empty) → the filter does not
+/// apply, fully identical to the old behavior (the 9-parameter version called
+/// directly; equivalent to the 8-parameter wrapper with an empty set).
 #[test]
 fn empty_unhealthy_set_keeps_legacy_promotion_behavior() {
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
@@ -1247,28 +1307,34 @@ fn empty_unhealthy_set_keeps_legacy_promotion_behavior() {
     assert_eq!(records[0].action, "promote");
 }
 
-/// FLIP-001 集成模拟（翻转序列，域层视角）：旧配置面劣化 → SEL-003 demote
-/// → 有效候选集含内核 roaming 新面（候选表 merge_into 产物、探测健康）→
-/// 下一轮 promote 落在健康新面（记忆面/劣化面被 unhealthy 过滤）→ 第 3 轮
-/// Keep 无动作——断言不产生 promote→demote 环。
+/// FLIP-001 integration simulation (the flip sequence, domain-layer view):
+/// the old configured face degrades → SEL-003 demote → the effective
+/// candidate set contains the kernel's new roaming face (produced by
+/// merge_into on the candidate table, probe-healthy) → the next round's
+/// promote lands on the healthy new face (memory/degraded faces filtered out
+/// by unhealthy) → round 3 is a Keep with no action — asserting no
+/// promote→demote ring is produced.
 #[test]
 fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
     let scope = cidr(OVERLAY);
     let self_vip = "10.240.0.2".parse().unwrap();
-    let face_a = lan("192.168.5.11", 51820); // 服务端候选面（ZT 劣化面）
-    let face_b = lan("192.168.5.23", 51820); // 内核 roaming 新面（健康）
+    let face_a = lan("192.168.5.11", 51820); // the server's candidate face (the degraded ZT face)
+    let face_b = lan("192.168.5.23", 51820); // the kernel's new roaming face (healthy)
     let my_lan = [cidr("192.168.5.0/24")];
-    // 服务端候选只有 face_a；候选表 merge 后的有效集含 face_b。
+    // The server's candidates carry only face_a; the effective set after the
+    // candidate-table merge contains face_b.
     let effective = [peer("dev-b", "10.240.0.3", &[face_a, face_b])];
     let mut current = BTreeMap::new();
     current.insert(
         "dev-b".into(),
         direct_peer("dev-b", "10.240.0.3", PeerLinkState::Direct),
     );
-    // face_a 直连是当初 promote 建立的（promote 动作写记忆面），夹具对齐。
+    // The face_a direct link was established by the original promote (the
+    // promote action writes the memory face); the fixture mirrors that.
     current.get_mut("dev-b").unwrap().last_direct = Some(face_a);
 
-    // 第 1 轮：face_a 探测窗口劣化 → 立即回中继；Direct 记忆面保留。
+    // Round 1: face_a's probe window degrades → immediate return to relay;
+    // the Direct memory face is kept.
     let degraded: BTreeMap<String, bool> = [("dev-b".to_string(), true)].into();
     let (updates, _) = plan_updates_logged(
         &effective,
@@ -1295,9 +1361,11 @@ fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
         "Direct demote keeps memory face"
     );
 
-    // 第 2 轮：Relay、恢复门放行（FLIP-001 bypass 语义 = hold_relay 空）；
-    // face_a 仍劣化（unhealthy_faces）→ 记忆面被滤 → healthy 滤后候选只剩
-    // face_b → promote 落在新面（不经「先 demote 再等恢复门」旧路径）。
+    // Round 2: Relay, the recovery gate released (FLIP-001 bypass semantics =
+    // empty hold_relay); face_a still degraded (unhealthy_faces) → the memory
+    // face is filtered → only face_b remains among the post-filter healthy
+    // candidates → promote lands on the new face (without the old "demote
+    // first, then wait for the recovery gate" path).
     let unhealthy: BTreeSet<(String, EndpointCandidate)> = [("dev-b".to_string(), face_a)].into();
     let (updates, records) = plan_updates_logged(
         &effective,
@@ -1333,8 +1401,8 @@ fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
         "memory face moves to the new healthy face"
     );
 
-    // 第 3 轮：face_b 直连、握手新鲜（30s，健康窗口内）、探测健康 → Keep
-    // 无动作，环收敛。
+    // Round 3: face_b direct, fresh handshake (30s, inside the health
+    // window), probe-healthy → Keep with no action; the ring converges.
     current.get_mut("dev-b").unwrap().state = PeerLinkState::Direct;
     let fresh_hs: BTreeMap<String, u64> = [("dev-b".to_string(), 30)].into();
     let (updates, _) = plan_updates_logged(
@@ -1355,8 +1423,9 @@ fn flip_sequence_promotes_healthy_roaming_face_without_ring() {
 
 #[test]
 fn demote_backoff_suppresses_promote_but_keeps_memory_face() {
-    // FLIP-002：抑制中的 Relay 对端本轮不 promote——state 留中继、记忆面
-    // 原样保留、决策记录 action="defer" 且 reason 来自抑制表。
+    // FLIP-002: a Relay peer under suppression does not promote this round —
+    // the state stays relay, the memory face is kept as-is, and the decision
+    // record has action="defer" with a reason from the suppress map.
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     current.insert(
@@ -1407,8 +1476,9 @@ fn demote_backoff_suppresses_promote_but_keeps_memory_face() {
 
 #[test]
 fn demote_backoff_does_not_touch_demote_sensitivity() {
-    // FLIP-002：退避只拦 promote 侧——直连劣化（握手过期）时即使该对端在
-    // 抑制表里，demote 照常发出（判定灵敏度不降）。
+    // FLIP-002: backoff only blocks the promote side — when the direct link
+    // degrades (handshake expired), the demote fires as usual even if the
+    // peer is in the suppress map (verdict sensitivity is not lowered).
     let wanted = vec![peer("dev-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     let mut current = BTreeMap::new();
     current.insert(
@@ -1439,8 +1509,10 @@ fn demote_backoff_does_not_touch_demote_sensitivity() {
 
 #[test]
 fn demote_backoff_expiry_restores_normal_promotion() {
-    // FLIP-002：抑制到期（map 不再含该对端）→ promote 恢复，记忆面优先。
-    // 同一夹具：抑制中 defer，随后空表（清零/到期）promote 正常发出。
+    // FLIP-002: suppression expired (the map no longer contains the peer) →
+    // promote is restored, memory face first. Same fixture: defer while
+    // suppressed, then with an empty map (cleared/expired) promote fires
+    // normally.
     let face = lan("192.168.1.50", 51821);
     let wanted = vec![peer("dev-b", "10.240.0.3", &[face])];
     let mut current = BTreeMap::new();

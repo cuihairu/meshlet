@@ -1,17 +1,19 @@
-//! meshlet-agent 库：设备端数据面协调（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
+//! meshlet-agent library: device-side dataplane reconciliation ([ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)).
 //!
-//! agent 只消费服务端下发的**结构化配置对象**（§16.4）：用 enrollment 凭证拉取
-//! 自身的数据面计划，有变更时调 [`meshlet_network::SystemBackend`]
-//! 应用隧道/路由/NAT，并周期心跳上报本地握手证据。
+//! The agent only consumes a **structured configuration object** delivered by the server
+//! (§16.4): it fetches its own dataplane plan with enrollment credentials, applies
+//! tunnel/routing/NAT via [`meshlet_network::SystemBackend`] when it changes, and
+//! periodically heartbeats local handshake evidence.
 //!
-//! 硬纪律：
-//! - **绝不执行服务端下发的 Shell 命令**——只消费类型化的
-//!   [`meshlet_network::DevicePlan`]；
-//! - **启动即对账**（「进程活着」≠「内核还是上次的样子」）：核对实际对象与账本
-//!   里记的 `desired_config_hash`，缺失/漂移即重放——覆盖「主机重启后隧道消失但
-//!   账本仍记 applied」（TODO #32）；
-//! - **私钥不出设备**（ADR-010）：计划里恒无私钥，agent 从
-//!   `[dataplane] private_key_file` 本地注入。
+//! Hard disciplines:
+//! - **Never execute shell commands issued by the server** - only the typed
+//!   [`meshlet_network::DevicePlan`] is consumed;
+//! - **Reconcile on startup** ("the process is alive" != "the kernel still looks the way it did"):
+//!   compare the actual objects against the `desired_config_hash` recorded in the ledger, and
+//!   replay on missing/drifted state - this covers "the tunnel vanished after a host reboot but
+//!   the ledger still says applied" (TODO #32);
+//! - **The private key never leaves the device** (ADR-010): plans never carry a private key; the
+//!   agent injects it locally from `[dataplane] private_key_file`.
 
 pub mod agent;
 pub mod backoff;

@@ -1,54 +1,54 @@
-//! WIN-PORT-1 B2：直连监听端口的「生效端口」解析（probe-bind 探测回退）。
+//! WIN-PORT-1 B2: effective-port resolution for the direct-connect listen port (probe-bind probing with fallback).
 //!
-//! Windows 上配置端口可能被 UDP 排除端口段（`netsh interface ipv4 show
-//! excludedportrange protocol=udp`）或占用挡住——`WireGuardTunnel$` 服务绑
-//! 不上即 `0xc0000022`（STATUS_ACCESS_DENIED；`wireguard.exe /dumplog` 实证
-//! `Could not bind socket to 0.0.0.0:51820`，换高位端口即通过）。本模块在
-//! apply 前 agent 侧 probe-bind 同端口探测（绑不上 = 服务也绑不上，同一
-//! 排除段对任意进程拒绑），被挡则按确定性窗口选回退端口。
+//! On Windows the configured port may be blocked by a UDP excluded-port range (`netsh interface ipv4 show
+//! excludedportrange protocol=udp`) or by another occupant — the `WireGuardTunnel$` service fails to bind
+//! with `0xc0000022` (STATUS_ACCESS_DENIED; proven by `wireguard.exe /dumplog` logging
+//! `Could not bind socket to 0.0.0.0:51820`; switching to a high port fixed it). This module
+//! probe-binds the same port agent-side before apply (if we cannot bind, the service cannot either —
+//! the same excluded range rejects any process), and picks a fallback port from a deterministic window when blocked.
 //!
-//! 解析顺序（[`resolve`]，防自占误判与防 churn 是硬约束）：
-//! 1. 快照端口 == 配置端口 → 直接用配置端口（现役已绑，零探测）；
-//! 2. probe 配置端口可绑 → 配置端口（排除段解除后自愈回配置端口）；
-//! 3. 账本端口 == 快照端口（现役在用）→ 沿用账本端口（换端口只会白断流，
-//!    对端候选面也要重收敛——杜绝每轮换端口的 churn）；
-//! 4. 回退窗口扫描（[`FALLBACK_PORT_BASE`] 起）→ 首个可绑端口；快照端口
-//!    落在窗口内视为现役可绑证据（账本丢失也不换口）；
-//! 5. 全部候选绑不上 → [`PortResolution::Blocked`]——调用方显式报错（附
-//!    netsh 排查命令）、计划不钉端口、`direct_report` 不上报，绝不静默走
-//!    中继还装作直连正常。
+//! Resolution order ([`resolve`]; avoiding self-occupancy misreads and churn are hard constraints):
+//! 1. Snapshot port == configured port → use the configured port directly (already bound in production, zero probing);
+//! 2. Probe shows the configured port bindable → configured port (self-heals back once the excluded range clears);
+//! 3. Ledger port == snapshot port (in active use) → keep the ledger port (switching ports only causes pointless
+//!    disconnects and the peer's candidate faces must re-converge — no per-round port-switch churn);
+//! 4. Fallback window scan (starting at [`FALLBACK_PORT_BASE`]) → first bindable port; a snapshot port
+//!    inside the window counts as evidence the port is actively bound (kept even if the ledger is lost);
+//! 5. No candidate binds → [`PortResolution::Blocked`] — the caller reports an explicit error (with the
+//!    netsh troubleshooting command), the plan pins no port, `direct_report` stays silent about it — never
+//!    silently ride the relay while pretending direct connect is fine.
 //!
-//! 解析结果落 `{state_dir}/direct-port.json`（[load]/[save]）；conf
-//! `ListenPort`、防火墙放行（`ensure_direct_udp_firewall_sync`）与
-//! `direct_report` 三处取同一生效端口（硬不变量，调用点在
-//! `super::reconcile`）。Linux 不探测不落账本（行为不变，恒取配置端口）。
+//! The resolution is persisted to `{state_dir}/direct-port.json` ([load]/[save]); conf
+//! `ListenPort`, the firewall allow rule (`ensure_direct_udp_firewall_sync`) and
+//! `direct_report` all take the same effective port (hard invariant; call sites in
+//! `super::reconcile`). Linux neither probes nor writes the ledger (behavior unchanged, always the configured port).
 
-/// 回退扫描窗口基址：52900。确定性（同机重扫收敛同口，对端候选面稳定）；
-/// 高于 WireGuard 默认 51820 常用集群，窗口内含真机手工缓解实证可用的
-/// 52931（cuihaitao 机 51820 被 `0xc0000022` 拒绑、52931 可绑）。
+/// Fallback scan window base: 52900. Deterministic (rescans on the same machine converge on the same port, keeping peer candidate faces stable);
+/// above WireGuard's default 51820 common cluster range; the window includes 52931, verified
+/// usable by manual mitigation on a real machine (cuihaitao's box: 51820 rejected with `0xc0000022`, 52931 bindable).
 pub(super) const FALLBACK_PORT_BASE: u16 = 52900;
-/// 回退扫描窗口大小：`52900..=53099` 共 200 个候选。
+/// Fallback scan window size: `52900..=53099`, 200 candidates.
 pub(super) const FALLBACK_PORT_COUNT: u16 = 200;
 
-/// 直连监听端口的解析结果。
+/// Resolution outcome for the direct-connect listen port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PortResolution {
-    /// 生效监听端口：conf `ListenPort`、防火墙放行、`direct_report` 三处
-    /// 必须同取此值。
+    /// Effective listen port: conf `ListenPort`, the firewall allow rule and `direct_report`
+    /// must all take this same value.
     Port(u16),
-    /// 配置端口与全部回退候选都绑不上：计划不钉端口、不上报候选端点，
-    /// 显式报错（排查命令见模块文档），不装作直连正常。
+    /// Neither the configured port nor any fallback candidate binds: the plan pins no port, no candidate
+    /// endpoint is reported, an explicit error is raised (troubleshooting command in the module docs); never pretend direct connect is fine.
     Blocked,
 }
 
-/// 解析生效监听端口（纯函数，probe 可注入跨平台单测）。
+/// Resolve the effective listen port (pure function; probe is injectable for cross-platform unit tests).
 ///
-/// - `configured`：`[dataplane.direct_connect] listen_port` 配置值；
-/// - `snapshot_port`：`inspect_sync()` 的 `tunnel_listen_port` 读数（现役
-///   绑定证据；`Some(0)` = 绑定失败的隧道读数，按未绑定处理）；
-/// - `persisted`：账本（[load]）里上一轮生效端口；
-/// - `is_windows`：探测回退仅 Windows；其余平台恒取配置端口（行为不变）；
-/// - `probe`：端口可绑性探测（生产为 [`probe_bind`]）。
+/// - `configured`: the `[dataplane.direct_connect] listen_port` config value;
+/// - `snapshot_port`: the `tunnel_listen_port` reading from `inspect_sync()` (evidence of the
+///   active binding; `Some(0)` = a tunnel reading with a failed bind, treated as unbound);
+/// - `persisted`: the previous round's effective port from the ledger ([load]);
+/// - `is_windows`: probe fallback is Windows-only; other platforms always take the configured port (behavior unchanged);
+/// - `probe`: port-bindability probe ([`probe_bind`] in production).
 pub(super) fn resolve(
     configured: u16,
     snapshot_port: Option<u16>,
@@ -59,55 +59,55 @@ pub(super) fn resolve(
     if !is_windows {
         return PortResolution::Port(configured);
     }
-    // 绑定失败的服务在 dump 里报 0（读数在但没绑上）：不算现役证据。
+    // A service that failed to bind reports 0 in the dump (reading exists but nothing bound): not active-binding evidence.
     let snapshot_port = snapshot_port.filter(|p| *p != 0);
-    // ① 现役已绑配置端口：probe 必自占误判——零探测直接用。
+    // ① The configured port is actively bound: probing would always self-occupy — use it directly with zero probes.
     if snapshot_port == Some(configured) {
         return PortResolution::Port(configured);
     }
-    // ② 配置端口可绑（含排除段解除后的自愈回配置端口）。
+    // ② The configured port is bindable (covers self-healing back to it once the excluded range clears).
     if probe(configured) {
         return PortResolution::Port(configured);
     }
-    // ③ 现役绑在账本端口上：沿用，绝不换口（churn 只会白断流）。
+    // ③ Actively bound on the ledger port: keep it, never switch (churn only causes pointless disconnects).
     if let (Some(ledger_port), Some(in_use)) = (persisted, snapshot_port) {
         if ledger_port == in_use {
             return PortResolution::Port(ledger_port);
         }
     }
-    // ④ 回退窗口扫描；快照端口落在窗口内 = 现役可绑证据（账本丢失也不换）。
+    // ④ Fallback window scan; a snapshot port inside the window = active-binding evidence (kept even if the ledger is lost).
     for offset in 0..FALLBACK_PORT_COUNT {
         let port = FALLBACK_PORT_BASE + offset;
         if Some(port) == snapshot_port || probe(port) {
             return PortResolution::Port(port);
         }
     }
-    // ⑤ 全不可绑：显式 Blocked，调用方关闸报错。
+    // ⑤ Nothing binds: explicit Blocked; the caller gates off and reports the error.
     PortResolution::Blocked
 }
 
-/// 端口可绑性探测：与 `wireguard.exe` 同形状绑 `0.0.0.0:<port>`（UDP），
-/// 绑得上即关（探测套接字即弃）。被排除段拒绑（WSAEACCES，即服务侧
-/// `0xc0000022` 的用户态等价）与被占用（WSAEADDRINUSE）都算不可绑——
-/// probe-bind 与服务侧绑定语义对齐，是 apply 前能拿到的最强证据
-/// （探测到服务启动间仍存 TOCTOU 缝隙，由对账端口漂移判定兜底）。
+/// Port-bindability probe: bind `0.0.0.0:<port>` (UDP) in the same shape as `wireguard.exe`;
+/// close immediately on success (the probe socket is discarded). Rejection by an excluded range (WSAEACCES, the
+/// user-mode equivalent of the service-side `0xc0000022`) and occupation (WSAEADDRINUSE) both count as unbindable —
+/// probe-bind matches the service-side bind semantics and is the strongest evidence available before apply
+/// (a TOCTOU gap remains between probe and service start, covered by the reconcile port-drift verdict).
 pub(super) fn probe_bind(port: u16) -> bool {
     std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).is_ok()
 }
 
-/// 生效端口账本路径：`{state_dir}/direct-port.json`。
+/// Effective-port ledger path: `{state_dir}/direct-port.json`.
 pub(super) fn ledger_path(state_dir: &str) -> std::path::PathBuf {
     std::path::Path::new(state_dir).join("direct-port.json")
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct DirectPortLedger {
-    /// 上一轮生效监听端口；`null` = 全部候选被挡（直连关闸中）。
+    /// The previous round's effective listen port; `null` = all candidates blocked (direct connect gated off).
     listen_port: Option<u16>,
 }
 
-/// 读账本：缺失/损坏按「无账本」处理（`None`，下一轮解析重新收敛，
-/// 绝不拿坏数据当现役证据）。
+/// Read the ledger: missing/corrupt is treated as "no ledger" (`None`; the next resolution round re-converges —
+/// bad data is never taken as active-binding evidence).
 pub(super) fn load(state_dir: &str) -> Option<u16> {
     let raw = std::fs::read_to_string(ledger_path(state_dir)).ok()?;
     serde_json::from_str::<DirectPortLedger>(&raw)
@@ -115,7 +115,7 @@ pub(super) fn load(state_dir: &str) -> Option<u16> {
         .and_then(|ledger| ledger.listen_port)
 }
 
-/// 写账本（失败只由调用方记日志：账本是防 churn 优化，不阻塞数据面）。
+/// Write the ledger (failures are only logged by the caller: the ledger is an anti-churn optimization, never blocks the data plane).
 pub(super) fn save(state_dir: &str, port: Option<u16>) -> Result<(), String> {
     let path = ledger_path(state_dir);
     let raw = serde_json::to_string(&DirectPortLedger { listen_port: port })
@@ -127,7 +127,7 @@ pub(super) fn save(state_dir: &str, port: Option<u16>) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// 记录探测调用序的桩：返回预设的可绑集，外部断言探测了哪些口。
+    /// Stub recording the probe call order: returns a preset bindable set; tests assert which ports were probed.
     struct ProbeRecorder {
         bindable: Vec<u16>,
         calls: std::cell::RefCell<Vec<u16>>,
@@ -151,14 +151,14 @@ mod tests {
 
     #[test]
     fn non_windows_keeps_configured_port_and_never_probes() {
-        // Linux 行为不变：恒取配置端口；探测与账本一概不参与。
+        // Linux behavior unchanged: always the configured port; probing and ledger never participate.
         let recorder = ProbeRecorder::new(&[]);
         let resolved = resolve(51820, None, Some(52931), false, &|p| recorder.probe(p));
         assert_eq!(resolved, PortResolution::Port(51820));
         assert!(recorder.called().is_empty());
     }
 
-    /// ①现役已绑配置端口：零探测直接用（probe 对现役端口必自占误判）。
+    /// ① Configured port actively bound: used directly with zero probes (probing the active port always self-occupies).
     #[test]
     fn snapshot_at_configured_port_short_circuits_without_probing() {
         let recorder = ProbeRecorder::new(&[]);
@@ -167,7 +167,7 @@ mod tests {
         assert!(recorder.called().is_empty());
     }
 
-    /// 配置端口可绑：探测一次即收敛（含排除段解除后的自愈路径）。
+    /// Configured port bindable: converges after one probe (covers the self-heal path once the excluded range clears).
     #[test]
     fn bindable_configured_port_wins() {
         let recorder = ProbeRecorder::new(&[51820]);
@@ -176,8 +176,8 @@ mod tests {
         assert_eq!(recorder.called(), vec![51820]);
     }
 
-    /// ③配置端口被挡 + 现役绑在账本端口上：沿用账本端口，绝不换口
-    /// （churn 只会白断流）。
+    /// ③ Configured port blocked + actively bound on the ledger port: keep the ledger port, never switch
+    /// (churn only causes pointless disconnects).
     #[test]
     fn persisted_port_in_use_is_kept_without_churn() {
         let recorder = ProbeRecorder::new(&[]);
@@ -185,35 +185,35 @@ mod tests {
             recorder.probe(p)
         });
         assert_eq!(resolved, PortResolution::Port(52931));
-        // 只探过配置端口一次（防自占的现役判定在前），回退窗口不扫。
+        // Only the configured port probed once (the anti-self-occupancy active-binding check runs first); no fallback-window scan.
         assert_eq!(recorder.called(), vec![51820]);
     }
 
-    /// ④配置端口与账本端口都不可用（隧道不在）：扫回退窗口取首个可绑口。
+    /// ④ Both configured and ledger ports unavailable (tunnel absent): scan the fallback window for the first bindable port.
     #[test]
     fn tunnel_absent_falls_back_to_first_bindable_candidate() {
-        // 52900/52901 被挡，52902 可绑。
+        // 52900/52901 blocked, 52902 bindable.
         let recorder = ProbeRecorder::new(&[52902]);
         let resolved = resolve(51820, None, Some(52931), true, &|p| recorder.probe(p));
         assert_eq!(resolved, PortResolution::Port(FALLBACK_PORT_BASE + 2));
         assert_eq!(recorder.called(), vec![51820, 52900, 52901, 52902]);
     }
 
-    /// 快照端口落在回退窗口内而账本丢失：视为现役可绑证据直接沿用
-    /// （防「账本没了就换口」的 churn）。
+    /// Snapshot port inside the fallback window with the ledger lost: taken as active-binding evidence and adopted directly
+    /// (prevents the "ledger gone, switch ports" churn).
     #[test]
     fn snapshot_inside_fallback_window_is_adopted_without_ledger() {
         let recorder = ProbeRecorder::new(&[]);
         let resolved = resolve(51820, Some(52931), None, true, &|p| recorder.probe(p));
         assert_eq!(resolved, PortResolution::Port(52931));
-        // 现役端口本身不探测（现役即证据）：只探过配置端口 + 52900..=52930。
+        // The active port itself is not probed (being active is the evidence): only the configured port + 52900..=52930 probed.
         let mut expected = vec![51820];
         expected.extend(FALLBACK_PORT_BASE..52931);
         assert_eq!(recorder.called(), expected);
     }
 
-    /// 绑定失败的隧道在 dump 里报端口 0：不算现役证据（Some(0) 按未绑定
-    /// 处理，绝不把 0 当生效端口采纳）。
+    /// A tunnel that failed to bind reports port 0 in the dump: not active-binding evidence (Some(0) is treated as
+    /// unbound; 0 is never adopted as the effective port).
     #[test]
     fn snapshot_port_zero_is_treated_as_unbound() {
         let recorder = ProbeRecorder::new(&[52900]);
@@ -222,23 +222,23 @@ mod tests {
         assert_eq!(recorder.called(), vec![51820, 52900]);
     }
 
-    /// ⑤配置端口与整个回退窗口全不可绑：显式 Blocked（调用方关闸报错，
-    /// 绝不静默走中继还装作直连正常）。
+    /// ⑤ Neither the configured port nor the whole fallback window binds: explicit Blocked (the caller gates off and reports —
+    /// never silently ride the relay while pretending direct connect is fine).
     #[test]
     fn all_candidates_blocked_reports_blocked() {
         let recorder = ProbeRecorder::new(&[]);
         let resolved = resolve(51820, None, None, true, &|p| recorder.probe(p));
         assert_eq!(resolved, PortResolution::Blocked);
-        // 探测了配置端口 + 全窗口（边界对齐：FALLBACK_PORT_COUNT 个候选）。
+        // Probed the configured port + the full window (boundary-aligned: FALLBACK_PORT_COUNT candidates).
         assert_eq!(recorder.called().len(), 1 + FALLBACK_PORT_COUNT as usize);
         assert_eq!(recorder.called()[0], 51820);
     }
 
-    /// 探测真值：被占端口假、释放后真（probe-bind 与真实绑定语义对齐）。
-    /// 占位套接字必须同为通配绑定——Windows 允许「specific 127.0.0.1」与
-    /// 「wildcard 0.0.0.0」同端口共存（Linux 拒；CI windows-latest 实证），
-    /// 通配对通配才是三平台一致的冲突语义，也正是生产形态（wireguard.exe
-    /// 与 probe 同绑 0.0.0.0）。
+    /// Probe ground truth: an occupied port reads false, a released one true (probe-bind matches real bind semantics).
+    /// The holder socket must also be a wildcard bind — Windows allows "specific 127.0.0.1" and
+    /// "wildcard 0.0.0.0" to coexist on the same port (Linux rejects it; verified on CI windows-latest),
+    /// so wildcard-vs-wildcard is the conflict semantics consistent across all three platforms, and also the production shape
+    /// (wireguard.exe and the probe both bind 0.0.0.0).
     #[test]
     fn probe_bind_reports_real_bindability() {
         let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
@@ -248,7 +248,7 @@ mod tests {
         assert!(probe_bind(port), "released port must read as bindable");
     }
 
-    /// 账本 round-trip：Some/None 都能落盘回读；损坏文件按无账本处理。
+    /// Ledger round-trip: both Some/None persist and read back; a corrupt file reads as no ledger.
     #[test]
     fn ledger_round_trips_and_corruption_reads_as_absent() {
         let dir = std::env::temp_dir().join(format!(

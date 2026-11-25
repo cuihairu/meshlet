@@ -2,10 +2,12 @@
 
 use meshlet_network::DevicePlan;
 
-/// hub 入口地址兜底（纯逻辑，§16.4）：服务端不知道 agent 的网络位置，计划里
-/// hub peer 的 endpoint 为 `None`；agent 用本地 `[dataplane] hub_endpoint`
-///（`host:port`）填充，设备才能主动发起握手。服务端已带值（未来通告
-/// advertise endpoint）则尊重服务端，不覆盖；未配置兜底则原样返回。
+/// Hub entry-address fallback (pure logic, §16.4): the server does not know the
+/// agent's network location, so the hub peer's endpoint in the plan is `None`; the
+/// agent fills it from the local `[dataplane] hub_endpoint` (`host:port`) so the
+/// device can initiate the handshake itself. A value already present (a future
+/// advertised endpoint) is respected and never overwritten; with no fallback
+/// configured the plan is returned unchanged.
 pub(super) fn plan_with_hub_endpoint(plan: &DevicePlan, hub_endpoint: Option<&str>) -> DevicePlan {
     let mut local = plan.clone();
     if let (Some(endpoint), Some(peer)) = (hub_endpoint, local.tunnel.peers.first_mut()) {
@@ -22,9 +24,8 @@ pub(super) fn plan_with_hub_endpoint(plan: &DevicePlan, hub_endpoint: Option<&st
     local
 }
 
-/// SEL-003 hub 兜底：hub peer（隧道配置第一个 peer，即服务端计划的 hub）的
-/// persistent-keepalive 强制 ≥ [meshlet_network::HUB_KEEPALIVE_SECS]，让 hub 永不
-/// 掉（NAT 映射常开，直连回退后随时可回）。计划显式给更高值则尊重。
+/// SEL-003 hub fallback: the hub peer (the first peer in the tunnel config, i.e.
+/// the server plan's hub) is forced to persistent-keepalive >= [meshlet_network::HUB_KEEPALIVE_SECS] so the hub never drops (the NAT mapping stays open, and the direct fallback can return to it at any time). An explicitly higher value in the plan is respected.
 pub(super) fn enforce_hub_keepalive(plan: &mut DevicePlan) {
     if let Some(peer) = plan.tunnel.peers.first_mut() {
         let floor = meshlet_network::HUB_KEEPALIVE_SECS;

@@ -1,26 +1,26 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-//! meshlet-agent 可执行入口（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
+//! meshlet-agent executable entry point ([ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)).
 //!
-//! 业务逻辑在库层（[`meshlet_agent`]）：本文件只做**启动纪律**——读配置、
-//! 校验数据面前置条件（默认全关时不碰内核）、**抢单实例锁**
-//! （[`meshlet_agent::instance_lock`]，已锁即退出，不让两个进程互踢同一个
-//! 设备身份）、注入本机私钥（ADR-010）、进入对账循环。
+//! Business logic lives in the library layer ([`meshlet_agent`]): this file only enforces **startup discipline** - read config,
+//! validate dataplane preconditions (keep hands off the kernel when all is off by default), **take the single-instance lock**
+//! ([`meshlet_agent::instance_lock`], exit if already locked so two processes never fight over the same
+//! device identity), inject this machine's private key (ADR-010), then enter the reconcile loop.
 //!
-//! 数据面纪律：agent 只消费服务端下发的结构化配置对象（§16.4），
-//! **绝不执行任何服务端下发的 Shell 命令**。
+//! Dataplane discipline: the agent only consumes structured config objects sent by the server (§16.4),
+//! and **never executes any shell command delivered by the server**.
 
 use meshlet_agent::{read_private_key, Agent};
 use meshlet_config::AgentConfig;
 
-/// TRAY-TF-01：release 构建若留在 CONSOLE 子系统，被计划任务/启动链拉起时：release 构建若留在 CONSOLE 子系统，被计划任务/启动链拉起时
-/// Windows 会挂出一个终端宿主进程——用户看到的「第一次弹 terminal 界面
-/// 然后闪退」正是这个（真机 imac 取证 WT 常驻窗口，subsys=3 实锤）。
-/// release 改 GUI 子系统后，日志要回到父控制台才能继续落盘。
+/// TRAY-TF-01: if a release build stays in the CONSOLE subsystem and is launched by Task Scheduler / a startup chain,
+/// Windows attaches a terminal host process - that is exactly the "first run pops a terminal, then it flashes and exits"
+/// users see (field evidence on imac: a resident Windows Terminal window, subsys=3 confirmed).
+/// Once release switches to the GUI subsystem, logs must reattach to the parent console to keep landing on disk.
 #[cfg(all(windows, not(debug_assertions)))]
 fn attach_parent_console() -> bool {
     use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
-    // SAFETY: 进程启动时一次性调用，参数是文档约定的父控制台句柄常量；
-    // 失败只表示没有可挂的父控制台（Explorer 双击、S4U 会话），无副作用。
+    // SAFETY: called once at process startup; the argument is the documented parent-console handle constant;
+    // failure only means there is no parent console to attach (Explorer double-click, S4U session), with no side effects.
     unsafe { AttachConsole(ATTACH_PARENT_PROCESS) != 0 }
 }
 
@@ -28,8 +28,8 @@ fn main() -> std::process::ExitCode {
     #[cfg(all(windows, not(debug_assertions)))]
     attach_parent_console();
 
-    // `--version`/`--help` 先行处理，避免被当成配置文件路径而报错
-    // （真机验收 NIGHTLY-MSI-1 抓到：`meshlet-agent --help` 曾 exit 1）。
+    // Handle `--version`/`--help` first so they are not mistaken for a config path and error out
+    // (field acceptance NIGHTLY-MSI-1 caught: `meshlet-agent --help` used to exit 1).
     if let Some(flag) = std::env::args().nth(1).as_deref() {
         match flag {
             "--version" | "-V" => {
@@ -52,14 +52,14 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    // 日志双写（config 加载后，用真实 state_dir）：stdout（前台调试）+
-    // `<state_dir>/logs/` 每日滚动文件——schtasks 直启 exe 时 stdout 无人
-    // 接收，文件才是唯一持久面（NIGHTLY 反馈 2026-11-21：打开日志目录
-    // 看不到任何文件）。初始化失败不阻断启动，退回纯 stdout。
+    // Dual logging (after config load, using the real state_dir): stdout (foreground debugging) +
+    // daily rolling files under `<state_dir>/logs/` - launched directly by schtasks, stdout has no
+    // receiver, so files are the only durable surface (NIGHTLY feedback 2026-11-21: opening the log dir
+    // showed no files at all). Init failure does not block startup; fall back to stdout only.
     let log_dir = std::path::PathBuf::from(&config.state_dir).join("logs");
     if std::fs::create_dir_all(&log_dir).is_ok() {
         let file_appender = tracing_appender::rolling::daily(&log_dir, "meshlet-agent.log");
-        // Writer 由全局 subscriber 持有；guard forget 到进程退出。
+        // The writer is held by the global subscriber; the guard is forgotten until process exit.
         let (log_writer, log_guard) = tracing_appender::non_blocking(file_appender);
         tracing_subscriber::fmt()
             .with_env_filter(
@@ -88,17 +88,17 @@ fn main() -> std::process::ExitCode {
         "agent config loaded"
     );
 
-    // 数据面默认全关：不碰内核，只报状态（§16.4 agent 自主边界）。
+    // Dataplane off by default: do not touch the kernel, only report status (§16.4 agent autonomy boundary).
     if !config.dataplane.enabled {
         tracing::info!("dataplane disabled: agent does not touch the kernel (see ADR-007)");
         return std::process::ExitCode::SUCCESS;
     }
-    // 单实例守卫（2026-11-12 imac 实锤：计划任务 + 残留测试进程让 3 个
-    // meshlet-agent 并存、互踢同一个 device_id，server 侧 0 条断连日志）：启动即
-    // 对 `<state_dir>/agent.lock` 拿 OS 级锁（flock / LockFileEx）并持有到退出；
-    // 已被别的实例拿着就明确报错退出——宁可这次启动失败，也不去抢设备身份。
-    // 锁在凭证解析**之前**拿：并发 bootstrap 同样会互写账本。上面的纯状态路径
-    // 已提前返回，不碰锁、不建目录。
+    // Single-instance guard (field evidence on imac 2026-11-12: Task Scheduler + a leftover test process left
+    // 3 meshlet-agent instances coexisting and kicking the same device_id, with 0 disconnect logs server-side):
+    // take an OS-level lock (flock / LockFileEx) on `<state_dir>/agent.lock` at startup and hold it until exit;
+    // if another instance holds it, error out explicitly - better to fail this startup than fight over device identity.
+    // The lock is taken **before** credential resolution: concurrent bootstraps would likewise race on the ledger.
+    // The pure-status path above already returned early, touching no lock and creating no directory.
     let state_dir = std::path::PathBuf::from(&config.state_dir);
     let lock_display = meshlet_agent::instance_lock::lock_path(&state_dir)
         .display()
@@ -111,8 +111,8 @@ fn main() -> std::process::ExitCode {
                     "meshlet-agent: another instance is already running (lock {lock_display} held); stop the other meshlet-agent before starting a new one"
                 );
             } else {
-                // 锁文件打不开同样拒绝：无法证明没有别的实例在跑（对齐 server 的
-                // 恢复守卫口径）。
+                // Refuse if the lock file cannot be opened too: there is no way to prove no other instance is running
+                // (matching the server's recovery-guard stance).
                 eprintln!(
                     "meshlet-agent: cannot acquire {lock_display} ({e}); refusing to start while another instance cannot be ruled out"
                 );
@@ -121,8 +121,8 @@ fn main() -> std::process::ExitCode {
         }
     };
     tracing::info!(instance_lock = %lock_display, "single-instance lock held");
-    // 凭证解析（ZeroTier 式自举）：配置 device_token → 凭证文件 → 持自举码
-    // 注册自身（落 Pending，控制中心批准前拉不到计划，心跳保活）。
+    // Credential resolution (ZeroTier-style bootstrap): configured device_token -> credential file -> register
+    // itself with the bootstrap code (lands in Pending; no plan until the control center approves, heartbeat keeps it alive).
     let config = match meshlet_agent::resolve_device_token(config) {
         Ok(c) => c,
         Err(e) => {
@@ -138,14 +138,14 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    // tunnel_backend=nt 装载失败等启动期错误：可见退出（错误一行），
-    // 绝不静默回落 service 模型跑错数据面。
+    // Startup errors such as a tunnel_backend=nt load failure: exit visibly (a one-line error),
+    // never silently fall back to the service model and run the wrong dataplane.
     //
-    // 错误必须同时写进 tracing 文件 sink（state/logs/meshlet-agent.log.*）：
-    // 本进程经 MeshletAgentDeploy（S4U/无 console 会话）运行，stderr 无人接，
-    // 只在 stderr eprintln 的话启动期失败原因在日志里不可恢复——ADR-008 七项
-    // item 4（缺 wireguard.dll fail-closed）诊断性缺口，记录于
-    // wgnt-seven-item-2026-11-22.md 相邻发现②。
+    // The error must also go to the tracing file sink (state/logs/meshlet-agent.log.*):
+    // this process runs under MeshletAgentDeploy (S4U / no console session), stderr has no receiver,
+    // so an eprintln-only startup failure is unrecoverable from the logs - an ADR-008 seven-item
+    // item 4 (missing wireguard.dll fail-closed) diagnostic gap, recorded as related finding 2 in
+    // wgnt-seven-item-2026-11-22.md.
     let agent = match Agent::new(config, private_key) {
         Ok(agent) => agent,
         Err(e) => {

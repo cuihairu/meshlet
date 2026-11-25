@@ -1,15 +1,15 @@
-//! DirectManager 用例：link_statuses 上报契约、ledger save/load 往返与
-//! 自愈、record_*/clear_endpoint 富化边界（R-DIAG-2）。
+//! DirectManager cases: the link_statuses report contract, ledger save/load round trips and
+//! self-healing, and the record_*/clear_endpoint enrichment boundary (R-DIAG-2).
 
 use super::*;
 
 #[test]
 fn link_statuses_report_active_direct_links_only() {
     let mut manager = DirectManager::new();
-    // 无在管对端 → 空上报（UI 默认按中继呈现）。
+    // No peers under management -> an empty report (the UI renders it as relay by default).
     assert!(manager.link_statuses().is_empty());
 
-    // Pending（第 1 周期）：状态 direct_pending，无握手读数。
+    // Pending (cycle 1): state direct_pending, with no handshake reading.
     let wanted = vec![peer("peer-b", "10.240.0.3", &[lan("192.168.1.50", 51821)])];
     manager.apply_plan(
         &wanted,
@@ -41,7 +41,7 @@ fn link_statuses_report_active_direct_links_only() {
         }]
     );
 
-    // 握手健康 → Direct，并携带探测时的握手年龄快照。
+    // A healthy handshake -> Direct, carrying the handshake-age snapshot taken at probe time.
     let mut ages = BTreeMap::new();
     ages.insert("peer-b".into(), 7u64);
     manager.apply_plan(
@@ -74,7 +74,7 @@ fn link_statuses_report_active_direct_links_only() {
         }]
     );
 
-    // 回退（候选撤销）→ 不再上报该对端。
+    // Fallback (candidate revoked) -> the peer is no longer reported.
     manager.apply_plan(
         &[],
         &[cidr(HOME)],
@@ -109,12 +109,12 @@ fn ledger_round_trips_the_keep_set_and_restores_as_direct() {
     );
     manager.save(&path).expect("ledger write");
 
-    // 从 ledger 恢复：keep set 原样、对端按「已建立」持有。
+    // Restored from the ledger: the keep set is intact and the peer is held as "established".
     let restored = DirectManager::load(&path);
     assert_eq!(restored.keep_keys(), manager.keep_keys());
     assert!(restored.is_direct("peer-a"));
 
-    // 损坏/缺失文件 → 空管理器（自愈：探测周期重建，不猜）。
+    // A corrupt/missing file -> an empty manager (self-healing: the probe cycle rebuilds it, without guessing).
     assert_eq!(
         DirectManager::load(&root.join("missing.json"))
             .keep_keys()
@@ -127,8 +127,8 @@ fn ledger_round_trips_the_keep_set_and_restores_as_direct() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// R-DIAG-2：record_*/clear_endpoint 只改命中对端，缺失对端 no-op；
-/// direct_candidates 只列非 Relay 对端。
+/// R-DIAG-2: record_*/clear_endpoint only touch the matched peer, and a missing peer is a no-op;
+/// direct_candidates lists only non-Relay peers.
 #[test]
 fn direct_peer_status_records_only_managed_non_relay() {
     let mut manager = DirectManager::new();
@@ -141,7 +141,7 @@ fn direct_peer_status_records_only_managed_non_relay() {
         direct_peer("peer-b", "10.240.0.4", PeerLinkState::Relay),
     );
 
-    // 富化：命中直连对端写入，Relay/缺失对端 no-op。
+    // Enrichment: written for a matched direct peer; a Relay/missing peer is a no-op.
     manager.record_endpoint("peer-a", "192.168.1.50:51821".into());
     manager.record_peer_status(
         "peer-a",
@@ -159,16 +159,16 @@ fn direct_peer_status_records_only_managed_non_relay() {
     assert_eq!(a.rtt_ms, Some(42));
     assert_eq!(a.last_handshake_at, Some(1_700_000_000));
     assert_eq!((a.rx_bytes, a.tx_bytes), (111, 222));
-    // Relay 对端不参与直连状态记录（无直连链路）。
+    // A Relay peer does not take part in direct state recording (it has no direct link).
     assert_eq!(manager.peers["peer-b"].endpoint, "");
 
-    // direct_candidates 只列非 Relay。
+    // direct_candidates lists only non-Relay.
     let candidates = manager.direct_candidates();
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].0, "peer-a");
     assert_eq!(candidates[0].1, "10.240.0.3".parse::<Ipv4Addr>().unwrap());
 
-    // 清空：endpoint 与 RTT 一并复位，其余读数保留。
+    // Clearing: the endpoint and the RTT reset together, while the other readings are retained.
     manager.clear_endpoint("peer-a");
     assert_eq!(manager.peers["peer-a"].endpoint, "");
     assert_eq!(manager.peers["peer-a"].rtt_ms, None);
@@ -178,9 +178,10 @@ fn direct_peer_status_records_only_managed_non_relay() {
     );
 }
 
-/// 记忆面（last_direct）读写边界：record_endpoint 随内核实况刷新（含 wg
-/// roaming 出来的表外面），clear_endpoint 只清现值不清记忆（回中继后的
-/// 再晋升要靠它选回）；Relay 对端无直连链路，两路都 no-op。
+/// The memory surface (last_direct) read/write boundary: record_endpoint refreshes it with the kernel's actual
+/// situation (including out-of-table faces from wg roaming), and clear_endpoint clears the current value without
+/// clearing the memory (a later re-promotion after falling back to relay depends on it to pick the same face back);
+/// a Relay peer has no direct link, so both paths are a no-op.
 #[test]
 fn record_endpoint_refreshes_memory_and_clear_keeps_it() {
     let mut manager = DirectManager::new();
@@ -193,13 +194,13 @@ fn record_endpoint_refreshes_memory_and_clear_keeps_it() {
         manager.peers["peer-a"].last_direct,
         Some(lan("192.168.5.11", 51820))
     );
-    // 内核漫游到新面（表外）→ 记忆跟随实况。
+    // The kernel roams to a new face (outside the table) -> the memory follows the actual situation.
     manager.record_endpoint("peer-a", "192.168.5.117:51821".into());
     assert_eq!(
         manager.peers["peer-a"].last_direct,
         Some(lan("192.168.5.117", 51821))
     );
-    // 回退清现值，记忆保留。
+    // The fallback clears the current value, keeping the memory.
     manager.clear_endpoint("peer-a");
     assert_eq!(manager.peers["peer-a"].endpoint, "");
     assert_eq!(
@@ -207,7 +208,7 @@ fn record_endpoint_refreshes_memory_and_clear_keeps_it() {
         Some(lan("192.168.5.117", 51821)),
         "demote clears the endpoint but keeps the remembered face"
     );
-    // Relay 对端 no-op（记忆随 plan_updates 的劣化分支维护）。
+    // A Relay peer is a no-op (the memory is maintained by plan_updates's degradation branch).
     manager.peers.insert(
         "peer-b".into(),
         direct_peer("peer-b", "10.240.0.4", PeerLinkState::Relay),

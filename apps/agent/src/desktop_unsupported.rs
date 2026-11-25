@@ -23,7 +23,7 @@ impl DesktopClient {
         DesktopPublish::Headless
     }
 
-    /// MT-004：非 Linux 无桌面通知（ADT-008 Windows 数据面后端落地前）。
+    /// MT-004: no desktop notifications on non-Linux (until the ADT-008 Windows dataplane backend lands).
     pub fn notify_task(&mut self, _call: &NotifyCall, _env: &EnvProbe) -> DesktopPublish {
         DesktopPublish::Headless
     }

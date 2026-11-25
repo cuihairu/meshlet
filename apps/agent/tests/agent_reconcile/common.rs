@@ -17,15 +17,15 @@ use meshlet_network::{DevicePlan, PeerConfig, RouteConfig, TunnelConfig};
 pub(crate) const PREFIX: &str = "mlg";
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(40);
 
-/// 本进程的对象标签（`mlg<pid><suffix>`）：内核对象名是全局的，崩溃残留或
-/// 并行跑的另一份测试都不该让本轮撞名失败。接口名限长 15 字符，`mlg` +
-/// pid(≤7) + suffix(1) 仍在限内；**suffix 按测试区分**——同一测试进程里并行
-/// 跑的多个用例共享 pid，没有 suffix 会撞名（bridge File exists）。
+/// This process's object tag (`mlg<pid><suffix>`): kernel object names are global, so leftovers
+/// from a crash or another concurrently running test must not fail this run by name collision. Interface names are capped at 15
+/// characters, and `mlg` + pid (≤7) + suffix (1) still fits; **the suffix distinguishes tests** — cases
+/// running in parallel inside one test process share a pid, and without a suffix they collide (bridge: File exists).
 pub(crate) fn tag(suffix: &str) -> String {
     format!("{PREFIX}{}{suffix}", std::process::id())
 }
 
-// ---------------------------------------------------------------- 进程辅助
+// ---------------------------------------------------------------- process helpers
 
 pub(crate) fn sudo(args: &[&str]) -> Output {
     Command::new("sudo")
@@ -59,7 +59,7 @@ pub(crate) fn count_prefix_lines(text: &str, prefix: &str) -> usize {
     text.lines().filter(|l| l.starts_with(prefix)).count()
 }
 
-// ---------------------------------------------------------------- 前置条件
+// ---------------------------------------------------------------- prerequisites
 
 pub(crate) fn prerequisites() -> Option<()> {
     if !sudo_ok(&["true"]) {
@@ -92,11 +92,11 @@ pub(crate) fn prerequisites() -> Option<()> {
     Some(())
 }
 
-/// 清掉历史残留：只删本前缀下、**其 pid 后缀进程已不存在**的对象。
+/// Clear away historical leftovers: only objects under this prefix whose **pid-suffix process no longer exists** get removed.
 ///
-/// 正在跑的并行测试（另一份 cargo test / 手工重跑）对象带活着的 pid，必须跳过
-/// ——否则「清场」会把别人的拓扑删掉，让并行跑出现莫名其妙的失败。没有数字后缀
-/// 的历史残留（旧前缀方案留下的）照删。
+/// Objects owned by a concurrently running test (another cargo test / a manual re-run) carry a live
+/// pid and must be skipped — otherwise the "cleanup" would delete someone else's topology and cause
+/// inexplicable failures in the parallel run. Leftovers without a numeric suffix (older prefix scheme) are removed anyway.
 pub(crate) fn preflight_cleanup() {
     let text = String::from_utf8_lossy(&sudo(&["ip", "netns", "list"]).stdout).to_string();
     for line in text.lines() {
@@ -116,7 +116,7 @@ pub(crate) fn preflight_cleanup() {
     }
 }
 
-/// 对象名的 pid 后缀进程是否还活着（活着=别的测试正在用，别删）。
+/// Whether the process named by the object's pid suffix is still alive (alive = another test is using it, do not delete).
 pub(crate) fn owner_alive(name: &str) -> bool {
     let tail = &name[PREFIX.len()..];
     let pid: String = tail.chars().take_while(char::is_ascii_digit).collect();
@@ -126,7 +126,7 @@ pub(crate) fn owner_alive(name: &str) -> bool {
     Path::new("/proc").join(pid).exists()
 }
 
-// ---------------------------------------------------------------- 密钥
+// ---------------------------------------------------------------- keys
 
 pub(crate) fn wg_genkey() -> Option<String> {
     let out = Command::new("wg").arg("genkey").output().ok()?;
@@ -158,7 +158,7 @@ pub(crate) fn wg_pubkey(private: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-// ---------------------------------------------------------------- 拓扑
+// ---------------------------------------------------------------- topology
 
 pub(crate) struct Node {
     pub(crate) netns: String,
@@ -191,7 +191,7 @@ impl Drop for Guard {
 }
 
 pub(crate) struct Topology {
-    #[allow(dead_code)] // 字段只经 Drop 清理
+    #[allow(dead_code)] // the field is only ever used by Drop for cleanup
     pub(crate) guard: Guard,
     pub(crate) hub: Node,
     pub(crate) a: Node,
@@ -327,7 +327,7 @@ impl Topology {
             }
         }
 
-        // 网关 LAN 段（G 另一个接口 + LAN 主机 netns）。
+        // Gateway LAN segment (a second interface on G plus the LAN hosts' netns).
         let lan = format!("{tag}L");
         let (lan0, lan1) = (format!("{tag}X0"), format!("{tag}X1"));
         guard.netns.push(lan.clone());
@@ -407,8 +407,8 @@ impl Topology {
             .success()
     }
 
-    /// 「应当可达」的探测：握手刚建立时首包可能丢失（key exchange 在途），
-    /// 因此在时限内重试；时限内一直不通才算失败。
+    /// A "should be reachable" probe: right after a handshake is established the first packet may be
+    /// lost (key exchange in flight), so retry within the deadline; only staying unreachable the whole time counts as failure.
     pub(crate) fn ping_within(&self, from: &str, to: &str, within: Duration) -> bool {
         let start = Instant::now();
         loop {
@@ -428,11 +428,11 @@ impl Topology {
     }
 }
 
-// ---------------------------------------------------------------- 计划构造
+// ---------------------------------------------------------------- plan builders
 
-/// hub 侧计划（与 server 适配层 `hub_plan` 同构）：peer = 全部设备，AllowedIPs
-/// = 虚拟 IP /32 + 经该设备转发的 Alias 前缀。私钥**不**在计划里（ADR-010），
-/// 由调用方从 `[dataplane] private_key_file` 注入——与 agent 路径同一纪律。
+/// The hub-side plan (isomorphic to the server adapter layer's `hub_plan`): peers = all devices, AllowedIPs
+/// = the virtual IP /32 plus the Alias prefixes forwarded through that device. The private key is **not** in the
+/// plan (ADR-010); the caller injects it from `[dataplane] private_key_file` — the same discipline as the agent path.
 pub(crate) fn hub_plan(topo: &Topology) -> DevicePlan {
     DevicePlan {
         desired_revision: 0,
@@ -446,13 +446,13 @@ pub(crate) fn hub_plan(topo: &Topology) -> DevicePlan {
                 .iter()
                 .map(|key| peer_for(topo, key))
                 .collect(),
-            // 显式 MTU（非默认 1420）：让「计划值真的落到内核」可断言（#51①）。
+            // Explicit MTU (not the default 1420): makes "the plan value really landed in the kernel" assertable (#51(1)).
             mtu: Some(1380),
             private_key: None,
         },
         routes: vec![
-            // Alias 路由（虚拟前缀）与 Direct 路由（真实 LAN 网段）都经网关
-            // 设备虚拟 IP 转发——§9.4「VPS 只按前缀转发」。
+            // Both the Alias routes (virtual prefixes) and the Direct routes (real LAN segments) are forwarded
+            // via the gateway device's virtual IP — §9.4 "the VPS only forwards by prefix".
             RouteConfig {
                 destination: "10.241.1.0/24".parse().unwrap(),
                 interface: "wg0".into(),
@@ -480,7 +480,7 @@ pub(crate) fn peer_for(topo: &Topology, key: &str) -> PeerConfig {
     };
     let mut allowed_ips = vec![format!("{}/32", node.overlay).parse().unwrap()];
     if key == "gw" {
-        // hub 必须为「经该设备转发的每个前缀」加密下发，否则转发包到不了网关。
+        // The hub must be configured to encrypt for every prefix forwarded through this device, or forwarded packets cannot reach the gateway.
         allowed_ips.push("10.241.1.0/24".parse().unwrap());
         allowed_ips.push("192.168.1.0/24".parse().unwrap());
     }
@@ -492,8 +492,8 @@ pub(crate) fn peer_for(topo: &Topology, key: &str) -> PeerConfig {
     }
 }
 
-/// 客户端设备计划（与 server `build_device_plan` 同构）：隧道 + 他人网关的
-/// 路由；`private_key` 恒为 `None`（ADR-010：agent 本地注入）。
+/// The client device plan (isomorphic to the server's `build_device_plan`): the tunnel plus routes to the
+/// other gateways' LANs; `private_key` is always `None` (ADR-010: injected locally by the agent).
 pub(crate) fn leaf_plan(
     node: &Node,
     hub: &Node,
@@ -551,9 +551,9 @@ pub(crate) fn alias_mapping() -> AliasMapping {
 
 pub(crate) const ALIAS_OWNER: &str = "meshlet alias al-1";
 
-// ---------------------------------------------------------------- agent 装配
+// ---------------------------------------------------------------- agent assembly
 
-/// 在 netns 内跑一个 agent 实例（后端注入 netns；私钥按 ADR-010 本地注入）。
+/// Run an agent instance inside a netns (the backend is injected into the netns; the private key is injected locally per ADR-010).
 pub(crate) fn agent_in(node: &Node, state_dir: &str) -> Agent {
     let config = AgentConfig {
         server_url: "http://127.0.0.1:1".into(),
@@ -583,8 +583,8 @@ pub(crate) fn temp_state_dir(name: &str) -> String {
     dir.to_string_lossy().to_string()
 }
 
-/// 带直连配置的 agent（§12）：`direct_connect.enabled` + 固定 `listen_port`——
-/// reconcile 会把 wg 接口绑到该端口，直连对端才能按它发包。
+/// An agent with direct-connect config (§12): `direct_connect.enabled` plus a fixed `listen_port` —
+/// reconcile binds the wg interface to that port, which is what direct peers send packets to.
 pub(crate) fn agent_in_direct(
     node: &Node,
     state_dir: &str,
@@ -618,10 +618,10 @@ pub(crate) fn agent_in_direct(
     Agent::with_backend(config, Some(node.private_key.clone()), backend)
 }
 
-/// 极简 agent API mock（std-only）：按 Bearer 凭证分发 `GET .../peers/endpoints`
-/// 的 JSON 应答（服务端视角的候选列表）。应答体可热切换（撤候选 → 回退）。
-/// 连接级语义（connection: close）与 ureq 兼容；每连接一个请求。
-/// 端点 mock 的可热切换应答池：`(服务端候选列表, 可变的剩余应答)`。
+/// A minimal agent API mock (std-only): dispatches the `GET .../peers/endpoints` JSON response by Bearer
+/// credential (the candidate list as seen by the server). The response body is hot-swappable (withdraw candidates to force a fallback).
+/// The connection-level semantics (connection: close) are compatible with ureq; one request per connection.
+/// The endpoint mock's hot-swappable response pool: `(server-side candidate list, mutable remaining responses)`.
 pub(crate) type EndpointResponses = Arc<Mutex<Vec<(String, String)>>>;
 
 pub(crate) fn spawn_endpoint_server(
@@ -678,7 +678,7 @@ pub(crate) fn spawn_endpoint_server(
     (format!("http://{addr}"), shared)
 }
 
-/// 服务端视角的单设备候选列表（`GET .../peers/endpoints` 应答体）。
+/// The per-device candidate list as seen by the server (the `GET .../peers/endpoints` response body).
 pub(crate) fn endpoints_body(public_key: &str, vip: &str, lan_ip: &str, port: u16) -> String {
     serde_json::json!([{
         "device_id": "dev-peer",
@@ -689,4 +689,4 @@ pub(crate) fn endpoints_body(public_key: &str, vip: &str, lan_ip: &str, port: u1
     .to_string()
 }
 
-// ---------------------------------------------------------------- 测试
+// ---------------------------------------------------------------- tests

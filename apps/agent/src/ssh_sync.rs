@@ -1,36 +1,36 @@
-//! SSH alias 配置分发（agent 侧）：把 mesh 节点渲染成 `~/.ssh/meshlet.conf`
-//! 的 `Host <alias>` 块，供 `ssh <alias>` 直达对端 overlay VIP。
+//! SSH alias config distribution (agent side): renders mesh nodes as `Host <alias>` blocks in `~/.ssh/meshlet.conf`,
+//! so `ssh <alias>` reaches a peer's overlay VIP directly.
 //!
-//! 安全铁律（默认全关，显式开启才动用户 `~/.ssh`）：
-//! - `[ssh_config_sync] enabled`（默认 **false**）：关 = 一个字节都不写；
-//! - 开 = 只写 meshlet 专用 fragment `~/.ssh/meshlet.conf`（原子写、0600、
-//!   幂等重写——每轮按期望主机表整文件重渲染，节点下线即块消失），
-//!   **绝不改写用户 `~/.ssh/config` 的既有内容**；
-//! - `[ssh_config_sync] manage_include`（默认 false）：开 = 检测
-//!   `~/.ssh/config` 是否已 `Include meshlet.conf`，缺失才**插入首行**
-//!   （OpenSSH 按首匹配取值，Include 落在 `Host *` 之后的尾部不生效——
-//!   coding-vm/imac 实机踩坑后改为首行插入；插入前把原文件备份一次到
-//!   `config.meshlet.bak`）；关 = 只写 fragment，状态文件标注
-//!   `manual_required` 提示手动加 Include。
-//! - `[ssh_config_sync] target_homes`（默认空 = 只写运行账号自己的
-//!   `$HOME`）：绝对路径数组，agent 以 root 服务运行时对每个目标 home
-//!   独立写 fragment / 管 Include，落盘文件属主钉成该 home 的属主用户。
+//! Safety invariants (everything off by default; touching the user's `~/.ssh` requires explicit opt-in):
+//! - `[ssh_config_sync] enabled` (default **false**): off = not a single byte is written;
+//! - on = writes only the meshlet-dedicated fragment `~/.ssh/meshlet.conf` (atomic write, 0600,
+//!   idempotent rewrite — each round re-renders the whole file from the desired host table, so a node leaving makes its block disappear),
+//!   **never rewriting anything already in the user's `~/.ssh/config`**;
+//! - `[ssh_config_sync] manage_include` (default false): on = checks whether `~/.ssh/config` already has
+//!   `Include meshlet.conf`, and only if missing **inserts it as the first line**
+//!   (OpenSSH resolves values by first match; an Include placed after `Host *` at the tail has no effect —
+//!   learned the hard way on coding-vm/imac, hence first-line insertion; the original file is backed up once to
+//!   `config.meshlet.bak` before insertion); off = writes only the fragment, and the status file flags
+//!   `manual_required` to hint at adding the Include by hand.
+//! - `[ssh_config_sync] target_homes` (default empty = only write the running account's own
+//!   `$HOME`): an array of absolute paths; when the agent runs as a root service it writes the fragment / manages the Include
+//!   independently for each target home, pinning the written file's owner to that home's owning user.
 //!
-//! alias 来源（面板/文档同口径，`alias_source` 如实标注）：
-//! hub 显式覆写（`hub-config`）> 节点真实主机名（`hostname`）>
-//! meshlet peer name（`peer-name`）。hub 未下发 `ssh_config` 段时 agent 用
-//! 本机默认自生成（主机名 + 自身 overlay VIP + 端口 22）。
+//! Alias sources (same precedence as panel/docs, `alias_source` states it faithfully):
+//! hub explicit override (`hub-config`) > the node's real hostname (`hostname`) >
+//! meshlet peer name (`peer-name`). When the hub dispatches no `ssh_config` section the agent self-generates from
+//! local defaults (hostname + its own overlay VIP + port 22).
 
 use meshlet_network::SshConfigPlan;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// fragment 文件名（meshlet 专用，不与用户 config 混写）。
+/// Fragment file name (meshlet-dedicated, never mixed into the user's config).
 pub const FRAGMENT_NAME: &str = "meshlet.conf";
-/// `~/.ssh/config` 首次被管理前的一次性备份名（存在即不覆盖）。
+/// One-time backup name before `~/.ssh/config` is first managed (never overwritten once it exists).
 const INCLUDE_BACKUP_NAME: &str = "config.meshlet.bak";
 
-/// 期望主机条目（已解析 alias 与来源）。
+/// Desired host entry (alias and source already resolved).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshHost {
     pub name: String,
@@ -41,40 +41,40 @@ pub struct SshHost {
     pub alias_source: &'static str,
 }
 
-/// Include 行状态（面板/日志口径）。
+/// Include-line state (panel/log wording).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IncludeState {
-    /// 同步开关关闭（不检查、不写）。
+    /// Sync switch off (not checked, not written).
     Off,
-    /// `~/.ssh/config` 已含 Include 行（本来就有，或本 agent 追加过）。
+    /// `~/.ssh/config` already contains the Include line (pre-existing, or added by this agent).
     Present,
-    /// 本 agent 追加了 Include 行（原文件已备份）。
+    /// This agent appended the Include line (original file backed up).
     Managed,
-    /// include 管理关 / 追加失败：需要手动加 `Include meshlet.conf`。
+    /// Include management off / append failed: `Include meshlet.conf` must be added manually.
     ManualRequired,
 }
 
-/// 同步结果状态（落 `{state_dir}/ssh-sync.json`，本地面板只读展示）。
+/// Sync result state (written to `{state_dir}/ssh-sync.json`; the local panel is read-only display).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SyncStatus {
     pub enabled: bool,
     pub manage_include: bool,
     pub include_state: IncludeState,
-    /// fragment 路径（开关关时也为 `~/.ssh/meshlet.conf` 的预期路径，供文案）。
-    /// 多目标 home 时 = 第一个 home 的 fragment 路径（旧格式兼容；全量表看
-    /// [`SyncStatus::homes`]）。
+    /// Fragment path (when the switch is off, still the expected path of `~/.ssh/meshlet.conf`, for display text).
+    /// With multiple target homes = the first home's fragment path (legacy-format compat; see the full table in
+    /// [`SyncStatus::homes`]).
     pub fragment_path: String,
-    /// 本轮期望主机表（关 = 空表）。
+    /// Desired host table for this round (off = empty table).
     pub hosts: Vec<StatusHost>,
     pub last_error: Option<String>,
-    /// 按目标 home 列出的全量状态（`target_homes` 非空时多行；开关关 =
-    /// 空数组）。顶层的 `fragment_path` / `include_state` / `last_error`
-    /// 恒等于 `homes[0]`，旧格式消费方不受多 home 影响。
+    /// Full status listed per target home (multiple rows when `target_homes` is non-empty; switch off =
+    /// empty array). The top-level `fragment_path` / `include_state` / `last_error` always mirror `homes[0]`,
+    /// so legacy-format consumers are unaffected by multi-home.
     pub homes: Vec<HomeStatus>,
 }
 
-/// 单个目标 home 的同步状态（`ssh-sync.json` 的 `homes` 数组项）。
+/// Sync status of a single target home (an item of the `homes` array in `ssh-sync.json`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HomeStatus {
     pub home: String,
@@ -83,7 +83,7 @@ pub struct HomeStatus {
     pub last_error: Option<String>,
 }
 
-/// 状态文件里的单主机行（面板直接渲染）。
+/// Single-host row in the status file (rendered directly by the panel).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct StatusHost {
     pub name: String,
@@ -94,21 +94,21 @@ pub struct StatusHost {
     pub alias_source: String,
 }
 
-/// SSH Host 别名 sanitize（与 hub 共用 [`meshlet_network::ssh_alias`] 实现，
-/// 两端口径不漂移）：保留大小写，非法字符转连字符，空名兜底 `node`。
+/// SSH Host alias sanitize (shared with the hub via [`meshlet_network::ssh_alias`], so the two sides never drift):
+/// keeps case, maps illegal characters to hyphens, falls back to `node` for empty names.
 pub fn sanitize_alias(name: &str) -> String {
     meshlet_network::ssh_alias::sanitize_alias(name)
 }
 
-/// alias 默认推导：主机名优先（真实主机名），缺省回落 peer name；
-/// 返回 (alias, source)。
+/// Default alias derivation: hostname first (real hostname), falling back to peer name when absent;
+/// returns (alias, source).
 pub fn default_alias(name: &str, hostname: Option<&str>) -> (String, &'static str) {
     meshlet_network::ssh_alias::resolve_alias(name, hostname, None)
 }
 
-/// hub 下发段 → 期望主机表。alias 与来源（`hub-config` > `hostname` >
-/// `peer-name`）由 hub 在计划里解析下发；agent 只做防御性 sanitize，来源
-/// 缺省（旧服务端）标注 `peer-name`。
+/// Hub-dispatched section → desired host table. Alias and source (`hub-config` > `hostname` >
+/// `peer-name`) are resolved and dispatched by the hub in the plan; the agent only sanitizes defensively, and marks
+/// a missing source (legacy server) as `peer-name`.
 pub fn hosts_from_plan(plan: &SshConfigPlan) -> Vec<SshHost> {
     let hosts = plan
         .hosts
@@ -125,7 +125,7 @@ pub fn hosts_from_plan(plan: &SshConfigPlan) -> Vec<SshHost> {
     dedupe_aliases(hosts)
 }
 
-/// 未知来源串（未来服务端新增枚举值）回落 `peer-name`，面板不显示乱码。
+/// Unknown source string (a future server enum value) falls back to `peer-name` so the panel never shows garbage.
 fn known_alias_source(raw: Option<&str>) -> &'static str {
     match raw {
         Some("hub-config") => "hub-config",
@@ -134,8 +134,8 @@ fn known_alias_source(raw: Option<&str>) -> &'static str {
     }
 }
 
-/// 同名 alias 去重：按 (name, address) 排序后，重复 alias 依次追加 `-2`、
-/// `-3`…保证 fragment 确定性且 Host 块唯一。
+/// Dedupe same-name aliases: after sorting by (name, address), duplicate aliases get `-2`,
+/// `-3`... appended in turn, keeping the fragment deterministic and Host blocks unique.
 fn dedupe_aliases(mut hosts: Vec<SshHost>) -> Vec<SshHost> {
     hosts.sort_by(|a, b| (&a.name, a.address).cmp(&(&b.name, b.address)));
     let mut used: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -149,8 +149,8 @@ fn dedupe_aliases(mut hosts: Vec<SshHost>) -> Vec<SshHost> {
     hosts
 }
 
-/// 渲染 fragment：每主机一个 `Host <alias>` 块；端口缺省写 22（显式可读），
-/// user 仅在下发时出现（不覆盖本地 ssh 默认）。
+/// Render the fragment: one `Host <alias>` block per host; a missing port is written as 22 (explicit and readable);
+/// user appears only when dispatched (does not override local ssh defaults).
 pub fn render_fragment(hosts: &[SshHost]) -> String {
     let mut out = String::new();
     out.push_str("# Generated by meshlet agent (ssh_config_sync). Do not edit.\n");
@@ -171,18 +171,18 @@ pub fn render_fragment(hosts: &[SshHost]) -> String {
     out
 }
 
-/// fragment 路径（`<home>/.ssh/meshlet.conf`）。
+/// Fragment path (`<home>/.ssh/meshlet.conf`).
 pub fn fragment_path(home: &Path) -> PathBuf {
     home.join(".ssh").join(FRAGMENT_NAME)
 }
 
-/// ssh_config 路径。
+/// ssh_config path.
 fn ssh_config_path(home: &Path) -> PathBuf {
     home.join(".ssh").join("config")
 }
 
-/// `~/.ssh/config` 是否已 Include meshlet fragment（行首 token `Include`
-/// 大小写不敏感 + 行内含 `meshlet.conf`）。文件缺失 = 未包含。
+/// Whether `~/.ssh/config` already Includes the meshlet fragment (first token `Include`,
+/// case-insensitive, and the line contains `meshlet.conf`). A missing file = not included.
 pub fn config_includes_fragment(config: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(config) else {
         return false;
@@ -196,12 +196,12 @@ pub fn config_includes_fragment(config: &Path) -> bool {
     })
 }
 
-/// 确保用户 config 含 `Include meshlet.conf`：已有 → `Present`（一字节不动）；
-/// 缺失 → 先备份原文件一次（`config.meshlet.bak`，存在即不覆盖），再把
-/// Include **插入首行**（OpenSSH 首匹配：尾部 Include 落在 `Host *` 之后
-/// 永不生效），config 不存在则新建（0600）。既有文件走同 inode 截断重写，
-/// 权限与符号链接身份都保留；写入失败尽力回滚原文。新建件与备份属主钉成
-/// 目标 home 属主（root 服务写入用户 home 的场景）。
+/// Ensure the user's config contains `Include meshlet.conf`: already present → `Present` (not a byte touched);
+/// missing → back up the original file once (`config.meshlet.bak`, never overwritten once it exists), then
+/// **insert the Include as the first line** (OpenSSH first-match: a trailing Include placed after `Host *`
+/// never takes effect); create the config if it does not exist (0600). An existing file is rewritten in-place via
+/// same-inode truncate, preserving both permissions and symlink identity; on write failure the original is restored best
+/// effort. New files and the backup get their owner pinned to the target home's owner (the root-service-writes-user-home case).
 fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) {
     if config_includes_fragment(config) {
         return (IncludeState::Present, None);
@@ -223,15 +223,15 @@ fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) 
             let _ = pin_owner_to_home(&backup, home);
         }
     }
-    // Include 隔一个空行再接原文；原文本身为空（新建/空文件）就不留空行。
-    // 空串用模式匹配不用 guard（clippy::redundant_guards 在 CI 是 error）。
+    // The Include is followed by one blank line, then the original content; if the original is empty (new/empty file) leave no blank line.
+    // Empty string is matched by pattern rather than guard (clippy::redundant_guards is an error in CI).
     let new_text = match existing.as_deref() {
         Some("") => format!("Include {FRAGMENT_NAME}\n"),
         Some(text) => format!("Include {FRAGMENT_NAME}\n\n{text}"),
         None => format!("Include {FRAGMENT_NAME}\n"),
     };
     let Some(text) = existing.as_deref() else {
-        // 新建：先落盘（此时内容还没写，先钉 0600 再写，避免裸权限窗口）。
+        // New file: write it first (nothing written yet at this point — pin 0600 before writing content, avoiding a bare-permission window).
         if let Err(e) = std::fs::write(config, &new_text) {
             return (
                 IncludeState::ManualRequired,
@@ -242,9 +242,9 @@ fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) 
         let _ = pin_owner_to_home(config, home);
         return (IncludeState::Managed, None);
     };
-    // 既有文件：备份已落袋，同 inode 截断重写（保留权限与符号链接身份；
-    // 改名替换会把符号链接变成普通文件，不走临时件 rename）。写半路失败
-    // 时尽力恢复原文（备份也在，双重兜底）。
+    // Existing file: backup is secured; same-inode truncate rewrite (preserves permissions and symlink identity;
+    // a rename-based swap would turn a symlink into a regular file, so no temp-file rename). A mid-write failure
+    // restores the original best effort (the backup is also there as a double safety net).
     let mut file = match std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -268,9 +268,9 @@ fn ensure_include(config: &Path, home: &Path) -> (IncludeState, Option<String>) 
     (IncludeState::Managed, None)
 }
 
-/// 把已落盘文件属主钉到目标 home 目录的属主（agent 以 root 服务运行、往
-/// 用户 home 写文件时必须有这一步，否则用户读不到自己的 fragment/备份）。
-/// home 目录 stat 不出来时放行不判错（不因检查手段失败否掉已写好的内容）。
+/// Pin the written file's owner to the target home directory's owner (mandatory when the agent runs as a root service and
+/// writes into a user's home, otherwise the user cannot read their own fragment/backup).
+/// If the home directory cannot be stat'd, pass without erroring (never discard already-written content over a failed check).
 #[cfg(unix)]
 fn pin_owner_to_home(path: &Path, home: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
@@ -279,7 +279,7 @@ fn pin_owner_to_home(path: &Path, home: &Path) -> Result<(), String> {
     };
     let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|_| format!("chown {}: path contains NUL", path.display()))?;
-    // chown(2)：root 直接生效；非 root 且属主不变时是允许的空操作。
+    // chown(2): a no-op that succeeds for root; allowed for non-root when the owner is unchanged.
     if unsafe { libc::chown(cpath.as_ptr(), meta.uid(), meta.gid()) } != 0 {
         return Err(format!(
             "chown {}: {}",
@@ -292,11 +292,11 @@ fn pin_owner_to_home(path: &Path, home: &Path) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn pin_owner_to_home(_path: &Path, _home: &Path) -> Result<(), String> {
-    Ok(()) // Windows 无 POSIX 属主；ACL 继承用户目录默认
+    Ok(()) // No POSIX ownership on Windows; ACL inherits the user directory default
 }
 
-/// 原子写 + 权限钉 0600：同目录临时文件写完 chmod 后 rename（进程崩半路也
-/// 不会留下半个 fragment，更不会动到别人的文件）。
+/// Atomic write + mode pinned to 0600: write a temp file in the same directory, chmod, then rename (a mid-run
+/// crash leaves neither half a fragment nor any damage to someone else's file).
 fn write_atomic_0600(path: &Path, content: &str) -> Result<(), String> {
     let dir = path
         .parent()
@@ -332,11 +332,11 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn set_mode(_path: &Path, _mode: u32) -> Result<(), String> {
-    Ok(()) // Windows 无 POSIX 权限；ACL 继承用户目录默认
+    Ok(()) // No POSIX permissions on Windows; ACL inherits the user directory default
 }
 
-/// 本机主机名：Windows 取 `COMPUTERNAME`，其余走 `hostname` 命令；都失败为
-/// `None`（回落 peer name）。trim 后为空同样视为 None。
+/// Local hostname: `COMPUTERNAME` on Windows, the `hostname` command elsewhere; `None` when both fail
+/// (falls back to peer name). Empty after trim is treated as None too.
 pub fn local_hostname() -> Option<String> {
     let candidate = if cfg!(target_os = "windows") {
         std::env::var("COMPUTERNAME").ok()
@@ -352,7 +352,7 @@ pub fn local_hostname() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// 本机默认主机条目（hub 未下发时的自生成块）：主机名 > peer name。
+/// Local default host entry (the self-generated block when the hub dispatches nothing): hostname > peer name.
 pub fn self_host(name: &str, address: std::net::Ipv4Addr) -> SshHost {
     let (alias, source) = default_alias(name, local_hostname().as_deref());
     SshHost {
@@ -365,14 +365,14 @@ pub fn self_host(name: &str, address: std::net::Ipv4Addr) -> SshHost {
     }
 }
 
-/// 每轮同步入口（tick 调用；失败只记状态不打断数据面循环）。
+/// Per-round sync entry point (called by the tick; failures are only recorded in state, never interrupting the data-plane loop).
 ///
-/// - 开关关：只刷新状态文件（enabled=false），**不碰 `~/.ssh` 任何文件**；
-/// - 开：按期望主机表整文件重渲染 fragment（幂等：内容不变不重写），
-///   再按 `manage_include` 决定是否管理用户 config 的 Include 行。
+/// - Switch off: only refresh the status file (enabled=false), **touching no file under `~/.ssh`**;
+/// - on: re-render the whole fragment from the desired host table (idempotent: no rewrite when content is unchanged),
+///   then manage the user config's Include line per `manage_include`.
 ///
-/// 单 home 入口（`target_homes` 为空时的旧语义）；多 home 走
-/// [`sync_homes`]。
+/// Single-home entry point (legacy semantics when `target_homes` is empty); multi-home goes through
+/// [`sync_homes`].
 pub fn sync(
     home: &Path,
     hosts: Option<&[SshHost]>,
@@ -391,9 +391,9 @@ pub fn sync(
     )
 }
 
-/// 多目标 home 同步入口：对每个 home 独立渲染 fragment、独立管 Include
-/// （一个 home 失败不影响其余 home，失败如实落到该 home 的 `last_error`）。
-/// 顶层字段取第一个 home 的状态（旧格式消费方口径不变）。
+/// Multi-target-home sync entry: renders the fragment and manages the Include independently per home (one home failing
+/// does not affect the others; failures land faithfully in that home's `last_error`).
+/// Top-level fields take the first home's status (legacy-format consumers see the same shape).
 pub fn sync_homes(
     homes: &[PathBuf],
     hosts: Option<&[SshHost]>,
@@ -422,7 +422,7 @@ pub fn sync_homes(
         write_status(status_path, &status);
         return status;
     }
-    // 重复路径只同步一次（多写同一 home 无意义，状态行也不重复）。
+    // Sync duplicate paths once (writing the same home repeatedly is pointless, and the status rows would duplicate too).
     let mut seen: Vec<&PathBuf> = Vec::new();
     let unique: Vec<&PathBuf> = homes
         .iter()
@@ -469,8 +469,8 @@ pub fn sync_homes(
     status
 }
 
-/// 单个 home 的同步（fragment + 可选 Include 管理），返回
-/// `(include_state, last_error)`。
+/// Sync one home (fragment + optional Include management); returns `(include_state, last_error)`.
+/// `(include_state, last_error)`.
 fn sync_one(
     home: &Path,
     desired: &[SshHost],
@@ -478,7 +478,7 @@ fn sync_one(
 ) -> (IncludeState, Option<String>) {
     let fragment = fragment_path(home);
     if let Err(e) = write_fragment(&fragment, home, desired) {
-        // 与旧单 home 语义一致：fragment 失败时 include_state 维持轮初值。
+        // Same semantics as the legacy single-home path: on fragment failure include_state keeps its round-start value.
         return (
             if manage_include {
                 IncludeState::ManualRequired
@@ -501,14 +501,14 @@ fn write_fragment(fragment: &Path, home: &Path, hosts: &[SshHost]) -> Result<(),
     let dir = fragment
         .parent()
         .ok_or_else(|| "fragment path has no parent".to_string())?;
-    // ~/.ssh 不存在则创建（0700）；已存在不动权限（尊重用户自有设置）。
+    // Create ~/.ssh if missing (0700); if present leave its permissions alone (respect the user's own settings).
     if !dir.exists() {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let _ = set_mode(dir, 0o700);
-        // root 服务代建的 .ssh 目录属主钉成目标 home 属主。
+        // Pin the owner of a root-service-created .ssh dir to the target home's owner.
         let _ = pin_owner_to_home(dir, home);
     }
-    // 幂等：内容一致不重写（mtime 稳定，同步监控/备份不被打搅）。
+    // Idempotent: same content → no rewrite (stable mtime, sync watchers/backups undisturbed).
     if let Ok(existing) = std::fs::read_to_string(fragment) {
         if existing == content {
             let _meta = std::fs::metadata(fragment)
@@ -520,7 +520,7 @@ fn write_fragment(fragment: &Path, home: &Path, hosts: &[SshHost]) -> Result<(),
                     set_mode(fragment, 0o600)?;
                 }
             }
-            // 每轮补钉属主（上一轮可能以非目标属主落盘）。
+            // Re-pin the owner every round (a previous round may have written it under a non-target owner).
             let _ = pin_owner_to_home(fragment, home);
             return Ok(());
         }
@@ -538,10 +538,10 @@ fn write_status(status_path: &Path, status: &SyncStatus) {
         if std::fs::write(&tmp, body).is_ok() {
             let _ = std::fs::rename(&tmp, status_path);
         }
-    } // 状态文件尽力而为：失败不影响数据面，也不重试
+    } // The status file is best effort: a failure never affects the data plane and is never retried
 }
 
-/// `{state_dir}/ssh-sync.json` 路径。
+/// `{state_dir}/ssh-sync.json` path.
 pub fn status_path(state_dir: &str) -> PathBuf {
     Path::new(state_dir).join("ssh-sync.json")
 }
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn sanitize_keeps_case_and_replaces_illegal_chars() {
         assert_eq!(sanitize_alias("openclaw-win"), "openclaw-win");
-        assert_eq!(sanitize_alias("iMac"), "iMac"); // 大小写保留
+        assert_eq!(sanitize_alias("iMac"), "iMac"); // case preserved
         assert_eq!(sanitize_alias("My PC"), "My-PC");
         assert_eq!(sanitize_alias("dev/note:1"), "dev-note-1");
         assert_eq!(sanitize_alias("  "), "node");
@@ -619,7 +619,7 @@ mod tests {
                     address: "10.240.0.9".parse().unwrap(),
                     port: None,
                     user: None,
-                    alias_source: None, // 旧服务端缺省
+                    alias_source: None, // legacy server default
                 },
             ],
         };
@@ -632,7 +632,7 @@ mod tests {
         assert_eq!(win.alias_source, "hub-config");
         assert_eq!(dev.alias, "iMac");
         assert_eq!(dev.alias_source, "hostname");
-        assert_eq!(bare.alias, "My-PC"); // 防御性 sanitize
+        assert_eq!(bare.alias, "My-PC"); // defensive sanitize
         assert_eq!(bare.alias_source, "peer-name");
     }
 
@@ -681,7 +681,7 @@ mod tests {
             );
         }
         let before = std::fs::metadata(&fragment).unwrap().modified().unwrap();
-        // 同内容再同步：不重写（mtime 不动）。
+        // Re-sync the same content: no rewrite (mtime untouched).
         sync(
             &home,
             Some(&hosts),
@@ -692,7 +692,7 @@ mod tests {
         );
         let after = std::fs::metadata(&fragment).unwrap().modified().unwrap();
         assert_eq!(before, after);
-        // 无临时文件残留。
+        // No temp-file leftovers.
         let leftovers: Vec<_> = std::fs::read_dir(home.join(".ssh"))
             .unwrap()
             .filter_map(Result::ok)
@@ -721,7 +721,7 @@ mod tests {
         let full = std::fs::read_to_string(&fragment).unwrap();
         assert!(full.contains("Host wd") && full.contains("Host dev"));
 
-        // 节点下线：hub 期望表不再含 wd → 块消失。
+        // Node removed: the hub's desired table no longer has wd → its block disappears.
         let one = vec![host("dev", "dev", "10.240.0.1", None, None)];
         sync(
             &home,
@@ -799,23 +799,23 @@ mod tests {
         let (state, err) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Managed, "err: {err:?}");
         let text = std::fs::read_to_string(&config).unwrap();
-        // Include 必须在首行：OpenSSH 按首匹配取值，尾部 Include 落在
-        // `Host *` 之后不生效（coding-vm/imac 实机踩坑）。
+        // The Include must be the first line: OpenSSH resolves by first match, and a trailing Include after
+        // `Host *` has no effect (learned on real coding-vm/imac machines).
         assert!(text.starts_with("Include meshlet.conf\n"));
-        // 原有内容原样跟在后面。
+        // The original content follows verbatim.
         assert!(text.contains("Host github.com\n  User git\n"));
-        // 原权限保留（同 inode 截断重写）。
+        // Original permissions preserved (same-inode truncate rewrite).
         assert_eq!(
             std::fs::metadata(&config).unwrap().permissions().mode() & 0o777,
             0o644
         );
-        // 备份一次、内容为原文（不含 Include 行）。
+        // Backed up once, with the original content (no Include line).
         let backup = home.join(".ssh").join(INCLUDE_BACKUP_NAME);
         assert_eq!(
             std::fs::read_to_string(&backup).unwrap(),
             "Host github.com\n  User git\n"
         );
-        // 已含 Include → Present，一个字节都不动。
+        // Already contains the Include → Present, not a byte touched.
         let (state, _) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Present);
         assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
@@ -850,7 +850,7 @@ mod tests {
             std::fs::read_to_string(&config).unwrap(),
             "Include meshlet.conf\n"
         );
-        // 备份是空原文。
+        // The backup is the empty original.
         assert_eq!(
             std::fs::read_to_string(home.join(".ssh").join(INCLUDE_BACKUP_NAME)).unwrap(),
             ""
@@ -875,14 +875,14 @@ mod tests {
         let (state, err) = ensure_include(&config, &home);
         assert_eq!(state, IncludeState::Present, "err: {err:?}");
         assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
-        // Present 路径不落备份（一个字节都没写）。
+        // The Present path writes no backup (not a byte written).
         assert!(!home.join(".ssh").join(INCLUDE_BACKUP_NAME).exists());
         let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
     fn include_is_added_without_losing_non_eol_terminated_content() {
-        // 无尾换行的原文也原样保留（首行插入，尾部一字节不动）。
+        // Original content without a trailing newline is also kept verbatim (first-line insert, not a byte changed at the tail).
         let home = tempdir("noeol");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
         let config = ssh_config_path(&home);
@@ -959,7 +959,7 @@ mod tests {
         assert_eq!(v["include_state"], "manual_required");
         assert_eq!(v["hosts"][0]["alias"], "wd");
         assert_eq!(v["hosts"][0]["port"], 2222);
-        // 关闭后状态文件如实反映（面板能看到「关」）。
+        // After switching off, the status file reflects it faithfully (the panel can see "off").
         sync(
             &home,
             None,
@@ -991,8 +991,8 @@ mod tests {
             true,
             &status_path(h1.to_str().unwrap()),
         );
-        // 每个 home 都有自己的 fragment：0600、属主钉成该 home 的属主；
-        // Include 行按目标 home 的 config 管理（全新 config 由本 agent 创建）。
+        // Every home gets its own fragment: 0600, owner pinned to that home's owner;
+        // the Include line is managed in that home's config (a brand-new config is created by this agent).
         for h in [&h1, &h2] {
             let fragment = fragment_path(h);
             assert!(fragment.exists(), "fragment missing in {}", h.display());
@@ -1004,7 +1004,7 @@ mod tests {
             assert_eq!(config_meta.mode() & 0o777, 0o600);
             assert_eq!(config_meta.uid(), std::fs::metadata(h).unwrap().uid());
         }
-        // 状态文件按 home 列全量；顶层镜像第一个 home。
+        // The status file lists the full set per home; the top level mirrors the first home.
         assert_eq!(status.homes.len(), 2);
         assert_eq!(status.homes[0].home, h1.display().to_string());
         assert_eq!(status.include_state, status.homes[0].include_state);
@@ -1016,8 +1016,8 @@ mod tests {
     #[test]
     fn one_home_failing_does_not_block_the_other() {
         let good = tempdir("homes-good");
-        // bad = good 的子目录路径上放一个「文件」冒充 home → stat 出来不是
-        // 目录，写 fragment 必失败。
+        // bad = a "file" placed on good's subdirectory path posing as a home → stat shows it is not
+        // a directory, so writing the fragment must fail.
         let base = tempdir("homes-base");
         let bad = base.join("not-a-home");
         std::fs::write(&bad, "i am a file").unwrap();
@@ -1035,7 +1035,7 @@ mod tests {
         assert!(status.homes[1].last_error.is_none());
         assert!(fragment_path(&good).exists());
         assert!(!fragment_path(&bad).exists());
-        // 顶层 last_error 镜像第一个失败的 home。
+        // Top-level last_error mirrors the first failed home.
         assert_eq!(status.last_error, status.homes[0].last_error);
         let _ = std::fs::remove_dir_all(&good);
         let _ = std::fs::remove_dir_all(&base);
@@ -1056,7 +1056,7 @@ mod tests {
         );
         let raw = std::fs::read_to_string(status_path(state_dir.to_str().unwrap())).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        // 旧字段仍在且与 homes[0] 一致（旧格式消费方不受影响）。
+        // Legacy fields remain and match homes[0] (legacy-format consumers unaffected).
         assert_eq!(
             v["fragment_path"],
             fragment_path(&home).display().to_string()
@@ -1081,7 +1081,7 @@ mod tests {
             false,
             &status_path(home.to_str().unwrap()),
         );
-        // 重复路径去重后只出现一行（多写一遍同一 home 无意义）。
+        // Deduped duplicate paths produce a single row (writing the same home twice is pointless).
         assert_eq!(status.homes.len(), 1);
         let _ = std::fs::remove_dir_all(&home);
     }

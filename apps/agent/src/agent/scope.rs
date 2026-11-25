@@ -3,14 +3,17 @@
 use meshlet_domain::Ipv4Cidr;
 use meshlet_network::DevicePlan;
 
-/// §12：本设备可路由网段 = hub peer 的 AllowedIPs 中**包含本设备 overlay
-/// 地址**的那条。分段网络时 hub peer 有多条 AllowedIPs 且 `normalize` 排序
-/// 不保证（`allowed_ips[0]` 不一定是所属段），包含关系才是唯一可靠判据；
-/// 与 `peer_endpoints_for` 的 scope 推导同一口径。取不到（无 hub peer /
-/// 地址越出所有段）返回 `None`——无法安全下发 `/32`，保持 hub 中继。
-/// 本设备可路由网段（直连 AllowedIPs `/32` 的冲突边界）：hub peer 的
-/// AllowedIPs 里**最长前缀**且包含本机 overlay 地址的 CIDR。多段重叠时
-/// 最具体的才是本机自己的段（宽段可能覆盖其他段）。
+/// §12: this device's routable segment = the entry in the hub peer's AllowedIPs
+/// that **contains this device's overlay address**. In a segmented network the
+/// hub peer has multiple AllowedIPs and `normalize` ordering is not guaranteed
+/// (`allowed_ips[0]` is not necessarily the owning segment); the containment
+/// relation is the only reliable criterion - same criterion as `peer_endpoints_for`'s
+/// scope derivation. Unreachable (no hub peer / the address falls outside every
+/// segment) returns `None` - a `/32` cannot be safely issued, so keep the hub
+/// relay. This device's routable segment (the conflict boundary for direct
+/// AllowedIPs `/32`): the **longest-prefix** CIDR in the hub peer's AllowedIPs
+/// that contains this machine's overlay address. When segments overlap, the
+/// most specific one is this machine's own segment (a wide segment may cover others).
 pub(super) fn direct_scope(plan: &DevicePlan) -> Option<Ipv4Cidr> {
     plan.tunnel
         .peers

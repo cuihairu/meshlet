@@ -1,16 +1,16 @@
-//! 机制级哨兵：fork 的 fd 副本让 flock 活过持有者的 close，直到 exec。
+//! Mechanism-level sentinel: a fork's fd copy keeps flock alive past the holder's close, until exec.
 //!
-//! 这是 2026-11-13 instance_lock 单测 flake 的根因机制（strace 现场取证 +
-//! C 复现双证实），落成可执行的回归证明：`fork()` 复制整张 fd 表（含
-//! `O_CLOEXEC` 的持锁 fd），副本到 exec **成功**才关——窗口期内锁在内核
-//! 眼里仍被占，哪怕持有者已经 close 了它。库测试二进制里其它单测并发 fork
-//! 真进程时（hostname / sh / ip / wg / ping），「释放后立刻重拿」本来就不
-//! 可靠——这正是锁语义测试必须住在无并发 fork 的独立二进制里的原因
-//! （见 `tests/instance_lock_semantics.rs` 头注释）。
+//! This is the root-cause mechanism behind the 2026-11-13 instance_lock unit-test flake
+//! (strace forensics + a C repro, doubly confirmed), turned into an executable regression:
+//! `fork()` copies the whole fd table (including the `O_CLOEXEC` lock-holding fd); the copy
+//! only closes when exec **succeeds** — during that window the kernel still sees the lock as held
+//! even though the holder already closed it. When other unit tests in the lib test binary fork real
+//! processes concurrently (hostname / sh / ip / wg / ping), "re-acquire right after release" is
+//! inherently unreliable — exactly why the lock semantics tests must live in a separate binary with no concurrent forks (see the header of `tests/instance_lock_semantics.rs`).
 //!
-//! 本文件**必须独占一个测试二进制**：哨兵自身的 fork 会复制本二进制里
-//! 其它并发测试可能持有的锁 fd，混进 `instance_lock_semantics.rs` 会把
-//! 那组「必须确定性绿」的测试重新变成概率红。
+//! This file **must own its own test binary**: the sentinel's own fork would copy lock fds held
+//! by other concurrent tests in the same binary; mixed into `instance_lock_semantics.rs`, it
+//! would turn that group of "must be deterministically green" tests probabilistically red again.
 
 #![cfg(target_os = "linux")]
 
@@ -30,7 +30,7 @@ fn forked_fd_copy_keeps_the_lock_alive_until_exec() {
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork");
     if pid == 0 {
-        // 子进程：故意停在 exec 前 3s——fd 表副本（含持锁 fd）还开着。
+        // Child: deliberately stall 3s before exec — the fd table copy (lock fd included) is still open.
         std::thread::sleep(Duration::from_secs(3));
         unsafe {
             libc::execl(
@@ -41,8 +41,8 @@ fn forked_fd_copy_keeps_the_lock_alive_until_exec() {
         };
         unsafe { libc::_exit(127) };
     }
-    // 父侧等到子进程确定处于 pre-exec 窗口内，再 close 唯一的父侧持锁 fd。
-    // （窗口余量 ~2.9s：CI 极端负载下也不许把「窗口内必须拿不到」变成概率红。）
+    // Parent: wait until the child is surely inside the pre-exec window, then close the parent's
+    // only lock fd. (Margin ~2.9s: under extreme CI load this must not turn probabilistically red.)
     std::thread::sleep(Duration::from_millis(100));
     drop(first);
     let during = try_acquire(&state_dir);
@@ -50,7 +50,7 @@ fn forked_fd_copy_keeps_the_lock_alive_until_exec() {
         during.is_err(),
         "while a pre-exec fd copy is alive, the lock must still be considered held"
     );
-    // 子进程 exec /bin/true（CLOEXEC 关掉副本）并退出后，锁必须可拿。
+    // After the child execs /bin/true (CLOEXEC closes the copy) and exits, the lock must be acquirable.
     let mut status = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
     assert!(status == 0, "child must exit cleanly (status {status})");

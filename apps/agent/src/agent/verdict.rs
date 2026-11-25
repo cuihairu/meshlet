@@ -2,8 +2,9 @@
 
 use meshlet_domain::PeerLinkState;
 
-/// `peer dial` 结果判定（纯函数，可测）：目标对端当前状态 → (ok, mode, message)。
-/// `None` = 对端不在管（本周期候选集外）——按失败呈现，绝不假装成功。
+/// `peer dial` verdict (pure function, testable): the target peer's current state
+/// -> (ok, mode, message). `None` = the peer is out of scope (outside this cycle's
+/// candidate set) - present as failure, never pretend success.
 pub(super) fn dial_verdict(
     status: Option<&crate::direct::DirectPeer>,
 ) -> (bool, &'static str, &'static str) {

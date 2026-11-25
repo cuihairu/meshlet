@@ -1,34 +1,36 @@
-//! 网络变化事件（P1 配套，2026-11-12 用户令）：接口起落 / 地址增删时唤醒
-//! 主循环的退避等待，**立即重试**——断线后最坏等一整个退避周期（300s 封顶
-//! 时代最坏 5 分钟）是「老是连不上」的直接来源；网络早恢复了，agent 却还
-//! 在退避里干等。
+//! Network-change events (the P1 companion, user directive 2026-11-12): wake the main loop's backoff wait
+//! on interface up/down or address add/remove and **retry immediately** - after a disconnect, the worst case of
+//! waiting out the whole backoff period (up to 5 minutes under the 300s cap) is the direct source of "it never
+//! connects"; the network has long recovered while the agent is still sitting in backoff.
 //!
-//! 平台机制（二选一，最小实现）：
-//! - **Linux**：netlink 订阅（`NETLINK_ROUTE` 组播
-//!   `RTMGRP_LINK | RTMGRP_IPV4_IFADDR`——接口 up/down 与 IPv4 地址增删，
-//!   `libc` 直达，不引新依赖）；
-//! - **Windows**：`NotifyAddrChange(NULL, NULL)` 同步阻塞式——官方文档明示
-//!   双 NULL 即阻塞到 IPv4 地址表变化（一次变化后需再次调用取下一次）。
-//!   接口起落通常伴随地址增删即触发；纯 link 翻转不换地址的极端场景不在此
-//!   最小实现的感知面内（如实记录）。
+//! Platform mechanisms (one of two, minimal implementation):
+//! - **Linux**: a netlink subscription (`NETLINK_ROUTE` multicast
+//!   `RTMGRP_LINK | RTMGRP_IPV4_IFADDR` - interface up/down and IPv4 address add/remove,
+//!   via `libc` directly, adding no new dependency);
+//! - **Windows**: a blocking `NotifyAddrChange(NULL, NULL)` - the official documentation states the two-NULL
+//!   form blocks until the IPv4 address table changes (call again after each change for the next one).
+//!   Interface up/down usually coincides with address add/remove and triggers it; the extreme case of a pure
+//!   link flip without an address change is outside this minimal implementation's sensing surface (recorded as such).
 //!
-//! 纪律：
-//! - **监视失败绝不放大故障**：起线程 / 订阅失败只告警退出，主循环退回纯
-//!   睡眠周期（行为同本模块不存在）——探测唤醒是加速器，不是依赖面；
-//! - **绝不忙转**：接收端把 `Disconnected`（监视线程没了）按「等满周期」
-//!   处理，见 [`crate::agent::Agent::run`]。
+//! Disciplines:
+//! - **A monitoring failure must never amplify the fault**: a thread-start / subscription failure only warns
+//!   and exits, and the main loop falls back to a plain sleep cycle (indistinguishable from the module not
+//!   existing) - probe-driven wakeup is an accelerator, not a dependency surface;
+//! - **Never spin busy**: the receiver treats `Disconnected` (the monitor thread is gone) as "wait out the
+//!   whole cycle", see [`crate::agent::Agent::run`].
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
-/// 起网络变化监视：返回事件接收端。每条消息代表「接口/地址表发生了变化」
-///（不区分具体事件——主循环的重试是幂等的拉取，无须知道变化内容）。
+/// Start network-change monitoring: returns the event receiver. Each message means "the interface/address
+/// table changed" (no distinction of specific events - the main loop's retry is an idempotent pull and needs no
+/// knowledge of what changed).
 ///
-/// 监视线程常驻到进程退出或订阅失败；订阅失败只记一次告警，接收端从此
-/// 收不到事件（主循环退回纯睡眠周期，见模块文档）。
+/// The monitor thread lives until process exit or subscription failure; a subscription failure warns once,
+/// after which the receiver receives no events (the main loop falls back to a plain sleep cycle, see the module docs).
 pub fn watch() -> Receiver<()> {
     let (tx, rx) = mpsc::channel();
-    // 发送端先克隆一份留在本函数：线程起不来时保活它——接收端既无事件
-    // 也无 Disconnected（否则主循环会被立刻唤醒，忙转）。
+    // The sender is cloned and kept alive here: when the thread cannot start, the receiver then sees neither
+    // events nor `Disconnected` (otherwise the main loop would be woken at once and spin busy).
     let keeper = tx.clone();
     match std::thread::Builder::new()
         .name("meshlet-net-event".into())
@@ -45,7 +47,7 @@ pub fn watch() -> Receiver<()> {
 
 #[cfg(target_os = "linux")]
 fn monitor(events: Sender<()>) {
-    // 最小 netlink 订阅：link（接口起落）+ IPv4 地址（地址增删）组播组。
+    // Minimal netlink subscription: the link (interface up/down) + IPv4 address (address add/remove) multicast groups.
     unsafe {
         let fd = libc::socket(
             libc::AF_NETLINK,
@@ -82,8 +84,8 @@ fn monitor(events: Sender<()>) {
                 return;
             }
             if n == 0 {
-                // 内核不会关 netlink：按异常退出处理（告警在 run 侧由
-                // Disconnected 兜底为纯睡眠）。
+                // The kernel never closes netlink: treat it as an abnormal exit (on the run side, `Disconnected`
+                // falls back to a plain sleep).
                 libc::close(fd);
                 return;
             }
@@ -98,8 +100,8 @@ fn monitor(events: Sender<()>) {
 #[cfg(target_os = "windows")]
 fn monitor(events: Sender<()>) {
     loop {
-        // 双 NULL 的同步式：阻塞到 IPv4 地址表变化（官方文档），无句柄归属
-        // 问题；一次变化后需再次调用取下一次。
+        // The synchronous two-NULL form: blocks until the IPv4 address table changes (official documentation),
+        // with no handle-ownership problem; call again after each change for the next.
         let rc = unsafe {
             windows_sys::Win32::NetworkManagement::IpHelper::NotifyAddrChange(
                 std::ptr::null_mut(),
@@ -119,8 +121,8 @@ fn monitor(events: Sender<()>) {
     }
 }
 
-/// 其余平台无网络变化机制：监视即退出（接收端 Disconnected → 主循环按
-/// 等满周期处理，见模块文档）。
+/// Other platforms have no network-change mechanism: monitoring exits at once (the receiver's `Disconnected`
+/// means the main loop waits out the whole cycle, see the module docs).
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn monitor(events: Sender<()>) {
     drop(events);
@@ -130,12 +132,13 @@ fn monitor(events: Sender<()>) {
 mod tests {
     use super::*;
 
-    /// 监视启动即有可用接收端；订阅失败（CI 容器常无 netlink 权限）不 panic，
-    /// 主循环按纯周期退避——启动本身不可能是故障点。
+    /// A usable receiver exists as soon as monitoring starts; a subscription failure (CI containers often lack
+    /// netlink permission) does not panic and the main loop falls back to pure periodic backoff - startup itself
+    /// cannot be a fault point.
     #[test]
     fn watch_returns_a_receiver_without_panicking() {
         let rx = watch();
-        // 不断言是否收到事件（真网络事件不可控）：接收端在即可。
+        // No assertion on whether events arrive (real network events are uncontrollable): the receiver existing is enough.
         drop(rx);
     }
 }

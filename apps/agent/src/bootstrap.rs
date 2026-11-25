@@ -1,27 +1,28 @@
-//! 自举注册（ZeroTier 式）：无 `device_token` 时持自举码向控制中心注册自身，
-//! 落 **Pending** 申请，等控制中心批准/拒绝。
+//! Bootstrap registration (ZeroTier-style): without a `device_token`, register this machine with the control center using a
+//! bootstrap token, filing a **Pending** request to await approval or rejection.
 //!
-//! 生命周期：首启 → 生成本机 WireGuard 密钥对（私钥落 0600 文件，ADR-010：
-//! 私钥不出设备）→ `POST /api/v1/device-registrations` 上报公钥 → 拿到
-//! agent 凭证（**仅此一次**下发，写 0600 `{state_dir}/device_token`）→
-//! 待审批期心跳保活（控制中心能看到设备活着）→ 批准后转入正常拉计划循环。
+//! Lifecycle: first boot -> generate a local WireGuard keypair (private key written to a 0600 file, ADR-010:
+//! the private key never leaves the device) -> `POST /api/v1/device-registrations` with the public key -> obtain the
+//! agent credential (issued **this one time only**, written as 0600 `{state_dir}/device_token`) -> keep alive with
+//! heartbeats during the pending-approval period (so the control center can see the device is alive) -> after
+//! approval, enter the normal plan-fetch loop.
 //!
-//! 凭证解析顺序（先到先用，不重复注册）：
-//! 1. 配置里的 `device_token`（邀请入会路径，§11.2）；
-//! 2. `{state_dir}/device_token` 文件（此前自举注册已签发，重启复用）；
-//! 3. 自举码 `bootstrap_token`（ZeroTier 式注册路径，本模块）。
+//! Credential resolution order (first that resolves wins, no double registration):
+//! 1. `device_token` from config (the invitation path, §11.2);
+//! 2. the `{state_dir}/device_token` file (issued by an earlier bootstrap registration, reused across restarts);
+//! 3. the bootstrap token `bootstrap_token` (the ZeroTier-style registration path, this module).
 
 use std::path::{Path, PathBuf};
 
 use meshlet_config::AgentConfig;
 use meshlet_network::keys;
 
-/// agent 凭证文件（自举注册签发，0600；重启后复用，不重复注册）。
+/// Agent credential file (issued by bootstrap registration, 0600; reused after a restart, never re-registered).
 pub fn device_token_path(state_dir: &str) -> PathBuf {
     Path::new(state_dir).join("device_token")
 }
 
-/// 平台标识（注册请求字段；与服务端 `Platform` 枚举同源）。
+/// Platform identifier (a registration-request field; shared with the server-side `Platform` enum).
 fn platform_str() -> &'static str {
     if cfg!(target_os = "windows") {
         "windows"
@@ -30,8 +31,8 @@ fn platform_str() -> &'static str {
     }
 }
 
-/// 解析设备凭证：配置 `device_token` → 凭证文件 → 自举注册。
-/// 返回补齐凭证后的配置（`device_token` 就位）。
+/// Resolve the device credential: config `device_token` -> credential file -> bootstrap registration.
+/// Returns the config with the credential filled in (`device_token` in place).
 pub fn resolve_device_token(config: AgentConfig) -> Result<AgentConfig, String> {
     if config
         .device_token
@@ -70,8 +71,9 @@ pub fn resolve_device_token(config: AgentConfig) -> Result<AgentConfig, String> 
     Ok(config)
 }
 
-/// 自举注册：密钥对（私钥 0600 落盘）→ `POST /device-registrations` →
-/// 凭证文件落盘（0600）。重复注册前先查凭证文件（[`resolve_device_token`]）。
+/// Bootstrap registration: keypair (private key written to disk as 0600) -> `POST /device-registrations` ->
+/// credential file written (0600). Check the credential file before registering again
+/// ([`resolve_device_token`]).
 fn register(config: AgentConfig, bootstrap_token: &str) -> Result<AgentConfig, String> {
     let device_name = config.device_name.clone().ok_or(
         "agent.device_name must be configured for self-registration (it identifies the device \
@@ -82,8 +84,8 @@ fn register(config: AgentConfig, bootstrap_token: &str) -> Result<AgentConfig, S
              local private key is generated there, never sent to the server)",
     )?;
 
-    // 本机密钥对：文件已存在则只推导公钥（私钥不动——重装不换钥匙）；
-    // 不存在则生成并落盘。
+    // The local keypair: if the file already exists, derive the public key only (leave the private key alone - a
+    // reinstall does not change the key); otherwise generate one and write it to disk.
     let (_private_key, public_key) = match std::fs::read_to_string(&key_file) {
         Ok(existing) => {
             let existing = existing.trim().to_string();
@@ -112,7 +114,7 @@ fn register(config: AgentConfig, bootstrap_token: &str) -> Result<AgentConfig, S
         "self-registered: waiting for approval in the control center"
     );
 
-    // agent 凭证仅此一次下发：立即落 0600 文件（重启复用，不重复注册）。
+    // The agent credential is issued this one time only: write it to the 0600 file immediately (reused after a restart, never re-registered).
     let token_path = device_token_path(&config.state_dir);
     if let Some(dir) = token_path.parent() {
         std::fs::create_dir_all(dir)
@@ -127,7 +129,7 @@ fn with_token(mut config: AgentConfig, token: String) -> AgentConfig {
     config
 }
 
-/// 写 0600 秘密文件（凭证/私钥）：权限收紧，非 Unix 平台退回默认写。
+/// Write a 0600 secret file (credential / private key): tighten permissions, with a fallback to a default write on non-Unix platforms.
 fn write_secret_file(path: &Path, content: &str) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -164,7 +166,7 @@ mod tests {
 
     #[test]
     fn platform_matches_server_enum() {
-        // 服务端只认 "linux" / "windows"（service::register_device）。
+        // The server only accepts "linux" / "windows" (service::register_device).
         assert!(matches!(platform_str(), "linux" | "windows"));
     }
 

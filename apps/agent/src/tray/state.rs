@@ -1,37 +1,38 @@
-//! 托盘四态状态机：不新造状态名——四态逐一对应仓内已有枚举（见模块 [`crate::tray`]
-//! 头文档「纪律一」的映射表），derive 由 agent 侧真实信号推导；每态带文本等价物
-//! （tooltip / accessible_name），不依赖颜色。渲染（轮廓几何与调色板）在
-//! [`crate::tray::icon`]。
+//! Tray four-state machine: no new state names are invented - each of the four states maps
+//! one-to-one onto an existing in-repo enum (see the mapping table in the "discipline one"
+//! section of the [`crate::tray`] module header), and `derive` reasons from real agent-side
+//! signals; every state carries a text equivalent (tooltip / accessible_name), never relying on
+//! color. Rendering (outline geometry and palette) lives in [`crate::tray::icon`].
 
 use crate::reconcile::Reason;
 
-/// 托盘状态：四态各对应一组仓内已有枚举，不新造状态名。
+/// Tray state: each of the four states corresponds to a set of existing in-repo enums; no new state names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayState {
-    /// 「在线直连」/「中继中」——**v1 同态**（ADR-002 全部流量经 VPS 中心中继，
-    /// 仓内无直连信号，P2P 留 v2）。对应：
-    /// [`PresenceState::Online`] ＋ [`Reason::UpToDate`] ＋ [`ApplyStatus::Applied`]
-    /// ＋ [`DeviceStatus::Active`]。
+    /// "online direct" / "relaying" - **the same state in v1** (ADR-002 sends all traffic through the VPS central relay,
+    /// and the repo has no direct-connect signal; P2P is deferred to v2). Maps to:
+    /// [`PresenceState::Online`] + [`Reason::UpToDate`] + [`ApplyStatus::Applied`]
+    /// + [`DeviceStatus::Active`].
     Online,
-    /// 隧道连通但控制通道失效。对应：[`PresenceState::TunnelOnly`]
-    /// （服务端口径「仅握手新鲜、agent 上报过期」）；agent 侧对位：本机 `wg show
-    /// latest-handshakes` 有值，但心跳上报失败。
+    /// The tunnel is connected but the control channel is down. Maps to [`PresenceState::TunnelOnly`]
+    /// (the server-side notion of "only the handshake is fresh, the agent report is stale"); the agent-side
+    /// counterpart: `wg show latest-handshakes` on this machine has a value, but heartbeat reporting fails.
     TunnelOnly,
-    /// 隧道异常：本地内核对象与服务端期望不一致，或重放失败。对应：
-    /// [`Reason::KernelDrift`] ＋ [`ApplyStatus::Failed`]。
+    /// Tunnel fault: local kernel objects disagree with the server's expectation, or replay failed. Maps to
+    /// [`Reason::KernelDrift`] + [`ApplyStatus::Failed`].
     TunnelDrift,
-    /// 已断开：控制通道与隧道均无新鲜证据。对应 [`PresenceState::Offline`]。
+    /// Disconnected: no fresh evidence for either the control channel or the tunnel. Maps to [`PresenceState::Offline`].
     Offline,
 }
 
 impl TrayState {
-    /// 由 agent 侧真实信号推导（纯函数，便于单测）：
+    /// Derived from real agent-side signals (pure function, easy to unit test):
     ///
-    /// - [`Reason::KernelDrift`] → [`TrayState::TunnelDrift`]（内核漂移即「隧道异常」）
-    /// - 控制通道失效 ＋ 本地读得到握手 → [`TrayState::TunnelOnly`]
-    /// - 控制通道失效 ＋ 本地也读不到握手 → [`TrayState::Offline`]
-    /// - 其余（含 `UpToDate` / `DesiredConfigChanged` / `NoLocalLedger`，均为**预期内**
-    ///   的配置变更而非异常）→ [`TrayState::Online`]
+    /// - [`Reason::KernelDrift`] -> [`TrayState::TunnelDrift`] (kernel drift means "tunnel fault")
+    /// - control channel down + a handshake is readable locally -> [`TrayState::TunnelOnly`]
+    /// - control channel down + no handshake readable locally either -> [`TrayState::Offline`]
+    /// - everything else (including `UpToDate` / `DesiredConfigChanged` / `NoLocalLedger`, all **expected**
+    ///   configuration changes rather than faults) -> [`TrayState::Online`]
     pub fn derive(reason: Reason, control_ok: bool, tunnel_alive: bool) -> Self {
         if reason == Reason::KernelDrift {
             return TrayState::TunnelDrift;
@@ -46,7 +47,7 @@ impl TrayState {
         TrayState::Online
     }
 
-    /// 无障碍短名（tray 图标的可访问名称；不依赖颜色）。
+    /// Accessibility short name (the tray icon's accessible name; does not rely on color).
     pub fn accessible_name(self) -> &'static str {
         match self {
             TrayState::Online => "Meshlet online",
@@ -56,7 +57,7 @@ impl TrayState {
         }
     }
 
-    /// tooltip 正文（整句，含状态含义；与图标形状互为冗余通道）。
+    /// Tooltip body (a full sentence carrying the state's meaning; a redundant channel alongside the icon shape).
     pub fn tooltip(self) -> &'static str {
         match self {
             TrayState::Online => "在线：控制通道正常，数据面与服务端期望一致（流量经 VPS 中继）",
@@ -67,7 +68,7 @@ impl TrayState {
     }
 }
 
-/// 全部四态（测试遍历用；`#[cfg(test)]` 不进生产构建）。
+/// All four states (for test iteration; `#[cfg(test)]` does not enter production builds).
 #[cfg(test)]
 pub(crate) fn all_states() -> [TrayState; 4] {
     [
@@ -85,7 +86,7 @@ mod tests {
     use meshlet_domain::entities::{ApplyStatus, DeviceStatus};
     use meshlet_domain::presence::PresenceState;
 
-    // ── 纪律一：状态映射到仓内已有枚举 ───────────────────────────────────
+    // -- Discipline one: states map onto existing in-repo enums ------------------------------
 
     #[test]
     fn kernel_drift_maps_to_tunnel_drift() {
@@ -93,7 +94,7 @@ mod tests {
             TrayState::derive(Reason::KernelDrift, true, true),
             TrayState::TunnelDrift
         );
-        // 漂移优先于心跳状态：控制通道失效时也是 TunnelDrift。
+        // Drift takes priority over heartbeat state: TunnelDrift even when the control channel is down.
         assert_eq!(
             TrayState::derive(Reason::KernelDrift, false, false),
             TrayState::TunnelDrift
@@ -118,7 +119,7 @@ mod tests {
 
     #[test]
     fn expected_config_changes_stay_online() {
-        // DesiredConfigChanged / NoLocalLedger 是预期内的配置变更，不是异常。
+        // DesiredConfigChanged / NoLocalLedger are expected configuration changes, not faults.
         for reason in [
             Reason::UpToDate,
             Reason::DesiredConfigChanged,
@@ -149,14 +150,14 @@ mod tests {
         }
     }
 
-    /// 编译期确认映射目标都是仓内已有枚举（防漂移）。
+    /// Confirm at compile time that every mapping target is an existing in-repo enum (drift guard).
     #[test]
     fn mapped_enums_are_the_repos_own() {
         assert_eq!(PresenceState::Online.as_str(), "online");
         assert_eq!(PresenceState::TunnelOnly.as_str(), "tunnel_only");
         assert_eq!(PresenceState::Offline.as_str(), "offline");
         assert_eq!(Reason::KernelDrift.as_str(), "kernel_drift");
-        // 隧道异常态的另一个对位：应用中失败（ApplyStatus 状态机允许的迁移）。
+        // Another counterpart of the tunnel-fault state: application failure (a transition the ApplyStatus state machine permits).
         assert!(ApplyStatus::Applying.can_transition_to(ApplyStatus::Failed));
         assert_ne!(DeviceStatus::Active, DeviceStatus::Revoked);
     }

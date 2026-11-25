@@ -46,9 +46,9 @@ pub struct NotifyCall {
 
 pub const NOTIFICATION_ID: u32 = 0;
 
-/// 任务到达通知的「打开详情」动作键（DBus 动作对 key/label 的前半）。
+/// Action key for the task-arrival notification's "open details" action (the key half of the D-Bus action key/label pair).
 pub const TASK_ACTION_OPEN: &str = "open";
-/// 任务到达通知摘要。任务 id/命令是动态内容，放 body；摘要保持静态。
+/// Task-arrival notification summary. The task id/command are dynamic content and go in the body; the summary stays static.
 pub const TASK_ARRIVED_SUMMARY: &str = "Task arrived";
 
 pub fn notify_call(status: &TrayStatus) -> NotifyCall {
@@ -64,10 +64,10 @@ pub fn notify_call(status: &TrayStatus) -> NotifyCall {
     }
 }
 
-/// 任务到达的托盘气泡（MT-004，复用 notify 契约）：摘要「Task arrived」，
-/// body 带任务 id 与命令，动作「open/Open task」指向打开任务详情。点击路由
-/// （ActionInvoked → 详情）是桌面宿主侧真实交互；见 MT1104——Windows 真机
-/// 验收 BLOCKED，此处只落代码面（纯构造 + 触发测试）。
+/// Tray bubble for task arrival (MT-004, reusing the notify contract): summary "Task arrived",
+/// body carries the task id and command, and the "open/Open task" action points at opening the task details. The click
+/// routing (ActionInvoked -> details) is a real desktop-host interaction; see MT1104 - real-machine
+/// acceptance on Windows is BLOCKED, so this only lands the code side (pure construction + trigger tests).
 pub fn task_notify_call(task_id: &str, cmd: &str) -> NotifyCall {
     NotifyCall {
         app_name: "Meshlet",
