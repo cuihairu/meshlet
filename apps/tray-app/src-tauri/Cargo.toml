@@ -19,5 +19,5 @@ meshlet-commands = { workspace = true }
 meshlet-network = { workspace = true }
 
 [dev-dependencies]
-# 契约测试用 mock runtime（MockRuntime 平台无关，宿主/交叉 check 两腿都可编译）。
+# Mock runtime for the contract tests (MockRuntime is platform-independent, so both the host and cross-check legs compile).
 tauri = { version = "2", features = ["test"] }

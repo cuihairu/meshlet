@@ -1,11 +1,15 @@
-//! 非 Linux 平台的明确占位后端（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
+//! Explicit placeholder backend for non-Linux platforms
+//! ([ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)).
 //!
-//! 构造与装配（`new` / `with_*`）照常成立，平台无关的调用方代码在任何
-//! 平台都能编译运行；但**每一个触碰内核的操作**都返回
-//! [`NetworkError::Unsupported`] 并点名操作与接口——Windows 网络后端
-//! （WireGuard tunnel service + 系统路由 API）是 ADR-008 的后续实现项。
-//! 占位的意义是**错误面**而不是假绿：应用失败可见、读数按「未证实」
-//! 处理，绝不静默假装生效（§10.3、§12.2）。
+//! Construction and assembly (`new` / `with_*`) work as usual, so
+//! platform-agnostic caller code compiles and runs on any platform; but
+//! **every operation that would touch the kernel** returns
+//! [`NetworkError::Unsupported`] and names the operation and the interface —
+//! the Windows network backend (WireGuard tunnel service + system routing
+//! API) is ADR-008's follow-up implementation item. The point of the
+//! placeholder is an **error surface** rather than a false green: apply
+//! failures are visible and readings are treated as "unverified"; it never
+//! silently pretends to have taken effect (§10.3, §12.2).
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -18,7 +22,8 @@ use crate::{
 };
 use meshlet_domain::Ipv4Cidr;
 
-/// 非 Linux 平台的占位后端：所有数据面操作显式拒绝（ADR-008 待接入）。
+/// Placeholder backend for non-Linux platforms: every data-plane operation is
+/// explicitly refused (ADR-008 pending integration).
 #[derive(Clone, Default)]
 pub struct UnsupportedBackend {
     interface: String,
@@ -31,18 +36,20 @@ impl UnsupportedBackend {
         }
     }
 
-    /// 测试钩子对齐（Linux 后端同名装配方法）：占位后端无视 netns 与
-    /// `sudo -n` 前缀——反正每个操作都会拒绝。
+    /// Test-hook parity (the same-named assembly method on the Linux backend):
+    /// the placeholder backend ignores netns and the `sudo -n` prefix — every
+    /// operation is going to be refused anyway.
     pub fn with_netns(self, _netns: impl Into<String>) -> Self {
         self
     }
 
-    /// 同 [`UnsupportedBackend::with_netns`]。
+    /// Same as [`UnsupportedBackend::with_netns`].
     pub fn with_sudo(self) -> Self {
         self
     }
 
-    /// 记录受管接口名，使拒绝信息能点名它（与 Linux 后端同形）。
+    /// Record the managed interface name so the refusal message can name it
+    /// (same shape as the Linux backend).
     pub fn with_interface(mut self, interface: impl Into<String>) -> Self {
         self.interface = interface.into();
         self
@@ -105,7 +112,8 @@ impl UnsupportedBackend {
         Err(self.refuse("apply_nat"))
     }
 
-    /// 设备计划组合应用（与 Linux 后端同签名）：先拒绝，不碰隧道/路由/NAT。
+    /// Combined device-plan application (same signature as the Linux backend):
+    /// refuse first, without touching tunnel/routes/NAT.
     pub fn apply_device_plan_sync(
         &self,
         _plan: &DevicePlan,
@@ -132,12 +140,15 @@ impl UnsupportedBackend {
         Err(self.refuse("enumerate lan subnets"))
     }
 
-    /// P2P 直连执行层本平台无实现：显式拒绝（不假装直连成功）。
+    /// No implementation of the P2P direct-connect execution layer on this
+    /// platform: explicitly refused (never pretend the direct connection
+    /// succeeded).
     pub fn handshake_ages_sync(&self) -> Result<BTreeMap<String, u64>, NetworkError> {
         Err(self.refuse("handshake_ages"))
     }
 
-    /// P2P 直连 peer 下发本平台无实现：显式拒绝。
+    /// No implementation of P2P direct peer application on this platform:
+    /// explicitly refused.
     pub fn set_direct_peer_sync(
         &self,
         _public_key: &str,
@@ -148,12 +159,14 @@ impl UnsupportedBackend {
         Err(self.refuse("set_direct_peer"))
     }
 
-    /// P2P 直连 peer 移除本平台无实现：显式拒绝。
+    /// No implementation of P2P direct peer removal on this platform:
+    /// explicitly refused.
     pub fn remove_peer_sync(&self, _public_key: &str) -> Result<(), NetworkError> {
         Err(self.refuse("remove_peer"))
     }
 
-    /// SEL-002 直连 endpoint 漫游本平台无实现：显式拒绝。
+    /// SEL-002 direct endpoint roaming has no implementation on this platform:
+    /// explicitly refused.
     pub fn set_direct_endpoint_sync(
         &self,
         _public_key: &str,
@@ -173,20 +186,24 @@ impl UnsupportedBackend {
         Err(self.refuse("rollback"))
     }
 
-    /// `wg pubkey` 等价物在本平台无实现：hub 公钥推导显式失败（server 把
-    /// 它作为可见错误返回，绝不下发空计划装作有 hub）。
+    /// The `wg pubkey` equivalent has no implementation on this platform: hub
+    /// public-key derivation fails explicitly (the server returns it as a
+    /// visible error, and never dispatches an empty plan pretending a hub
+    /// exists).
     pub fn public_key_from_private(&self, _private_key: &str) -> Result<String, NetworkError> {
         Err(self.refuse("public_key_from_private"))
     }
 
-    /// 大包探测在本平台无数据面：`false` = 「未证实」，不是绿（§7.5/§12.2
-    /// 不假绿——探测失败绝不冒充路径可承载）。
+    /// Large-packet probing has no data plane on this platform: `false` means
+    /// "unverified", not green (§7.5/§12.2 no false green — a failed probe
+    /// never pretends the path can carry it).
     pub fn mtu_probe_sync(&self, _target: Ipv4Addr, _payload: u32) -> bool {
         false
     }
 
-    /// 默认路由底层 MTU 在本平台无读数来源：`None` = 「读数不可得」，调用方
-    /// 回退默认探测尺寸（§7.5 不臆测）。
+    /// The default route's underlay MTU has no reading source on this platform:
+    /// `None` means "reading unavailable", and the caller falls back to the
+    /// default probe size (§7.5, no guessing).
     pub fn underlay_path_mtu_sync(&self) -> Option<u32> {
         None
     }
@@ -243,8 +260,9 @@ mod tests {
         }
     }
 
-    /// 每个数据面操作都显式拒绝，且拒绝信息点名操作与接口（错误面，
-    /// 不是静默吞掉假装通过）。
+    /// Every data-plane operation is explicitly refused, and the refusal names
+    /// the operation and the interface (an error surface, not a silent swallow
+    /// that pretends it passed).
     #[test]
     fn every_operation_refuses_naming_the_operation() {
         let backend = UnsupportedBackend::new().with_interface("wg0");
@@ -321,7 +339,8 @@ mod tests {
         }
     }
 
-    /// trait 面（async）与 sync 面同一拒绝语义：占位不是只在一条路上诚实。
+    /// The trait surface (async) refuses with the same semantics as the sync
+    /// surface: the placeholder is not honest on only one path.
     #[tokio::test]
     async fn the_trait_surface_refuses_the_same_way() {
         let backend = UnsupportedBackend::new();
@@ -331,7 +350,8 @@ mod tests {
         ));
     }
 
-    /// 大包探测恒 false：占位后端下「未证实」不冒充绿（§7.5）。
+    /// Large-packet probing is always false: under the placeholder backend
+    /// "unverified" never poses as green (§7.5).
     #[test]
     fn mtu_probe_reports_unverified() {
         assert!(!UnsupportedBackend::new().mtu_probe_sync("10.240.0.2".parse().unwrap(), 1392));

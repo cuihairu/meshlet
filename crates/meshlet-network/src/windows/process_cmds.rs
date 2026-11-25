@@ -28,12 +28,15 @@ impl WindowsNetworkBackend {
         parse_ip_enable_router(&String::from_utf8_lossy(&output.stdout))
     }
 
-    /// 确保 IP 转发开启（镜像 Linux `sysctl -w net.ipv4.ip_forward=1`）。
+    /// Make sure IP forwarding is enabled (mirrors Linux
+    /// `sysctl -w net.ipv4.ip_forward=1`).
     ///
-    /// [crate::NetworkSnapshot] 的 `forwarding_enabled` 读 `IPEnableRouter`
-    /// 注册表；[`apps/agent` 的漂移判定] 要求其为 `Some(true)`，否则
-    /// `KernelDrift` 每轮重放。Windows 客户端默认缺失/为 0，必须在此置 1
-    /// 才能收敛（幂等：已为 1 则跳过，`/f` 覆盖写仅在实际变更时）。
+    /// `forwarding_enabled` in [crate::NetworkSnapshot] reads the `IPEnableRouter`
+    /// registry value; [the drift verdict in `apps/agent`] requires it to be
+    /// `Some(true)`, otherwise `KernelDrift` replays every round. Windows
+    /// clients default to missing / 0, so it must be set to 1 here to converge
+    /// (idempotent: skip when already 1 — the `/f` overwrite write happens only
+    /// on an actual change).
     pub(super) fn ensure_ip_forwarding_sync(&self) -> Result<(), NetworkError> {
         if self.forwarding_enabled() == Some(true) {
             return Ok(());
@@ -67,20 +70,25 @@ impl WindowsNetworkBackend {
         Ok(())
     }
 
-    /// AGENT-FW-1 接线：设备计划 apply 时按档位走 mesh 可达性防火墙。
+    /// AGENT-FW-1 wiring: on device plan apply, run the mesh reachability
+    /// firewall per the profile category.
     ///
-    /// 镜像 Linux `ensure_host_firewall_sync` 的纪律——探测
-    /// 失败按「未满足」处理（fail toward action；档位 set 与规则 add 均幂等），
-    /// 执行失败显式报错，绝不假装生效。置于隧道与路由之后调用：
-    /// `SetNetworkCategoryPrivate` 需接口已存在。
+    /// Mirrors the discipline of Linux `ensure_host_firewall_sync` — a probe
+    /// failure is treated as "not satisfied" (fail toward action; both the
+    /// category set and the rule add are idempotent), while an execution failure
+    /// reports an explicit error and never pretends to have taken effect. Called
+    /// after the tunnel and routes: `SetNetworkCategoryPrivate` needs the
+    /// interface to already exist.
     pub(super) fn ensure_mesh_reachability_sync(
         &self,
         device_addr: std::net::Ipv4Addr,
     ) -> Result<(), NetworkError> {
-        // nt 模型下 `self.interface`（如 `wg-meshlet`）不是 OS 别名（WireGuardNT
-        // adapter 的 OS 别名是驱动默认名 `WireGuard`，隧道名只在
-        // InterfaceDescription——七项验收 item 1 证据）。probe 与 set 都用
-        // 解析出的 OS 别名；service 模型路径行为不变。
+        // Under the nt model `self.interface` (e.g. `wg-meshlet`) is not an OS
+        // alias (a WireGuardNT adapter's OS alias is the driver default name
+        // `WireGuard`; the tunnel name appears only in
+        // InterfaceDescription — seven-item acceptance item 1 evidence). Both
+        // probe and set use the resolved OS alias; the service model path is
+        // unchanged.
         let interface = self.effective_interface_alias()?;
         let category_is_private = self.probe_net_category_is_private(&interface);
         let icmp_rule_state = self.probe_icmp_rule_state(device_addr);
@@ -96,11 +104,15 @@ impl WindowsNetworkBackend {
         Ok(())
     }
 
-    /// `(Get-NetConnectionProfile -InterfaceAlias <if>).NetworkCategory` 探测：
-    /// exit 0 且值为 Private → 已满足；接口未找到 / 命令失败 → 未满足（宁补
-    /// 不漏，档位 set 天然幂等）。只取档位值，绝不在整段输出搜 `private`——
-    /// 否则连接名含该词的 Public 档会被误判（审核发现 #4）。`interface` 是
-    /// 调用方已解析的 OS 层别名（见 [Self::effective_interface_alias]）。
+    /// `(Get-NetConnectionProfile -InterfaceAlias <if>).NetworkCategory` probe:
+    /// exit 0 with a Private value → already satisfied; interface not found /
+    /// command failure → not satisfied (prefer setting it over missing it —
+    /// the category set is naturally idempotent). Only the category value is
+    /// read, never searching for `private` anywhere in the whole output —
+    /// otherwise a Public profile whose connection name contains that word
+    /// would be misjudged (review finding #4). `interface` is the OS-layer
+    /// alias the caller has already resolved (see
+    /// [Self::effective_interface_alias]).
     pub(super) fn probe_net_category_is_private(&self, interface: &str) -> bool {
         let Ok(output) = std::process::Command::new("powershell")
             .args([
@@ -123,11 +135,14 @@ impl WindowsNetworkBackend {
         crate::windows_firewall::net_category_is_private(&String::from_utf8_lossy(&output.stdout))
     }
 
-    /// `netsh advfirewall firewall show rule name=Meshlet-ICMPv4-In` 在场状态。
+    /// Presence state of
+    /// `netsh advfirewall firewall show rule name=Meshlet-ICMPv4-In`.
     ///
-    /// 仅按名判在场会在地址变更 / 同名规则被禁用后误报为已满足（审核发现
-    /// #1）：需逐块核对「已启用 且 localip 匹配当前设备地址」。netsh 输出按
-    /// 活动代码页编码，走 GBK 兑底解码。
+    /// Judging presence by name alone misreports satisfied after an address
+    /// change or after a same-named rule gets disabled (review finding #1):
+    /// each block must be checked for "enabled and localip matching the current
+    /// device address". netsh output is encoded in the active code page, so this
+    /// uses the GBK fallback decode.
     pub(super) fn probe_icmp_rule_state(
         &self,
         device_addr: std::net::Ipv4Addr,
@@ -163,19 +178,23 @@ impl WindowsNetworkBackend {
         }
     }
 
-    /// 直连 UDP 端口入站放行（批次④ Windows 接线）：`Meshlet-Direct-UDP-In`
-    /// 规则（protocol=udp / localport=<port> / profile=any）。在场且端口匹配
-    /// → 跳过；在场但端口已变（审核发现 #3）→ 先 `delete name=<rule>` 清掉
-    /// 全部同名旧端口规则再 add——netsh 重复 add 同名规则会叠出重复项，
-    /// 只加不清会在端口漂移后同时放行新旧两个端口。
+    /// Inbound allowance for the direct-connect UDP port (batch ④ Windows
+    /// wiring): the `Meshlet-Direct-UDP-In` rule (protocol=udp /
+    /// localport=<port> / profile=any). Present with a matching port → skip;
+    /// present but the port has changed (review finding #3) → first
+    /// `delete name=<rule>` to clear all old-port rules of the same name, then
+    /// add — netsh stacking duplicate entries on repeated same-name adds means
+    /// adding without clearing would allow both the old and the new port after
+    /// port drift.
     pub(super) fn ensure_direct_udp_firewall_sync(&self, port: u16) -> Result<(), NetworkError> {
         let output = self.direct_udp_rule_output();
         if crate::windows_firewall::firewall_rule_present(&output) {
             if crate::windows_firewall::rule_output_mentions_port(&output, port) {
                 return Ok(());
             }
-            // 端口漂移：清空同名规则（delete 按 name 删全部同名项，幂等），
-            // 落到下方 add 重建当前端口的新规则。
+            // Port drift: clear the same-named rule (delete by name removes all
+            // same-named entries, idempotent), then fall through to the add
+            // below to rebuild the rule for the current port.
             let cleanup = crate::windows_firewall::FirewallRuleCommand::Delete {
                 name: crate::windows_firewall::DIRECT_UDP_RULE_NAME.into(),
             };
@@ -200,8 +219,10 @@ impl WindowsNetworkBackend {
         )))
     }
 
-    /// `netsh advfirewall firewall show rule name=Meshlet-Direct-UDP-In` 输出
-    /// （GBK 兑底解码；命令失败 / spawn 失败 → 空文本，判为不在场）。
+    /// Output of
+    /// `netsh advfirewall firewall show rule name=Meshlet-Direct-UDP-In`
+    /// (GBK fallback decode; command failure / spawn failure → empty text,
+    /// treated as absent).
     fn direct_udp_rule_output(&self) -> String {
         std::process::Command::new("netsh")
             .args([

@@ -1,12 +1,15 @@
-//! Linux `NetworkBackend` 实装的真机集成测试（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
+//! Real-machine integration tests for the Linux `NetworkBackend` implementation
+//! ([ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)).
 //!
-//! 与 `wg_forwarding.rs` / `alias_nat.rs` 的区别：**全部内核操作走
-//! `LinuxNetworkBackend`**（netns + sudo 测试钩子），不再用裸 `wg` / `ip`
-//! 命令配置数据面——控制面 apply 路径与内核之间是同一套代码。裸命令只用于
-//! 搭 underlay（网桥/veth/netns 本身，非后端职责）与「外部视角」探针。
+//! How it differs from `wg_forwarding.rs` / `alias_nat.rs`: **every kernel operation goes through
+//! `LinuxNetworkBackend`** (netns + sudo test hooks) instead of configuring the dataplane with raw
+//! `wg` / `ip` commands -- the same code sits between the control-plane apply path and the kernel.
+//! Raw commands are used only to build the underlay (bridge/veth/netns itself, which is not the
+//! backend's job) and for "external viewpoint" probes.
 //!
-//! 场景模块共享同一个 `mltb` 前缀；进程内串行锁防止该 underlay 被并发
-//! 改写。原有验收语义、SKIP 纪律和外部对象保护保持不变。
+//! The scenario modules share the same `mltb` prefix; an in-process serialization lock keeps that
+//! underlay from being rewritten concurrently. The pre-existing acceptance semantics, SKIP
+//! discipline and external-object protection are unchanged.
 
 #![cfg(target_os = "linux")]
 

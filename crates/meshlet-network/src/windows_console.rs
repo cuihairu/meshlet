@@ -1,35 +1,41 @@
-//! Windows 控制台输出解码（执行层共享，ADR-008 TODO #52 真机取证）。
+//! Windows console output decoding (shared by the execution layer, ADR-008
+//! TODO #52 real-machine forensics).
 //!
-//! 真机证据（2026-10-25，中文 Windows Server，CP936）：netsh / sc.exe 的
-//! **重定向输出是活动代码页编码而非 UTF-8**——netsh 删除不存在路由返回
-//! 字节 `D5 D2 B2 BB B5 BD D4 AA CB D8 A1 A3`（「找不到元素。」的 GBK
-//! 编码）。执行层此前用 `String::from_utf8_lossy` 解码，中文在 U+FFFD
-//! 乱码中丢失，幂等删除文案分类全部失效（`windows_netsh` 真机集成测试
-//! 抓到）。
+//! Real-machine evidence (2026-10-25, Chinese Windows Server, CP936): the
+//! **redirected output of netsh / sc.exe is encoded in the active code page,
+//! not UTF-8** — netsh deleting a nonexistent route returned the bytes
+//! `D5 D2 B2 BB B5 BD D4 AA CB D8 A1 A3` (the GBK encoding of the
+//! "element not found" message). The execution layer previously decoded with
+//! `String::from_utf8_lossy`, so the Chinese text was lost as U+FFFD
+//! replacement garbage and every idempotent-delete message classification
+//! failed (caught by the `windows_netsh` real-machine integration test).
 //!
-//! 纪律：
-//! - **UTF-8 优先**：合法 UTF-8（en-US runner 与任何 UTF-8 输出）原样
-//!   通过，既有绿路径零变化；
-//! - **非 UTF-8 按活动代码页解码**（`MultiByteToWideChar(CP_ACP)`），
-//!   覆盖中文/繁中/日文等本地化部署，不引入新的外部依赖；
-//! - **绝不 panic、绝不返回空文本伪装成功**：解码不可断时按 UTF-8
-//!   lossy 兜底（§10.3 失败可见）。
+//! Discipline:
+//! - **UTF-8 first**: valid UTF-8 (the en-US runner and any UTF-8 output)
+//!   passes through unchanged, with zero change to existing green paths;
+//! - **non-UTF-8 is decoded with the active code page**
+//!   (`MultiByteToWideChar(CP_ACP)`), covering Simplified Chinese /
+//!   Traditional Chinese / Japanese and other localized deployments without
+//!   introducing new external dependencies;
+//! - **never panic, never return empty text to feign success**: when decoding
+//!   cannot proceed, fall back to UTF-8 lossy (§10.3 failures stay visible).
 
-/// 按控制台输出代码页解码进程输出（UTF-8 优先）。
+/// Decode process output using the console output code page (UTF-8 first).
 ///
-/// 控制台工具（route/ping/netsh/sc）重定向输出用的是 **OEM 代码页**
-/// （`GetConsoleOutputCP`），不是 ANSI（CP_ACP）：en-US 上 OEM=437、
-/// ANSI=1252，拿 ANSI 解 OEM 字节必然出乱码。因此先探测
-/// `GetConsoleOutputCP`，取不到再回退 CP_ACP（0）。
+/// Console tools (route/ping/netsh/sc) emit redirected output in the **OEM code
+/// page** (`GetConsoleOutputCP`), not ANSI (CP_ACP): on en-US OEM=437 and
+/// ANSI=1252, so decoding OEM bytes as ANSI always garbles them. Probe
+/// `GetConsoleOutputCP` first and only fall back to CP_ACP (0) when that
+/// fails.
 pub fn decode_output(bytes: &[u8]) -> String {
     decode_output_with(bytes, console_output_code_page())
 }
 
-/// 控制台输出代码页：每次调用即取（kernel32 调用本身近乎免费），
-/// 失败回退 0（CP_ACP，旧行为）。
+/// Console output code page: fetched on every call (the kernel32 call itself
+/// is nearly free), falling back to 0 (CP_ACP, the old behavior) on failure.
 #[cfg(target_os = "windows")]
 fn console_output_code_page() -> u32 {
-    // SAFETY：GetConsoleOutputCP 无参数无副作用。
+    // SAFETY: GetConsoleOutputCP takes no arguments and has no side effects.
     unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() }
 }
 
@@ -38,8 +44,8 @@ fn console_output_code_page() -> u32 {
     0
 }
 
-/// 指定代码页的解码核心（测试注入 936/GBK 验证真机取证字节，
-/// 不依赖宿主系统语言）。
+/// Decoding core for an explicit code page (tests inject 936/GBK to verify
+/// the real-machine forensic bytes without depending on the host language).
 pub fn decode_output_with(bytes: &[u8], code_page: u32) -> String {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return text.to_string();
@@ -50,11 +56,13 @@ pub fn decode_output_with(bytes: &[u8], code_page: u32) -> String {
     decode_via_code_page(bytes, code_page)
 }
 
-/// Windows：`MultiByteToWideChar` 按指定代码页转 UTF-16 再转 `String`。
+/// Windows: `MultiByteToWideChar` converts to UTF-16 under the given code page,
+/// then to `String`.
 #[cfg(target_os = "windows")]
 fn decode_via_code_page(bytes: &[u8], code_page: u32) -> String {
-    // SAFETY：lpmultibytestr 指向 bytes 且 cbmultibyte 与其长度一致；
-    // 第一次调用取目标 UTF-16 长度，第二次写入等长的自持缓冲。
+    // SAFETY: lpmultibytestr points at bytes and cbmultibyte matches its length;
+    // the first call fetches the target UTF-16 length, the second writes into an
+    // owning buffer of exactly that length.
     unsafe {
         use windows_sys::Win32::Globalization::MultiByteToWideChar;
         let len = MultiByteToWideChar(
@@ -83,29 +91,35 @@ fn decode_via_code_page(bytes: &[u8], code_page: u32) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// 非 Windows：无系统代码页语义，UTF-8 lossy 兜底。该分支只为让计划层
-/// 单测在 Linux CI 编译；真实解码只发生在 Windows 执行层。
+/// Non-Windows: there is no system code page semantics, so this is a UTF-8
+/// lossy fallback. This branch exists only to let plan-layer unit tests
+/// compile on Linux CI; real decoding happens only in the Windows execution
+/// layer.
 #[cfg(not(target_os = "windows"))]
 fn decode_via_code_page(bytes: &[u8], _code_page: u32) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// 受控 console 工具 spawn 的统一创建标志（builder 链式注入）。
+/// Unified creation flags for spawning controlled console tools (injected
+/// through the builder chain).
 ///
-/// **为什么必须**：GUI 子系统进程（tray-app）spawn console 工具
-/// （route/powershell/ping/netsh/sc/reg/wireguard.exe）时，Windows 默认为
-/// 每个子进程弹一个终端窗——真机实锤 2026-11-20（cuihaitao 机）：点状态
-/// 面板 → `get_diag` → `diagnostics_sync()` 连环 spawn → 终端窗狂闪
-/// （c3634c5 只修了 tray-app 自身两处）。本 crate 的执行层 spawn 会经
-/// [`crate::SystemBackend`] 被同一 GUI 进程调用，**全部受控 spawn 统一**
-/// 经 [`NoWindowCommand::no_window`] 加 `CREATE_NO_WINDOW`。
+/// **Why it is necessary**: when a GUI-subsystem process (tray-app) spawns
+/// console tools (route/powershell/ping/netsh/sc/reg/wireguard.exe), Windows
+/// pops a new terminal window for every child by default — pinned down on a
+/// real machine 2026-11-20 (cuihaitao's box): clicking the status panel →
+/// `get_diag` → `diagnostics_sync()` spawned in a chain → terminal windows
+/// flashed furiously (c3634c5 only fixed the two spots inside tray-app
+/// itself). This crate's execution-layer spawns reach the same GUI process via
+/// [`crate::SystemBackend`], so **every controlled spawn uniformly** adds
+/// `CREATE_NO_WINDOW` through [`NoWindowCommand::no_window`].
 ///
-/// **为什么无副作用**：本 crate 的 spawn 全部捕获输出（管道 stdio，无
-/// 交互语义可损失）；控制台子系统进程（agent/CLI/server）本身有控制台，
-/// 子进程不弹新窗、也不依附，行为不变。非 Windows 平台为恒等链（保持
-/// 跨平台编译语义统一）。
+/// **Why it has no side effects**: every spawn in this crate captures output
+/// (piped stdio, no interactive semantics to lose); console-subsystem processes
+/// (agent/CLI/server) already own a console, so the child pops no new window and
+/// attaches to nothing — behavior unchanged. Non-Windows platforms get an
+/// identity chain (keeping cross-platform compile semantics uniform).
 pub trait NoWindowCommand {
-    /// 加 `CREATE_NO_WINDOW`（0x0800_0000）创建标志。
+    /// Adds the `CREATE_NO_WINDOW` (0x0800_0000) creation flag.
     fn no_window(&mut self) -> &mut Self;
 }
 
@@ -125,15 +139,17 @@ impl NoWindowCommand for std::process::Command {
 mod tests {
     use super::*;
 
-    /// 真机取证字节（2026-10-25，本机 CP936）：netsh 删除不存在路由的
-    /// 完整报文「找不到元素。」。仅真机测试引用。
+    /// Real-machine forensic bytes (2026-10-25, local CP936): netsh's complete
+    /// message when deleting a nonexistent route ("element not found").
+    /// Referenced by real-machine tests only.
     #[cfg(target_os = "windows")]
     const GBK_ELEMENT_ABSENT: &[u8] = &[
         0xD5, 0xD2, 0xB2, 0xBB, 0xB5, 0xBD, 0xD4, 0xAA, 0xCB, 0xD8, 0xA1, 0xA3,
     ];
 
-    /// 真机取证字节：「没有与指定标准相匹配的规则。」（netsh 防火墙删除
-    /// 不存在规则的完整报文）。仅真机测试引用。
+    /// Real-machine forensic bytes: "no rule matched the supplied criteria"
+    /// (netsh firewall's complete message when deleting a nonexistent rule).
+    /// Referenced by real-machine tests only.
     #[cfg(target_os = "windows")]
     const GBK_NO_RULE_MATCH: &[u8] = &[
         0xC3, 0xBB, 0xD3, 0xD0, 0xD3, 0xEB, 0xD6, 0xB8, 0xB6, 0xA8, 0xB1, 0xEA, 0xD7, 0xBC, 0xCF,
@@ -161,8 +177,9 @@ mod tests {
 
     #[test]
     fn gbk_bytes_never_panic_and_never_decode_to_empty() {
-        // 全部高位字节逐个探测：任何输入都不 panic、解码结果非空
-        //（空文本会被上游误读为「成功」，§10.3）。
+        // Probe every high byte one by one: no input panics and no decoded
+        // result is empty (empty text would be misread by upstream as "success",
+        // §10.3).
         for lead in 0x80u8..=0xFF {
             let decoded = decode_output_with(&[lead, b'x'], 936);
             assert!(!decoded.is_empty(), "lead {lead:#04x} decoded to empty");

@@ -1,29 +1,35 @@
-//! Windows 防火墙计划层（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
+//! Windows firewall plan layer ([ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)).
 //!
-//! 本模块包含**纯规划**与 `#[cfg(windows)]` 执行层：`netsh advfirewall
-//! firewall add/delete rule` 的参数构造、失败文本分类与受控执行。计划层
-//! 函数在任意平台编译并单测（本仓 CI 的 Linux 侧即可跑绿）；执行层真机
-//! 验证（2026-10-26，中文 Windows Server）：add / show 读回 / delete /
-//! 幂等 re-delete 全链路走通；完整验收前 Windows 仍保持 [crate::unsupported]
-//! 的显式占位，不接 [crate::SystemBackend]。
+//! This module contains **pure planning** plus a `#[cfg(windows)]` execution
+//! layer: argument construction for `netsh advfirewall firewall add/delete
+//! rule`, failure text classification, and controlled execution. Plan-layer
+//! functions compile and unit-test on any platform (the Linux side of this
+//! repo's CI runs green); the execution layer was verified on a real machine
+//! (2026-10-26, Chinese Windows Server): add / show read-back / delete /
+//! idempotent re-delete all ran end to end. Until full acceptance, Windows
+//! still keeps the explicit [crate::unsupported] placeholder and is not wired
+//! into [crate::SystemBackend].
 //!
-//! 与 [windows_routes](../../../crates/meshlet-network/src/windows_routes.rs)
-//! 同一纪律：
+//! Same discipline as [windows_routes](../../../crates/meshlet-network/src/windows_routes.rs):
 //!
-//! - **受控命令**：只构造 `name=` / `dir=` / `action=` / `protocol=` /
-//!   `localport=` / `remoteport=` / `profile=` 等命名参数；`key=value` 对
-//!   保持单个 argv 词元，含空格的规则名（如 `Meshlet WireGuard`）不拆词，
-//!   也**不内嵌引号**（netsh 引号语义见 [windows_routes] 的实测注记）；
-//! - **确定性**：Add 的字段顺序固定；profile 多值固定为
-//!   `domain,private,public`，重复值去重，未显式提供时用 `any`；
-//! - **fail closed**：权限文案宽匹配映射为
-//!   [`NetworkError::InsufficientPrivileges`]；删除规则已不存在的文案按
-//!   幂等成功；其他未知失败统一 [`NetworkError::ApplyRejected`] 并携带
-//!   netsh 原文首行。
+//! - **Controlled commands**: only `name=` / `dir=` / `action=` / `protocol=` /
+//!   `localport=` / `remoteport=` / `profile=`-style named arguments are
+//!   constructed; a `key=value` pair stays a single argv token, so a rule
+//!   name containing spaces (such as `Meshlet WireGuard`) is not split into
+//!   words and carries **no embedded quotes** (see the measured notes on
+//!   netsh quoting semantics in [windows_routes]);
+//! - **Determinism**: Add field order is fixed; multi-value profile is fixed
+//!   to `domain,private,public`, duplicate values are deduplicated, and `any`
+//!   is used when nothing is supplied explicitly;
+//! - **fail closed**: wide matching on permission text maps to
+//!   [`NetworkError::InsufficientPrivileges`]; the text for deleting a rule
+//!   that no longer exists counts as idempotent success; any other unknown
+//!   failure becomes [`NetworkError::ApplyRejected`] carrying the first line
+//!   of the original netsh output.
 
 use crate::NetworkError;
 
-/// 防火墙规则方向（netsh `dir=` 的受控取值）。
+/// Firewall rule direction (the controlled values for netsh `dir=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirewallDirection {
     Inbound,
@@ -39,7 +45,7 @@ impl FirewallDirection {
     }
 }
 
-/// 防火墙规则动作（netsh `action=` 的受控取值）。
+/// Firewall rule action (the controlled values for netsh `action=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirewallAction {
     Allow,
@@ -55,17 +61,20 @@ impl FirewallAction {
     }
 }
 
-/// 受控协议；`Any` 是 netsh 的缺省语义，显式渲染避免参数形状漂移。
+/// Controlled protocols; `Any` is netsh's default semantics, rendered
+/// explicitly to keep the argument shape from drifting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirewallProtocol {
     Any,
     Tcp,
     Udp,
-    /// ICMPv4 回显（echo request，type 8 / any code）：mesh 邻居可达性探测
-    /// 依赖它——Windows 把 wg 接口判为 Public 档后默认挡 ICMP（2026-10-30
-    /// 实战 dev→win 不通，手工建 Meshlet-ICMPv4-In 才通）。netsh 用
-    /// `protocol=icmpv4:8,any` 表达；ICMP 无端口，[FirewallRule] 的端口词元
-    /// 对 [FirewallProtocol::IcmpV4] 省略。
+    /// ICMPv4 echo (echo request, type 8 / any code): mesh neighbor
+    /// reachability probing depends on it — once Windows classifies the wg
+    /// interface as the Public category the default inbound policy blocks
+    /// ICMP (2026-10-30 in practice: dev->win did not go through until a
+    /// Meshlet-ICMPv4-In rule was created by hand). netsh expresses it as
+    /// `protocol=icmpv4:8,any`; ICMP has no ports, so [FirewallRule]'s port
+    /// tokens are omitted for [FirewallProtocol::IcmpV4].
     IcmpV4,
 }
 
@@ -80,7 +89,8 @@ impl FirewallProtocol {
     }
 }
 
-/// 防火墙 profile；渲染顺序固定且与 netsh 常见写法一致。
+/// Firewall profiles; render order is fixed and matches netsh's common
+/// spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FirewallProfile {
     Domain,
@@ -98,28 +108,34 @@ impl FirewallProfile {
     }
 }
 
-/// 受控规则描述。计划层从类型化字段渲染，控制面不能注入任意 argv。
+/// Controlled rule description. The plan layer renders it from typed
+/// fields; the control plane cannot inject arbitrary argv.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirewallRule {
     pub name: String,
     pub direction: FirewallDirection,
     pub action: FirewallAction,
     pub protocol: FirewallProtocol,
-    /// netsh 端口词元（如 `51820`、`5000-5010` 或 `any`）；保持字符串是
-    /// 为了完整覆盖 Windows 的范围/列表语法，执行层仍以单个 argv 传递。
+    /// netsh port tokens (e.g. `51820`, `5000-5010`, or `any`); kept as
+    /// strings to fully cover Windows's range/list syntax, and still passed
+    /// as a single argv by the execution layer.
     pub local_port: String,
     pub remote_port: String,
-    /// `None` 渲染为 `profile=any`；有值时固定 domain/private/public 顺序。
+    /// `None` renders as `profile=any`; with values the order is fixed
+    /// domain/private/public.
     pub profiles: Option<Vec<FirewallProfile>>,
-    /// netsh `description=`；规则计划可空，省略该参数。
+    /// netsh `description=`; optional in the rule plan, and the argument is
+    /// omitted when so.
     pub description: Option<String>,
-    /// netsh `localip=`；mesh 可达性规则用它把放行**限定到 wg 接口地址**
-    /// （netsh 无按接口限定能力，`localip=<设备 overlay 地址>` 是等价且有
-    /// 安全边界的做法：只有发往该 mesh 地址的包才匹配）。`None` = 省略。
+    /// netsh `localip=`; mesh reachability rules use it to **restrict the
+    /// allowance to the wg interface address** (netsh cannot restrict per
+    /// interface, and `localip=<device overlay address>` is the equivalent
+    /// with a security boundary: only packets destined for that mesh address
+    /// match). `None` = omit.
     pub local_ip: Option<std::net::Ipv4Addr>,
 }
 
-/// 一条受控 netsh 防火墙命令（计划态；执行见 [exec]）。
+/// A controlled netsh firewall command (planned form; execution in [exec]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirewallRuleCommand {
     Add { rule: FirewallRule },
@@ -127,8 +143,9 @@ pub enum FirewallRuleCommand {
 }
 
 impl FirewallRuleCommand {
-    /// netsh 参数（含 `advfirewall firewall add/delete rule` 前缀；计划与
-    /// 未来执行层共用同一构造，避免参数漂移）。
+    /// netsh arguments (including the `advfirewall firewall add/delete rule`
+    /// prefix; the plan and the future execution layer share the same
+    /// construction to avoid argument drift).
     pub fn args(&self) -> Vec<String> {
         let mut args = vec!["advfirewall".into(), "firewall".into()];
         match self {
@@ -138,8 +155,9 @@ impl FirewallRuleCommand {
                 args.push(format!("dir={}", rule.direction.as_str()));
                 args.push(format!("action={}", rule.action.as_str()));
                 args.push(format!("protocol={}", rule.protocol.as_str()));
-                // ICMPv4 无端口概念：对 `icmpv4:8,any` 省略 localport/remoteport
-                // （netsh 不接受 ICMP 协议带端口词元）。
+                // ICMPv4 has no concept of ports: omit localport/remoteport
+                // for `icmpv4:8,any` (netsh does not accept port tokens with
+                // an ICMP protocol).
                 if !matches!(rule.protocol, FirewallProtocol::IcmpV4) {
                     args.push(named_value("localport", &rule.local_port));
                     args.push(named_value("remoteport", &rule.remote_port));
@@ -163,7 +181,7 @@ impl FirewallRuleCommand {
         args
     }
 
-    /// 操作名（错误消息点名用）。
+    /// Operation name (used to name things in error messages).
     pub fn operation(&self) -> &'static str {
         match self {
             FirewallRuleCommand::Add { .. } => "firewall rule add",
@@ -171,7 +189,7 @@ impl FirewallRuleCommand {
         }
     }
 
-    /// 受管规则名（错误消息点名用）。
+    /// Managed rule name (used to name things in error messages).
     pub fn name(&self) -> &str {
         match self {
             FirewallRuleCommand::Add { rule } => &rule.name,
@@ -184,31 +202,40 @@ impl FirewallRuleCommand {
     }
 }
 
-/// mesh 可达性保障命令（AGENT-FW-1）。
+/// Mesh reachability safeguard commands (AGENT-FW-1).
 ///
-/// 背景（2026-10-30 实战）：Windows 把 wg 接口判为 **Public** 档，其默认
-/// 入站策略挡 ICMP——dev→win 的 wg 隧道握手正常但 ping 不通，手工建
-/// `Meshlet-ICMPv4-In` 规则才通。根因修复 = 把接口连接档位设为 **Private**
-/// （Private 档默认放行 ICMP）+ 显式入站 ICMPv4 放行规则作双保险。
+/// Background (2026-10-30 in practice): Windows classifies the wg interface
+/// as the **Public** category, whose default inbound policy blocks ICMP —
+/// the dev->win wg tunnel handshake worked but ping did not, until a
+/// `Meshlet-ICMPv4-In` rule was created by hand. Root-cause fix = set the
+/// interface's network category to **Private** (the Private category allows
+/// ICMP by default) plus an explicit inbound ICMPv4 allow rule as a second
+/// line of defense.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MeshFirewallCommand {
-    /// `Set-NetConnectionProfile -InterfaceAlias <if> -NetworkCategory Private`。
+    /// `Set-NetConnectionProfile -InterfaceAlias <if> -NetworkCategory Private`.
     ///
-    /// 用 PowerShell 而非 netsh：NetworkCategory 是**连接档位**属性，netsh 无
-    /// 对应子命令；set 语义天然幂等（已是 Private 再设仍成功）。
+    /// PowerShell rather than netsh: NetworkCategory is a **network
+    /// category** property and netsh has no matching subcommand; the set
+    /// semantics are naturally idempotent (setting Private on an already
+    /// Private connection still succeeds).
     SetNetworkCategoryPrivate { interface: String },
-    /// `netsh advfirewall firewall add rule`：`Meshlet-ICMPv4-In` 入站 ICMP 放行，
-    /// 限定设备 overlay 地址（见 [mesh_icmp_rule]）；幂等由调用方先探
-    /// [firewall_rule_present] 再决定是否下发。
+    /// `netsh advfirewall firewall add rule`: allow inbound ICMP for
+    /// `Meshlet-ICMPv4-In`, restricted to the device overlay address (see
+    /// [mesh_icmp_rule]); idempotency comes from the caller probing
+    /// [firewall_rule_present] first and deciding whether to issue it.
     AddIcmpRule { rule: FirewallRule },
-    /// `netsh advfirewall firewall delete rule`：按名删除同名 ICMP 规则。
-    /// 地址变更残留 / 被禁用的旧规则先删后建（审核发现 #1）；netsh delete
-    /// 按名删全部同名规则，重建后恰一条。
+    /// `netsh advfirewall firewall delete rule`: delete the ICMP rule with
+    /// this name. Leftovers from an address change or a disabled stale rule
+    /// are deleted then recreated (audit finding #1); netsh delete removes
+    /// every rule with that name, so exactly one remains after the rebuild.
     DeleteIcmpRule { name: String },
 }
 
 impl MeshFirewallCommand {
-    /// 构造档位命令并校验接口名（拒绝引号/空白，防 `-Command` 注入）。
+    /// Build the category command after validating the interface name
+    /// (quotes and whitespace are rejected to prevent `-Command`
+    /// injection).
     pub fn set_network_category_private(interface: &str) -> Result<Self, NetworkError> {
         validate_tunnel_interface(interface)?;
         Ok(Self::SetNetworkCategoryPrivate {
@@ -216,7 +243,8 @@ impl MeshFirewallCommand {
         })
     }
 
-    /// argv（不含程序名）：档位命令走 `powershell`，ICMP 规则走 `netsh`。
+    /// argv (without the program name): the category command goes through
+    /// `powershell`, ICMP rules through `netsh`.
     pub fn args(&self) -> Vec<String> {
         match self {
             Self::SetNetworkCategoryPrivate { interface } => vec![
@@ -243,14 +271,16 @@ impl MeshFirewallCommand {
         }
     }
 
-    /// 该命令是否走 netsh（否则走 PowerShell）。
+    /// Whether this command goes through netsh (otherwise PowerShell).
     pub fn uses_netsh(&self) -> bool {
         matches!(self, Self::AddIcmpRule { .. } | Self::DeleteIcmpRule { .. })
     }
 }
 
-/// 受管隧道接口名校验：Windows 隧道名（`wg-meshlet`）字符集，拒绝引号与
-/// 空白——接口名会进入 PowerShell 单引号字符串，防注入。
+/// Validate a managed tunnel interface name: the Windows tunnel name
+/// character set (`wg-meshlet`), rejecting quotes and whitespace — the
+/// interface name goes into a PowerShell single-quoted string, so this is
+/// injection defense.
 fn validate_tunnel_interface(interface: &str) -> Result<(), NetworkError> {
     if interface.is_empty()
         || !interface
@@ -264,14 +294,19 @@ fn validate_tunnel_interface(interface: &str) -> Result<(), NetworkError> {
     Ok(())
 }
 
-/// 直连 UDP 放行规则名（批次④ Windows 接线）。固定名是幂等探测的一半：
-/// `netsh advfirewall firewall show rule name=<此名>` + 端口双重核对。
+/// Name of the direct-connect UDP allow rule (batch 4 Windows wiring). The
+/// fixed name is half of the idempotency probe:
+/// `netsh advfirewall firewall show rule name=<this name>` plus a port
+/// cross-check.
 pub const DIRECT_UDP_RULE_NAME: &str = "Meshlet-Direct-UDP-In";
 
-/// 直连 UDP 端口入站放行规则（P2P §12 批次④ Windows 侧）：inbound / allow /
-/// `protocol=udp` / `localport=<port>`，profile 不绑（any）——wg 适配器被
-/// Windows 判为 Public 档，直连握手入站包在默认入站策略下会被丢弃。
-/// 与 [mesh_icmp_rule] 同纪律：受控命名参数，调用方先探在场再 add。
+/// Inbound allow rule for the direct-connect UDP port (P2P §12, batch 4,
+/// Windows side): inbound / allow / `protocol=udp` / `localport=<port>`,
+/// with no profile binding (any) — the wg adapter is classified by Windows
+/// as the Public category, so inbound packets of a direct-connect handshake
+/// are dropped under the default inbound policy. Same discipline as
+/// [mesh_icmp_rule]: controlled named arguments, and the caller probes for
+/// presence before adding.
 pub fn direct_udp_rule(port: u16) -> FirewallRule {
     FirewallRule {
         name: DIRECT_UDP_RULE_NAME.into(),
@@ -288,20 +323,25 @@ pub fn direct_udp_rule(port: u16) -> FirewallRule {
     }
 }
 
-/// `netsh … show rule` 输出里是否出现该端口的 `LocalPort` 词元。
-/// 规则名固定而端口可变（配置改端口后旧规则在场但端口不符）：名字在场
-/// **不**代表端口放行，需逐条核对 `LocalPort: <port>` 行。
+/// Whether the `netsh … show rule` output contains a `LocalPort` token for
+/// that port. The rule name is fixed while the port is variable (after a
+/// config port change the old rule is still present but the port does not
+/// match): the name being present **does not** mean the port is allowed, so
+/// each `LocalPort: <port>` line must be checked.
 ///
-/// 字段标签按 en / zh-CN 双语言匹配（`LocalPort` / `本地端口`），避免中文
-/// 系统的本地化输出漏判、每次重放叠加同名规则（2026-11-09 审核发现 #2）。
+/// Field labels are matched in both en / zh-CN (`LocalPort`, plus the zh-CN localized label),
+/// so localized output on a Chinese system is not missed, which would stack
+/// another rule with the same name on every replay (2026-11-09 audit finding
+/// #2).
 pub fn rule_output_mentions_port(output: &str, port: u16) -> bool {
     rule_output_ports(output).contains(&port)
 }
 
-/// `netsh … show rule` 输出中出现的全部 `LocalPort` 值。
+/// Every `LocalPort` value appearing in `netsh … show rule` output.
 ///
-/// 同一固定规则名可含多条（配置改端口后旧端口规则残留，审核发现 #3）；
-/// 调用方据此判断「名字在场但端口不符」并触发重建。
+/// The same fixed rule name can cover several rules (a rule for the old port
+/// lingers after a config port change, audit finding #3); the caller uses
+/// this to detect "name present but port mismatched" and trigger a rebuild.
 pub fn rule_output_ports(output: &str) -> Vec<u16> {
     let mut ports = Vec::new();
     for line in output.lines() {
@@ -318,31 +358,32 @@ pub fn rule_output_ports(output: &str) -> Vec<u16> {
     ports
 }
 
-/// `netsh advfirewall firewall show rule` 输出的 LocalPort 字段标签。
-/// en `LocalPort`；zh-CN `本地端口`（本地化输出，审核发现 #2）。
+/// The LocalPort field label in `netsh advfirewall firewall show rule`
+/// output. en `LocalPort`; the zh-CN localized label (localized output, audit
+/// finding #2).
 fn is_local_port_label(label: &str) -> bool {
     label.eq_ignore_ascii_case("localport") || label.to_ascii_lowercase().contains("本地端口")
 }
 
-/// LocalIP 字段标签：en `LocalIP`；zh-CN `本地IP` / `本地 IP`。
+/// LocalIP field label: en `LocalIP`; the two zh-CN localized label spellings.
 fn is_local_ip_label(label: &str) -> bool {
     label.eq_ignore_ascii_case("localip")
         || label.to_ascii_lowercase().contains("本地ip")
         || label.to_ascii_lowercase().contains("本地 ip")
 }
 
-/// Enabled 字段标签：en `Enabled`；zh-CN `已启用`。
+/// Enabled field label: en `Enabled`; the zh-CN localized label.
 fn is_enabled_label(label: &str) -> bool {
     label.eq_ignore_ascii_case("enabled") || label.to_ascii_lowercase().contains("已启用")
 }
 
-/// 布尔字段取值：en `Yes`；zh-CN `是`（兼容 `true` / `1`）。
+/// Boolean field value: en `Yes`; the zh-CN localized value (`true` / `1` also accepted).
 fn is_yes_value(value: &str) -> bool {
     let v = value.trim();
     v.eq_ignore_ascii_case("yes") || v.eq_ignore_ascii_case("true") || v == "是" || v == "1"
 }
 
-/// 规则块头标签：en `Rule Name`；zh-CN `规则名称`。
+/// Rule block header label: en `Rule Name`; the zh-CN localized label.
 fn is_rule_name_header(line: &str) -> bool {
     let t = line.trim();
     t.eq_ignore_ascii_case("rule name")
@@ -350,8 +391,10 @@ fn is_rule_name_header(line: &str) -> bool {
         || t.starts_with("规则名称")
 }
 
-/// `netsh … show rule name=<n>` 输出按规则块拆分。同名规则可能多条（地址变更
-/// 残留 / 禁用副本，审核发现 #1）；无块头时整段视为单块。
+/// Split `netsh … show rule name=<n>` output into rule blocks. Several rules
+/// may share a name (leftover from an address change / a disabled copy, audit
+/// finding #1); when no block header exists, the whole output is treated as
+/// one block.
 fn rule_blocks(output: &str) -> Vec<String> {
     let lines: Vec<&str> = output.lines().collect();
     let mut headers: Vec<usize> = Vec::new();
@@ -379,9 +422,11 @@ fn rule_blocks(output: &str) -> Vec<String> {
     blocks
 }
 
-/// LocalIP 值与设备地址匹配：netsh show 把 localip 归一成 `ip/netmask` 形态
-/// （`127.0.0.1/255.255.255.255`），多地址逗号分隔——取每个词元 `/` 前的
-/// IP 部分做精确比较（真机取证见 windows_firewall_live，裸地址也兼容）。
+/// Match a LocalIP value against the device address: netsh show normalizes
+/// localip into `ip/netmask` form (`127.0.0.1/255.255.255.255`), with
+/// multiple addresses comma-separated — compare the IP part before `/` in
+/// each token exactly (real-machine evidence in windows_firewall_live; a
+/// bare address is tolerated too).
 fn local_ip_value_matches(value: &str, addr: std::net::Ipv4Addr) -> bool {
     value.split(',').any(|token| {
         let ip = token.trim().split('/').next().unwrap_or("").trim();
@@ -389,10 +434,12 @@ fn local_ip_value_matches(value: &str, addr: std::net::Ipv4Addr) -> bool {
     })
 }
 
-/// 同名 ICMP 规则中是否存在「已启用 且 localip 匹配当前设备地址」的规则。
+/// Whether the ICMP rules with this name contain one that is **enabled and
+/// whose localip matches the current device address**.
 ///
-/// 审核发现 #1：仅按名字判在场会在地址变更 / 规则被禁用后误报为已满足、跳过
-/// 创建——需逐块核对启用态与地址绑定。
+/// Audit finding #1: judging presence by name alone reports the rule as
+/// satisfied after an address change or a disable, skipping creation — each
+/// block must be checked for both its enabled state and its address binding.
 pub fn rule_output_has_satisfied_icmp_rule(output: &str, addr: std::net::Ipv4Addr) -> bool {
     for block in rule_blocks(output) {
         let mut enabled = false;
@@ -416,9 +463,11 @@ pub fn rule_output_has_satisfied_icmp_rule(output: &str, addr: std::net::Ipv4Add
     false
 }
 
-/// mesh 入站 ICMP 放行规则（`Meshlet-ICMPv4-In`）：inbound / allow /
-/// `icmpv4:8,any`，`localip` 限定到设备 overlay 地址——netsh 无按接口限定，
-/// `localip=<设备地址>` 等价且带安全边界（只匹配发往该 mesh 地址的包）。
+/// Inbound mesh ICMP allow rule (`Meshlet-ICMPv4-In`): inbound / allow /
+/// `icmpv4:8,any`, with `localip` restricted to the device overlay address —
+/// netsh cannot restrict per interface, and
+/// `localip=<device address>` is the equivalent with a security boundary
+/// (only packets destined for that mesh address match).
 pub fn mesh_icmp_rule(device_addr: std::net::Ipv4Addr) -> FirewallRule {
     FirewallRule {
         name: "Meshlet-ICMPv4-In".into(),
@@ -427,7 +476,7 @@ pub fn mesh_icmp_rule(device_addr: std::net::Ipv4Addr) -> FirewallRule {
         protocol: FirewallProtocol::IcmpV4,
         local_port: "any".into(),
         remote_port: "any".into(),
-        profiles: None, // any：Private 档为主修复，本规则作双保险，不绑档位
+        profiles: None, // any: the Private category is the main fix, this rule is the second line of defense, no profile binding
         description: Some(
             "meshlet mesh reachability: inbound ICMP echo to the wg interface".into(),
         ),
@@ -435,22 +484,29 @@ pub fn mesh_icmp_rule(device_addr: std::net::Ipv4Addr) -> FirewallRule {
     }
 }
 
-/// 同名 ICMP 规则在场状态（探测 → 规划，AGENT-FW-1 审核发现 #1）。
+/// Presence state of the ICMP rule with this name (probe -> plan,
+/// AGENT-FW-1 audit finding #1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IcmpRuleState {
-    /// 名为 `Meshlet-ICMPv4-In` 的规则不存在——直接添加。
+    /// No rule named `Meshlet-ICMPv4-In` exists — add one directly.
     Absent,
-    /// 存在、已启用、且 localip 与当前设备地址一致——已满足，不动。
+    /// Present, enabled, and localip matches the current device address —
+    /// satisfied, leave it alone.
     Satisfied,
-    /// 同名规则在场但不满足（地址变更残留 / 被禁用）——先删后建，
-    /// 否则仅按名判在场会跳过创建、当前地址的入站 ping 未获保障。
+    /// A rule with this name is present but unsatisfied (leftover from an
+    /// address change / disabled) — delete then recreate; otherwise judging
+    /// presence by name alone would skip creation and inbound ping to the
+    /// current address would not be guaranteed.
     Stale,
 }
 
-/// 纯规划（AGENT-FW-1，跨平台单测）：给定档位与规则现状，产出保障命令。
+/// Pure planning (AGENT-FW-1, unit-tested across platforms): given the
+/// category and the rule state, produce the safeguard commands.
 ///
-/// 调用方先探测 `category_is_private` 与 ICMP 规则在场状态
-/// （[IcmpRuleState]），本函数只做决定论映射——全幂等（现状已满足 → 空计划）。
+/// The caller probes `category_is_private` and the ICMP rule presence state
+/// ([IcmpRuleState]) first; this function only performs a deterministic
+/// mapping — fully idempotent (an already-satisfied state -> an empty
+/// plan).
 pub fn mesh_reachability_commands(
     interface: &str,
     device_addr: std::net::Ipv4Addr,
@@ -481,19 +537,24 @@ pub fn mesh_reachability_commands(
     Ok(commands)
 }
 
-/// 判断 `netsh advfirewall firewall show rule name=<name>` 输出表示规则存在。
-/// 缺失时报「没有与指定标准相匹配的规则。」（zh-CN 真机取证）/ 英文等价
-/// 文案——复用 [firewall_rule_already_absent] 判定缺位。
+/// Decide whether `netsh advfirewall firewall show rule name=<name>` output
+/// indicates the rule exists. Absence is reported with the zh-CN localized
+/// "no rules match the specified criteria" message (evidenced on a real zh-CN machine) /
+/// the English equivalent text — this
+/// reuses [firewall_rule_already_absent] to detect absence.
 pub fn firewall_rule_present(output: &str) -> bool {
     !output.trim().is_empty() && !firewall_rule_already_absent(output)
 }
 
-/// 判断 `Get-NetConnectionProfile` 输出表示连接档位已是 Private。
+/// Decide whether `Get-NetConnectionProfile` output shows the network
+/// category is already Private.
 ///
-/// 只认 `NetworkCategory` 字段（PowerShell 字段名不随界面语言变化）或裸值
-/// 输出（探测命令只取 `.NetworkCategory`）；绝不在整段输出里搜 `private`——
-/// 否则连接名/别名含该词的 Public 档会被误判为 Private、跳过档位切换
-/// （2026-11-09 审核发现 #4）。
+/// Trust only the `NetworkCategory` field (PowerShell field names do not
+/// vary with UI language) or a bare-value output (the probe command only
+/// takes `.NetworkCategory`); never search for `private` across the whole
+/// output — a Public connection whose name/alias contains that word would
+/// then be misjudged as Private and the category switch skipped
+/// (2026-11-09 audit finding #4).
 pub fn net_category_is_private(output: &str) -> bool {
     let mut bare: Option<&str> = None;
     for line in output.lines() {
@@ -506,7 +567,8 @@ pub fn net_category_is_private(output: &str) -> bool {
             if label.eq_ignore_ascii_case("networkcategory") {
                 return value.trim().eq_ignore_ascii_case("private");
             }
-            // 其他字段（Name / InterfaceAlias 等）忽略，防同名词误判。
+            // Other fields (Name / InterfaceAlias, etc.) are ignored to
+            // avoid false hits on same-word collisions.
         } else if bare.is_none() {
             bare = Some(trimmed);
         }
@@ -514,13 +576,15 @@ pub fn net_category_is_private(output: &str) -> bool {
     bare.is_some_and(|v| v.eq_ignore_ascii_case("private"))
 }
 
-/// `key=value` 形式的 netsh 命名参数，**整个键值对是单个 argv 词元**，不内嵌
-/// 引号；命令行层引号由 std 进程生成器负责。
+/// A netsh named argument in `key=value` form: **the whole pair is a single
+/// argv token**, with no embedded quotes; command-line-level quoting is
+/// handled by std's process builder.
 fn named_value(key: &str, value: &str) -> String {
     format!("{key}={value}")
 }
 
-/// 多 profile 固定顺序渲染；重复项只保留一次，`any` 不与具体 profile 混用。
+/// Render multiple profiles in a fixed order; duplicates are kept once, and
+/// `any` is never mixed with concrete profiles.
 fn render_profiles(profiles: Option<&[FirewallProfile]>) -> String {
     match profiles {
         None => "any".into(),
@@ -547,22 +611,27 @@ fn render_profiles(profiles: Option<&[FirewallProfile]>) -> String {
     }
 }
 
-/// 判断 netsh 删除输出是否表示「没有匹配规则」；按子串宽匹配覆盖 Windows
-/// 各版本/语言路径下的幂等删除文案差异。
+/// Decide whether netsh delete output means "no matching rule"; wide
+/// substring matching covers the differences in idempotent delete text
+/// across Windows versions and languages.
 pub fn firewall_rule_already_absent(output: &str) -> bool {
     let lowered = output.to_lowercase();
     lowered.contains("no rules match the specified criteria")
         || lowered.contains("rule does not exist")
         || lowered.contains("cannot find")
-        // zh-CN 真机取证（2026-10-25，CP936 解码后）：netsh 防火墙删除不
-        // 存在规则的完整报文为「没有与指定标准相匹配的规则。」。
+        // Evidenced on a real zh-CN machine (2026-10-25, after CP936
+        // decoding): the full message from netsh firewall when deleting a
+        // nonexistent rule is the zh-CN localized "no rules match the specified criteria".
         || output.contains("没有与指定标准相匹配的规则")
 }
 
-/// 分类 netsh 防火墙失败：幂等删除成功，权限失败明示提权，其余 fail closed。
+/// Classify netsh firewall failures: an idempotent successful delete, an
+/// explicit elevation demand for privilege failures, and fail closed for
+/// anything else.
 ///
-/// `requires elevation` / `access is denied` 用子串宽匹配（大小写不敏感），
-/// 覆盖 Windows 版本与重定向输出的文案差异；错误消息点名操作与规则名。
+/// `requires elevation` / `access is denied` use wide substring matching
+/// (case-insensitive) to cover differences in Windows versions and
+/// redirected output; the error message names the operation and the rule.
 pub fn classify_netsh_firewall_failure(
     exit_code: i32,
     output: &str,
@@ -576,9 +645,9 @@ pub fn classify_netsh_firewall_failure(
     let lowered = output.to_lowercase();
     if lowered.contains("requires elevation")
         || lowered.contains("access is denied")
-        // zh-CN 真机取证：「请求的操作需要提升(作为管理员运行)。」=
-        // ERROR_ELEVATION_REQUIRED；「拒绝访问」= ERROR_ACCESS_DENIED
-        // 的 zh-CN 标准文案。宽匹配纪律不变。
+        // Evidenced on a real zh-CN machine: the standard zh-CN wording of
+        // ERROR_ELEVATION_REQUIRED and ERROR_ACCESS_DENIED. The wide-match
+        // discipline is unchanged.
         || output.contains("需要提升")
         || output.contains("拒绝访问")
     {
@@ -595,7 +664,8 @@ pub fn classify_netsh_firewall_failure(
     )))
 }
 
-/// 输出的首个非空行（错误消息携带 netsh 原文，便于诊断）。
+/// The first non-empty line of the output (error messages carry the original
+/// netsh text to ease diagnostics).
 fn first_nonempty_line(output: &str) -> &str {
     output
         .lines()
@@ -604,20 +674,23 @@ fn first_nonempty_line(output: &str) -> &str {
         .unwrap_or("(no output)")
 }
 
-/// 执行层（`#[cfg(windows)]`）：只负责把计划函数构造的参数交给 netsh、
-/// 把输出交回计划层分类，没有其他逻辑。
+/// Execution layer (`#[cfg(windows)]`): it only hands the arguments built by
+/// the plan functions to netsh and hands the output back to the plan layer
+/// for classification — there is no other logic.
 ///
-/// 真机实测（2026-10-26，中文 Windows Server）：add / show 读回 / delete /
-/// 幂等 re-delete（「没有与指定标准相匹配的规则。」经
-/// [crate::windows_console] 解码后分类）全链路走通。TODO #52 保持未勾：
-/// 接 [crate::SystemBackend] 仍以完整验收为准。
+/// Verified on a real machine (2026-10-26, Chinese Windows Server): add /
+/// show read-back / delete / idempotent re-delete (the zh-CN localized
+/// absence text, classified after decoding through
+/// [crate::windows_console]) all ran end to end. TODO #52 stays unchecked:
+/// wiring into [crate::SystemBackend] still awaits full acceptance.
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_netsh_firewall_failure, FirewallRuleCommand};
     use crate::windows_console::NoWindowCommand;
     use crate::{ApplyResult, NetworkError};
 
-    /// 执行一条受控 netsh 防火墙命令：成功/幂等成功/分类失败三态。
+    /// Execute one controlled netsh firewall command: success / idempotent
+    /// success / classified failure.
     pub fn run_firewall_command(
         command: &FirewallRuleCommand,
     ) -> Result<ApplyResult, NetworkError> {
@@ -626,8 +699,9 @@ pub mod exec {
             .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn netsh: {error}")))?;
-        // netsh 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），
-        // UTF-8 优先 + CP_ACP 兑底解码，见 [windows_console]。
+        // netsh's redirected output is encoded in the active code page
+        // (evidenced as GBK on a real zh-CN machine); prefer UTF-8 with a
+        // CP_ACP fallback decode, see [windows_console].
         let text = format!(
             "{}{}",
             crate::windows_console::decode_output(&output.stdout),
@@ -636,7 +710,8 @@ pub mod exec {
         if output.status.success() {
             return Ok(ApplyResult::ok());
         }
-        // 删除规则已不存在 = 幂等成功（清理路径清到空态不算失败）。
+        // Deleting an already-absent rule = idempotent success (driving the
+        // cleanup path to an empty state is not a failure).
         if command.is_delete() && super::firewall_rule_already_absent(&text) {
             return Ok(ApplyResult::ok());
         }
@@ -649,11 +724,15 @@ pub mod exec {
         Ok(ApplyResult::ok())
     }
 
-    /// 执行一条 mesh 可达性命令（AGENT-FW-1）：按变体走 netsh 或 PowerShell，
-    /// 成功/分类失败两态（档位 set 语义天然幂等，无需 absent 分支）。
+    /// Execute one mesh reachability command (AGENT-FW-1): per variant it
+    /// goes through netsh or PowerShell, with success / classified failure
+    /// states (the category set semantics are naturally idempotent, so no
+    /// absent branch is needed).
     ///
-    /// 真机验证随 #52 接线后的 apply 链路一并进行（R-05 门禁）；本函数只把
-    /// 计划命令交给系统、把输出交回计划层分类。
+    /// Real-machine verification runs together with the apply chain after
+    /// #52 is wired (the R-05 gate); this function only hands the planned
+    /// command to the system and hands the output back to the plan layer
+    /// for classification.
     pub fn run_mesh_firewall_command(
         command: &super::MeshFirewallCommand,
     ) -> Result<ApplyResult, NetworkError> {
@@ -717,14 +796,17 @@ mod tests {
         assert!(rule_output_mentions_port(output, 20000));
         assert!(!rule_output_mentions_port(output, 51820));
         assert!(!rule_output_mentions_port("", 51820));
-        // 无冒号/畸形行按不匹配处理，不 panic。
+        // Lines without a colon / malformed lines are treated as
+        // non-matching, without panicking.
         assert!(!rule_output_mentions_port("LocalPort garbage", 51820));
     }
 
     #[test]
     fn rule_output_mentions_port_matches_zh_cn_label() {
-        // 审核发现 #2：中文 Windows 的 netsh 输出用「本地端口」标签，英文标签
-        // 匹配会漏判 → 每次重放叠加同名规则。zh 标签必须命中。
+        // Audit finding #2: netsh output on a Chinese Windows uses the
+        // zh-CN local-port label, so matching only the English label misses
+        // it and every replay stacks another rule with the same name. The
+        // zh label must hit.
         let zh = "规则名称: Meshlet-Direct-UDP-In\r\n本地端口:\t51820\r\n";
         assert!(rule_output_mentions_port(zh, 51820));
         assert!(!rule_output_mentions_port(zh, 20000));
@@ -733,7 +815,9 @@ mod tests {
 
     #[test]
     fn rule_output_ports_enumerates_all_mentioned_ports() {
-        // 审核发现 #3：同名规则可含多条（配置改端口后残留），端口全集需枚举。
+        // Audit finding #3: a fixed rule name can cover several rules
+        // (lingering after a config port change), so the full port set must
+        // be enumerated.
         let both = "Rule Name: Meshlet-Direct-UDP-In\r\nLocalPort: 20000\r\n\
                     Rule Name: Meshlet-Direct-UDP-In\r\nLocalPort: 51820\r\n";
         assert_eq!(rule_output_ports(both), vec![20000, 51820]);
@@ -743,49 +827,55 @@ mod tests {
 
     #[test]
     fn icmp_rule_satisfaction_checks_enabled_and_local_ip() {
-        // 审核发现 #1：仅按名判在场会在地址变更 / 规则被禁用后误报。
+        // Audit finding #1: judging presence by name alone gives false
+        // positives after an address change or when the rule is disabled.
         let addr = "10.240.0.7".parse().unwrap();
         let satisfied_en = format!(
             "Rule Name:        Meshlet-ICMPv4-In\r\nEnabled:          Yes\r\nLocalIP:         {addr}\r\n"
         );
         assert!(rule_output_has_satisfied_icmp_rule(&satisfied_en, addr));
 
-        // 地址变更：规则在场但 localip 是旧地址 → 不满足。
+        // Address change: the rule is present but localip is the old
+        // address -> unsatisfied.
         let stale_addr = "Rule Name:        Meshlet-ICMPv4-In\r\nEnabled:          Yes\r\nLocalIP:         10.240.0.9\r\n".to_string();
         assert!(!rule_output_has_satisfied_icmp_rule(&stale_addr, addr));
 
-        // 同名规则被禁用（Enabled: No）→ 不满足。
+        // A rule with the same name is disabled (Enabled: No) ->
+        // unsatisfied.
         let disabled = format!(
             "Rule Name:        Meshlet-ICMPv4-In\r\nEnabled:          No\r\nLocalIP:         {addr}\r\n"
         );
         assert!(!rule_output_has_satisfied_icmp_rule(&disabled, addr));
 
-        // zh-CN 字段（已启用: 是 / 本地 IP）→ 满足。
+        // zh-CN fields (enabled: yes / local IP) -> satisfied.
         let zh = format!(
             "规则名称:      Meshlet-ICMPv4-In\r\n已启用:        是\r\n本地 IP:        {addr}\r\n"
         );
         assert!(rule_output_has_satisfied_icmp_rule(&zh, addr));
     }
 
-    /// netsh show 把 localip 归一为 `ip/netmask`（真机 windows_firewall_live
-    /// 取证：`LocalIP: 127.0.0.1/255.255.255.255`），裸串等值比较会把已满足
-    /// 误判 Stale、每轮 apply delete+add 永不幂等。
+    /// netsh show normalizes localip to `ip/netmask` (evidenced in the real-
+    /// machine windows_firewall_live notes: `LocalIP: 127.0.0.1/255.255.255.255`),
+    /// so a bare string equality comparison would misjudge a satisfied rule
+    /// as Stale and delete+add on every apply, never idempotent.
     #[test]
     fn icmp_rule_satisfaction_tolerates_netsh_ip_mask_suffix() {
         let addr = "127.0.0.1".parse().unwrap();
-        // 真机形态：ip/netmask + 对齐宽空格。
+        // Real-machine shape: ip/netmask plus wide alignment spaces.
         let real = "Rule Name:                            Meshlet-ICMPv4-In\r\n\
                     Enabled:                              Yes\r\n\
                     LocalIP:                              127.0.0.1/255.255.255.255\r\n";
         assert!(rule_output_has_satisfied_icmp_rule(real, addr));
-        // CIDR 形态同样兼容。
+        // The CIDR form is compatible too.
         let cidr = "Enabled: Yes\r\nLocalIP: 127.0.0.1/32\r\n";
         assert!(rule_output_has_satisfied_icmp_rule(cidr, addr));
-        // 多地址逗号分隔，含目标地址 → 满足。
+        // Multiple comma-separated addresses including the target ->
+        // satisfied.
         let multi =
             "Enabled: Yes\r\nLocalIP: 10.240.0.9/255.255.255.255,127.0.0.1/255.255.255.255\r\n";
         assert!(rule_output_has_satisfied_icmp_rule(multi, addr));
-        // 形态合法但地址不同 → 不满足（前缀同段也不行）。
+        // Well-formed but a different address -> unsatisfied (a shared
+        // prefix is not enough either).
         let other = "Enabled: Yes\r\nLocalIP: 127.0.0.2/255.255.255.255\r\n";
         assert!(!rule_output_has_satisfied_icmp_rule(other, addr));
     }
@@ -796,8 +886,9 @@ mod tests {
         use super::rule;
         use crate::{ApplyResult, NetworkError};
 
-        /// 编译期锁定 exec 入口：签名只接收计划命令、返回计划层结果，测试不
-        /// 启动 netsh。
+        /// Compile-time lock on the exec entry point: the signature only
+        /// accepts a planned command and returns a plan-layer result, so the
+        /// test never launches netsh.
         #[test]
         fn exec_entrypoint_takes_planned_command_and_returns_planned_result() {
             fn assert_signature(
@@ -807,7 +898,8 @@ mod tests {
             assert_signature(super::super::exec::run_firewall_command);
         }
 
-        /// exec 的删除分支依赖计划层判定：不存在文案 = 幂等成功。
+        /// exec's delete branch depends on the plan-layer decision: the
+        /// absence text = idempotent success.
         #[test]
         fn exec_delete_absence_classifier_is_idempotent_success() {
             assert!(firewall_rule_already_absent(
@@ -828,7 +920,8 @@ mod tests {
             .is_ok());
         }
 
-        /// exec 的非零退出码交回计划层：权限类必须仍归权限错误。
+        /// exec hands non-zero exit codes back to the plan layer: a
+        /// privilege-class failure must still land as a privilege error.
         #[test]
         fn exec_failure_classification_preserves_privilege_mapping() {
             let command = FirewallRuleCommand::Add { rule: rule() };
@@ -938,7 +1031,8 @@ mod tests {
         ));
     }
 
-    /// zh-CN 真机取证（2026-10-25）：中文缺失报文按原文命中幂等删除判定。
+    /// Evidenced on a real zh-CN machine (2026-10-25): the Chinese absence
+    /// message, verbatim, hits the idempotent delete decision.
     #[test]
     fn localized_absence_output_is_idempotent_success_for_delete() {
         assert!(firewall_rule_already_absent("没有与指定标准相匹配的规则。"));
@@ -951,7 +1045,8 @@ mod tests {
         .is_ok());
     }
 
-    /// zh-CN 真机取证：本地化提权文案归入权限类。
+    /// Evidenced on a real zh-CN machine: the localized elevation text
+    /// classifies as a privilege error.
     #[test]
     fn localized_privilege_output_maps_to_privileges() {
         assert!(matches!(
@@ -1005,8 +1100,10 @@ mod tests {
 
     #[test]
     fn icmp_rule_renders_protocol_and_localip_without_ports() {
-        // netsh 不接受 ICMP 协议带端口词元：localport/remoteport 必须省略；
-        // localip 把放行限定到设备 overlay 地址（=「限定 wg 接口」的 netsh 等价）。
+        // netsh does not accept port tokens with an ICMP protocol:
+        // localport/remoteport must be omitted; localip restricts the
+        // allowance to the device overlay address (the netsh equivalent of
+        // "restrict to the wg interface").
         let args = FirewallRuleCommand::Add {
             rule: mesh_icmp_rule(DEVICE_ADDR),
         }
@@ -1048,7 +1145,8 @@ mod tests {
     #[test]
     fn mesh_reachability_plan_covers_all_current_states() {
         use IcmpRuleState::*;
-        // 全幂等：档位已 Private 且规则已满足 → 空计划；任一缺 → 只补缺的那条。
+        // Fully idempotent: category already Private and the rule already
+        // satisfied -> empty plan; missing either -> only fill that gap.
         let none = mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, Satisfied).unwrap();
         assert!(none.is_empty());
 
@@ -1076,7 +1174,9 @@ mod tests {
 
     #[test]
     fn mesh_reachability_stale_icmp_rule_is_delete_then_add() {
-        // 审核发现 #1：地址变更残留 / 被禁用的同名规则 → 先删后建，保证恰一条。
+        // Audit finding #1: a lingering rule from an address change, or a
+        // disabled rule with the same name -> delete then create, guaranteeing
+        // exactly one.
         let commands =
             mesh_reachability_commands("wg-meshlet", DEVICE_ADDR, true, IcmpRuleState::Stale)
                 .unwrap();
@@ -1097,7 +1197,8 @@ mod tests {
 
     #[test]
     fn mesh_reachability_rejects_unsafe_interface_names() {
-        // 接口名进入 PowerShell 单引号字符串：引号/空白必须拒绝（防注入）。
+        // The interface name goes into a PowerShell single-quoted string:
+        // quotes/whitespace must be rejected (injection defense).
         for bad in ["", "wg meshlet", "wg'x", "wg\"x", "wg;x", "$(x)", "wg|x"] {
             assert!(
                 mesh_reachability_commands(bad, DEVICE_ADDR, false, IcmpRuleState::Absent).is_err(),
@@ -1105,7 +1206,7 @@ mod tests {
             );
             assert!(MeshFirewallCommand::set_network_category_private(bad).is_err());
         }
-        // 合法隧道名（含 dot / 下划线）必须放行。
+        // Legal tunnel names (with dot / underscore) must pass through.
         for good in ["wg-meshlet", "wg0", "Meshlet.Tunnel_1"] {
             assert!(
                 mesh_reachability_commands(good, DEVICE_ADDR, true, IcmpRuleState::Satisfied)
@@ -1116,7 +1217,7 @@ mod tests {
 
     #[test]
     fn firewall_rule_present_distinguishes_show_output() {
-        // en-US / zh-CN 真机报文（CP936 解码后）。
+        // en-US / zh-CN real-machine messages (after CP936 decoding).
         assert!(firewall_rule_present(
             "Rule Name:        Meshlet-ICMPv4-In\r\nEnabled:          Yes"
         ));
@@ -1141,14 +1242,16 @@ mod tests {
 
     #[test]
     fn net_category_probe_ignores_name_collisions() {
-        // 审核发现 #4：连接名/别名含 private 但档位为 Public → 必须判非 Private。
+        // Audit finding #4: a connection name/alias containing private but
+        // the category is Public -> must judge non-Private.
         assert!(!net_category_is_private(
             "Name       : Private LAN\nNetworkCategory : Public"
         ));
         assert!(net_category_is_private(
             "Name       : Private LAN\nNetworkCategory : Private"
         ));
-        // 探测命令只取 `.NetworkCategory` 时的裸值输出。
+        // Bare-value output when the probe command takes only
+        // `.NetworkCategory`.
         assert!(net_category_is_private("Private"));
         assert!(!net_category_is_private("Public"));
         assert!(!net_category_is_private("DomainAuthenticated"));

@@ -1,19 +1,24 @@
-//! WireGuard 密钥对（Curve25519）：agent 自举注册用。
+//! WireGuard keypair (Curve25519): used for agent bootstrap registration.
 //!
-//! 设备注册需要上报**公钥**（服务端存公钥 + 指纹，绝不存私钥侧材料，
-//! ADR-010）。agent 本机持私钥（`[dataplane] private_key_file`，0600）：
-//! 首次注册时生成密钥对并落盘；文件已存在时从私钥推导公钥（私钥不动）。
+//! Device registration must report the **public key** (the server stores the
+//! public key + fingerprint and never any private-side material, ADR-010). The
+//! agent keeps the private key locally (`[dataplane] private_key_file`, 0600):
+//! on first registration a keypair is generated and written to disk; if the file
+//! already exists, the public key is derived from the private one (the private
+//! key is left untouched).
 //!
-//! 与 `wg genkey` / `wg pubkey` 同构：32 字节 Curve25519，标准 base64
-//! （44 字符含 `=` 填充）。x25519-dalek 的 `StaticSecret::from([u8; 32])`
-//! 自带 RFC 7748 clamping，与 `wg genkey` 语义一致。
+//! Isomorphic to `wg genkey` / `wg pubkey`: 32-byte Curve25519 in standard
+//! base64 (44 characters with `=` padding). x25519-dalek's
+//! `StaticSecret::from([u8; 32])` applies RFC 7748 clamping itself, matching
+//! the semantics of `wg genkey`.
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 
-/// 生成本机密钥对：返回 `(私钥 base64, 公钥 base64)`。
+/// Generate the local keypair: returns `(private key base64, public key base64)`.
 ///
-/// 私钥**只在内存中返回一次**，由调用方立即写入 0600 文件；本模块不落盘。
+/// The private key is **only returned once, in memory**; the caller writes it
+/// immediately to a 0600 file. This module never touches disk.
 pub fn generate_keypair() -> Result<(String, String), String> {
     let secret = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
     let public = x25519_dalek::PublicKey::from(&secret);
@@ -23,7 +28,7 @@ pub fn generate_keypair() -> Result<(String, String), String> {
     ))
 }
 
-/// 从本机私钥推导公钥（私钥文件已存在的注册路径）。
+/// Derive the public key from the local private key (the registration path where the private key file already exists).
 pub fn public_from_private(private_b64: &str) -> Result<String, String> {
     let raw = BASE64
         .decode(private_b64.trim())
@@ -45,7 +50,7 @@ mod tests {
         let (private, public) = generate_keypair().expect("keypair generates");
         let derived = public_from_private(&private).expect("public derives");
         assert_eq!(public, derived);
-        // 与 `wg` 同构的编码：32 字节 → 44 字符标准 base64。
+        // Encoding isomorphic to `wg`: 32 bytes -> 44 characters of standard base64.
         assert_eq!(private.len(), 44);
         assert_eq!(public.len(), 44);
     }
@@ -60,7 +65,7 @@ mod tests {
     #[test]
     fn rejects_bad_private_key_material() {
         assert!(public_from_private("not-base64!!").is_err());
-        // 4 字节合法 base64 但长度不对。
+        // 4 bytes of valid base64 but the wrong length.
         assert!(public_from_private(&BASE64.encode([0u8; 4])).is_err());
     }
 }

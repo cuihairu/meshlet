@@ -1,64 +1,80 @@
-//! SEL-001 Windows 探测传输（P0，2026-11-13 接线）：`ping -n 1 -w 1000` 的
-//! ICMP echo 实测 RTT（毫秒）。
+//! SEL-001 Windows probe transport (P0, wired 2026-11-13): the measured ICMP
+//! echo RTT (milliseconds) of `ping -n 1 -w 1000`.
 //!
-//! 此前 [`crate::probe::default_transport`] 非 Linux 一律 `None`（记丢包），
-//! 三台主力机全是 Windows——SEL-001 探测 / SEL-002 切换在主力平台全盲。
+//! Previously [`crate::probe::default_transport`] returned `None` on every
+//! non-Linux system (recorded as packet loss), and all three primary machines
+//! are Windows — SEL-001 probing / SEL-002 switching were completely blind on
+//! the primary platform.
 //!
-//! 采样窗口与 Linux [`crate::linux::run_ping_rtt`] 对齐：单次 echo、1s 等待
-//!（Linux `-W 1` / Windows `-w 1000`），探测是高频轻量操作，诊断级长等待会
-//! 拖慢探测线程。
+//! The sampling window is aligned with Linux's
+//! [`crate::linux::run_ping_rtt`]: a single echo with a 1s wait (Linux `-W 1` /
+//! Windows `-w 1000`); probing is a frequent lightweight operation, and a
+//! diagnostic-grade long wait would slow the probe thread.
 //!
-//! 文案纪律与 [`crate::windows_firewall`] 一致：**解析层是跨平台纯函数，
-//! Linux 本机可单测**；执行层（跑 ping.exe）`#[cfg(windows)]`。真机 zh-CN 的
-//! 重定向输出是 CP936/GBK，先经 [`crate::windows_console::decode_output`]
-//! 解码再解析；解析同时认 en `time=` 与 zh `时间=`，其余语系不在验收面内
-//!（与防火墙探测的 en+zh 口径一致，如实记录）。
+//! The wording discipline matches [`crate::windows_firewall`]: **the parsing
+//! layer is a cross-platform pure function that can be unit-tested on Linux
+//! itself**; the execution layer (running ping.exe) is `#[cfg(windows)]`. A
+//! real zh-CN machine's redirected output is CP936/GBK; decode it through
+//! [`crate::windows_console::decode_output`] before parsing. The parser accepts
+//! both the en `time=` and the zh time label, while other locales are outside
+//! the acceptance surface (the same en+zh convention as the firewall probing,
+//! recorded as-is).
 //!
-//! 不信任 ping.exe 的退出码（unreachable 的退出码随版本而异）：**解析到回应
-//! RTT 才算探测成功**，超时 / 不可达 / 标签不认识一律 `None`——
-//! [`crate::probe::probe_round`] 记为丢包，绝不假装探测到。
+//! Do not trust ping.exe's exit code (the code for unreachable varies by
+//! version): **only a parsed reply RTT counts as a successful probe**; timeout /
+//! unreachable / an unrecognized label are all `None` —
+//! [`crate::probe::probe_round`] records a packet loss and never pretends a
+//! probe succeeded.
 //!
-//! 真机验收（真实 Windows 上的 RTT 读数走查）待 R-05 席位。
+//! Real-machine acceptance (a walkthrough of the RTT readings on a real
+//! Windows) awaits seat R-05.
 
 #[cfg(target_os = "windows")]
 use crate::windows_console::NoWindowCommand;
 #[cfg(target_os = "windows")]
 use std::net::Ipv4Addr;
 
-/// zh-CN 回应行的时间标签（CP936 解码后的 UTF-8 文本）；en 为 `time`。
+/// The zh-CN reply line's time label (the UTF-8 text after CP936 decoding); en
+/// uses `time`.
 const ZH_TIME_LABEL: &str = "时间";
 
-/// 从（已按活动代码页解码的）`ping` 输出解析首个 RTT（毫秒）。
+/// Parse the first RTT (milliseconds) out of the `ping` output (already decoded
+/// in the active code page).
 ///
-/// 支持 en `time=2ms`、zh `时间=8ms`，与两者的小于 1ms 表示 `time<1ms` /
-/// `时间<1ms`（记 0ms，与 Linux iputils `time<1 ms` 同口径）。没有任何读数
-///（超时 / 不可达 / 标签不认识）返回 `None`——调用方记为丢包。
+/// Supports the en `time=2ms` and the zh-CN localized equivalent, including
+/// both sub-1ms forms `time<1ms` / the zh variant (recorded as 0ms, the same
+/// convention as Linux iputils `time<1 ms`). No reading at all (timeout /
+/// unreachable / unrecognized label) returns `None` — the caller records packet
+/// loss.
 ///
-/// **标签后必须紧跟 `=` / `:` / 空白再接数值**：en 统计行
-/// 「Approximate round trip **times** in milli-seconds:」与 zh 统计表头
-/// 「往返行程的估计**时间**(以毫秒为单位):」都含时间词，但后面跟的是
-/// 普通文字/`(`——全超时的输出里若不设此闸，Minimum 的 `0ms` 会被误读成
-/// RTT 0（假探测成功）。
+/// **The label must be followed immediately by `=` / `:` / whitespace and then
+/// a number**: the en statistics line "Approximate round trip **times** in
+/// milli-seconds:" and the zh statistics header both contain the time word, but
+/// what follows is ordinary text / `(` — without this gate in an all-timeout
+/// output, Minimum's `0ms` would be misread as RTT 0 (a fake probe success).
 pub fn parse_ping_rtt_ms(text: &str) -> Option<u128> {
     rtt_after_label(text, "time").or_else(|| rtt_after_label(text, ZH_TIME_LABEL))
 }
 
-/// `label` 之后紧跟分隔符再接数值的首个读数；不合式的出现处跳过继续找。
+/// The first reading where `label` is immediately followed by a separator and
+/// then a number; malformed occurrences are skipped and the search continues.
 fn rtt_after_label(text: &str, label: &str) -> Option<u128> {
     let mut from = 0usize;
     while let Some(rel) = text[from..].find(label) {
         let after = &text[from + rel + label.len()..];
-        // 标签与读数之间只允许 `=`/`:`/空白（回应行实为紧贴的 `=`）。
+        // Only `=`/`:`/whitespace may sit between the label and the reading (a
+        // reply line actually has a tight `=`).
         let rest = after.trim_start_matches(['=', ':', ' ', '\t']);
         if let Some(sub_ms) = rest.strip_prefix('<') {
-            // `time<1ms` / `时间<1ms`：亚毫秒读数，Windows 不给小数——记 0。
+            // `time<1ms` / the zh variant: a sub-millisecond reading; Windows
+            // gives no decimals — record 0.
             let digit_end = sub_ms
                 .find(|c: char| !c.is_ascii_digit())
                 .unwrap_or(sub_ms.len());
             if digit_end > 0 {
                 return Some(0);
             }
-            // `<` 后不是数字：不是读数，继续找下一处。
+            // What follows `<` is not a digit: not a reading, keep looking.
         } else if rest.starts_with(|c: char| c.is_ascii_digit()) {
             let end = rest
                 .find(|c: char| !c.is_ascii_digit() && c != '.')
@@ -70,13 +86,15 @@ fn rtt_after_label(text: &str, label: &str) -> Option<u128> {
     None
 }
 
-/// SEL-001 探测层传输（Windows 执行层）：`ping -n 1 -w 1000 <ip>` 实测
-/// ICMP RTT（毫秒）。采样窗口与 Linux [`crate::linux::run_ping_rtt`]
-///（`ping -c 1 -W 1`）对齐：单次 echo、1s 等待。
+/// SEL-001 probe transport (the Windows execution layer): `ping -n 1 -w 1000
+/// <ip>` measures the ICMP RTT (milliseconds). The sampling window is aligned
+/// with Linux's [`crate::linux::run_ping_rtt`] (`ping -c 1 -W 1`): a single
+/// echo, 1s wait.
 ///
-/// 输出按活动代码页解码（真机 zh-CN 是 CP936，见 [`crate::windows_console`]），
-/// 解析不到读数（spawn 失败 / 超时 / 不可达）一律 `None`——记为丢包，
-/// 绝不假装探测到。
+/// The output is decoded in the active code page (a real zh-CN machine is
+/// CP936, see [`crate::windows_console`]); when no reading can be parsed (a
+/// spawn failure / timeout / unreachable) it is always `None` — recorded as
+/// packet loss, never pretending a probe succeeded.
 #[cfg(target_os = "windows")]
 pub fn run_ping_rtt(target: Ipv4Addr) -> Option<u128> {
     let out = std::process::Command::new("ping")
@@ -109,7 +127,8 @@ Approximate round trip times in milli-seconds:
 
     #[test]
     fn parses_zh_reply_rtt() {
-        // 真机 zh-CN 输出形状（CP936 经 windows_console 解码后的 UTF-8 文本）。
+        // The real zh-CN machine's output shape (the UTF-8 text after CP936 is
+        // decoded by windows_console).
         let out = "\
 正在 Ping 10.240.0.1 具有 32 字节的数据:
 来自 10.240.0.1 的回复: 字节=32 时间=9ms TTL=64
@@ -135,8 +154,9 @@ Approximate round trip times in milli-seconds:
 
     #[test]
     fn timeout_and_unreachable_have_no_reading() {
-        // 全超时（en）：仅统计行的「times」含 time 子串，且其后不是读数——
-        // 不得把 Minimum 的 0ms 误读成 RTT。
+        // All-timeout (en): only the statistics line's "times" contains the time
+        // substring, and no reading follows it — Minimum's 0ms must not be
+        // misread as an RTT.
         let en_timeout = "\
 Request timed out.
 
@@ -145,22 +165,23 @@ Ping statistics for 10.0.0.1:
 Approximate round trip times in milli-seconds:
     Minimum = 0ms, Maximum = 0ms, Average = 0ms";
         assert_eq!(parse_ping_rtt_ms(en_timeout), None);
-        // 全超时（zh）。
+        // All-timeout (zh).
         let zh_timeout = "请求超时。";
         assert_eq!(parse_ping_rtt_ms(zh_timeout), None);
-        // 不可达：回应行无时间读数。
+        // Unreachable: the reply line carries no time reading.
         assert_eq!(
             parse_ping_rtt_ms("Reply from 10.0.0.1: Destination host unreachable."),
             None
         );
-        // 解析失败（ping 请求找不到主机）。
+        // Parse failure (ping cannot find the host).
         assert_eq!(parse_ping_rtt_ms("Ping 请求找不到主机。"), None);
     }
 
     #[test]
     fn zh_stats_header_time_label_is_not_a_reading() {
-        // zh 统计表头「往返行程的估计时间(以毫秒为单位):」含「时间」但紧跟
-        // `(`，不是读数——全超时输出不得从统计段误读出 RTT。
+        // The zh statistics header contains the time word but it is followed
+        // directly by `(`, not a reading — an all-timeout output must not have an
+        // RTT misread out of its statistics section.
         let out = "\
 请求超时。
 

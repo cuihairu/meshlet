@@ -13,7 +13,7 @@ fn nat_mode_selection_and_identity_isolation() {
     let _guard = NETNS_PREFIX_LOCK.lock().unwrap();
     let topo = match Topology::setup() {
         Some(t) => t,
-        None => return, // 已打印 SKIP:
+        None => return, // Already printed SKIP:
     };
     let mut hub_backend = topo.hub.backend();
     let mut a_backend = topo.a.backend();
@@ -58,8 +58,8 @@ fn nat_mode_selection_and_identity_isolation() {
         }])
         .expect("gw baseline apply_routes");
 
-    // ---- 11. 身份级漂移注入（M2）：观测层如实报出身份，外来资源不入集合
-    // 本文件只允许一个 netns 前缀，故并入本测试末尾而非另开 #[test]。
+    // ---- 11. Identity-level drift injection (M2): the observation layer reports identities as they are, and foreign resources never enter the set
+    // This file may use only one netns prefix, so it is appended to the end of this test rather than opening a new #[test].
     let alias = alias_mapping();
     let rules = meshlet_network::nat::alias_nat_rules(&alias);
     hub_backend
@@ -76,7 +76,7 @@ fn nat_mode_selection_and_identity_isolation() {
         "hub handshake after re-apply"
     );
 
-    // (a) peer 身份：条数相同、身份被换 → 快照必须报出新身份（旧条数检查看不见）。
+    // (a) Peer identity: the count is the same but the identity was swapped -> the snapshot must report the new identity (a count check would not see it).
     let stranger_private = wg_genkey().expect("generate a stranger key");
     let stranger_public = wg_pubkey(&stranger_private).expect("derive the stranger key");
     require_ok(
@@ -120,7 +120,7 @@ fn nat_mode_selection_and_identity_isolation() {
         "the stranger's identity and its allowed-ips must be read out: {ids:?}"
     );
 
-    // (b) 身份未变但 allowed-ips 被改宽 → 快照按身份报出改动。
+    // (b) The identity is unchanged but the allowed-ips were widened -> the snapshot reports the change by identity.
     require_ok(
         &netns_exec(
             &topo.hub.netns,
@@ -150,8 +150,8 @@ fn nat_mode_selection_and_identity_isolation() {
         "widened allowed-ips must be read back by identity"
     );
 
-    // (c) 路由所有权：未打 Meshlet 标记的路由不入观测集合；打了标记的残留
-    // 会被看到（因此能被 reconcile 按所有权清理）。
+    // (c) Route ownership: routes without the Meshlet mark do not enter the observed set; a leftover that
+    // does carry the mark is visible (and so can be cleaned by reconcile on ownership).
     require_ok(
         &netns_exec(
             &topo.hub.netns,
@@ -192,8 +192,8 @@ fn nat_mode_selection_and_identity_isolation() {
         snap.installed_routes
     );
 
-    // (d) NAT 指纹：非 Meshlet 所有权注释的规则不入集合，自有指纹与计划侧
-    // 逐字节一致。
+    // (d) NAT fingerprints: rules without the Meshlet ownership comment do not enter the set, and the owned
+    // fingerprints match the planning side byte for byte.
     let planned = sorted_signatures(
         &rules
             .iter()
@@ -229,7 +229,7 @@ fn nat_mode_selection_and_identity_isolation() {
         "a foreign rule must not enter the meshlet-owned signature set"
     );
 
-    // 修复：再 apply 一次清掉 Meshlet 自有的注入，外来路由与外来规则保留。
+    // The repair: one more apply clears Meshlet's own injected objects, while the foreign route and foreign rule survive.
     hub_backend
         .apply_tunnel_sync(
             &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true),

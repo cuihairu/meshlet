@@ -1,61 +1,74 @@
-//! macOS boringtun 后端——命令计划层 + `cfg(target_os = "macos")` 执行器。
+//! The macOS boringtun backend — the command plan layer plus the
+//! `cfg(target_os = "macos")` executor.
 //!
-//! 路径（见 [crate::macos_wireguard_bt] 模块文档，②-3 决策）：**PATH B——
-//! spawn boringtun-cli + wg.sock UAPI**。boringtun-cli 起 utun 并挂
-//! `/var/run/wireguard/*.sock`，meshlet 经 `wg` 工具配密钥/peer、本文件的
-//! 命令计划配**哑 utun** 的 IP/路由/MTU。
+//! The path (see the [crate::macos_wireguard_bt] module documentation, decision
+//! ②-3): **PATH B — spawn boringtun-cli + wg.sock UAPI**. boringtun-cli brings up
+//! the utun and attaches `/var/run/wireguard/*.sock`; meshlet configures
+//! keys/peers through the `wg` tool, and the command plan in this file configures
+//! the **dummy utun**'s IP/routes/MTU.
 //!
-//! 三层纪律：
+//! Three layers of discipline:
 //!
-//! - **命令计划（全平台纯函数）**：[bt_apply_commands] 把 [BtInterfacePlan]
-//!   → `Vec<[BtCommand]>`（确定性顺序：地址 → MTU → 逐 peer 逐 allowed_ip
-//!   路由）。mac 无 netns 等价物，测试钩子退化为**命令记录器 mock**——单测
-//!   断言生成的命令序列，不真执行。
-//! - **执行器（`cfg(target_os = "macos")`）**：`exec` 子模块的
-//!   `MacNetworkBackend` 把命令计划逐条 spawn（对齐 [crate::linux::backend]
-//!   执行器模型：前缀测试钩子、非零退出落 [NetworkError::Io] 携带 stderr）。
-//!   宿主 CI 不跑 macOS 测试，本层经 `x86_64-apple-darwin` 交叉 check 编译
-//!   验证。
-//! - **接口名守门**：utun 名白名单对 `resolved_iface` 同样生效——执行层从
-//!   `WG_TUN_NAME_FILE` 读到的内核分配名同样不可信（fail closed）。
+//! - **The command plan (a pure function on every platform)**:
+//!   [bt_apply_commands] turns a [BtInterfacePlan] into a
+//!   `Vec<[BtCommand]>` (in a deterministic order: address -> MTU -> per peer,
+//!   per allowed_ip routes). macOS has no netns equivalent, so the test hook
+//!   degrades to a **command recorder mock** — unit tests assert the generated
+//!   command sequence without really running anything.
+//! - **The executor (`cfg(target_os = "macos")`)**: the `exec` submodule's
+//!   `MacNetworkBackend` spawns each command in the plan (aligned with the
+//!   [crate::linux::backend] executor model: a prefix test hook, and a non-zero
+//!   exit landing in [NetworkError::Io] carrying the stderr). The host CI does
+//!   not run macOS tests; this layer is verified by the
+//!   `x86_64-apple-darwin` cross check compile.
+//! - **Interface name guard**: the utun name whitelist applies to
+//!   `resolved_iface` too — the kernel-assigned name the execution layer reads
+//!   from `WG_TUN_NAME_FILE` is equally untrusted (fail closed).
 
 use crate::macos_wireguard_bt::{bt_utun_name, BtInterfacePlan};
 use crate::NetworkError;
 use meshlet_domain::Ipv4Cidr;
 use std::net::Ipv4Addr;
 
-/// 单条已生成命令（哑设备的自管面：地址 / MTU / 路由）。
+/// One generated command (the dummy device's self-managed surface: address /
+/// MTU / routes).
 ///
-/// 变体即 macOS 命令方言的最小闭集——密钥/peer 配置面走 `wg`（UAPI），
-/// 不在本枚举内。
+/// The variants are the minimal closed set of the macOS command dialect — the
+/// key/peer configuration surface goes through `wg` (UAPI) and is not in this
+/// enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BtCommand {
-    /// `ifconfig <iface> inet <local> <dest> netmask <mask>`——utun 是
-    /// 点对点设备，dest 取自身（wireguard-go / boringtun-cli 同款），转发
-    /// 由下方逐条路由驱动。
+    /// `ifconfig <iface> inet <local> <dest> netmask <mask>` — the utun is a
+    /// point-to-point device, dest takes itself (the same as wireguard-go /
+    /// boringtun-cli), and forwarding is driven by the per-route entries
+    /// below.
     SetAddress {
         iface: String,
         local: Ipv4Addr,
         dest: Ipv4Addr,
         mask: Ipv4Addr,
     },
-    /// `ifconfig <iface> mtu <mtu>`——MTU 经 ifconfig 设置（计划守门
-    /// [crate::macos_wireguard_bt::BT_INTERFACE_MTU]）。
+    /// `ifconfig <iface> mtu <mtu>` — the MTU is set through ifconfig (guarded by
+    /// [crate::macos_wireguard_bt::BT_INTERFACE_MTU] at the plan layer).
     SetMtu { iface: String, mtu: u32 },
-    /// `route -n add -net <network> -netmask <mask> -interface <iface>`——
-    /// allowed_ips 逐条落路由（peer 级 allowed-ips 即身份级路由）。
+    /// `route -n add -net <network> -netmask <mask> -interface <iface>` — each
+    /// allowed_ips entry lands as a route (peer-level allowed-ips are the
+    /// identity-level routes).
     AddRoute {
         iface: String,
         network: Ipv4Addr,
         mask: Ipv4Addr,
     },
-    /// `scutil --dns`——**只读诊断**：读解析器现状（对账/取证面）。写面
-    /// 是 [crate::macos_dns] 的 resolver 文件计划，不经本命令。
+    /// `scutil --dns` — **read-only diagnostics**: reads the resolver's current
+    /// state (the reconciliation/forensics surface). The write surface is the
+    /// resolver file plan of [crate::macos_dns] and does not go through this
+    /// command.
     DumpDns,
 }
 
 impl BtCommand {
-    /// 渲染为 argv（不执行）。测试断言序列与参数均走此形。
+    /// Render into argv (without executing). Test assertions over both the
+    /// sequence and the arguments go through this form.
     pub fn argv(&self) -> Vec<String> {
         match self {
             Self::SetAddress {
@@ -98,9 +111,11 @@ impl BtCommand {
     }
 }
 
-/// 实际接口名解析（纯函数）：计划名是 `utun`（内核自选）时取 `kernel_assigned`
-/// （执行层读 `WG_TUN_NAME_FILE` 得到）；计划名是 `utun<digits>` 显式指定时
-/// 直接采用。解析结果同样过 [bt_utun_name] 守门——内核给的名字也不信。
+/// Resolve the actual interface name (a pure function): when the plan name is
+/// `utun` (kernel picks), take `kernel_assigned` (obtained by the execution layer
+/// reading `WG_TUN_NAME_FILE`); when the plan name is an explicit
+/// `utun<digits>`, adopt it directly. The resolved result also passes the
+/// [bt_utun_name] guard — a kernel-given name is untrusted too.
 pub fn bt_resolved_interface_name(
     plan: &BtInterfacePlan,
     kernel_assigned: &str,
@@ -112,15 +127,20 @@ pub fn bt_resolved_interface_name(
     }
 }
 
-/// 命令计划：[BtInterfacePlan] → `Vec<[BtCommand]>`（确定性顺序）。
+/// The command plan: [BtInterfacePlan] -> `Vec<[BtCommand]>` (deterministic
+/// order).
 ///
-/// - 第一条：接口地址（`inet <local> <dest> netmask <mask>`，dest=自身）；
-/// - 第二条：MTU（计划 `mtu` 为 `None` 时省略，不静默补默认）；
-/// - 其后：每 peer 的每条 allowed_ip 一条 `route add`（peer 序 →
-///   allowed_ip 序，不排序、不合并——与 linux 路由平铺语义同构）。
+/// - First: the interface address (`inet <local> <dest> netmask <mask>`,
+///   dest=self);
+/// - Second: the MTU (omitted when the plan's `mtu` is `None`; never silently
+///   filled with a default);
+/// - Then: one `route add` per allowed_ip of each peer (peer order ->
+///   allowed_ip order, unsorted and unmerged — structurally identical to the
+///   linux route flattening semantics).
 ///
-/// `resolved_iface` 是实际 utun 名（[bt_resolved_interface_name] 解析后的），
-/// 过守门拒绝非白名单名。
+/// `resolved_iface` is the actual utun name (as resolved by
+/// [bt_resolved_interface_name]) and passes the guard, which refuses
+/// non-whitelisted names.
 pub fn bt_apply_commands(
     plan: &BtInterfacePlan,
     resolved_iface: &str,
@@ -157,13 +177,16 @@ pub fn bt_apply_commands(
     Ok(commands)
 }
 
-/// 隧道配置 → 命令计划（③-C 接线组合面，全平台纯函数）：
-/// [bt_interface_plan] → [bt_resolved_interface_name] → [bt_apply_commands]。
+/// The tunnel config -> the command plan (the ③-C wiring composition, a pure
+/// function on every platform):
+/// [bt_interface_plan] -> [bt_resolved_interface_name] -> [bt_apply_commands].
 ///
-/// `interface_name` 是配置侧 utun 名（`utun` 让内核选 / `utun<N>` 显式）；
-/// `kernel_assigned` 是执行层拿到的内核分配名（计划名显式时被忽略）。密钥
-/// /peer 配置面走 `wg` UAPI（不在命令计划内）——本函数只产出哑 utun 的
-/// 地址/MTU/路由命令序列。
+/// `interface_name` is the configuration-side utun name (`utun` lets the kernel
+/// choose / an explicit `utun<N>`); `kernel_assigned` is the kernel-assigned
+/// name the execution layer obtained (ignored when the plan name is explicit).
+/// The key/peer configuration surface goes through the `wg` UAPI (not part of
+/// the command plan) — this function only produces the dummy utun's address/MTU/
+/// route command sequence.
 pub fn bt_apply(
     tunnel: &crate::TunnelConfig,
     interface_name: &str,
@@ -181,11 +204,13 @@ mod exec {
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Output, Stdio};
 
-    /// macOS 命令执行器（`cfg(target_os = "macos")`，宿主 CI 不跑 macOS
-    /// 测试，仅经 `x86_64-apple-darwin` 交叉 check 编译验证）。
+    /// The macOS command executor (`cfg(target_os = "macos")`; the host CI does
+    /// not run macOS tests, this layer is verified only by the
+    /// `x86_64-apple-darwin` cross check compile).
     #[derive(Clone)]
     pub struct MacNetworkBackend {
-        /// 测试钩子：每条命令前缀 `sudo -n`（无特权验证用）。
+        /// Test hook: prefix every command with `sudo -n` (for unprivileged
+        /// verification).
         sudo: bool,
     }
 
@@ -194,13 +219,13 @@ mod exec {
             Self { sudo: false }
         }
 
-        /// 测试钩子：以 `sudo -n` 前缀执行每条命令。
+        /// Test hook: run every command with a `sudo -n` prefix.
         pub fn with_sudo(mut self) -> Self {
             self.sudo = true;
             self
         }
 
-        /// 命令前缀（sudo 测试钩子）。
+        /// The command prefix (the sudo test hook).
         fn command_prefix(&self) -> Vec<&'static str> {
             if self.sudo {
                 vec!["sudo", "-n"]
@@ -209,9 +234,11 @@ mod exec {
             }
         }
 
-        /// `sudo -n` 失败是否因「需要密码/未配 NOPASSWD」。
+        /// Whether a `sudo -n` failure is due to "a password is required /
+        /// NOPASSWD not configured".
         ///
-        /// 只匹配 sudo 自身报错面，不匹配下游命令失败（那走 Io）。
+        /// Matches only sudo's own error surface, not a downstream command
+        /// failure (that goes to Io).
         fn sudo_password_required(stderr: &str) -> bool {
             let lower = stderr.to_ascii_lowercase();
             lower.contains("password is required")
@@ -220,13 +247,14 @@ mod exec {
                 || lower.contains("may not run sudo")
         }
 
-        /// 执行一条命令。非零退出返回携带 stderr 的 [NetworkError::Io]
-        /// （不静默、不假装成功）。
+        /// Run one command. A non-zero exit returns [NetworkError::Io] carrying
+        /// the stderr (never silent, never pretending success).
         ///
-        /// `sudo` 模式下先过 [crate::macos_privileges] 白名单：白名单外
-        /// 拒绝提升（fail-closed）；`sudo -n` 因未配置 NOPASSWD / 需密码
-        /// 失败时返回 [NetworkError::InsufficientPrivileges] 并点名
-        /// `docs/macos-privileges.md`。
+        /// Under `sudo` mode the [crate::macos_privileges] whitelist is checked
+        /// first: elevation outside the whitelist is refused (fail-closed); when
+        /// `sudo -n` fails because NOPASSWD is not configured or a password is
+        /// required, returns [NetworkError::InsufficientPrivileges] naming the
+        /// `docs/macos-privileges.md`).
         pub fn run(&self, argv: &[&str]) -> Result<Output, NetworkError> {
             let owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
             if self.sudo {
@@ -261,7 +289,8 @@ mod exec {
             Ok(out)
         }
 
-        /// 按序执行命令计划（第一条失败即停，后续不执行——fail closed）。
+        /// Run the command plan in order (stop at the first failure and run
+        /// nothing after it — fail closed).
         pub fn apply(&self, commands: &[BtCommand]) -> Result<(), NetworkError> {
             for command in commands {
                 let owned = command.argv();
@@ -278,12 +307,14 @@ mod exec {
         }
     }
 
-    /// 真实解析器文件落盘执行器（`cfg(target_os = "macos")`）。
+    /// The real resolver file on-disk executor (`cfg(target_os = "macos")`).
     ///
-    /// 写 `/etc/resolver/<domain>` 并设 [crate::macos_dns::RESOLVER_FILE_MODE]；
-    /// 非特权进程的写失败返回
-    /// [NetworkError::InsufficientPrivileges]（可见，不假写）——提升该写
-    /// 是 launchd 特权 helper 后续（见 docs/macos-privileges.md §5）。
+    /// Writes `/etc/resolver/<domain>` and sets
+    /// [crate::macos_dns::RESOLVER_FILE_MODE];
+    /// a write failure from an unprivileged process returns
+    /// [NetworkError::InsufficientPrivileges] (visible, never a fake write) —
+    /// elevating that write is a later launchd privileged helper follow-up (see
+    /// docs/macos-privileges.md §5).
     pub struct FsResolverSink;
 
     impl FsResolverSink {
@@ -365,8 +396,9 @@ mod tests {
         crate::macos_wireguard_bt::bt_interface_plan(&tunnel(), "utun5").unwrap()
     }
 
-    /// ④ 钉：命令序列顺序与参数——地址 → MTU → 逐 peer 逐 allowed_ip 路由
-    /// （peer 序、allowed_ip 序保持，不排序不合并）。
+    /// ④ pin: the command sequence order and arguments — address -> MTU -> per
+    /// peer, per allowed_ip routes (the peer order and allowed_ip order are
+    /// preserved, neither sorted nor merged).
     #[test]
     fn command_sequence_is_deterministic_and_ordered() {
         let commands = bt_apply_commands(&plan(), "utun5").unwrap();
@@ -421,7 +453,8 @@ mod tests {
         );
     }
 
-    /// ④ 钉：地址命令 dest=自身（点对点 utun，转发由路由驱动）。
+    /// ④ pin: the address command's dest=self (a point-to-point utun, forwarding
+    /// driven by the routes).
     #[test]
     fn address_command_uses_self_as_point_to_point_dest() {
         let commands = bt_apply_commands(&plan(), "utun5").unwrap();
@@ -436,7 +469,8 @@ mod tests {
         );
     }
 
-    /// ④ 钉：MTU 为 `None` 时不补命令（不静默套用 1420 假装满足）。
+    /// ④ pin: when the MTU is `None`, no command is added (never silently coerced
+    /// to 1420 and pretending it is satisfied).
     #[test]
     fn mtu_none_omits_mtu_command() {
         let mut tunnel = tunnel();
@@ -449,8 +483,8 @@ mod tests {
             .all(|c| !matches!(c, BtCommand::SetMtu { .. })));
     }
 
-    /// ④ 钉：`resolved_iface` 同样过 utun 白名单（WG_TUN_NAME_FILE 读来的
-    /// 内核名也不信，fail closed）。
+    /// ④ pin: `resolved_iface` also passes the utun whitelist (a kernel name read
+    /// from WG_TUN_NAME_FILE is untrusted too, fail closed).
     #[test]
     fn resolved_iface_is_validated() {
         assert_eq!(
@@ -462,7 +496,8 @@ mod tests {
         );
     }
 
-    /// ④ 钉：显式名走计划名（内核给的名字被忽略）；`utun` 名走内核分配名。
+    /// ④ pin: an explicit name takes the plan name (the kernel-given name is
+    /// ignored); a `utun` name takes the kernel-assigned name.
     #[test]
     fn resolved_interface_name_prefers_explicit_and_falls_back_to_kernel() {
         let explicit = crate::macos_wireguard_bt::bt_interface_plan(&tunnel(), "utun5").unwrap();
@@ -480,8 +515,10 @@ mod tests {
         );
     }
 
-    /// ④ 钉：命令计划不碰私钥（密钥面在 `wg`/boringtun-cli UAPI 配置文件
-    /// 里，命令序列与私钥字节无关——Debug 序列化含私钥的计划也一样）。
+    /// ④ pin: the command plan never touches the private key (the key surface is
+    /// in the `wg`/boringtun-cli UAPI config file, and the command sequence is
+    /// unrelated to the key bytes — the same holds for Debug-serializing a plan
+    /// that carries the key).
     #[test]
     fn command_plan_never_carries_private_key_bytes() {
         let commands = bt_apply_commands(&plan(), "utun5").unwrap();
@@ -490,17 +527,20 @@ mod tests {
         assert!(!rendered.contains("private_key"), "{rendered}");
     }
 
-    /// ③-B 钉：DNS 诊断子命令渲染 `scutil --dns`（只读，无接口名/写面成分）。
+    /// ③-B pin: the DNS diagnostic subcommand renders `scutil --dns` (read-only,
+    /// with no interface-name/write-surface component).
     #[test]
     fn dump_dns_renders_scutil_diagnostics() {
         let rendered = BtCommand::DumpDns.argv();
         assert_eq!(rendered, vec!["scutil", "--dns"]);
-        // 白名单校验：诊断命令同样可被提升执行（scutil 在 sudo 白名单内）。
+        // Whitelist check: the diagnostic command may also be elevated (scutil is
+        // in the sudo whitelist).
         assert!(crate::macos_privileges::check_sudo_elevation(&rendered).is_ok());
     }
 
-    /// ③-C 钉：`bt_apply` 组合面（配置 → 命令计划）与 `bt_apply_commands`
-    /// 语义一致；显式 utun 名时内核分配名被忽略（不覆盖）。
+    /// ③-C pin: the `bt_apply` composition (config -> command plan) matches the
+    /// semantics of `bt_apply_commands`; with an explicit utun name the
+    /// kernel-assigned name is ignored (not overridden).
     #[test]
     fn bt_apply_composes_plan_and_ignores_kernel_name_for_explicit_iface() {
         let commands = bt_apply(&tunnel(), "utun5", "utun9").unwrap();
@@ -515,8 +555,9 @@ mod tests {
             .all(|c| !matches!(c, BtCommand::AddRoute { iface, .. } if iface != "utun5")));
     }
 
-    /// ③-C 钉：`bt_apply` 走 `utun`（内核自选）时采用内核分配名——执行层拿
-    /// 到的名字不可信，仍过白名单（非 utun 名拒）。
+    /// ③-C pin: when `bt_apply` uses `utun` (kernel picks), it adopts the
+    /// kernel-assigned name — the name the execution layer obtains is untrusted
+    /// and still passes the whitelist (non-utun names are refused).
     #[test]
     fn bt_apply_uses_kernel_assigned_name_for_bare_utun() {
         let commands = bt_apply(&tunnel(), "utun", "utun12").unwrap();

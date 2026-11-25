@@ -1,23 +1,33 @@
-//! macOS 平台 SystemBackend（③-C 接线）：默认占位 + boringtun 数据面分派。
+//! macOS platform SystemBackend (③-C wiring): default placeholder + boringtun
+//! data-plane dispatch.
 //!
-//! macOS 上 `SystemBackend` 原本落在 [crate::unsupported] 占位（一切操作
-//! 显式拒绝）。本模块把 macOS 的默认后端换成**双模**结构：
+//! On macOS, `SystemBackend` used to fall through to the [crate::unsupported]
+//! placeholder (every operation explicitly refused). This module swaps the
+//! macOS default backend for a **dual-mode** structure:
 //!
-//! - **默认（Service 语义）**：逐操作委托 [crate::unsupported::UnsupportedBackend]
-//!   ——保持既有行为（每操作 `Unsupported`，绝不静默假装生效）。`mac-boringtun`
-//!   未选时就是它，**行为零变化**。
-//! - **boringtun 模式**（[MacSystemBackend::with_mac_boringtun]）：隧道应用面
-//!   走 [crate::macos::backend::bt_apply] 命令计划 → 执行器
-//!   [crate::macos::backend::MacNetworkBackend]（sudo 白名单在
-//!   [crate::macos::backend] 钩子守门）；其余操作仍占位拒绝（mac 无 NAT/
-//!   peer 直连面）。
+//! - **Default (Service semantics)**: delegates each operation to
+//!   [crate::unsupported::UnsupportedBackend] — preserving the existing
+//!   behavior (`Unsupported` per operation, never silently faking success).
+//!   This is what runs when `mac-boringtun` is not selected: **zero behavior
+//!   change**.
+//! - **boringtun mode** ([MacSystemBackend::with_mac_boringtun]): the tunnel
+//!   apply surface goes through the [crate::macos::backend::bt_apply] command
+//!   plan -> executor [crate::macos::backend::MacNetworkBackend] (the sudo
+//!   whitelist is guarded by the hook in [crate::macos::backend]); every other
+//!   operation stays placeholder-refused (mac has no NAT / peer direct-connect
+//!   surface).
 //!
-//! 隧道配置面的 **wg 密钥/peer UAPI 与内核分配 utun 名（`WG_TUN_NAME_FILE`）
-//! 是 ⑤ 真机验收项**——本文件不发明路径；boringtun 模式下计划名 `utun`（内核
-//! 自选）时显式报错点名 ⑤，绝不把 `utun` 当真实接口名静默应用。
+//! On the tunnel configuration surface, **the wg key/peer UAPI and the
+//! kernel-assigned utun name (`WG_TUN_NAME_FILE`) are ⑤ real-machine
+//! acceptance items** — this file invents no paths; in boringtun mode an
+//! explicitly named error calling out ⑤ is raised when the planned name is
+//! `utun` (kernel-chosen), and `utun` is never silently applied as a real
+//! interface name.
 //!
-//! 仅 `#[cfg(target_os = "macos")]` 编译（宿主 CI 不跑 macOS 测试，经
-//! `x86_64-apple-darwin` 交叉 check 编译验证；命令计划语义由全平台单测覆盖）。
+//! Compiled only under `#[cfg(target_os = "macos")]` (the host CI does not run
+//! macOS tests; compilation is verified via an `x86_64-apple-darwin` cross
+//! check, and command-plan semantics are covered by the cross-platform unit
+//! tests).
 
 use super::backend::{bt_apply, MacNetworkBackend};
 use crate::unsupported::UnsupportedBackend;
@@ -29,14 +39,16 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
-/// macOS 平台后端：占位底座 + 可选 boringtun 隧道面。
+/// macOS platform backend: placeholder base + optional boringtun tunnel surface.
 #[derive(Clone)]
 pub struct MacSystemBackend {
-    /// 占位底座（默认模式的一切操作 + boringtun 模式的非隧道操作）。
+    /// Placeholder base (every operation in default mode + the non-tunnel
+    /// operations in boringtun mode).
     base: UnsupportedBackend,
-    /// 受管 utun 名（`utun` 让内核选 / `utun<N>` 显式）。
+    /// Managed utun name (`utun` lets the kernel choose / `utun<N>` is explicit).
     interface: String,
-    /// boringtun 数据面：`None` = 默认占位；`Some` = 隧道应用走命令计划。
+    /// boringtun data plane: `None` = default placeholder; `Some` = tunnel
+    /// application goes through the command plan.
     boringtun: Option<MacNetworkBackend>,
 }
 
@@ -49,13 +61,15 @@ impl MacSystemBackend {
         }
     }
 
-    /// 记录受管 utun 名（对齐各后端 `with_interface` 装配）。
+    /// Record the managed utun name (mirrors each backend's `with_interface`
+    /// assembly).
     pub fn with_interface(mut self, interface: impl Into<String>) -> Self {
         self.interface = interface.into();
         self
     }
 
-    /// 测试钩子（对齐各后端装配面）：boringtun 命令经 `sudo -n` 前缀。
+    /// Test hook (mirrors each backend's assembly surface): boringtun commands
+    /// are prefixed with `sudo -n`.
     pub fn with_sudo(mut self) -> Self {
         if let Some(backend) = self.boringtun.take() {
             self.boringtun = Some(backend.with_sudo());
@@ -63,25 +77,30 @@ impl MacSystemBackend {
         self
     }
 
-    /// 测试钩子（对齐各后端装配面）：mac 无 netns，忽略（占位语义不变）。
+    /// Test hook (mirrors each backend's assembly surface): mac has no netns,
+    /// so this is ignored (placeholder semantics unchanged).
     pub fn with_netns(self, _netns: impl Into<String>) -> Self {
         self
     }
 
-    /// ③-C 接线：选择 boringtun 数据面（隧道应用走命令计划）。
+    /// ③-C wiring: select the boringtun data plane (tunnel application goes
+    /// through the command plan).
     pub fn with_mac_boringtun(mut self) -> Self {
         self.boringtun = Some(MacNetworkBackend::new());
         self
     }
 
-    /// 隧道应用面：boringtun 模式下走 bt 命令计划，否则占位拒绝。
+    /// Tunnel apply surface: in boringtun mode this goes through the bt command
+    /// plan, otherwise the placeholder refuses.
     fn apply_tunnel_sync(&self, config: &TunnelConfig) -> Result<ApplyResult, NetworkError> {
         let backend = match self.boringtun.as_ref() {
             Some(backend) => backend,
             None => return self.base.apply_tunnel_sync(config, &BTreeSet::new()),
         };
-        // 计划名 `utun`（内核自选）需 `WG_TUN_NAME_FILE` 才拿得到实际名——
-        // 那是 ⑤ 真机项，本批不发明路径：显式报错，绝不把 `utun` 当真实接口。
+        // A planned name of `utun` (kernel-chosen) can only yield the real name
+        // via `WG_TUN_NAME_FILE` — that is a ⑤ real-machine item and this batch
+        // invents no paths: raise an explicit error rather than treating `utun`
+        // as a real interface.
         if self.interface == "utun" {
             return Err(NetworkError::ApplyRejected(
                 "mac-boringtun with kernel-assigned utun name needs WG_TUN_NAME_FILE \
@@ -94,7 +113,8 @@ impl MacSystemBackend {
         Ok(ApplyResult::ok())
     }
 
-    // ---- 占位委托面（默认与 boringtun 模式一致：mac 无这些面）----
+    // ---- Placeholder delegation surface (identical in default and boringtun
+    //      mode: mac has none of these surfaces) ----
 
     pub fn inspect_sync(&self) -> Result<NetworkSnapshot, NetworkError> {
         self.base.inspect_sync()
@@ -202,8 +222,10 @@ impl MacSystemBackend {
         self.base.meshlet_nat_owners_sync()
     }
 
-    /// 设备计划组合应用：隧道面走 boringtun（若选中），其余成分占位拒绝。
-    /// 签名对齐 [UnsupportedBackend::apply_device_plan_sync]（&self）。
+    /// Combined device-plan application: the tunnel surface goes through
+    /// boringtun (if selected), the remaining components are placeholder-refused.
+    /// The signature mirrors [UnsupportedBackend::apply_device_plan_sync]
+    /// (&self).
     pub fn apply_device_plan_sync(
         &self,
         plan: &crate::DevicePlan,
@@ -219,8 +241,10 @@ impl MacSystemBackend {
                 tunnel_result.error.unwrap_or_default(),
             ));
         }
-        // 其余成分（routes/nat）走占位：mac 无独立路由/NAT 面。boringtun 的
-        // 路由已含在命令计划（peer allowed_ips），无独立路由表成分。
+        // The remaining components (routes/nat) go through the placeholder:
+        // mac has no independent route/NAT surface. boringtun's routes are
+        // already included in the command plan (peer allowed_ips), so there is
+        // no separate routing-table component.
         let routes = self.apply_routes_sync(&plan.routes)?;
         if !routes.applied {
             return Err(NetworkError::ApplyRejected(
@@ -281,8 +305,9 @@ impl NetworkBackend for MacSystemBackend {
 mod tests {
     use super::*;
 
-    /// ③-C 钉：默认模式（未选 mac-boringtun）行为与占位一致——隧道应用显式
-    /// 拒绝，绝不静默假装生效。
+    /// ③-C pin: in default mode (mac-boringtun not selected) behavior matches
+    /// the placeholder — tunnel application is explicitly refused and never
+    /// silently faked as applied.
     #[test]
     fn default_mode_refuses_tunnel_apply() {
         let backend = MacSystemBackend::new().with_interface("utun5");
@@ -298,8 +323,9 @@ mod tests {
         assert!(matches!(err, Err(NetworkError::Unsupported(_))));
     }
 
-    /// ③-C 钉：boringtun 模式且计划名 `utun`（内核自选）→ 显式拒绝（
-    /// WG_TUN_NAME_FILE 是 ⑤ 真机项，绝不把 `utun` 当真实接口名应用）。
+    /// ③-C pin: boringtun mode with a planned name of `utun` (kernel-chosen)
+    /// -> explicitly refused (WG_TUN_NAME_FILE is a ⑤ real-machine item, and
+    /// `utun` is never applied as a real interface name).
     #[test]
     fn boringtun_bare_utun_fails_closed() {
         let backend = MacSystemBackend::new()
@@ -317,15 +343,18 @@ mod tests {
         assert!(matches!(err, Err(NetworkError::ApplyRejected(_))));
     }
 
-    /// ③-C 钉：boringtun 模式显式 `utun<N>` 名走命令计划（不因内核名缺失而
-    /// 拒——显式名不需要 WG_TUN_NAME_FILE）。
+    /// ③-C pin: boringtun mode with an explicit `utun<N>` name goes through
+    /// the command plan (it is not refused just because the kernel name is
+    /// unavailable — an explicit name does not need WG_TUN_NAME_FILE).
     #[test]
     fn boringtun_explicit_utun_reaches_command_plan() {
         let backend = MacSystemBackend::new()
             .with_interface("utun5")
             .with_mac_boringtun();
-        // 命令计划层（bt_apply）对显式名成功——执行层 spawn 因无真实 utun 而
-        // Io 失败，但这是执行错误不是计划拒绝；此处断言计划面不拒。
+        // The command-plan layer (bt_apply) succeeds for an explicit name —
+        // the execution layer fails with Io because no real utun exists, but
+        // that is an execution error, not a plan rejection; this asserts the
+        // plan surface does not refuse.
         let plan = crate::macos_wireguard_bt::bt_interface_plan(
             &crate::TunnelConfig {
                 name: "net-a".into(),

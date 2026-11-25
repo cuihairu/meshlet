@@ -3,9 +3,10 @@ use meshlet_domain::Ipv4Cidr;
 use std::net::Ipv4Addr;
 use std::process::{Command, Stdio};
 
-/// 从 `ip link show <if>` 输出解析实际 MTU 读数（首行形如
-/// `3: wg0: <...> mtu 1420 qdisc noqueue ...`）。读不到 `mtu` 字段或无法
-/// 解析时返回 `None`——调用方按「读数不可得」处理，不臆测默认值。
+/// Parse the actual MTU reading out of `ip link show <if>` output (the first
+/// line looks like `3: wg0: <...> mtu 1420 qdisc noqueue ...`). Returns
+/// `None` when no `mtu` field can be read or parsed — the caller treats that
+/// as "reading unavailable" rather than assuming a default value.
 pub(crate) fn parse_link_mtu(link_show: &str) -> Option<u32> {
     let mut tokens = link_show.split_whitespace();
     while let Some(token) = tokens.next() {
@@ -16,9 +17,10 @@ pub(crate) fn parse_link_mtu(link_show: &str) -> Option<u32> {
     None
 }
 
-/// 从 `ip -4 route show default` 解析默认路由出接口（首行形如
-/// `default via 10.0.0.1 dev ens18 proto dhcp ...`）。解析不出 `dev` 时返回
-/// `None`——调用方按「读数不可得」处理，不臆测接口名。
+/// Parse the default route's outgoing interface out of `ip -4 route show
+/// default` (the first line looks like `default via 10.0.0.1 dev ens18
+/// proto dhcp ...`). Returns `None` when no `dev` can be parsed — the caller
+/// treats that as "reading unavailable" rather than guessing an interface name.
 pub(crate) fn parse_default_route_interface(route_show: &str) -> Option<String> {
     let line = route_show.lines().next()?;
     let mut tokens = line.split_whitespace();
@@ -30,8 +32,9 @@ pub(crate) fn parse_default_route_interface(route_show: &str) -> Option<String> 
     None
 }
 
-/// 从 `ip -4 -o addr show` 输出解析 `(接口, IPv4 地址)` 对（仅 `inet` 行）。
-/// 形如 `2: eth0    inet 192.168.1.50/24 ...`（`-o` 单行每地址一行）。
+/// Parse `(interface, IPv4 address)` pairs out of `ip -4 -o addr show`
+/// output (only `inet` lines). Lines look like
+/// `2: eth0    inet 192.168.1.50/24 ...` (`-o` puts one address per line).
 pub(crate) fn parse_ip_octet_addrs(output: &str) -> Vec<(String, Ipv4Addr)> {
     output
         .lines()
@@ -47,9 +50,10 @@ pub(crate) fn parse_ip_octet_addrs(output: &str) -> Vec<(String, Ipv4Addr)> {
         .collect()
 }
 
-/// 同 [`parse_ip_octet_addrs`]，但保留前缀长度（`192.168.1.50/24` → 网段）。
-/// 仅解析合法网段（前缀 0–32）；解析失败的行跳过（调用方按「该子网不可知」
-/// 处理，不臆造）。
+/// Same as [`parse_ip_octet_addrs`], but keeps the prefix length
+/// (`192.168.1.50/24` -> the subnet). Only valid subnets are parsed
+/// (prefix 0-32); lines that fail to parse are skipped (the caller treats
+/// that as "this subnet is unknown" rather than inventing one).
 pub(crate) fn parse_ip_octet_subnets(output: &str) -> Vec<(String, Ipv4Cidr)> {
     output
         .lines()
@@ -59,9 +63,10 @@ pub(crate) fn parse_ip_octet_subnets(output: &str) -> Vec<(String, Ipv4Cidr)> {
                 return None;
             }
             let ifname = fields[1].to_string();
-            // 接口地址形如 `10.98.0.20/24`——主机位恒非零，不能用
-            // `Ipv4Cidr::from_str`（其要求规范化网络地址）；按「地址+前缀」
-            // 掩出所属网段（`10.98.0.0/24`）。
+            // An interface address looks like `10.98.0.20/24` — the host bits are
+            // never zero, so `Ipv4Cidr::from_str` (which requires a canonical
+            // network address) cannot be used; mask out the containing network
+            // from "address + prefix" instead (`10.98.0.0/24`).
             let (addr, prefix) = fields[3].split_once('/')?;
             let addr: std::net::Ipv4Addr = addr.parse().ok()?;
             let prefix: u8 = prefix.parse().ok()?;
@@ -71,15 +76,19 @@ pub(crate) fn parse_ip_octet_subnets(output: &str) -> Vec<(String, Ipv4Cidr)> {
         .collect()
 }
 
-/// 候选 LAN 接口：排除回环、受管隧道，以及容器/虚拟化/vpn 等不会承载
-/// 对端直连的虚拟接口（`docker*`/`br-*`/`veth*`/`virbr*`/`vmbr*`/
-/// `tailscale*`/`wg*`）。
+/// Candidate LAN interfaces: exclude loopback, the managed tunnel, and
+/// virtual interfaces from containers/virtualization/VPN that would never
+/// carry a peer's direct connection (`docker*`/`br-*`/`veth*`/`virbr*`/
+/// `vmbr*`/`tailscale*`/`wg*`).
 ///
-/// **外来 overlay 同样出局**（`zt*` = ZeroTier，Linux 侧恒 `zt` + 随机后缀）：
-/// 把它的网段当成本机 LAN，会把对端的 ZeroTier 地址判成「同网段直连」，于是
-/// WG endpoint 指进另一套隧道——两条隧道互为路径即互相封装成环（2026-11-23
-/// 真机事故：内部/物理 185:1）。ADR-014 的「互为备份、不争路由」也要求两者
-/// 各走各的路，而不是借道对方。
+/// **Foreign overlays are out too** (`zt*` = ZeroTier, which on Linux is
+/// always `zt` plus a random suffix): treating its subnet as the local LAN
+/// would classify the peer's ZeroTier address as "same-subnet direct", and
+/// the WG endpoint would then point into the other tunnel — with the two
+/// tunnels serving as each other's path they encapsulate each other into a
+/// loop (2026-11-23 real-machine incident: inner/physical 185:1). ADR-014's
+/// "mutual backup, no route contention" also requires the two to take their
+/// own paths rather than transit through each other.
 pub(crate) fn is_lan_interface(ifname: &str, wg_interface: &str) -> bool {
     if ifname == "lo" || ifname == wg_interface {
         return false;
@@ -116,9 +125,11 @@ pub(crate) fn mtu_matches_planned(link_show: &str, planned: Option<u32>) -> bool
     parse_link_mtu(link_show) == Some(enforced_tunnel_mtu(planned))
 }
 
-/// 当前 UTC 时刻的 ISO-8601 字符串（秒精度，`Z` 后缀）——诊断采集时刻。
-/// 不引 chrono（meshlet-network 是纯命令执行层）；用 `date` 命令读取本机
-/// UTC 时间，失败回退 `SystemTime` 的纪元秒格式化（仅作采集时刻展示）。
+/// ISO-8601 string of the current UTC time (second precision, `Z` suffix) —
+/// the diagnostic collection timestamp. chrono is deliberately not pulled in
+/// (meshlet-network is a pure command-execution layer); the local UTC time is
+/// read with the `date` command, falling back to formatting `SystemTime`
+/// epoch seconds on failure (displayed only as the collection timestamp).
 pub(crate) fn chrono_now_iso() -> String {
     if let Ok(out) = std::process::Command::new("date")
         .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
@@ -139,11 +150,12 @@ pub(crate) fn chrono_now_iso() -> String {
     format!("{secs}")
 }
 
-/// 从 `ping` 输出解析首个 RTT（毫秒）。支持 `time=12.3 ms` 与 `time<1 ms`
-///（Linux iputils 的超小延迟表示）；无读数返回 `None`。
+/// Parse the first RTT (milliseconds) out of `ping` output. Supports both
+/// `time=12.3 ms` and `time<1 ms` (iputils on Linux expresses sub-millisecond
+/// latency this way); returns `None` when there is no reading.
 ///
-/// `pub`（非 `pub(crate)`）：探测层（[`crate::probe`]）与 netns 集成测试
-/// （`tests/probe_netns.rs`）都直接复用本解析器。
+/// `pub` (not `pub(crate)`): both the probe layer ([`crate::probe`]) and the
+/// netns integration tests (`tests/probe_netns.rs`) reuse this parser directly.
 pub fn parse_ping_rtt_ms(text: &str) -> Option<u128> {
     let start = text.find("time")?;
     let rest = &text[start + 4..];
@@ -155,10 +167,13 @@ pub fn parse_ping_rtt_ms(text: &str) -> Option<u128> {
     value[..end].parse::<f64>().ok().map(|v| v.round() as u128)
 }
 
-/// SEL-001 探测层传输：不经后端（无 sudo / netns 前缀）直接 `ping -c 1
-/// -W 1` 实测 ICMP RTT（毫秒）。agent 探测线程以本函数探测候选端点 IP
-///（候选是普通单播地址，从 agent 进程可达即可，无需经 wg 接口）。
-/// 超时 1s——探测是高频轻量操作，2s 的诊断级等待会拖慢探测线程。
+/// SEL-001 probe-layer transport: measures ICMP RTT (milliseconds) with a
+/// direct `ping -c 1 -W 1`, bypassing the backend (no sudo / netns prefix).
+/// The agent's probe thread uses this function to probe candidate endpoint
+/// IPs (a candidate is an ordinary unicast address — reachable from the
+/// agent process is enough; the wg interface is not needed). The timeout is
+/// 1s — probing is a high-frequency lightweight operation, and a 2s
+/// diagnostics-grade wait would slow the probe thread down.
 pub fn run_ping_rtt(target: Ipv4Addr) -> Option<u128> {
     let out = Command::new("ping")
         .args(["-c", "1", "-W", "1", &target.to_string()])
@@ -170,9 +185,11 @@ pub fn run_ping_rtt(target: Ipv4Addr) -> Option<u128> {
     parse_ping_rtt_ms(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// 解析 `wg show <if> dump` 的 peer 行为诊断读数（纯函数，Linux 本机可测）。
-/// 空白分隔：`pubkey preshared endpoint allowed-ips latest-handshake rx tx
-/// keepalive`；与 Linux 现有 peer dump 解析器同一公钥判据，缺列按 0/空补。
+/// Parse a peer line of `wg show <if> dump` into diagnostic readings (pure
+/// function, testable on a Linux host). Whitespace separated:
+/// `pubkey preshared endpoint allowed-ips latest-handshake rx tx keepalive`;
+/// the same public-key criterion as the existing Linux peer dump parser, with
+/// missing columns filled in as 0/empty.
 pub(crate) fn parse_wg_dump_diag_line(line: &str) -> Option<WgPeerDiagnostic> {
     let fields: Vec<&str> = line.split_whitespace().collect();
     let public_key = fields.first()?;
@@ -211,12 +228,15 @@ pub(crate) fn route_source(route_get: &str, tunnel: &str) -> Option<Ipv4Addr> {
     (!source.is_unspecified() && !source.is_loopback()).then_some(source)
 }
 
-/// §18.3：判读 `ip route show exact <dst>` 的一行是否为「不经受管接口的
-/// 外来路由」。返回 `Some(行原文)` 表示冲突——目标前缀已被指往别的路径，
-/// `ip route replace` 会静默接管它，必须改为显式拒绝；`None` 表示经受管
-/// 接口的既有路由（Meshlet 自有对象，幂等改写属正常计划变更）。解析不出
-/// `dev` 的行（blackhole / 输出格式变化）按冲突处理——fail closed，不放过
-/// 未知对象。
+/// §18.3: decide whether one line of `ip route show exact <dst>` is a "foreign
+/// route not going through the managed interface". Returns `Some(raw line)`
+/// for a conflict — the target prefix is already pointed at a different path,
+/// and `ip route replace` would silently take it over, so the operation must
+/// be refused explicitly; `None` means an existing route through the managed
+/// interface (a Meshlet-owned object, where rewriting it idempotently is a
+/// normal plan change). Lines whose `dev` cannot be parsed (blackhole /
+/// changed output format) are treated as conflicts — fail closed, never let an
+/// unknown object through.
 pub(crate) fn foreign_route_line(line: &str, interface: &str) -> Option<String> {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     match tokens

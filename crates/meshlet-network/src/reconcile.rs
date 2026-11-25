@@ -1,16 +1,19 @@
-//! 纯解析与对账（从 lib.rs 拆出）：wg 输出解析、握手年龄表，以及计划与内核
-//! 快照的逐项对账（无 IO，双平台共享，Linux 本机可测）。
+//! Pure parsing and reconciliation (split out from lib.rs): parsing wg output, the handshake age
+//! table, and item-by-item reconciliation between the plan and the kernel snapshot (no IO, shared by
+//! both platforms, testable on a local Linux box).
 
 use crate::{DevicePlan, NetworkSnapshot};
 
-/// 解析 `wg show <if> latest-handshakes` 输出（每行 `公钥 握手unix时间 距今秒`）：
-/// 公钥 → 距今秒数。第三列优先（WireGuard 自己算好的年龄）；缺第三列时按
-/// `now - 握手时间` 兜底。握手时间为 0（从未握手）的 peer 不在输出里——
-/// 调用方按「无读数」处理（§12 `classify_probe` 的 Unknown/Unhealthy 之别）。
+/// Parse the output of `wg show <if> latest-handshakes` (each line is `public key  handshake unix time  seconds ago`):
+/// returns public key → seconds ago. The third column wins (the age WireGuard already computed); when
+/// it is missing, fall back to `now - handshake time`. Peers with handshake time 0 (never shook
+/// hands) are absent from the output — callers treat them as "no reading" (the Unknown vs Unhealthy
+/// distinction of §12 `classify_probe`).
 ///
-/// 由 crate 根 re-export（实现见本模块，而非 [crate::linux] 模块）：双平台共享的**纯解析逻辑**，
-/// Windows 执行层（`windows` 模块，`#[cfg(windows)]`）与 Linux 执行层各取
-/// 所需——解析本身不依赖平台，二进制格式两侧一致。
+/// Re-exported from the crate root (the implementation lives in this module, not the [crate::linux]
+/// module): this is **pure parsing logic** shared by both platforms, and the Windows execution layer
+/// (the `windows` module, `#[cfg(windows)]`) and the Linux execution layer each take what they need —
+/// parsing itself is platform-independent and the wire format matches on both sides.
 pub(crate) fn parse_handshake_ages(
     text: &str,
     now_secs: u64,
@@ -19,7 +22,7 @@ pub(crate) fn parse_handshake_ages(
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let key = fields.next()?;
-            // 公钥 44 字符 base64 且以 `=` 结尾（与 dump 行解析同一判据）。
+            // A public key is 44 characters of base64 ending in `=` (the same criterion as dump-line parsing).
             if key.len() != 44 || !key.ends_with('=') {
                 return None;
             }
@@ -36,9 +39,10 @@ pub(crate) fn parse_handshake_ages(
         .collect()
 }
 
-/// 解析 `wg show <if> dump` 接口行的本机公钥指纹（字段 1；字段 0 是私钥，
-/// 绝不外传）。Linux `wg` 与 Windows `wg.exe` 同一 dump 格式，共享本解析。
-/// 公钥按身份校验（44 字符 base64、`=` 结尾）——残行/占位文本不臆造指纹。
+/// Parse the local public-key fingerprint from the interface line of `wg show <if> dump` (field 1;
+/// field 0 is the private key and is never handed out). Linux `wg` and Windows `wg.exe` share one
+/// dump format, so this parse is shared. The public key is validated as an identity (44 characters of
+/// base64, ending in `=`) — partial lines / placeholder text must not fabricate a fingerprint.
 pub fn parse_wg_dump_local_public_key(dump: &str) -> Option<String> {
     let header = dump.lines().next()?;
     let public_key = header.split_whitespace().nth(1)?;
@@ -48,30 +52,34 @@ pub fn parse_wg_dump_local_public_key(dump: &str) -> Option<String> {
     Some(public_key.to_string())
 }
 
-/// 解析 `wg show <if> dump` 接口行的实际监听端口（字段 2）。Linux `wg` 与
-/// Windows `wg.exe` 同一 dump 格式，共享本解析；解析不出（空/残行）→
-/// `None`（调用方按证据缺失处理，不判漂移）。
+/// Parse the actual listening port from the interface line of `wg show <if> dump` (field 2). Linux
+/// `wg` and Windows `wg.exe` share one dump format, so this parse is shared; if it cannot be parsed
+/// (empty / partial line) → `None` (the caller treats it as missing evidence and does not call it drift).
 pub fn parse_wg_dump_listen_port(dump: &str) -> Option<u16> {
     dump.lines().next()?.split_whitespace().nth(2)?.parse().ok()
 }
 
-/// 计划与内核快照逐项对账（纯函数，无 IO，Linux 本机可测）。
+/// Item-by-item reconciliation between the plan and the kernel snapshot (a pure function, no IO,
+/// testable on a local Linux box).
 ///
-/// 供 Windows 后端 `device_plan_matches_sync` 使用（Linux 有内联的更强实现）；
-/// 把「隧道在但配置已漂移」从「误判一致」中分辨出来：
-/// ① 每个计划 peer 公钥必须存在于快照 peers（子集方向）；
-/// ①a. 每个计划 peer 的 `allowed_ips` 必须与快照读回的 allowed-ips 精确一致
-///    （顺序无关；与 Linux 同职责实现的身份级判定对齐）；
-/// ② 快照里每个 peer 必须是计划 peer 或 `extra_peer_keys`（无未受管漂移；
-///    `extra_peer_keys` 是直连保留等允许存在的额外 peer）；
-/// ③ 每个计划路由 `destination` 必须在 `installed_routes`（CIDR 精确匹配）；
-/// ④ 计划显式指定 MTU 则须与快照 `tunnel_mtu` 一致；
-/// ⑤ 隧道不存在（`tunnel_exists=false`）→ 不匹配；
-/// ⑥ 适配器实际地址读数存在且与计划地址不同 → 不匹配（手动换址的隧道）。
+/// Used by the Windows backend's `device_plan_matches_sync` (Linux has an inline stronger
+/// implementation); it separates "the tunnel is up but the configuration has drifted" from "wrongly
+/// judged matching":
+/// ① every planned peer public key must exist in the snapshot peers (the subset direction);
+/// ①a. each planned peer's `allowed_ips` must match exactly the allowed-ips read back from the
+///    snapshot (order-insensitive; aligned with the identity-level verdict of the Linux counterpart);
+/// ② every peer in the snapshot must be a planned peer or in `extra_peer_keys` (no unmanaged drift;
+///    `extra_peer_keys` holds extra peers that a direct link retains and so are allowed);
+/// ③ each planned route `destination` must be in `installed_routes` (exact CIDR match);
+/// ④ if the plan specifies an MTU explicitly, it must match the snapshot `tunnel_mtu`;
+/// ⑤ the tunnel not existing (`tunnel_exists=false`) → not matching;
+/// ⑥ the adapter's actual address reading exists and differs from the planned address → not matching
+///    (a tunnel whose address was moved by hand).
 ///
-/// 调用方是 `#[cfg(windows)]` 的 `WindowsNetworkBackend`，故非 Windows 目标
-/// 上本函数保持可编译（含单测）但无调用方——按仓内惯例以 cfg_attr 豁免
-/// dead_code，让 Linux 本机能跑这些对账单测。
+/// The caller is the `#[cfg(windows)]` `WindowsNetworkBackend`, so on non-Windows targets this
+/// function stays compilable (including its unit tests) but has no callers — following the repo
+/// convention it is exempted from dead_code via cfg_attr so a Linux box can run these reconciliation
+/// tests.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn device_plan_matches(
     plan: &DevicePlan,
@@ -84,7 +92,7 @@ pub(crate) fn device_plan_matches(
     for peer in &plan.tunnel.peers {
         if !snapshot.peers.iter().any(|p| {
             p.public_key == peer.public_key
-                // 集合语义：wg dump 读回的 CIDR 顺序不稳定，按集合比较。
+                // Set semantics: the CIDR order read back by `wg dump` is unstable, compare as sets.
                 && p.allowed_ips.len() == peer.allowed_ips.len()
                 && peer
                     .allowed_ips
@@ -108,9 +116,10 @@ pub(crate) fn device_plan_matches(
         }
         return false;
     }
-    // 路由对照只对「路由独立于 peer 下发」的后端成立（service 模型）。
-    // peer allowed-ips 装配路由的后端（nt 模型 adapter set_default_route）
-    // 不走此处——路由已由上方 peer 身份级比对完全决定（同 drifted 口径）。
+    // Route comparison only holds for backends whose routes are installed independently of peers
+    // (the service model). Backends that assemble routes from peer allowed-ips (the nt model's
+    // adapter set_default_route) do not take this path — routes are already fully determined by the
+    // peer identity-level comparison above (the same drifted convention).
     if !snapshot.routes_from_peers {
         for route in &plan.routes {
             if !snapshot.installed_routes.contains(&route.destination) {
@@ -123,15 +132,17 @@ pub(crate) fn device_plan_matches(
             return false;
         }
     }
-    // ⑥ 适配器实际地址：读数存在且与计划不符 → 手动换址，必须判不匹配。
-    //    读数缺失（None）不判——证据缺失不假装一致，也不进重放死循环。
+    // ⑥ The adapter's actual address: a reading that exists but disagrees with the plan -> the address
+    //    was moved by hand, and it must read as not matching. A missing reading (None) is not judged
+    //    — missing evidence neither pretends to match nor enters a replay loop.
     if let Some(actual) = snapshot.tunnel_address {
         if actual != plan.tunnel.address {
             return false;
         }
     }
-    // ⑦ 实际监听端口：直连钉住的固定端口与内核读数不符（手动 `wg set
-    //    listen-port` / 半应用状态）→ 判不匹配，重放纠回。读数缺失不判。
+    // ⑦ The actual listening port: the direct-connect-pinned port disagrees with the kernel reading
+    //    (a manual `wg set listen-port` / a half-applied state) -> judge not matching and let a
+    //    replay correct it. A missing reading is not judged.
     if let Some(port) = plan.tunnel.listen_port {
         if let Some(actual) = snapshot.tunnel_listen_port {
             if actual != port {
@@ -218,8 +229,8 @@ mod device_plan_matches_tests {
 
     #[test]
     fn adapter_address_mismatch_reads_as_not_matching() {
-        // 手动把隧道地址改了（peer/路由/MTU 全一致）→ 必须判不匹配；
-        // 读数缺失（None）不判。
+        // The tunnel address was moved by hand (peer/routes/MTU all match) -> must read as not matching;
+        // a missing reading (None) is not judged.
         let p = plan(&["pk-a"], &["10.240.0.0/24"], None);
         let mut moved = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
         moved.tunnel_address = Some("10.240.0.99".parse().unwrap());
@@ -238,8 +249,9 @@ mod device_plan_matches_tests {
 
     #[test]
     fn pinned_listen_port_mismatch_reads_as_not_matching() {
-        // 直连钉住的固定端口与内核读数不符（手动 wg set listen-port /
-        // 半应用）→ 必须判不匹配，重放纠回；读数缺失（None）不判。
+        // The direct-connect-pinned port disagrees with the kernel reading (a manual wg set listen-port /
+        // a half-applied state) -> must read as not matching and be corrected by a replay; a
+        // missing reading (None) is not judged.
         let mut p = plan(&["pk-a"], &["10.240.0.0/24"], None);
         p.tunnel.listen_port = Some(51820);
         let mut drifted = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
@@ -248,7 +260,7 @@ mod device_plan_matches_tests {
         let mut matching = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
         matching.tunnel_listen_port = Some(51820);
         assert!(device_plan_matches(&p, &empty_extra(), &matching));
-        // 证据缺失不判（不进重放死循环）。
+        // Missing evidence is not judged (so we do not enter a replay loop).
         let mut unreadable = snapshot(true, &["pk-a"], &["10.240.0.0/24"], None);
         unreadable.tunnel_listen_port = None;
         assert!(device_plan_matches(&p, &empty_extra(), &unreadable));
@@ -256,7 +268,7 @@ mod device_plan_matches_tests {
 
     #[test]
     fn wg_dump_listen_port_parses_interface_line() {
-        // 接口行形状：私钥 本机公钥 监听端口 …
+        // Interface-line shape: private key, local public key, listen port, ...
         let dump = format!("{} {} 51820\n", "x".repeat(32), "A".repeat(43) + "=");
         assert_eq!(crate::parse_wg_dump_listen_port(&dump), Some(51820));
         let no_port = format!("{} {}\n", "x".repeat(32), "A".repeat(43) + "=");
@@ -268,7 +280,7 @@ mod device_plan_matches_tests {
 
     #[test]
     fn missing_plan_peer_false() {
-        // 计划有 pk-c，快照缺 → 漂移。
+        // The plan has pk-c but the snapshot does not -> drift.
         let p = plan(&["pk-a", "pk-c"], &[], None);
         let s = snapshot(true, &["pk-a"], &[], None);
         assert!(!device_plan_matches(&p, &empty_extra(), &s));
@@ -276,11 +288,11 @@ mod device_plan_matches_tests {
 
     #[test]
     fn drifted_peer_false_but_extra_allowed_true() {
-        // 快照多出 pk-x：不在计划也不在 extra → 未受管漂移。
+        // The snapshot carries an extra pk-x: neither planned nor in extra -> unmanaged drift.
         let p = plan(&["pk-a"], &[], None);
         let s = snapshot(true, &["pk-a", "pk-x"], &[], None);
         assert!(!device_plan_matches(&p, &empty_extra(), &s));
-        // extra_peer_keys 放行 pk-x → 一致。
+        // extra_peer_keys admits pk-x -> matching.
         let mut extra = empty_extra();
         extra.insert("pk-x".into());
         assert!(device_plan_matches(&p, &extra, &s));
@@ -288,8 +300,8 @@ mod device_plan_matches_tests {
 
     #[test]
     fn drifted_peer_allowed_ips_false() {
-        // 计划 peer 存在但内核 allowed-ips 已漂移（如被外部 wg set 改过）
-        // → 必须判定不匹配以触发重放纠回。
+        // The planned peer exists but the kernel allowed-ips has drifted (e.g. rewritten by an outside
+        // `wg set`) -> must judge not matching so a replay corrects it.
         let p = plan(&["pk-a"], &[], None);
         let mut s = snapshot(true, &["pk-a"], &[], None);
         s.peers[0].allowed_ips = vec!["10.240.0.6/32".parse().unwrap()];
@@ -298,7 +310,7 @@ mod device_plan_matches_tests {
 
     #[test]
     fn missing_route_false() {
-        // 计划路由 10.240.0.0/24 未安装 → 漂移。
+        // The planned route 10.240.0.0/24 is not installed -> drift.
         let p = plan(&[], &["10.240.0.0/24"], None);
         let s = snapshot(true, &[], &["192.168.1.0/24"], None);
         assert!(!device_plan_matches(&p, &empty_extra(), &s));
@@ -306,24 +318,25 @@ mod device_plan_matches_tests {
 
     #[test]
     fn peer_implied_routes_skip_plan_route_check() {
-        // nt 模型（wireguard-nt adapter set_default_route）的路由完全由 peer
-        // allowed-ips 装配，plan.routes 不经独立路径下发（netsh route apply
-        // 显式拒绝）。device_plan_matches 按 plan.routes 的「缺路由」判定对
-        // nt 恒假——routes_from_peers 时跳过（同 drifted 口径）。
+        // In the nt model (wireguard-nt adapter set_default_route) routes are assembled entirely from peer
+        // allowed-ips; plan.routes is never pushed through an independent path (netsh route apply is
+        // explicitly rejected). device_plan_matches' "missing route" verdict on plan.routes is
+        // therefore always false for nt — skip it when routes_from_peers (the same drifted convention).
         let p = plan(&[], &["10.240.0.0/24"], None);
         let mut s = snapshot(true, &[], &[], None);
         s.routes_from_peers = true;
         assert!(device_plan_matches(&p, &empty_extra(), &s));
 
-        // 对照：同一快照按 service 模型口径（路由独立于 peer、按 plan.routes
-        // 判「缺路由」）→ 计划路由未装 → 必须判不匹配。
+        // Contrast: the same snapshot under the service-model convention (routes independent of peers,
+        // "missing route" judged against plan.routes) -> the planned route is not installed -> must
+        // read as not matching.
         s.routes_from_peers = false;
         assert!(!device_plan_matches(&p, &empty_extra(), &s));
     }
 
     #[test]
     fn mtu_drift_false() {
-        // 计划显式 1420，内核读数 1300 → 漂移。
+        // The plan states 1420 explicitly while the kernel reads 1300 -> drift.
         let p = plan(&[], &[], Some(1420));
         let s = snapshot(true, &[], &[], Some(1300));
         assert!(!device_plan_matches(&p, &empty_extra(), &s));
@@ -338,23 +351,24 @@ mod device_plan_matches_tests {
 
     #[test]
     fn no_planned_mtu_skips_mtu_check() {
-        // 计划未指定 MTU → 不比对，仅其余项判定。
+        // The plan specifies no MTU -> skip the comparison, judging only the rest.
         let p = plan(&["pk-a"], &["10.240.0.0/24"], None);
         let s = snapshot(true, &["pk-a"], &["10.240.0.0/24"], Some(1300));
         assert!(device_plan_matches(&p, &empty_extra(), &s));
     }
-    /// 本机公钥指纹解析（BUG② 修复的读数端）：接口行字段 1；私钥（字段 0）
-    /// 绝不返回；残行 / 占位文本 / 空表 → None。
+    /// Local public-key fingerprint parsing (the reading side fixed by BUG②): field 1 of the interface
+    /// line; the private key (field 0) is never returned; partial line / placeholder text / empty
+    /// table -> None.
     #[test]
     fn wg_dump_local_public_key_reads_field_one_and_validates_shape() {
         let key = format!("{}=", "K".repeat(43));
         let dump = format!("some-private-key\t{key}\t51820\t0\n");
         assert_eq!(parse_wg_dump_local_public_key(&dump), Some(key.clone()));
-        // 接口行在前、peer 行在后：只看首行。
+        // The interface line comes first and the peer lines after: only the first line is read.
         let with_peer =
             format!("{dump}PEER-KEY-PLACEHOLDER\t\tendpoint\t10.240.0.2/32\t0\t0\t0\t0\n");
         assert_eq!(parse_wg_dump_local_public_key(&with_peer), Some(key));
-        // 空表 / 残行 / 非法形状。
+        // Empty table / partial line / invalid shape.
         assert_eq!(parse_wg_dump_local_public_key(""), None);
         assert_eq!(parse_wg_dump_local_public_key("only-private-key\n"), None);
         assert_eq!(

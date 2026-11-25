@@ -1,4 +1,4 @@
-//! 网络后端错误类型（从 lib.rs 拆出）。
+//! Network backend error types (split out from lib.rs).
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NetworkError {

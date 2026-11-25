@@ -1,53 +1,59 @@
-//! 诊断载体类型（R-DIAG，从 lib.rs 拆出）：结构化诊断快照的 Serde 类型；
-//! crate 根 re-export 保持 `meshlet_network::{NetworkDiagnostics, ...}` 路径。
+//! Diagnostics carrier types (R-DIAG, split out from lib.rs): the Serde types
+//! behind structured diagnostic snapshots; the crate root re-exports them to
+//! keep the `meshlet_network::{NetworkDiagnostics, ...}` path intact.
 
-/// 网络诊断信息面（R-DIAG，2026-11-01 用户令）：agent 本地路由表 / 接口
-/// 清单 / wg-mlt 读数三类快照的**结构化**载体。agent 采集（[crate::NetworkBackend]
-/// 各平台实现，Linux 复用既有 `ip route` / `wg show dump` 解析器，不重写），
-/// 随心跳上报服务端；控制台诊断页与 CLI `meshlet agent diag` 据此展示。
+/// Network diagnostics information surface (R-DIAG, 2026-11-01 user directive):
+/// **structured** carriers for three kinds of snapshot — the agent's local route
+/// table, the interface inventory, and wg-mlt readings. The agent collects them
+/// (per-platform [crate::NetworkBackend] implementations; on Linux the existing
+/// `ip route` / `wg show dump` parsers are reused, not rewritten) and reports
+/// them to the server with the heartbeat; the console diagnostics page and the
+/// CLI `meshlet agent diag` render from them.
 ///
-/// 纪律与 [crate::NetworkSnapshot] 同源：读不到的真实状态按 `None` / 空数组上报
-/// （证据缺失可见），绝不臆测默认值。
+/// Discipline shared with [crate::NetworkSnapshot]: real state that cannot be read
+/// is reported as `None` / an empty array (missing evidence stays visible);
+/// never guess a default value.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct NetworkDiagnostics {
-    /// 采集时刻（agent 本地 ISO-8601）；`None` = 采集未完成。
+    /// Collection time (agent-local ISO-8601); `None` = collection incomplete.
     pub collected_at: Option<String>,
-    /// 全表路由（Linux `ip route show table all` 原文 / Windows `route print`）。
-    /// 原文保留以便与真实路由表逐行对照；空 = 未取到。
+    /// Full route tables (raw Linux `ip route show table all` / Windows `route print`).
+    /// Kept verbatim so it can be diffed line by line against the real routing table;
+    /// empty = not obtained.
     pub route_table: Vec<String>,
-    /// 接口清单（名称 + IPv4 地址/前缀 + 状态 + MTU）。
+    /// Interface inventory (name + IPv4 address/prefix + state + MTU).
     pub interfaces: Vec<InterfaceDiagnostic>,
-    /// wg-mlt 接口读数（`wg show dump` 解析；每行一个 peer）。
+    /// wg-mlt interface readings (`wg show dump` parsed; one entry per peer).
     pub wg: Vec<WgPeerDiagnostic>,
 }
 
-/// 单条接口诊断（R-DIAG「接口清单：含地址/状态/MTU」）。
+/// One interface diagnostic entry (R-DIAG "interface inventory: includes address/state/MTU").
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct InterfaceDiagnostic {
     pub name: String,
-    /// IPv4 地址（点分）；无 IPv4 地址留空串。
+    /// IPv4 address (dotted notation); empty string when there is no IPv4 address.
     pub ipv4: String,
-    /// 前缀长度（0–32）；未取到留空。
+    /// Prefix length (0–32); `None` when not obtained.
     pub prefix: Option<u8>,
-    /// `up` / `down` / `unknown`（Linux 按 `ip link` 的 UP flag，Windows 按
-    /// `Get-NetIPConfiguration` 的 InterfaceOperationalStatus）。
+    /// `up` / `down` / `unknown` (on Linux from the `ip link` UP flag, on
+    /// Windows from the InterfaceOperationalStatus of `Get-NetIPConfiguration`).
     pub state: String,
-    /// 接口 MTU（字节）；`None` = 未取到。
+    /// Interface MTU (bytes); `None` = not obtained.
     pub mtu: Option<u32>,
 }
 
-/// 单条 wg-mlt 接口读数（R-DIAG「wg show：peer/握手/流量」）。
+/// One wg-mlt interface reading (R-DIAG "wg show: peer/handshake/traffic").
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct WgPeerDiagnostic {
     pub public_key: String,
-    /// 对端 endpoint（`ip:port`）；空 = 未配置。
+    /// Peer endpoint (`ip:port`); empty = not configured.
     pub endpoint: String,
-    /// 对端 AllowedIPs（逗号分隔 CIDR 字符串）。
+    /// Peer AllowedIPs (comma-separated CIDR string).
     pub allowed_ips: String,
-    /// 最近握手时间（Unix 秒）；0 = 从未握手。
+    /// Most recent handshake time (Unix seconds); 0 = no handshake ever.
     pub last_handshake: u64,
-    /// 累计接收字节（`transfer-rx`）。
+    /// Cumulative received bytes (`transfer-rx`).
     pub rx_bytes: u64,
-    /// 累计发送字节（`transfer-tx`）。
+    /// Cumulative sent bytes (`transfer-tx`).
     pub tx_bytes: u64,
 }

@@ -1,21 +1,23 @@
-//! SEL-001 候选端点探测层：对每 peer 的全部候选端点发轻量探测，采集
-//! RTT / 丢包 / 抖动滑动窗口（[todo.md](../../../todo.md) SEL-001）。
+//! SEL-001 candidate-endpoint probing layer: send a lightweight probe to every candidate endpoint
+//! of every peer and collect RTT / loss / jitter sliding windows ([todo.md](../../../todo.md) SEL-001).
 //!
-//! 设计要点（与任务书一一对应）：
-//! - **候选输入**是 [`meshlet_domain::PeerEndpoints`]（hub 下发的公网 / 局域网
-//!   候选），探测层只消费它、不自己拼装；
-//! - **窗口统计**（[`ProbeWindow`]）是纯逻辑：保留最近 `capacity` 次探测，
-//!   超限逐出最旧，`rtt_ms`（中位数）/ `loss_rate` / `jitter_ms` 全部由窗口
-//!   推导，SEL-002 的评分与迟滞切换直接消费；
-//! - **传输可注入**（[`probe_round`] 的 `transport` 闭包）：生产走平台默认
-//!   [`default_transport`]（Linux 经 `ping` 发 ICMP echo，不新增控制面负载），
-//!   netns 集成测试注入「在指定命名空间内 ping」的传输来实测双路径 RTT；
-//! - **零控制面负载**：探测周期与心跳 / 派单独立，只复用对端候选集（30s 心跳
-//!   同步的数据），绝不因探测额外请求 server。
+//! Design points (one-to-one with the task sheet):
+//! - **Candidate input** is [`meshlet_domain::PeerEndpoints`] (the public / LAN candidates pushed
+//!   by the hub); the probing layer only consumes it and never assembles one itself;
+//! - **Window statistics** ([`ProbeWindow`]) are pure logic: keep the most recent `capacity` probes,
+//!   evicting the oldest when over capacity, and `rtt_ms` (median) / `loss_rate` / `jitter_ms` are all
+//!   derived from the window; SEL-002's scoring and hysteresis switching consume them directly;
+//! - **Injectable transport** (the `transport` closure of [`probe_round`]): production uses the
+//!   platform default [`default_transport`] (Linux sends an ICMP echo via `ping`, adding no control
+//!   plane load), while the netns integration tests inject a "ping inside a given namespace" transport
+//!   to measure both paths' RTT for real;
+//! - **Zero control-plane load**: the probe cycle is independent of the heartbeat / dispatch and only
+//!   reuses the peer candidate sets (data synced on the 30s heartbeat); probing never triggers an
+//!   extra request to the server.
 //!
-//! 平台差异收敛在 [`default_transport`]：Linux 真实 ICMP 探测（`ping -c 1
-//! -W 1`）；Windows 同口径 ICMP（`ping -n 1 -w 1000`，[`crate::windows_probe`]，
-//! 2026-11-13 接线）；其余平台返回 `None`（记为丢包）。
+//! Platform differences converge in [`default_transport`]: real ICMP probing on Linux (`ping -c 1
+//! -W 1`); the same-caliber ICMP on Windows (`ping -n 1 -w 1000`, [`crate::windows_probe`], wired in
+//! 2026-11-13); all other platforms return `None` (recorded as a loss).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::Ipv4Addr;
@@ -23,22 +25,22 @@ use std::net::Ipv4Addr;
 use meshlet_domain::{EndpointCandidate, PeerEndpoints};
 
 // ---------------------------------------------------------------------------
-// 窗口统计
+// Window statistics
 // ---------------------------------------------------------------------------
 
-/// 一次探测结果。
+/// The outcome of one probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeSample {
-    /// 往返时延（毫秒）。
+    /// Round-trip time (milliseconds).
     Rtt(u64),
-    /// 探测超时未响应（丢包）。
+    /// The probe timed out without a response (a loss).
     Lost,
 }
 
-/// 有界滑动窗口：保留最近 `capacity` 次探测，超限逐出最旧。
+/// A bounded sliding window: keeps the most recent `capacity` probes and evicts the oldest when over.
 ///
-/// 纯统计结构，无 IO；所有读数（RTT / 丢包率 / 抖动）都由窗口内样本推导，
-/// 不维护任何外部状态，SEL-002 可直接消费。
+/// A pure statistics structure with no IO; every reading (RTT / loss rate / jitter) is derived from
+/// the samples in the window, no external state is kept, and SEL-002 can consume it directly.
 #[derive(Debug, Clone)]
 pub struct ProbeWindow {
     capacity: usize,
@@ -46,7 +48,7 @@ pub struct ProbeWindow {
 }
 
 impl ProbeWindow {
-    /// 新建窗口。`capacity` 下限 1（空窗口无意义）。
+    /// Create a window. `capacity` is floored at 1 (an empty window is meaningless).
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
@@ -54,7 +56,7 @@ impl ProbeWindow {
         }
     }
 
-    /// 记录一次探测；窗口已满则逐出最旧样本。
+    /// Record one probe; evict the oldest sample once the window is full.
     pub fn record(&mut self, sample: ProbeSample) {
         if self.samples.len() == self.capacity {
             self.samples.pop_front();
@@ -62,7 +64,7 @@ impl ProbeWindow {
         self.samples.push_back(sample);
     }
 
-    /// 窗口内样本数。
+    /// The number of samples in the window.
     pub fn len(&self) -> usize {
         self.samples.len()
     }
@@ -71,18 +73,19 @@ impl ProbeWindow {
         self.samples.is_empty()
     }
 
-    /// 窗口容量（本次探测的样本上限）。
+    /// The window capacity (the sample ceiling for this probe round).
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
-    /// 窗口内全部样本（旧 → 新，只读视图）。
+    /// All samples in the window (oldest → newest, a read-only view).
     pub fn samples(&self) -> &VecDeque<ProbeSample> {
         &self.samples
     }
 
-    /// 窗口内 RTT 样本的中位数（毫秒）。鲁棒集中趋势：单点尖峰 / 单次丢包
-    /// 不把读数带偏，SEL-002 评分以此为主。无 RTT 样本 → `None`。
+    /// The median of the RTT samples in the window (milliseconds). A robust measure of central tendency:
+    /// a single spike / a single loss does not skew the reading, and SEL-002's scoring relies on it
+    /// primarily. No RTT samples -> `None`.
     pub fn rtt_ms(&self) -> Option<u64> {
         let mut rtts: Vec<u64> = self
             .samples
@@ -101,7 +104,7 @@ impl ProbeWindow {
         }
     }
 
-    /// 丢包率（0.0..=1.0）：窗口内 Lost 样本 / 总样本。空窗口 → 0.0。
+    /// The loss rate (0.0..=1.0): Lost samples in the window / total samples. An empty window -> 0.0.
     pub fn loss_rate(&self) -> f64 {
         if self.samples.is_empty() {
             return 0.0;
@@ -114,8 +117,8 @@ impl ProbeWindow {
         lost as f64 / self.samples.len() as f64
     }
 
-    /// 抖动（毫秒）：相邻 RTT 样本绝对差值的均值（RFC 3550 式简单抖动）。
-    /// 需要 ≥2 个 RTT 样本，否则 `None`。
+    /// The jitter (milliseconds): the mean of the absolute differences between adjacent RTT samples (a
+    /// simple RFC 3550-style jitter). Requires >= 2 RTT samples, otherwise `None`.
     pub fn jitter_ms(&self) -> Option<f64> {
         let rtts: Vec<u64> = self
             .samples
@@ -134,21 +137,23 @@ impl ProbeWindow {
 }
 
 // ---------------------------------------------------------------------------
-// 每目标跟踪器
+// Per-target tracker
 // ---------------------------------------------------------------------------
 
-/// 探测目标标识：对端 wg 公钥 + 候选端点。
+/// A probe target identifier: the peer's wg public key + the candidate endpoint.
 ///
-/// 公钥是全部消费端的统一键：SEL-003 劣化映射 / [`RecoveryGate`]、SEL-002
-/// [`SwitchGate`]、SEL-004 候选详情都按 `PeerEndpoints::public_key` 查窗口
-/// （2026-11-13 SEL-002 真死复验实锤：按 device_id 记键使三路消费全部失配，
-/// 生产环境劣化/切换/候选详情全盲）。
+/// The public key is the unified key for every consumer: the SEL-003 degradation map /
+/// [`RecoveryGate`], the SEL-002 [`SwitchGate`], and the SEL-004 candidate details all look windows
+/// up by `PeerEndpoints::public_key` (confirmed by the 2026-11-13 SEL-002 real-death re-verification:
+/// keying by device_id mismatched all three consumers, blinding degradation / switching / candidate
+/// details in production).
 pub type ProbeTarget = (String, EndpointCandidate);
 
-/// 每 `(peer, candidate)` 一个滑动窗口的跟踪器。
+/// A tracker holding one sliding window per `(peer, candidate)`.
 ///
-/// 候选集来自 30s 心跳同步的对端列表；本跟踪器只增删目标，不发起任何网络
-/// 操作（传输由 [`probe_round`] 注入）。
+/// The candidate sets come from the peer list synced on the 30s heartbeat; this tracker only adds
+/// and removes targets and performs no network operation of its own (the transport is injected by
+/// [`probe_round`]).
 #[derive(Debug, Clone)]
 pub struct ProbeTracker {
     capacity: usize,
@@ -156,7 +161,7 @@ pub struct ProbeTracker {
 }
 
 impl ProbeTracker {
-    /// 新建跟踪器；每个目标窗口容量为 `capacity`（下限 1）。
+    /// Create a tracker; every target's window capacity is `capacity` (floored at 1).
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
@@ -168,7 +173,7 @@ impl ProbeTracker {
         self.capacity
     }
 
-    /// 记录一次探测到目标 `(peer 公钥, candidate)`。
+    /// Record one probe against the target `(peer public key, candidate)`.
     pub fn record(&mut self, public_key: &str, candidate: EndpointCandidate, sample: ProbeSample) {
         self.windows
             .entry((public_key.to_string(), candidate))
@@ -176,13 +181,13 @@ impl ProbeTracker {
             .record(sample);
     }
 
-    /// 读目标当前窗口（无记录 → `None`）。
+    /// Read the target's current window (no record -> `None`).
     pub fn window(&self, public_key: &str, candidate: EndpointCandidate) -> Option<&ProbeWindow> {
         self.windows.get(&(public_key.to_string(), candidate))
     }
 
-    /// 当前跟踪目标数（含已无候选的历史目标，[`retain_peers`](Self::retain_peers)
-    /// 后仅剩活目标）。
+    /// The number of targets currently tracked (including historical targets that have lost their
+    /// candidates; after [`retain_peers`](Self::retain_peers) only live targets remain).
     pub fn len(&self) -> usize {
         self.windows.len()
     }
@@ -191,13 +196,14 @@ impl ProbeTracker {
         self.windows.is_empty()
     }
 
-    /// 全部目标 → 窗口（只读视图）。
+    /// Every target -> window (a read-only view).
     pub fn windows(&self) -> &BTreeMap<ProbeTarget, ProbeWindow> {
         &self.windows
     }
 
-    /// 忘掉不在当前 peer 集合里的目标：对端下线 / 候选消失 → 统计回收，
-    /// 不让死目标拖着旧窗口占用内存（SEL-002 评分为候选集之外的 peer 无意义）。
+    /// Forget targets that are no longer in the current peer set: a peer going offline / a candidate
+    /// disappearing reclaims the statistics, so dead targets do not drag stale windows around and
+    /// hold memory (SEL-002 scoring for peers outside the candidate set is meaningless anyway).
     pub fn retain_peers(&mut self, peers: &[PeerEndpoints]) {
         let live: BTreeSet<ProbeTarget> = peers
             .iter()
@@ -208,26 +214,28 @@ impl ProbeTracker {
 }
 
 // ---------------------------------------------------------------------------
-// 一轮探测编排
+// One probe round orchestration
 // ---------------------------------------------------------------------------
 
-/// 一轮探测的概要（日志 / 测试断言用）。
+/// The summary of one probe round (for logging / test assertions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbeRound {
-    /// 本轮发出的探测数（peers × 各自候选数）。
+    /// The number of probes issued this round (peers × each one's candidate count).
     pub issued: usize,
-    /// 其中记为丢包（传输返回 `None`）的数量。
+    /// How many of them were recorded as losses (the transport returned `None`).
     pub lost: usize,
 }
 
-/// 对每 peer 的每个候选端点发一次探测并记录进 [`ProbeTracker`]。
+/// Send one probe to each candidate endpoint of each peer and record them into [`ProbeTracker`].
 ///
-/// `transport(ip) -> Option<u128>` 实测 RTT（毫秒）：`Some(ms)` 记为
-/// [`ProbeSample::Rtt`]，`None`（超时 / 不可达 / 平台不支持）记为
-/// [`ProbeSample::Lost`]。ICMP echo 以候选 IP 为目标（端口对 ICMP 无意义，
-/// 但端口保留在目标标识里，供后续 UDP / WG 传输区分同一 IP 的不同候选）。
+/// `transport(ip) -> Option<u128>` measures the RTT (milliseconds): `Some(ms)` is recorded as
+/// [`ProbeSample::Rtt`] and `None` (timeout / unreachable / platform unsupported) as
+/// [`ProbeSample::Lost`]. The ICMP echo targets the candidate IP (a port is meaningless for ICMP, but
+/// it is kept in the target identifier so that later UDP / WG transports can distinguish different
+/// candidates of the same IP).
 ///
-/// 先 [`ProbeTracker::retain_peers`] 再探测：本轮 peer 集之外的旧目标立即回收。
+/// [`ProbeTracker::retain_peers`] runs before probing: stale targets outside this round's peer set are
+/// reclaimed immediately.
 pub fn probe_round<F: Fn(Ipv4Addr) -> Option<u128>>(
     tracker: &mut ProbeTracker,
     peers: &[PeerEndpoints],
@@ -252,46 +260,51 @@ pub fn probe_round<F: Fn(Ipv4Addr) -> Option<u128>>(
     ProbeRound { issued, lost }
 }
 
-/// 平台默认探测传输：Linux 经 `ping -c 1 -W 1` 发 ICMP echo 实测 RTT（免特权
-/// 的 `ping_group_range` 或 root 均可，与 [`crate::linux::run_ping_rtt`] 同源）。
+/// Platform default probe transport: on Linux, measure the RTT by sending an ICMP echo via
+/// `ping -c 1 -W 1` (both the unprivileged `ping_group_range` and root work, the same source as
+/// [`crate::linux::run_ping_rtt`]).
 ///
-/// Windows 经 `ping -n 1 -w 1000` 同口径实测（[`crate::windows_probe`]，P0
-/// 接线 2026-11-13：此前非 Linux 一律 `None` 记丢包，主力平台探测全盲）。
-/// 其余平台返回 `None`——`probe_round` 记为丢包，绝不假装探测到 RTT。
+/// Windows measures with the same caliber via `ping -n 1 -w 1000` ([`crate::windows_probe`], P0
+/// wiring on 2026-11-13: before that, every non-Linux platform returned `None` and was recorded as
+/// a loss, leaving probing blind on the primary platform).
+/// Other platforms return `None` — `probe_round` records a loss and never pretends an RTT was probed.
 #[cfg(target_os = "linux")]
 pub fn default_transport(ip: Ipv4Addr) -> Option<u128> {
     crate::linux::run_ping_rtt(ip)
 }
 
-/// 平台默认探测传输（Windows）：见上方 Linux 版别的文档。
+/// Platform default probe transport (Windows): see the docs of the Linux variant above.
 #[cfg(target_os = "windows")]
 pub fn default_transport(ip: Ipv4Addr) -> Option<u128> {
     crate::windows_probe::run_ping_rtt(ip)
 }
 
-/// 平台默认探测传输（其余平台）：无探测实现，记为丢包（见上方文档）。
+/// Platform default probe transport (all other platforms): there is no probe implementation, so it
+/// records a loss (see the docs above).
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn default_transport(_ip: Ipv4Addr) -> Option<u128> {
     None
 }
 
 // ---------------------------------------------------------------------------
-// SEL-002 路径评分与迟滞切换（纯逻辑，无 IO）
+// SEL-002 path scoring and hysteresis switching (pure logic, no IO)
 // ---------------------------------------------------------------------------
 
-/// 丢包重罚系数：`score = rtt_ms * (1 + LOSS_PENALTY * loss_rate)`.
-/// RTT 是主导项（毫秒直接作基数），丢包率以乘法放大——10% 丢包把得分
-/// 加倍，全丢窗口无 RTT 样本则得分记为 +∞（最差）。丢包重罚保证「丢包尖峰」
-/// 的劣化路径不会因中位数 RTT 仍低而被误判为优。
+/// The loss penalty factor: `score = rtt_ms * (1 + LOSS_PENALTY * loss_rate)`.
+/// RTT is the dominant term (milliseconds serve directly as the base) and the loss rate multiplies
+/// it upward — 10% loss doubles the score, and an all-lost window with no RTT samples scores +∞
+/// (the worst). The heavy loss penalty ensures a degraded path suffering a "loss spike" is not
+/// misjudged as good just because its median RTT is still low.
 pub const LOSS_PENALTY: f64 = 10.0;
 
-/// 路径得分（SEL-002 评分）：`rtt_ms * (1 + LOSS_PENALTY * loss_rate)`.
+/// Path score (the SEL-002 scoring): `rtt_ms * (1 + LOSS_PENALTY * loss_rate)`.
 ///
-/// - 空窗口 → `None`（尚无读数，不参与比较）；
-/// - 窗口内无 RTT 样本（全丢）→ `Some(+∞)`（最差，任何有 RTT 的路径更优）；
-/// - 其余 → `Some(rtt 中位数 * (1 + LOSS_PENALTY * 丢包率))`。
+/// - an empty window -> `None` (no readings yet, it does not take part in comparisons);
+/// - a window with no RTT samples (all lost) -> `Some(+∞)` (the worst; any path with an RTT is better);
+/// - otherwise -> `Some(rtt median * (1 + LOSS_PENALTY * loss rate))`.
 ///
-/// 越低越好。SEL-002 的迟滞切换直接以此做「新路径优于现路径 ≥30%」判定。
+/// Lower is better. SEL-002's hysteresis switching makes its "the new path beats the current one by
+/// >= 30%" decision directly on this.
 pub fn score(window: &ProbeWindow) -> Option<f64> {
     if window.is_empty() {
         return None;
@@ -302,17 +315,18 @@ pub fn score(window: &ProbeWindow) -> Option<f64> {
     }
 }
 
-/// 一次迟滞切换决策（SEL-002）：目标候选 + 人类可读理由（事件记录用）。
+/// One hysteresis switch decision (SEL-002): the target candidate + a human-readable reason (for event records).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitchDecision {
-    /// 切换到的候选端点。
+    /// The candidate endpoint being switched to.
     pub to: EndpointCandidate,
-    /// 切换理由（如「score 60.0 beats 100.0 by >=30% for 3 consecutive samples」）。
+    /// The switch reason (e.g. "score 60.0 beats 100.0 by >=30% for 3 consecutive samples").
     pub reason: String,
 }
 
-/// 一次切换的簿记（方案 1 宽限的载体）：切换时刻、切换前旧 endpoint（回滚
-/// 目标）、切换后现 endpoint、宽限期内是否已用过一次性回滚（方案 8）。
+/// The bookkeeping of one switch (the carrier of the plan-1 cooldown): the switch instant, the old
+/// endpoint before the switch (the rollback target), the current endpoint after the switch, and
+/// whether the one-shot rollback has been used during the cooldown (plan 8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitchRecord {
     at_ms: u64,
@@ -321,34 +335,39 @@ struct SwitchRecord {
     rolled_back: bool,
 }
 
-/// 迟滞闸（SEL-002）：新路径须**连续** `required` 次采样且得分优于现路径
-/// ≥ `margin`（默认 30%）才切换，防抖。纯状态机，无 IO。
+/// The hysteresis gate (SEL-002): a new path must score better than the current one by
+/// >= `margin` (default 30%) for **`required` consecutive** samples before switching — debounce.
+/// A pure state machine, no IO.
 ///
-/// 状态按 `(peer, candidate)` 记录连续更优计数：候选变差 / 现路径重新领先 /
-/// 切换目标变化都会清零相应计数，绝不因单次抖动翻转。
+/// State records the consecutive-better count per `(peer, candidate)`: a candidate getting worse,
+/// the current path re-taking the lead, or the switch target changing each reset the relevant
+/// count; a single jitter blip never flips the gate.
 ///
-/// **切换宽限**（方案 1，2026-11-17）：每次切换后 `cooldown_ms` 内（默认
-/// interval×required×2 = 30s，上限 60s）禁止再次切换、禁止对现路径判劣化
-/// （消费方经 [`Self::in_cooldown`] 查询后自行豁免，如 `degraded_map`）。
-/// 用户实测 ping 三态横跳（100% 超时 ↔ 1.7-3.3s 巨延迟 ↔ 12ms 满速）的
-/// 「切换瞬断档」——切换后新路径握手/探测窗口尚未立起来，迟滞闸与劣化闸
-/// 立刻对无读数的新现路径动作，正是横跳的放大器；宽限期把这段真空 shielding
-/// 掉。宽限过长会延迟真故障切换，配置面钳制 ≤60s。
+/// **Switch cooldown** (plan 1, 2026-11-17): for `cooldown_ms` after each switch (default
+/// interval×required×2 = 30s, capped at 60s), no further switch is allowed and the current path may
+/// not be judged degraded (consumers query [`Self::in_cooldown`] and exempt themselves, e.g. `degraded_map`).
+/// This addresses the "switch blackout band" in the user's measured three-state ping flapping
+/// (100% timeout ↔ 1.7-3.3s huge latency ↔ 12ms full speed) — right after a switch the new path's
+/// handshake / probe window has not stood up yet, and the hysteresis gate and the degradation gate
+/// acting immediately on the reading-less new current path are exactly the amplifier of the flapping;
+/// the cooldown shields that vacuum period. Too long a cooldown would delay switching on real
+/// failures, so the configuration side clamps it to <= 60s.
 #[derive(Debug, Clone)]
 pub struct SwitchGate {
     required: usize,
     margin: f64,
-    /// 切换宽限（毫秒）。0 = 关闭宽限（切换后立即可再评估）。
+    /// The switch cooldown (milliseconds). 0 = cooldown off (re-evaluation is possible immediately
+    /// after a switch).
     cooldown_ms: u64,
-    /// `(peer, candidate)` → 连续满足「优于现路径 ≥ margin」的采样数。
+    /// `(peer, candidate)` -> the number of samples that consecutively met "better than the current path by >= margin".
     streaks: BTreeMap<ProbeTarget, usize>,
-    /// 对端公钥 → 最近一次切换簿记（宽限与回滚的载体）。
+    /// Peer public key -> the most recent switch bookkeeping (the carrier of the cooldown and rollback).
     last_switch: BTreeMap<String, SwitchRecord>,
 }
 
 impl SwitchGate {
-    /// 新建迟滞闸。`required` 下限 1；`margin` 钳制到 `(0.0, 1.0]`；
-    /// `cooldown_ms` = 切换宽限（0 关闭）。
+    /// Create a hysteresis gate. `required` is floored at 1; `margin` is clamped into `(0.0, 1.0]`;
+    /// `cooldown_ms` = the switch cooldown (0 disables it).
     pub fn new(required: usize, margin: f64, cooldown_ms: u64) -> Self {
         Self {
             required: required.max(1),
@@ -367,25 +386,29 @@ impl SwitchGate {
         self.margin
     }
 
-    /// 该对端是否处于切换宽限内（最近一次切换后 `cooldown_ms` 内，含端点）。
-    /// 宽限语义：禁再切（[`Self::evaluate`] 内部先行拦截）+ 禁对现路径判
-    /// 劣化（劣化消费方调用本方法自行豁免）。
+    /// Whether this peer is inside the switch cooldown (within `cooldown_ms` after the most recent
+    /// switch, endpoint inclusive). Cooldown semantics: no further switch (intercepted up front
+    /// inside [`Self::evaluate`]) + no degradation verdict against the current path (the degradation
+    /// consumer calls this method and exempts itself).
     ///
-    /// 含端点（`now ≤ at + cooldown`）：对账周期与探测周期相差一个 poll
-    /// 间隔（默认 30s = 默认宽限），含端点才能让紧随切换之后的对账轮
-    /// （方案 8 回滚检查）仍落在宽限内。
+    /// Endpoint inclusive (`now <= at + cooldown`): the reconciliation cycle and the probe cycle
+    /// differ by one poll interval (default 30s = the default cooldown), and only an inclusive
+    /// endpoint keeps the reconciliation round right after a switch (the plan-8 rollback check)
+    /// inside the cooldown.
     pub fn in_cooldown(&self, peer: &str, now_ms: u64) -> bool {
         self.last_switch
             .get(peer)
             .is_some_and(|rec| now_ms <= rec.at_ms.saturating_add(self.cooldown_ms))
     }
 
-    /// 切换宽限内的旧 endpoint 一次性回滚（方案 8）：宽限期内、尚未用过
-    /// 回滚、且现路径仍是上次切换的目标面 → 返回旧 endpoint 并记账（回滚
-    /// 也过宽限：宽限起点重置为本轮 `now_ms`，一次性标记置位——一次切换
-    /// 至多回滚一次，绝不乒乓）。宽限外 / 已回滚 / 现路径已被 roam 或后续
-    /// 动作移走 → `None`。「新路径何时算坏」的触发证据由调用方判定，本闸
-    /// 只管许可与簿记（统一在 SwitchGate 内，提案 (d)）。
+    /// The one-shot rollback to the old endpoint within the switch cooldown (plan 8): when inside the
+    /// cooldown, the rollback has not been used yet, and the current path is still the target face
+    /// of the last switch -> return the old endpoint and book it (a rollback also passes through
+    /// the cooldown: the cooldown start resets to this round's `now_ms` and the one-shot marker is
+    /// set — at most one rollback per switch, never ping-pong). Outside the cooldown / already rolled
+    /// back / the current path has been moved by roaming or a later action -> `None`. The caller
+    /// decides the evidence for "when does the new path count as bad"; this gate only handles
+    /// permission and bookkeeping (kept unified inside SwitchGate, proposal (d)).
     pub fn rollback(
         &mut self,
         peer: &str,
@@ -404,19 +427,21 @@ impl SwitchGate {
         Some(rec.from)
     }
 
-    /// 评估一轮：给定现路径与全部候选窗口，返回是否切换。
+    /// Evaluate one round: given the current path and all candidate windows, decide whether to switch.
     ///
-    /// - `current`：当前选中的候选（`None` = 尚无直连路径，初始选择由
-    ///   DirectManager 负责，本闸只做**已建立路径之间的切换**）；
-    /// - `windows`：该 peer 的候选 → 窗口快照（[`ProbeTracker::windows`]
-    ///   按 peer 公钥过滤后的视图）；
-    /// - `now_ms`：当前 Unix 毫秒（宽限期判定；纯状态机不取系统钟，测试
-    ///   可注入虚拟时间）。
+    /// - `current`: the currently selected candidate (`None` = no direct path yet; the initial
+    ///   selection is the DirectManager's job, this gate only does **switching between established
+    ///   paths**);
+    /// - `windows`: this peer's candidate -> window snapshot (the view of
+    ///   [`ProbeTracker::windows`] filtered by the peer's public key);
+    /// - `now_ms`: the current Unix milliseconds (for the cooldown; a pure state machine never
+    ///   reads the system clock, and tests can inject a virtual clock).
     ///
-    /// 返回 `Some(SwitchDecision)` 当且仅当：不在切换宽限内，且存在一个
-    /// 候选，其得分严格低于现路径得分、且 `得分 <= 现路径得分 * (1 - margin)`，
-    /// 且该候选已连续 `required` 轮满足此条件。达到阈值后重置该候选计数
-    /// （一次切换一次计数）并记录切换簿记（宽限起点 = 本轮 `now_ms`）。
+    /// Returns `Some(SwitchDecision)` if and only if: not inside the cooldown, and there exists a
+    /// candidate whose score is strictly lower than the current path's and `score <= current score *
+    /// (1 - margin)`, and that candidate has met this condition for `required` consecutive rounds.
+    /// Once the threshold is reached the candidate's count is reset (one switch, one count) and the
+    /// switch bookkeeping is recorded (the cooldown start = this round's `now_ms`).
     pub fn evaluate(
         &mut self,
         peer: &str,
@@ -424,8 +449,9 @@ impl SwitchGate {
         windows: &BTreeMap<ProbeTarget, ProbeWindow>,
         now_ms: u64,
     ) -> Option<SwitchDecision> {
-        // 宽限期内冻结评估：streak 不推进（宽限结束后须重新攒满连续计数
-        // ——多花 required×interval 秒，换取「切换后真空期绝不翻转」）。
+        // Evaluation freezes during the cooldown: the streak does not advance (after the cooldown ends the
+        // consecutive count must be rebuilt from scratch — spending required×interval extra seconds
+        // in exchange for "never flips during the post-switch vacuum period").
         if self.in_cooldown(peer, now_ms) {
             return None;
         }
@@ -433,16 +459,18 @@ impl SwitchGate {
         if windows.is_empty() {
             return None;
         }
-        // 现路径无窗口（如 WG roaming 到候选表之外的面，2026-11-13 真机实锤：
-        // 稳定的 192.168.5.0/24 roaming 面不在候选表 → 无读数）→ **不切换**。
-        // `score` 的「无 RTT 读数 = ∞」语义只该用于候选间比较（全丢的候选
-        // 确实最差），不能把「无读数」的现路径当最差处理——那会把工作中的
-        // 稳定路径主动踢到候选表可见（但不一定更适合 WG 会话）的候选上，
-        // 触发会话重建乃至 classify-240 降级极限环。无证据不动现路径；路径
-        // 死亡由握手年龄 classify 与 SEL-003 劣化闸负责。
+        // The current path has no window (e.g. WG has roamed onto a face outside the candidate table,
+        // confirmed on a real machine on 2026-11-13: a stable 192.168.5.0/24 roaming face is not in
+        // the candidate table -> no reading) -> **do not switch**. The "no RTT reading = ∞" semantics
+        // of `score` should only be used to compare candidates (an all-lost candidate really is the
+        // worst); a current path with "no reading" must not be treated as the worst — that would
+        // actively kick a working stable path over to a candidate that is visible in the candidate
+        // table (but not necessarily better for the WG session), triggering session rebuilds and even
+        // a classify-240 degradation limit cycle. With no evidence, do not touch the current path;
+        // path death is owned by the handshake-age classify and the SEL-003 degradation gate.
         let current_score = windows.get(&(peer.to_string(), current)).and_then(score)?;
 
-        // 最佳候选 = 得分最低者（确定性：得分相同取地址最小者）。
+        // The best candidate = the lowest score (deterministic: on a tie, the smallest address wins).
         let mut best_candidate: Option<EndpointCandidate> = None;
         let mut best_score = f64::INFINITY;
         for ((p, c), w) in windows {
@@ -462,12 +490,12 @@ impl SwitchGate {
         let best_candidate = best_candidate?;
 
         if best_candidate == current {
-            // 现路径仍是最佳：所有候选的连胜计数清零（连续条件被打破）。
+            // The current path is still the best: every candidate's win streak is cleared (the consecutive condition broke).
             self.streaks.clear();
             return None;
         }
 
-        // 新路径须**严格**更优且优于现路径 ≥ margin（防抖）。
+        // The new path must be **strictly** better and beat the current path by >= margin (debounce).
         let improved =
             best_score < current_score && best_score <= current_score * (1.0 - self.margin);
         if !improved {
@@ -479,11 +507,12 @@ impl SwitchGate {
         let streak = self.streaks.entry(key.clone()).or_insert(0);
         *streak += 1;
         if *streak >= self.required {
-            // 方案 8 目标预检显式化：切换目标窗口必须非空且至少一拍 RTT
-            // 成功——「全 Lost / 无读数」的面没有可用性证据，绝不作为切换
-            // 目标。score 的 ∞ 排序在正常路径已挡住此类目标（全丢 = 最差、
-            // 严格更优要求有限分），此处把隐含前提落成显式契约：预检失败
-            // 宁可留在现路径，下一周期重攒证据。
+            // The plan-8 target pre-check made explicit: the switch target's window must be non-empty and
+            // have at least one successful RTT beat — an "all Lost / no reading" face has no
+            // availability evidence and must never become a switch target. Score's ∞ ordering already
+            // blocks such targets on the normal path (all lost = worst, and strictly-better requires a
+            // finite score); this turns the implicit premise into an explicit contract: on a failed
+            // pre-check, prefer staying on the current path and re-gathering evidence next cycle.
             let target_live = windows.get(&key).is_some_and(|w| {
                 !w.is_empty() && w.samples().iter().any(|s| matches!(s, ProbeSample::Rtt(_)))
             });
@@ -497,7 +526,7 @@ impl SwitchGate {
                 *streak
             );
             self.streaks.remove(&key);
-            // 切换簿记：宽限起点 + 旧 endpoint（方案 8 回滚目标）。
+            // Switch bookkeeping: the cooldown start + the old endpoint (the plan-8 rollback target).
             self.last_switch.insert(
                 peer.to_string(),
                 SwitchRecord {
@@ -518,68 +547,77 @@ impl SwitchGate {
 }
 
 // ---------------------------------------------------------------------------
-// SEL-003 hub 兜底：直连劣化检测与恢复门（纯逻辑，无 IO）
+// SEL-003 hub backstop: direct degradation detection and recovery gate (pure logic, no IO)
 // ---------------------------------------------------------------------------
 
-/// 丢包尖峰阈值（SEL-003）默认值：窗口丢包率 ≥ 此值视为「丢包尖峰」，立即
-/// 回中继。2026-11-17 从 0.5 收窄到 0.2（用户拍板）：49% 丢包的面在旧阈值下
-/// 是「未达尖峰」的健康面，能作为 FLIP-001 恢复门 bypass 证据把直连拉回来
-/// ——实测 ping 三态横跳（100% 超时 ↔ 1.7-3.3s 巨延迟 ↔ 12ms 满速）里的
-/// 劣化面放行正来自这里。现由 agent 配置 `ProbeConfig::loss_spike` 下发
-/// （默认 0.2），本常量只作配置默认值与测试基准。
+/// The default "loss spike" threshold (SEL-003): a window loss rate >= this
+/// value counts as a "loss spike" and sends us straight back to the relay. Narrowed from 0.5 to 0.2 on
+/// 2026-11-17 (user decision): under the old threshold a face with 49% loss was still "below the spike"
+/// and healthy enough to serve as FLIP-001 recovery-gate bypass evidence and drag the direct connect back
+/// up — and that is exactly where the degraded-face release in the measured ping three-state flapping
+/// (100% timeout ↔ 1.7-3.3s huge latency ↔ 12ms full speed) came from. It is now pushed down by the agent
+/// configuration `ProbeConfig::loss_spike` (default 0.2); this constant is only the configuration default
+/// and a test baseline.
 pub const LOSS_SPIKE_THRESHOLD: f64 = 0.2;
 
-/// 末拍超时容忍（SEL-003）：窗口末尾须连续此拍数 `Lost` 才判劣化。窗口
-/// 20 拍 ≈ 100s 证据下，3 拍 ≈ 15s 持续丢包才算真劣化，单拍瞬态不动作
-/// （2026-11-14 真机实录：ZT 面 ICMP 单拍瞬态曾单拍即触发 demote，握手
-/// age 56–120s 新鲜、classify 无辜——JMrE/FSaf ~2min direct↔hub 极限环）。
+/// The last-beats timeout tolerance (SEL-003): the window's tail must hold this
+/// many consecutive `Lost` beats before the path counts as degraded. With a 20-beat window (~100s of
+/// evidence), 3 beats ≈ 15s of sustained loss is required for a true verdict — a single transient beat
+/// triggers nothing (on a real machine recorded on 2026-11-14: an ICMP single-beat transient on the ZT
+/// face once triggered a demote by itself while the handshake age was fresh at 56–120s and classify was
+/// innocent — the JMrE/FSaf ~2min direct↔hub limit cycle).
 pub const LAST_LOST_TOLERANCE: usize = 3;
 
-/// 直连路径劣化判定（SEL-003）：
-/// - 空窗口 → `false`（尚无读数，不武断回中继）；
-/// - 窗口不足 [`LAST_LOST_TOLERANCE`] 拍且全 `Lost` → `true`（短窗口小
-///   流量端点不豁免，见下）；
-/// - 窗口 ≥ [`LAST_LOST_TOLERANCE`] 拍且无任何 RTT 样本（全程 `Lost`）→
-///   `false`（无基线豁免，见下）；
-/// - 窗口丢包率 ≥ `loss_spike`（丢包尖峰，默认 [`LOSS_SPIKE_THRESHOLD`]，
-///   由 agent 配置 `ProbeConfig::loss_spike` 下发）→ `true`；
-/// - 窗口末尾连续 [`LAST_LOST_TOLERANCE`] 拍 `Lost`（持续超时）→ `true`；
-///   单拍瞬态不触发；
-/// - 窗口 RTT 中位数 ≥ `degrade_rtt_ms`（时延劣化）→ `true`；
-/// - 其余 → `false`。
+/// The direct-path degradation verdict (SEL-003):
+/// - an empty window -> `false` (no readings yet, no abrupt fallback to the relay);
+/// - a window shorter than [`LAST_LOST_TOLERANCE`] beats that is all `Lost` -> `true` (short-window
+///   low-traffic endpoints get no exemption, see below);
+/// - a window >= [`LAST_LOST_TOLERANCE`] beats with no RTT samples at all (all `Lost`) -> `false` (the
+///   no-baseline exemption applies, see below);
+/// - a window loss rate >= `loss_spike` (a loss spike, default [`LOSS_SPIKE_THRESHOLD`], pushed by the
+///   agent configuration `ProbeConfig::loss_spike`) -> `true`;
+/// - [`LAST_LOST_TOLERANCE`] consecutive `Lost` beats at the window tail (a sustained timeout) -> `true`;
+///   a single transient beat triggers nothing;
+/// - a window RTT median >= `degrade_rtt_ms` (latency degradation) -> `true`;
+/// - anything else -> `false`.
 ///
-/// 任一命中即「立即回中继」：劣化直连路径不再承载流量，hub peer 整段路由
-/// 自动接管（/32 直连 peer 移除后最长前缀匹配回落 hub）。恢复须经
-/// [`RecoveryGate`] 迟滞切回。
+/// Any hit means "fall back to the relay immediately": the degraded direct path no longer carries traffic,
+/// and the hub peer's whole route section takes over automatically (with the /32 direct peer removed, the
+/// longest-prefix match falls back to the hub). Recovery must go through the [`RecoveryGate`] hysteresis
+/// switch-back.
 ///
-/// **时延维度**（2026-11-13 SEL-002 双机验收残余跟进）：此前只有丢包/超时
-/// 两条规则——探测全程成功但 RTT 深劣化的路径（真机实录 1715ms `probe_ok`）
-/// 永不劣化，直连被「链路活着」的证据钉死。中位数判定天然等价「连续 N 拍
-/// 超阈值」：单点/少数尖峰拉不动中位数（防抖），持续深劣化才命中。阈值由
-/// agent 配置 `ProbeConfig::degrade_rtt_ms` 下发（默认 800ms，依据见其文档）。
+/// **The latency dimension** (2026-11-13, SEL-002 two-machine acceptance follow-up): there were only two
+/// rules, loss/timeout — a path that probes successfully throughout but has a deeply degraded RTT (recorded
+/// at 1715ms `probe_ok` on a real machine) never degraded, and the direct connect was pinned by the
+/// "the link is alive" evidence. Median-based verdicts are naturally equivalent to "N consecutive beats over
+/// the threshold": a single peak / a few peaks cannot move the median (debounce), only sustained deep
+/// degradation hits. The threshold is pushed by the agent configuration `ProbeConfig::degrade_rtt_ms`
+/// (default 800ms, rationale in its doc).
 ///
-/// **无基线豁免**（2026-11-13 SEL-002 imac/openclaw 真死复验实锤）：对端
-/// 防火墙拦 ICMP（Windows 默认拦 echo）时探测全程 `Lost`，但 WG 隧道可能
-/// 完全健康（内核握手持续续期、7–8ms 实测）——与晋升门槛「ICMP 探测失败
-/// 不拦晋升」（Windows 网格防火墙对 wg 接口 100% 丢包取证）同一哲学：没有
-/// 「由好变坏」的窗口证据就不判劣化。真死由握手年龄 classify 兜底（超过
-/// 健康窗口 → Demote），不依赖探测。
+/// **The no-baseline exemption** (2026-11-13 SEL-002 imac/openclaw real-death re-verification): when the
+/// peer's firewall blocks ICMP (Windows blocks echo by default) the probes are all `Lost`, but the WG
+/// tunnel may be perfectly healthy (kernel handshake kept renewing, 7–8ms measured) — the same philosophy
+/// as the promotion bar "an ICMP probe failure does not block promotion" (the Windows grid firewall drops
+/// 100% of packets to the wg interface): with no "went from good to bad" window evidence, do not call it
+/// degraded. Real death is owned by the handshake-age classify (past the healthy window -> Demote), not by
+/// probing.
 ///
-/// **末拍连续性**（2026-11-14 SEL-003 last-Lost 软化）：原「末拍一拍
-/// `Lost` 即劣化」对 ZT 面单拍瞬态过敏——真机实录 demote 时握手 age
-/// 56–120s 新鲜（classify 无辜），触发者即此类瞬态，构成 JMrE/FSaf
-/// direct↔hub 极限环。改为末尾连续 [`LAST_LOST_TOLERANCE`] 拍才动作。
-/// 丢包尖峰/中位数分支天然多拍，不变。
+/// **Last-beat continuity** (2026-11-14 SEL-003 last-Lost softening): the old "one `Lost` beat at the tail
+/// is degradation" was over-sensitive to ZT-face single-beat transients — a real machine recorded a demote
+/// with a fresh 56–120s handshake age (classify innocent), and such transients were the trigger, feeding the
+/// JMrE/FSaf direct↔hub limit cycle. Now only a run of [`LAST_LOST_TOLERANCE`] consecutive beats at the tail
+/// acts. The loss-spike / median branches are naturally multi-beat and stay unchanged.
 ///
-/// **年轻窗口豁免**（方案 1，2026-11-17）：窗口样本 < `min_samples`（默认
-/// 4，agent 配置 `ProbeConfig::degrade_min_samples` 下发）→ 一律 `false`。
-/// 与无基线豁免同一语义：豁免的是「读数不足」，不是「读数差」——刚切换的
-/// 路径 / 新观测的面窗口尚未立起来，少数几拍的聚合统计（丢包率/中位数）
-/// 方差极大，拿它判劣化就是实测 ping 三态横跳的放大器。代价：原 11-14
-/// 「短窗口全 `Lost` 直判劣化（小流量端点不豁免）」规则在默认 `min_samples`
-/// ≥ 3 下被本豁免取代——读数不足的窗口一律不动作，真死仍由握手年龄
-/// classify 兜底（本函数的既有哲学）。`min_samples` 配 1-2 时短窗口分支
-/// 仍可达（全 `Lost` 直判劣化）。
+/// **The young-window exemption** (plan 1, 2026-11-17): window samples < `min_samples` (default 4, pushed
+/// by the agent configuration `ProbeConfig::degrade_min_samples`) -> always `false`. Same semantics as the
+/// no-baseline exemption: what is exempted is "insufficient readings", not "bad readings" — a just-switched
+/// path or a newly observed face's window has not stood up yet, and aggregate statistics over a few beats
+/// (loss rate / median) have enormous variance, so judging degradation from them is exactly the amplifier
+/// of the measured ping three-state flapping. The cost: the old 11-14 rule "a short window of all `Lost` is
+/// directly judged degraded (low-traffic endpoints get no exemption)" is replaced by this exemption under
+/// the default `min_samples` >= 3 — windows with insufficient readings never act, and real death is still
+/// owned by the handshake-age classify (this function's standing philosophy). With `min_samples` set to 1-2
+/// the short-window branch stays reachable (all `Lost` is directly judged degraded).
 pub fn is_degraded(
     window: &ProbeWindow,
     degrade_rtt_ms: u64,
@@ -587,27 +625,30 @@ pub fn is_degraded(
     min_samples: usize,
 ) -> bool {
     let samples = window.samples();
-    // 年轻窗口豁免：读数不足不判劣化（空窗口同样命中 0 < min_samples）。
+    // Young-window exemption: insufficient readings means no degradation verdict (an empty window also
+    // hits 0 < min_samples).
     if samples.len() < min_samples.max(1) {
         return false;
     }
     let median_rtt = window.rtt_ms();
     if samples.len() < LAST_LOST_TOLERANCE {
-        // 短窗口（< 3 拍，仅 min_samples ≤ 2 时可达）：尾部连续性无从谈起，
-        // 按现有样本直判——全 Lost 即劣化（无基线豁免不适用于短窗口）。
+        // Short window (< 3 beats, reachable only when min_samples <= 2): tail continuity is off the
+        // table, judge straight on the existing samples — all Lost is degradation (the no-baseline
+        // exemption does not apply to short windows).
         if samples.iter().all(|s| matches!(s, ProbeSample::Lost)) {
             return true;
         }
     } else if median_rtt.is_none() {
-        // 无基线豁免：窗口内无任何成功采样 → 没有基线可比，「丢包尖峰/
-        // 超时」无从谈起；真死由握手年龄 classify 兜底。
+        // No-baseline exemption: no successful sample in the window -> there is no baseline to compare
+        // against, so "loss spike / timeout" is out of the question; real death is owned by the
+        // handshake-age classify.
         return false;
     }
     if window.loss_rate() >= loss_spike {
         return true;
     }
-    // 末拍连续性：末尾连续 LAST_LOST_TOLERANCE 拍 Lost 才算真劣化
-    // （单拍瞬态不动作，见 doc）。
+    // Last-beat continuity: only a run of LAST_LOST_TOLERANCE consecutive Lost beats at the tail is a true
+    // degradation (a single transient beat triggers nothing, see doc).
     if samples
         .iter()
         .rev()
@@ -619,17 +660,18 @@ pub fn is_degraded(
     median_rtt.is_some_and(|m| m >= degrade_rtt_ms)
 }
 
-/// 恢复门（SEL-003）：直连劣化回中继后，须连续 `required` 轮健康才允许
-/// 按迟滞闸切回。纯状态机，无 IO。
+/// The recovery gate (SEL-003): after a direct degradation falls back to the relay, the peer must be
+/// healthy for `required` consecutive rounds before the hysteresis gate allows switching back. A pure
+/// state machine, no IO.
 #[derive(Debug, Clone)]
 pub struct RecoveryGate {
     required: usize,
-    /// 对端公钥 → 连续健康轮数。
+    /// Peer public key -> the count of consecutive healthy rounds.
     streaks: BTreeMap<String, usize>,
 }
 
 impl RecoveryGate {
-    /// 新建恢复门。`required` 下限 1。
+    /// Create a recovery gate. `required` is floored at 1.
     pub fn new(required: usize) -> Self {
         Self {
             required: required.max(1),
@@ -641,9 +683,9 @@ impl RecoveryGate {
         self.required
     }
 
-    /// 记录一轮探测结果。`healthy` = 该对端直连路径本轮健康（非劣化）。
-    /// 返回 `true` 当且仅当该对端已连续 `required` 轮健康（允许切回）；
-    /// 不健康则清零计数（连续条件被打破）。
+    /// Record one round's probe outcome. `healthy` = this peer's direct path was healthy (not degraded)
+    /// this round. Returns `true` if and only if the peer has now been healthy for `required` consecutive
+    /// rounds (switch-back allowed); an unhealthy round clears the count (the consecutive condition broke).
     pub fn record(&mut self, peer: &str, healthy: bool) -> bool {
         if !healthy {
             self.streaks.remove(peer);
@@ -654,12 +696,13 @@ impl RecoveryGate {
         *streak >= self.required
     }
 
-    /// 对端当前是否已恢复（连续 `required` 轮健康）。
+    /// Whether the peer has currently recovered (`required` consecutive healthy rounds).
     pub fn is_ready(&self, peer: &str) -> bool {
         self.streaks.get(peer).is_some_and(|s| *s >= self.required)
     }
 
-    /// 忘掉不在当前 peer 集合里的对端（下线/撤销后回收计数）。
+    /// Forget peers that are no longer in the current peer set (their counters are reclaimed after
+    /// going offline or being revoked).
     pub fn retain(&mut self, peers: &[String]) {
         let live: BTreeSet<&str> = peers.iter().map(|s| s.as_str()).collect();
         self.streaks.retain(|k, _| live.contains(k.as_str()));
@@ -667,15 +710,15 @@ impl RecoveryGate {
 }
 
 // ---------------------------------------------------------------------------
-// 测试
+// Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 年轻窗口豁免下限的测试基准（与 ProbeConfig::degrade_min_samples
-    /// 默认 4 同值）。
+    /// Test baseline for the young-window exemption floor (same value as the
+    /// ProbeConfig::degrade_min_samples default of 4).
     const MIN_SAMPLES: usize = 4;
 
     fn lan(ip: &str, port: u16) -> EndpointCandidate {
@@ -707,7 +750,7 @@ mod tests {
         w.record(ProbeSample::Rtt(20));
         w.record(ProbeSample::Rtt(30));
         assert_eq!(w.len(), 3);
-        // 第 4 次逐出最旧（10）。
+        // The 4th record evicts the oldest (10).
         w.record(ProbeSample::Rtt(40));
         assert_eq!(w.len(), 3);
         assert_eq!(
@@ -726,10 +769,10 @@ mod tests {
         for v in [30, 10, 20] {
             w.record(ProbeSample::Rtt(v));
         }
-        // 奇数：排序 10,20,30 → 中位数 20。
+        // Odd: sorted 10,20,30 -> median 20.
         assert_eq!(w.rtt_ms(), Some(20));
         w.record(ProbeSample::Rtt(40));
-        // 偶数：10,20,30,40 → 均值 (20+30)/2 = 25。
+        // Even: 10,20,30,40 -> mean (20+30)/2 = 25.
         assert_eq!(w.rtt_ms(), Some(25));
     }
 
@@ -740,7 +783,7 @@ mod tests {
         w.record(ProbeSample::Rtt(50));
         w.record(ProbeSample::Lost);
         w.record(ProbeSample::Rtt(70));
-        // 仅 50,70 → 中位数 60。
+        // Only 50,70 -> median 60.
         assert_eq!(w.rtt_ms(), Some(60));
     }
 
@@ -760,12 +803,12 @@ mod tests {
         w.record(ProbeSample::Rtt(20));
         w.record(ProbeSample::Lost);
         assert_eq!(w.loss_rate(), 0.5);
-        // 全丢。
+        // All lost.
         let mut all = ProbeWindow::new(2);
         all.record(ProbeSample::Lost);
         all.record(ProbeSample::Lost);
         assert_eq!(all.loss_rate(), 1.0);
-        // 空窗口 → 0。
+        // An empty window -> 0.
         assert_eq!(ProbeWindow::new(2).loss_rate(), 0.0);
     }
 
@@ -775,7 +818,7 @@ mod tests {
         for v in [10, 20, 25] {
             w.record(ProbeSample::Rtt(v));
         }
-        // 相邻差 |10-20|=10, |20-25|=5 → 均值 7.5。
+        // Adjacent differences |10-20|=10, |20-25|=5 -> mean 7.5.
         assert_eq!(w.jitter_ms(), Some(7.5));
     }
 
@@ -811,7 +854,7 @@ mod tests {
         let c2 = lan("192.168.1.60", 51821);
         t.record("dev-b", c1, ProbeSample::Rtt(11));
         t.record("dev-c", c2, ProbeSample::Rtt(12));
-        // 只剩 dev-b：dev-c 的目标被回收。
+        // Only dev-b left: dev-c's target is reclaimed.
         t.retain_peers(&[peer("dev-b", "10.240.0.3", &[c1])]);
         assert_eq!(t.len(), 1);
         assert!(t.window("dev-c", c2).is_none());
@@ -831,7 +874,7 @@ mod tests {
             ),
             peer("dev-c", "10.240.0.4", &[lan("10.0.0.7", 51821)]),
         ];
-        // 传输：.50 可达（7ms），.60 与 10.0.0.7 超时。
+        // Transport: .50 is reachable (7ms), .60 and 10.0.0.7 time out.
         let round = probe_round(&mut t, &peers, |ip| match ip.octets()[3] {
             50 => Some(7),
             _ => None,
@@ -866,7 +909,7 @@ mod tests {
         let first = vec![peer("dev-b", "10.240.0.3", &[c1, c2])];
         probe_round(&mut t, &first, |_| Some(5));
         assert_eq!(t.len(), 2);
-        // 第二轮 dev-b 只剩 c1：c2 的目标被回收。
+        // Round 2 leaves only c1 for dev-b: c2's target is reclaimed.
         let second = vec![peer("dev-b", "10.240.0.3", &[c1])];
         probe_round(&mut t, &second, |_| Some(6));
         assert_eq!(t.len(), 1);
@@ -874,9 +917,10 @@ mod tests {
         assert_eq!(t.window("dev-b", c1).unwrap().rtt_ms(), Some(5));
     }
 
-    /// 窗口必须记在 `public_key` 下（生产里 device_id ≠ public_key 是常态）：
-    /// 劣化映射 / 迟滞闸 / 候选详情全部按公钥查窗口（2026-11-13 SEL-002
-    /// 真死复验实锤 device_id 记键使三路消费全部失配、生产全盲）。
+    /// Probe windows must be keyed under `public_key` (in production device_id != public_key is the norm):
+    /// the degradation map / the hysteresis gate / the candidate details all look windows up by public
+    /// key (the 2026-11-13 SEL-002 real-death recheck pinned down that keying on device_id made all
+    /// three consumers mismatch, leaving production completely blind).
     #[test]
     fn probe_round_keys_windows_by_public_key() {
         let mut t = ProbeTracker::new(4);
@@ -892,20 +936,20 @@ mod tests {
 
     #[test]
     fn score_uses_rtt_with_loss_penalty_and_penalizes_full_loss() {
-        // 无丢包：score = rtt。
+        // No loss: score = rtt.
         let mut w = ProbeWindow::new(4);
         w.record(ProbeSample::Rtt(100));
         assert_eq!(score(&w), Some(100.0));
-        // 50% 丢包：score = 100 * (1 + 10*0.5) = 600。
+        // 50% loss: score = 100 * (1 + 10*0.5) = 600.
         let mut half = ProbeWindow::new(4);
         half.record(ProbeSample::Rtt(100));
         half.record(ProbeSample::Lost);
         assert_eq!(score(&half), Some(600.0));
-        // 全丢：无 RTT 样本 → +∞（最差）。
+        // All lost: no RTT samples -> +inf (worst).
         let mut all = ProbeWindow::new(4);
         all.record(ProbeSample::Lost);
         assert_eq!(score(&all), Some(f64::INFINITY));
-        // 空窗口 → None（尚无读数）。
+        // An empty window -> None (no reading yet).
         assert_eq!(score(&ProbeWindow::new(4)), None);
     }
 
@@ -918,7 +962,7 @@ mod tests {
         let mut gate = SwitchGate::new(3, 0.30, 0);
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
 
-        // 前 2 轮：c2 得分 60 vs c1 得分 100，已满足 ≥30% 但未连续满 3 轮。
+        // The first 2 rounds: c2 scores 60 against c1's 100, which clears >=30% but has not lasted 3 rounds in a row.
         for _ in 0..2 {
             windows.clear();
             let mut w1 = ProbeWindow::new(8);
@@ -929,7 +973,7 @@ mod tests {
             windows.insert(("dev-b".into(), c2), w2);
             assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_none());
         }
-        // 第 3 轮：连续 3 轮 → 切换。
+        // Round 3: 3 consecutive rounds -> switch.
         windows.clear();
         let mut w1 = ProbeWindow::new(8);
         w1.record(ProbeSample::Rtt(100));
@@ -946,13 +990,13 @@ mod tests {
 
     #[test]
     fn switch_gate_jitter_does_not_flip() {
-        // 抖动场景：c1 与 c2 得分交替领先、差距不足 30% → 永不切换。
+        // Jitter scenario: c1 and c2 alternate in the lead with a gap under 30% -> never switch.
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
         let mut gate = SwitchGate::new(3, 0.30, 0);
         for round in 0..20u64 {
             let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
-            // 交替领先但差距仅 10%（不足 30% 迟滞）。
+            // Alternating leads but the gap is only 10% (below the 30% hysteresis).
             let (a, b) = if round % 2 == 0 { (100, 90) } else { (90, 100) };
             let mut w1 = ProbeWindow::new(8);
             w1.record(ProbeSample::Rtt(a));
@@ -974,7 +1018,7 @@ mod tests {
         let mut gate = SwitchGate::new(3, 0.30, 0);
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
 
-        // 2 轮 c2 更好（连续计数=2）。
+        // 2 rounds where c2 is better (consecutive count = 2).
         for _ in 0..2 {
             windows.clear();
             let mut w1 = ProbeWindow::new(8);
@@ -985,7 +1029,7 @@ mod tests {
             windows.insert(("dev-b".into(), c2), w2);
             assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_none());
         }
-        // 第 3 轮：c1 回到最佳 → 计数清零，不切换。
+        // Round 3: c1 is best again -> the count resets and nothing switches.
         windows.clear();
         let mut w1 = ProbeWindow::new(8);
         w1.record(ProbeSample::Rtt(50));
@@ -994,7 +1038,7 @@ mod tests {
         windows.insert(("dev-b".into(), c1), w1);
         windows.insert(("dev-b".into(), c2), w2);
         assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_none());
-        // 再 3 轮 c2 更好：计数从 0 重新开始 → 需满 3 轮。
+        // 3 more rounds where c2 is better: the count restarts from 0, so a full 3 rounds are needed.
         for _ in 0..2 {
             windows.clear();
             let mut w1 = ProbeWindow::new(8);
@@ -1015,15 +1059,16 @@ mod tests {
         assert!(gate.evaluate("dev-b", Some(c1), &windows, 0).is_some());
     }
 
-    /// 现路径无窗口（候选表之外的 roaming 面，2026-11-13 真机实锤：稳定的
-    /// 192.168.5.0/24 roaming 面不在候选表 → 无读数 → 旧逻辑按 ∞ 评分把它
-    /// 踢下线，触发会话重建乃至 classify-240 降级极限环）→ 不切换。
+    /// The current path has no window (the roaming plane outside the candidate table, pinned down on a
+    /// real machine on 2026-11-13: the stable 192.168.5.0/24 roaming plane is not in the candidate
+    /// table -> no reading -> the old logic scored it as +inf and kicked it off line, triggering
+    /// session rebuilds and even a classify-240 degradation limit loop) -> do not switch.
     #[test]
     fn switch_gate_spares_current_path_without_window() {
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
         let mut gate = SwitchGate::new(1, 0.30, 0);
-        // 只有 c2 有读数（48ms）；现路径 c1 无任何窗口。
+        // Only c2 has a reading (48ms); the current path c1 has no window at all.
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
         let mut w = ProbeWindow::new(8);
         w.record(ProbeSample::Rtt(48));
@@ -1038,7 +1083,7 @@ mod tests {
 
     #[test]
     fn switch_gate_requires_strict_margin_improvement() {
-        // 差距 20%（<30%）：即使连续多轮也不切换。
+        // A 20% gap (<30%): no switch even across several consecutive rounds.
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
         let mut gate = SwitchGate::new(3, 0.30, 0);
@@ -1056,7 +1101,7 @@ mod tests {
 
     #[test]
     fn switch_gate_full_loss_makes_that_path_worst() {
-        // 现路径全丢（score=+∞），新路径有 RTT → 一次即切换（required=1）。
+        // The current path is fully lost (score = +inf) and the other path has an RTT -> switch on the first round (required = 1).
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
         let mut gate = SwitchGate::new(1, 0.30, 0);
@@ -1073,9 +1118,10 @@ mod tests {
         assert_eq!(decision.to, c2);
     }
 
-    /// 切换宽限（方案 1，2026-11-17）钉子：切换后 cooldown 内禁再切——即使
-    /// 另一候选持续远优于现路径；宽限一过即按常规迟滞闸动作。宽限期内
-    /// streak 不推进（冻结评估），宽限结束后须重新攒满连续计数。
+    /// Switch-grace (plan 1, 2026-11-17) nail: after a switch, re-switching is blocked within the cooldown
+    /// even when another candidate stays consistently far better than the current path; once the grace
+    /// elapses, the ordinary hysteresis gate acts. During the grace the streak does not advance (the
+    /// evaluation is frozen), and after it the consecutive count must be gathered again from zero.
     #[test]
     fn switch_gate_cooldown_blocks_re_switch_within_grace() {
         let c1 = lan("192.168.1.50", 51821);
@@ -1091,7 +1137,7 @@ mod tests {
             }
             w
         };
-        // t=1000：c2 得分 60 优于 c1 的 100 ≥30% → 切换（宽限起点）。
+        // t=1000: c2 scores 60 against c1's 100, >=30% -> switch (grace start).
         let w = windows([(c1, 100), (c2, 60), (c3, 300)]);
         let decision = gate
             .evaluate("dev-b", Some(c1), &w, 1000)
@@ -1099,30 +1145,31 @@ mod tests {
         assert_eq!(decision.to, c2);
         assert!(gate.in_cooldown("dev-b", 2000), "within grace");
         assert!(!gate.in_cooldown("dev-b", 31_001), "grace elapsed");
-        // t=2000（宽限内）：c3 得分 30 远优于现路径 c2 的 60 → 仍禁再切。
+        // t=2000 (within grace): c3 scores 30, far better than the current path c2's 60 -> re-switch still blocked.
         let w = windows([(c1, 100), (c2, 60), (c3, 30)]);
         assert!(
             gate.evaluate("dev-b", Some(c2), &w, 2000).is_none(),
             "re-switch blocked within grace"
         );
-        // t=31001（宽限刚过）：同一更优候选 → 常规闸动作。
+        // t=31001 (just past grace): the same better candidate -> the ordinary gate acts.
         let decision = gate
             .evaluate("dev-b", Some(c2), &w, 31_001)
             .expect("switch after grace");
         assert_eq!(decision.to, c3);
     }
 
-    /// 方案 8 目标预检钉子：目标候选全 Lost 不切换——有 RTT 的面在场时
-    /// score 排序天然排除全丢面（∞ 最差）；现路径与候选同为全 Lost 时
-    /// 「严格更优」亦不可满足。两路合起来锁定契约：无可用性证据的面绝不
-    /// 成为切换目标（evaluate 内的显式预检是防御纵深）。
+    /// Plan-8 target pre-check nail: an all-lost target candidate never switches -- when any RTT-bearing
+    /// face is present, the score ordering rules out all-lost faces by itself (inf is worst); when the
+    /// current path and the candidate are both all-lost, "strictly better" cannot be met either. The
+    /// two together pin the contract: a face without any availability evidence never becomes a switch
+    /// target (the explicit pre-check inside evaluate is defense in depth).
     #[test]
     fn switch_gate_never_targets_all_lost_candidate() {
         let c1 = lan("192.168.1.50", 51821);
         let c2 = lan("192.168.1.60", 51821);
         let c3 = lan("192.168.1.70", 51821);
         let mut gate = SwitchGate::new(1, 0.30, 0);
-        // 现路径健康（100），唯一其他候选全 Lost → 不切。
+        // The current path is healthy (100), the only other candidate is all-lost -> no switch.
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
         let mut w1 = ProbeWindow::new(8);
         w1.record(ProbeSample::Rtt(100));
@@ -1136,8 +1183,8 @@ mod tests {
                 "all-lost candidate must never be a switch target"
             );
         }
-        // 现路径与候选同为全 Lost（均无可用性证据）→ 不切；有 RTT 的第三
-        // 候选在场 → 切它。
+        // The current path and the candidate are both all-lost (neither has availability evidence) -> no
+        // switch; a third candidate with an RTT is present -> switch to it.
         let mut windows: BTreeMap<ProbeTarget, ProbeWindow> = BTreeMap::new();
         let mut dead1 = ProbeWindow::new(8);
         let mut dead2 = ProbeWindow::new(8);
@@ -1159,9 +1206,10 @@ mod tests {
         );
     }
 
-    /// 方案 8 回滚钉子：宽限内一次性回滚到旧 endpoint；回滚也过宽限（宽限
-    /// 起点重置为本轮时刻）；一次性——同一切换至多回滚一次；宽限外、或
-    /// 现路径已不是上次切换目标（被 roam 移走）→ 不回滚。
+    /// Plan-8 rollback nail: within the grace, a one-shot rollback to the old endpoint; the rollback also
+    /// passes the grace (the grace start resets to this round's instant); one-shot -- at most one
+    /// rollback per switch; outside the grace, or when the current path is no longer the last switch's
+    /// target (moved away by a roam) -> no rollback.
     #[test]
     fn rollback_is_one_shot_within_grace_and_extends_it() {
         let c1 = lan("192.168.1.50", 51821);
@@ -1176,11 +1224,11 @@ mod tests {
         windows.insert(("dev-b".into(), c2), w2);
         gate.evaluate("dev-b", Some(c1), &windows, 1000)
             .expect("switch c1->c2");
-        // 宽限内回滚 c2→c1。
+        // Roll back c2->c1 within the grace.
         assert_eq!(gate.rollback("dev-b", c2, 2000), Some(c1));
-        // 一次性：同一宽限内再请求 → None。
+        // One-shot: a second request within the same grace -> None.
         assert_eq!(gate.rollback("dev-b", c2, 3000), None);
-        // 回滚也过宽限：宽限起点重置为 2000 → 31000 仍在重置后的宽限内。
+        // The rollback also passes the grace: the grace start resets to 2000, so 31_000 is still within the reset grace.
         assert!(
             gate.in_cooldown("dev-b", 31_000),
             "grace restarts at rollback"
@@ -1189,9 +1237,9 @@ mod tests {
             !gate.in_cooldown("dev-b", 32_001),
             "and expires from the rollback instant"
         );
-        // 宽限外不回滚。
+        // Outside the grace: no rollback.
         assert_eq!(gate.rollback("dev-b", c1, 32_001), None);
-        // 现路径不是上次切换目标 → 不回滚（重新切换一次后用错的目标请求）。
+        // The current path is not the last switch's target -> no rollback (a request naming the wrong target after one more switch).
         gate.evaluate("dev-b", Some(c1), &windows, 32_001)
             .expect("re-switch c1->c2 after grace");
         assert_eq!(
@@ -1207,7 +1255,7 @@ mod tests {
     #[test]
     fn degraded_detects_loss_spike_and_timeout() {
         const DEGRADE_RTT_MS: u64 = 800;
-        // 丢包尖峰（≥ 默认 20% 丢包）→ 劣化。
+        // A loss spike (>= the default 20% loss) -> degraded.
         let mut w = ProbeWindow::new(4);
         w.record(ProbeSample::Rtt(10));
         w.record(ProbeSample::Rtt(10));
@@ -1217,9 +1265,10 @@ mod tests {
             is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "50% loss is a spike"
         );
-        // 末拍单次超时（丢包 1/6 ≈ 16.7% < 20% 尖峰阈值）→ 单拍瞬态不动作
-        // （2026-11-14 last-Lost 软化：须末尾连续 LAST_LOST_TOLERANCE 拍；
-        // 20% 阈值下小窗口须 ≥6 拍才容纳单拍瞬态）。
+        // A single tail timeout (loss 1/6 ~= 16.7%, under the 20% spike threshold) -> a
+        // one-beat transient triggers nothing (the 2026-11-14 last-Lost softening: the tail must
+        // be Lost for LAST_LOST_TOLERANCE consecutive beats; at the 20% threshold a small window
+        // needs at least 6 beats to absorb a single-beat transient).
         let mut t = ProbeWindow::new(6);
         for _ in 0..5 {
             t.record(ProbeSample::Rtt(10));
@@ -1229,7 +1278,7 @@ mod tests {
             !is_degraded(&t, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "single tail lost tolerated"
         );
-        // 健康：全 RTT、丢包率低、末次 Rtt → 不劣化。
+        // Healthy: all RTT, low loss, last beat an Rtt -> not degraded.
         let mut ok = ProbeWindow::new(4);
         ok.record(ProbeSample::Rtt(10));
         ok.record(ProbeSample::Rtt(12));
@@ -1239,7 +1288,7 @@ mod tests {
             LOSS_SPIKE_THRESHOLD,
             MIN_SAMPLES
         ));
-        // 空窗口（尚无读数）→ 不武断回中继。
+        // An empty window (no reading yet) -> do not rashly fall back to the relay.
         assert!(!is_degraded(
             &ProbeWindow::new(4),
             DEGRADE_RTT_MS,
@@ -1248,14 +1297,15 @@ mod tests {
         ));
     }
 
-    /// 丢包尖峰阈值收窄的钉子（2026-11-17 用户拍板 50% → 20%）：49% 丢包在
-    /// 旧阈值下是「未达尖峰」的健康面，能作为 FLIP-001 恢复门 bypass 证据
-    /// 把直连拉回劣化面（实测 ping 三态横跳的劣化面放行）；49% 必须判劣化、
-    /// <20%（19%）仍健康。
+    /// Nail for the narrowed loss-spike threshold (the user fixed 50% -> 20% on 2026-11-17): under the
+    /// old threshold, 49% loss was a "below spike" healthy face and could serve as FLIP-001 recovery-gate
+    /// bypass evidence, dragging direct connect back onto a degraded face (admitting a degraded face
+    /// that hops among ping's three states in practice); 49% must read as degraded, while below 20%
+    /// (19%) stays healthy.
     #[test]
     fn loss_spike_threshold_boundary_49_and_19_percent() {
         const DEGRADE_RTT_MS: u64 = 800;
-        // 49% 丢包（49/100，末拍 Rtt 不触发末拍规则）→ 尖峰劣化。
+        // 49% loss (49/100, the last beat an Rtt so the tail rule does not fire) -> a spike degradation.
         let mut w = ProbeWindow::new(100);
         for _ in 0..48 {
             w.record(ProbeSample::Lost);
@@ -1268,12 +1318,12 @@ mod tests {
             is_degraded(&w, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "49% loss must degrade under the 20% threshold"
         );
-        // 旧阈值 50% 下同一窗口不判劣化（收窄动机的对照断言）。
+        // Under the old 50% threshold the same window would not degrade (the contrast assertion behind the narrowing).
         assert!(
             !is_degraded(&w, DEGRADE_RTT_MS, 0.5, MIN_SAMPLES),
             "49% loss was healthy under the old 50% threshold"
         );
-        // 19% 丢包（19/100）→ 仍健康。
+        // 19% loss (19/100) -> still healthy.
         let mut ok = ProbeWindow::new(100);
         for _ in 0..19 {
             ok.record(ProbeSample::Lost);
@@ -1287,14 +1337,15 @@ mod tests {
         );
     }
 
-    /// last-Lost 软化（2026-11-14 巡检单）：窗口末尾须连续
-    /// [`LAST_LOST_TOLERANCE`] 拍 `Lost` 才判劣化——ZT 面 ICMP 单拍瞬态
-    /// （真机实录：demote 时握手 age 56–120s 新鲜、classify 无辜，触发者
-    /// 即单拍瞬态）不再动作；短窗口（< 3 拍）全 `Lost` 不享受豁免。
+    /// last-Lost softening (the 2026-11-14 patrol sheet): the window tail must be Lost for
+    /// [`LAST_LOST_TOLERANCE`] consecutive beats before it degrades -- a one-beat ICMP transient on the
+    /// ZT face (recorded on a real machine: at demotion time the handshake age was 56-120s, fresh, and
+    /// classify was innocent, the trigger being that one-beat transient) no longer acts; a short window
+    /// (< 3 beats) that is all `Lost` does not get the exemption.
     #[test]
     fn last_lost_requires_consecutive_tail_loss() {
         const DEGRADE_RTT_MS: u64 = 800;
-        // 末尾恰好 1 拍 Lost → 不劣化。
+        // Exactly 1 tail beat Lost -> not degraded.
         let mut one = ProbeWindow::new(8);
         for _ in 0..7 {
             one.record(ProbeSample::Rtt(10));
@@ -1304,8 +1355,8 @@ mod tests {
             !is_degraded(&one, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "single tail lost tolerated"
         );
-        // 末尾恰好 2 拍 Lost → 不劣化（丢包 2/12 ≈ 16.7% < 20% 尖峰阈值，
-        // 20% 阈值下小窗口须 ≥12 拍才容纳双拍瞬态）。
+        // Exactly 2 tail beats Lost -> not degraded (loss 2/12 ~= 16.7% < the 20% spike threshold;
+        // at the 20% threshold a small window needs at least 12 beats to absorb a two-beat transient).
         let mut two = ProbeWindow::new(12);
         for _ in 0..10 {
             two.record(ProbeSample::Rtt(10));
@@ -1316,8 +1367,8 @@ mod tests {
             !is_degraded(&two, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "two tail losts tolerated"
         );
-        // 末尾连续 3 拍 Lost → 劣化（丢包率 3/16 ≈ 18.75% < 20% 尖峰阈值，
-        // 纯末拍规则命中）。
+        // 3 consecutive tail beats Lost -> degraded (loss 3/16 ~= 18.75% < the 20% spike threshold,
+        // hit purely by the tail rule).
         let mut three = ProbeWindow::new(16);
         for _ in 0..13 {
             three.record(ProbeSample::Rtt(10));
@@ -1329,8 +1380,8 @@ mod tests {
             is_degraded(&three, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "three consecutive tail losts degrade"
         );
-        // 3 拍 Lost 但中间夹 2 拍 Rtt（尾部连续被打断）→ 不劣化（丢包
-        // 3/16 ≈ 18.75% < 20% 尖峰阈值，纯末拍连续性判定）。
+        // 3 Lost beats but 2 RTT beats interleaved (the tail run is broken) -> not degraded (loss
+        // 3/16 ~= 18.75% < the 20% spike threshold; a purely tail-continuity verdict).
         let mut broken = ProbeWindow::new(16);
         for _ in 0..5 {
             broken.record(ProbeSample::Rtt(10));
@@ -1348,9 +1399,9 @@ mod tests {
             !is_degraded(&broken, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "interleaved rtt breaks the tail run"
         );
-        // 年轻窗口豁免（方案 1，2026-11-17）取代 11-14「短窗口全 Lost 直判
-        // 劣化」：2 拍全 Lost 在默认 min_samples=4 下读数不足 → 不判劣化
-        // （真死由握手年龄 classify 兜底）。
+        // The young-window exemption (plan 1, 2026-11-17) replaces the 11-14 "a short all-Lost window
+        // degrades outright" rule: 2 all-Lost beats are an insufficient reading at the default
+        // min_samples=4 -> not judged degraded (a real death is caught by the handshake-age classify).
         let mut short = ProbeWindow::new(2);
         short.record(ProbeSample::Lost);
         short.record(ProbeSample::Lost);
@@ -1358,21 +1409,23 @@ mod tests {
             !is_degraded(&short, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "young all-lost window exempt"
         );
-        // 同一短窗口在 min_samples ≤ 2 的配置下仍直判劣化（分支保持可达）。
+        // The same short window still degrades outright under a min_samples <= 2 configuration (the branch stays reachable).
         assert!(
             is_degraded(&short, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, 2),
             "short all-lost window degrades when min_samples = 2"
         );
     }
 
-    /// 年轻窗口豁免的钉子（方案 1，2026-11-17）：样本 < min_samples（默认 4）
-    /// 一律不判劣化——刚切换路径/新观测面的少数几拍聚合统计方差极大，拿它
-    /// 判劣化就是实测 ping 三态横跳的放大器；窗口攒满 4 拍后同口径证据即动作。
+    /// Nail for the young-window exemption (plan 1, 2026-11-17): fewer samples than min_samples (default 4)
+    /// never degrades -- the aggregate statistics of the few beats right after a path switch / a newly
+    /// observed face have enormous variance, and judging on them is exactly the amplifier of the ping
+    /// three-state hopping seen in practice; once the window accumulates 4 beats, evidence under the same
+    /// criterion acts.
     #[test]
     fn young_window_below_min_samples_is_exempt() {
         const DEGRADE_RTT_MS: u64 = 800;
-        // 3 拍 [Rtt, L, L]：丢包 2/3 ≥ 20%、末尾连续 2 拍 Lost——两条件都
-        // 「该中」，但 3 < 4 → 年轻窗口豁免。
+        // 3 beats [Rtt, L, L]: loss 2/3 >= 20% and 2 consecutive tail beats Lost -- both conditions
+        // "ought to hit", but 3 < 4 -> the young-window exemption.
         let mut young = ProbeWindow::new(8);
         young.record(ProbeSample::Rtt(10));
         young.record(ProbeSample::Lost);
@@ -1381,13 +1434,13 @@ mod tests {
             !is_degraded(&young, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "3-sample window is young and exempt"
         );
-        // 第 4 拍 Lost 落下：窗口攒满 → 末尾连续 3 拍 Lost → 劣化。
+        // The 4th beat, a Lost, lands: the window is full -> 3 consecutive tail beats Lost -> degraded.
         young.record(ProbeSample::Lost);
         assert!(
             is_degraded(&young, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "4th sample fills the window; tail run acts"
         );
-        // 空窗口同豁免（0 < 4）。
+        // An empty window is exempt the same way (0 < 4).
         assert!(!is_degraded(
             &ProbeWindow::new(8),
             DEGRADE_RTT_MS,
@@ -1396,9 +1449,10 @@ mod tests {
         ));
     }
 
-    /// 无基线豁免（2026-11-13 真死复验实锤）：openclaw-win / windows-desktop
-    /// 防火墙拦 ICMP，候选窗口全程 Lost，但 WG 隧道健康（握手持续续期）——
-    /// 全程 Lost 无「由好变坏」的证据，不判劣化；真死由握手年龄 classify 兜底。
+    /// No-baseline exemption (pinned down by the 2026-11-13 real-death recheck): the firewalls on
+    /// openclaw-win / windows-desktop block ICMP, so the candidate window is Lost throughout, while the WG
+    /// tunnel is healthy (the handshake keeps renewing) -- an all-Lost window carries no "went from good to
+    /// bad" evidence, so it is not judged degraded; a true death is caught by the handshake-age classify.
     #[test]
     fn degraded_without_rtt_baseline_stays_healthy() {
         const DEGRADE_RTT_MS: u64 = 800;
@@ -1412,13 +1466,14 @@ mod tests {
         );
     }
 
-    /// 时延维度（2026-11-13 残余跟进）：探测全程成功但 RTT 持续深劣化
-    /// （真机实录 1715ms `probe_ok` 钉直连）也必须判劣化。中位数判定等价
-    /// 「连续 N 拍超阈值」——少数尖峰拉不动中位数（防抖）。
+    /// The latency dimension (the 2026-11-13 residual follow-up): probing succeeding throughout while the RTT
+    /// stays deeply degraded (recorded on a real machine, 1715ms of `probe_ok` pinning direct connect)
+    /// must also read as degraded. The median verdict is equivalent to "N consecutive beats over the
+    /// threshold" -- a minority of spikes cannot drag the median (debounce).
     #[test]
     fn degraded_when_median_rtt_is_sustained_over_threshold() {
         const DEGRADE_RTT_MS: u64 = 800;
-        // 持续深劣化：全样本 ≥ 阈值 → 中位数 900/1715 命中。
+        // Sustained deep degradation: every sample >= the threshold -> the median 900/1715 hits.
         let mut bad = ProbeWindow::new(8);
         for v in [900, 1715, 950, 880] {
             bad.record(ProbeSample::Rtt(v));
@@ -1427,8 +1482,8 @@ mod tests {
             is_degraded(&bad, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "sustained 900ms degrades"
         );
-        // 边界：中位数恰等于阈值 → 命中（≥ 语义，与丢包尖峰一致）。4 拍
-        // 攒满年轻窗口下限（min_samples=4），豁免不再适用。
+        // The boundary: the median exactly equals the threshold -> it hits (>= semantics, consistent with the
+        // loss spike). 4 beats fill the young-window floor (min_samples=4), so the exemption no longer applies.
         let mut edge = ProbeWindow::new(4);
         for _ in 0..4 {
             edge.record(ProbeSample::Rtt(800));
@@ -1437,7 +1492,7 @@ mod tests {
             is_degraded(&edge, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "median == threshold hits"
         );
-        // 少数尖峰拉不动中位数：8 拍里 2 拍 1500ms，中位数仍 ~10ms → 不劣化。
+        // A minority of spikes cannot drag the median: 2 beats of 1500ms out of 8, the median still ~10ms -> not degraded.
         let mut spiky = ProbeWindow::new(8);
         for _ in 0..6 {
             spiky.record(ProbeSample::Rtt(10));
@@ -1448,7 +1503,7 @@ mod tests {
             !is_degraded(&spiky, DEGRADE_RTT_MS, LOSS_SPIKE_THRESHOLD, MIN_SAMPLES),
             "minority spikes must not degrade"
         );
-        // 多数拍超阈值：[10,900,900,1500] → 中位数 900 ≥ 800 → 持续劣化命中。
+        // A majority of beats over the threshold: [10,900,900,1500] -> median 900 >= 800 -> sustained degradation hits.
         let mut half = ProbeWindow::new(4);
         half.record(ProbeSample::Rtt(10));
         half.record(ProbeSample::Rtt(900));
@@ -1463,18 +1518,18 @@ mod tests {
     #[test]
     fn recovery_gate_requires_consecutive_healthy_rounds() {
         let mut gate = RecoveryGate::new(3);
-        // 不健康 → 计数清零，永不 ready。
+        // Unhealthy -> the count clears, never ready.
         assert!(!gate.record("peer-a", false));
         assert!(!gate.is_ready("peer-a"));
-        // 连续 3 轮健康 → 第 3 轮 ready。
+        // 3 consecutive healthy rounds -> ready on the 3rd.
         assert!(!gate.record("peer-a", true));
         assert!(!gate.record("peer-a", true));
         assert!(gate.record("peer-a", true));
         assert!(gate.is_ready("peer-a"));
-        // 一轮不健康 → 计数清零，不再 ready。
+        // One unhealthy round -> the count clears, no longer ready.
         assert!(!gate.record("peer-a", false));
         assert!(!gate.is_ready("peer-a"));
-        // 再 2 轮健康仍未满 3。
+        // 2 more healthy rounds and still not 3.
         assert!(!gate.record("peer-a", true));
         assert!(!gate.record("peer-a", true));
         assert!(!gate.is_ready("peer-a"));

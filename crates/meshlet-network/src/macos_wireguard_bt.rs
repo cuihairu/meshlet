@@ -1,52 +1,67 @@
-//! boringtun 嵌入式用户态后端——计划层（[分析文档](../../../docs/design/userspace-wireguard-analysis.md)
-//! 同源；meshlet 数据面从内核 WireGuard 迁到 boringtun 用户态协议）。
+//! The boringtun embedded userspace backend — the plan layer (sourced from the
+//! [analysis document](../../../docs/design/userspace-wireguard-analysis.md);
+//! the meshlet data plane moves from the kernel WireGuard to the boringtun
+//! userspace protocol).
 //!
-//! 目标模型：macOS 上以 boringtun（Cloudflare）跑 WireGuard 用户态协议，
-//! 替代内核 WireGuard 模块。**Intel mac 选型钉死**（2026-11-22 用户拍板：
-//! `x86_64-apple-darwin` 官方支持；gotatun/wireguard-go 出局）。
+//! Target model: run the WireGuard userspace protocol on macOS with boringtun
+//! (Cloudflare), replacing the kernel WireGuard module. **The Intel mac choice
+//! is pinned** (the user decided on 2026-11-22: `x86_64-apple-darwin` is
+//! officially supported; gotatun/wireguard-go are out).
 //!
-//! 分层（同 [crate::windows_wireguard_nt] 纪律）：
+//! Layering (the same discipline as [crate::windows_wireguard_nt]):
 //!
-//! **计划层**（任意平台编译+单测）：[TunnelConfig] → [BtInterfacePlan]
-//! 的纯转换与 utun 命名/端口/MTU 守门（[bt_interface_plan]）。
+//! **Plan layer** (compiles and unit-tests on any platform): the pure
+//! conversion [TunnelConfig] -> [BtInterfacePlan] plus the utun naming/port/MTU
+//! guards ([bt_interface_plan]).
 //!
-//! **命令计划**（任意平台编译+单测）：[BtInterfacePlan] →
-//! `Vec<[crate::macos::backend::BtCommand]>`（ifconfig/route/MTU——utun
-//! 是**哑设备**，IP/路由
-//! 自管，见 [crate::macos] 的 `bt_apply_commands`）。
+//! **Command plan** (compiles and unit-tests on any platform):
+//! [BtInterfacePlan] -> `Vec<[crate::macos::backend::BtCommand]>`
+//! (ifconfig/route/MTU — the utun is a **dummy device** whose IP/routes are
+//! self-managed, see `bt_apply_commands` in [crate::macos]).
 //!
-//! **`#[cfg(target_os = "macos")]` 执行层**：spawn boringtun-cli——起 utun
-//! 并挂 `/var/run/wireguard/*.sock` UAPI，然后跑命令执行器（见
-//! [crate::macos::backend]）。宿主 CI 不跑 macOS 测试，本层经
-//! `x86_64-apple-darwin` 交叉 check 编译验证。
+//! **`#[cfg(target_os = "macos")]` execution layer**: spawns boringtun-cli —
+//! bring up the utun and attach the `/var/run/wireguard/*.sock` UAPI, then run
+//! the command executor (see [crate::macos::backend]). The host CI does not
+//! run macOS tests; this layer is verified by the
+//! `x86_64-apple-darwin` cross check compile.
 //!
-//! 路径选择（②-3 决策）：**PATH B——spawn boringtun-cli + wg.sock UAPI**，
-//! 非库级嵌入（PATH A）。理由：boringtun 0.7.1 库是 WireGuard 协议库
-//! （`noise`/`x25519` 模块），**不提供 macOS utun 设备抽象**（`device`
-//! feature 走 socket2，非 utun ioctl）——PATH A 需 meshlet 自建 utun
-//! ioctl + 协议事件循环 + 线程生命周期管理，远超本批（测试钉）范围；
-//! PATH B 由 boringtun-cli 起 utun 并暴露 UAPI socket，meshlet 经标准
-//! `wg` 工具配密钥/peer、`ifconfig`/`route` 配哑设备 IP/路由；命令执行器
-//! 与对账模型从 linux 后端平移。**boringtun crate 依赖因此不加**（PATH B
-//! 运行时只依赖 `boringtun-cli` 二进制，打包是 ⑤ 真机批事项）。
+//! Path selection (decision ②-3): **PATH B — spawn boringtun-cli + wg.sock
+//! UAPI**, not library-level embedding (PATH A). Reason: the boringtun 0.7.1
+//! library is a WireGuard protocol library (the `noise`/`x25519` modules) and
+//! **does not provide a macOS utun device abstraction** (the `device` feature
+//! goes through socket2, not utun ioctls) — PATH A would require meshlet to
+//! build its own utun ioctls plus a protocol event loop and thread lifecycle
+//! management, far beyond the scope of this batch (test pins); PATH B has
+//! boringtun-cli bring up the utun and expose the UAPI socket, and meshlet
+//! configures keys/peers through the standard `wg` tool and the dummy device's
+//! IP/routes through `ifconfig`/`route`; the command executor and the
+//! reconciliation model are carried over from the linux backend. **The
+//! boringtun crate dependency is therefore not added** (PATH B only depends on
+//! the `boringtun-cli` binary at runtime; packaging belongs to the ⑤ real
+//! machine batch).
 //!
-//! 纪律（承 [crate::windows_wireguard_nt] / ADR-010）：
+//! Discipline (inheriting [crate::windows_wireguard_nt] / ADR-010):
 //!
-//! - **fail closed（端口）**：[TunnelConfig::listen_port] 为 `None` 时
-//!   拒绝——boringtun/utun 需要显式端口，`None` 落默认 51820 在多网络下
-//!   必然撞绑（服务模型时代同源）。见 [bt_listen_port]。
-//! - **fail closed（peer）**：peer `endpoint` 是必填 `SocketAddr`（无
-//!   Option 余地），缺失/解析失败一律拒绝；`persistent_keepalive_secs`
-//!   超出 `u16` 上界拒绝，绝不静默截断。
-//! - **命名守门**：utun 名必须 `utun`（让内核选）或 `utun<digits>`
-//!   （`utun[0-9]+`，如 `utun5`）；其余一律拒。macOS utun 是内核管理
-//!   的哑设备，名字只能由内核分配或显式指定。
-//! - **私钥边界（ADR-010）**：[BtInterfacePlan::private_key] 只透传
-//!   [TunnelConfig::private_key]（`None` = 保留现有密钥，幂等重应用）；
-//!   手工 [std::fmt::Debug] 实现对私钥字段脱敏——计划对象可安全进日志。
-//! - **MTU**：[BT_INTERFACE_MTU] 守门——计划 `mtu` 非 `None` 且 ≠1420
-//!   一律拒（与 NT 同规）；meshlet 缺省计划 MTU 恰为 1420
-//!   （[crate::DEFAULT_TUNNEL_MTU]）。
+//! - **fail closed (port)**: [TunnelConfig::listen_port] being `None` is
+//!   refused — boringtun/utun need an explicit port, and `None` falling back to
+//!   the default 51820 must collide across multiple networks (the same root as
+//!   back in the service-model era). See [bt_listen_port].
+//! - **fail closed (peer)**: the peer `endpoint` is a mandatory `SocketAddr`
+//!   (no room for an Option); missing or unparseable values are always refused;
+//!   `persistent_keepalive_secs` beyond the `u16` upper bound is refused, never
+//!   silently truncated.
+//! - **naming guard**: the utun name must be `utun` (let the kernel choose) or
+//!   `utun<digits>` (`utun[0-9]+`, such as `utun5`); everything else is
+//!   refused. A macOS utun is a kernel-managed dummy device, and its name can
+//!   only be allocated by the kernel or given explicitly.
+//! - **private key boundary (ADR-010)**: [BtInterfacePlan::private_key] only
+//!   passes through [TunnelConfig::private_key] (`None` = keep the existing key,
+//!   idempotent re-application); the hand-written [std::fmt::Debug]
+//!   implementation redacts the private key field — the plan object can safely
+//!   enter logs.
+//! - **MTU**: guarded by [BT_INTERFACE_MTU] — a plan `mtu` that is not `None`
+//!   and is not 1420 is always refused (the same rule as NT); meshlet's default
+//!   plan MTU happens to be 1420 ([crate::DEFAULT_TUNNEL_MTU]).
 
 use crate::NetworkError;
 use crate::TunnelConfig;
@@ -54,10 +69,13 @@ use meshlet_domain::Ipv4Cidr;
 use std::fmt;
 use std::net::SocketAddr;
 
-/// boringtun 计划层错误：命名/端口/peer 转换守门的拒绝原因。
+/// boringtun plan-layer error: the rejection reasons of the naming/port/peer
+/// conversion guards.
 ///
-/// 执行层（后批）落 [`crate::NetworkError`] 时按变体映射；
-/// 计划层先独立成类型，避免执行语义污染计划语义（同 NT 口径）。
+/// The execution layer (a later batch) maps variants when it lands in
+/// [`crate::NetworkError`]; the plan layer stands as its own type first so that
+/// execution semantics cannot pollute plan semantics (the same convention as
+/// NT).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BtPlanError {
     #[error("utun interface name is empty")]
@@ -85,27 +103,32 @@ pub enum BtPlanError {
 }
 
 impl From<BtPlanError> for NetworkError {
-    /// 计划层守门拒绝 → 应用拒绝（语义不变：计划不合法就是拒绝，绝不静默
-    /// 修正）。backend 分派用 `?` 直接收编。
+    /// A plan-layer guard rejection -> an application rejection (the semantics
+    /// are unchanged: an invalid plan is a rejection, never a silent
+    /// correction). The backend dispatch absorbs it directly with `?`.
     fn from(error: BtPlanError) -> Self {
         NetworkError::ApplyRejected(error.to_string())
     }
 }
 
-/// 单 peer 的 boringtun 计划（[crate::PeerConfig] 的执行形态前置转换）。
+/// The boringtun plan for a single peer (the pre-conversion to the execution
+/// form of [crate::PeerConfig]).
 ///
-/// 字段对应标准 `wg` 配置面（boringtun-cli UAPI 同构）：公钥/keepalive 仍持
-/// 计划层形态（base64 `String` / `Option<u16>`），二进制转换留给执行层——
-/// 密钥字节只应存在于执行瞬间。
+/// The fields mirror the standard `wg` configuration surface (structurally
+/// identical to the boringtun-cli UAPI): the public key/keepalive keep the
+/// plan-layer form (a base64 `String` / `Option<u16>`), and the binary
+/// conversion is left to the execution layer — key bytes should only exist at
+/// the moment of execution.
 #[derive(Clone, PartialEq, Eq)]
 pub struct BtPeerPlan {
-    /// peer 公钥（base64）。
+    /// The peer public key (base64).
     pub public_key: String,
-    /// peer 的 UDP 可达端点。**必填**，缺失在 [bt_interface_plan] 即拒。
+    /// The peer's UDP-reachable endpoint. **Mandatory**; a missing value is
+    /// refused at [bt_interface_plan].
     pub endpoint: SocketAddr,
-    /// AllowedIPs（与目标路由一致，§7.2）。
+    /// AllowedIPs (matching the target routes, §7.2).
     pub allowed_ips: Vec<Ipv4Cidr>,
-    /// 持久 keepalive 秒数；`None` = 不发。
+    /// Persistent keepalive seconds; `None` = do not send.
     pub keep_alive: Option<u16>,
 }
 
@@ -120,27 +143,32 @@ impl fmt::Debug for BtPeerPlan {
     }
 }
 
-/// 单网络的 boringtun 计划：[TunnelConfig] 经守门后的执行形态。
+/// The boringtun plan for a single network: the execution form of
+/// [TunnelConfig] after the guards.
 ///
-/// 私钥边界（ADR-010）：[private_key](BtInterfacePlan::private_key) 只在
-/// agent 本地存在；[Debug](std::fmt::Debug) 实现脱敏，计划对象可安全进日志。
+/// Private key boundary (ADR-010): [private_key](BtInterfacePlan::private_key)
+/// exists only locally on the agent; the [Debug](std::fmt::Debug)
+/// implementation redacts it, so the plan object can safely enter logs.
 #[derive(Clone, PartialEq, Eq)]
 pub struct BtInterfacePlan {
-    /// utun 接口名（`utun` 让内核选，或 `utun<digits>` 显式；见
-    /// [bt_utun_name]）。执行层在 `utun` 时经 `WG_TUN_NAME_FILE` 取实际名。
+    /// The utun interface name (`utun` lets the kernel choose, or an explicit
+    /// `utun<digits>`; see [bt_utun_name]). The execution layer resolves the
+    /// actual name through `WG_TUN_NAME_FILE` when it is `utun`.
     pub interface_name: String,
-    /// 显式分配的 UDP listen 端口（**非 Option**，见 [bt_listen_port]）。
+    /// The explicitly allocated UDP listen port (**not an Option**; see
+    /// [bt_listen_port]).
     pub listen_port: u16,
-    /// 接口地址。
+    /// The interface address.
     pub address: std::net::Ipv4Addr,
-    /// 接口地址前缀长度。
+    /// The interface address prefix length.
     pub address_prefix: u8,
-    /// MTU 意图（守门 [BT_INTERFACE_MTU]；执行层经 `ifconfig` 装配）。
+    /// The MTU intent (guarded by [BT_INTERFACE_MTU]; assembled by the
+    /// execution layer through `ifconfig`).
     pub mtu: Option<u32>,
-    /// 私钥（base64）。`None` = 保留现有密钥（幂等重应用）；**Debug
-    /// 脱敏**，绝不进日志。
+    /// The private key (base64). `None` = keep the existing key (idempotent
+    /// re-application); **redacted in Debug**, never entering logs.
     pub private_key: Option<String>,
-    /// peer 计划。
+    /// The peer plans.
     pub peers: Vec<BtPeerPlan>,
 }
 
@@ -161,15 +189,20 @@ impl fmt::Debug for BtInterfacePlan {
     }
 }
 
-/// boringtun 接口 MTU 守门值（与 NT 同规）：meshlet 缺省计划 MTU 恰为
-/// 1420（[crate::DEFAULT_TUNNEL_MTU]），本路径目前只接受 1420——非 1420
-/// 计划（如 PPPoE 1412）明确拒绝而非静默套用 1420 假装满足。
+/// The boringtun interface MTU guard value (the same rule as NT): meshlet's
+/// default plan MTU happens to be 1420 ([crate::DEFAULT_TUNNEL_MTU]), and this
+/// path currently accepts only 1420 — a non-1420 plan (such as PPPoE 1412) is
+/// explicitly refused rather than silently coerced to 1420 and pretending it
+/// is satisfied.
 pub const BT_INTERFACE_MTU: u32 = 1420;
 
-/// utun 接口名守门：`utun`（让内核选）或 `utun<digits>`（如 `utun5`）。
+/// The utun interface name guard: `utun` (let the kernel choose) or
+/// `utun<digits>` (such as `utun5`).
 ///
-/// fail closed：空串、非 `utun` 前缀、前缀后含非数字字符均拒。macOS utun
-/// 是内核管理的哑设备，名字只能由内核分配或显式指定——不接受任意字符串。
+/// fail closed: an empty string, a non-`utun` prefix, and any non-digit
+/// characters after the prefix are all refused. A macOS utun is a
+/// kernel-managed dummy device and its name can only be allocated by the kernel
+/// or given explicitly — no arbitrary string is accepted.
 pub fn bt_utun_name(requested: &str) -> Result<String, BtPlanError> {
     if requested.is_empty() {
         return Err(BtPlanError::UtunNameEmpty);
@@ -187,20 +220,22 @@ pub fn bt_utun_name(requested: &str) -> Result<String, BtPlanError> {
     Ok(requested.to_string())
 }
 
-/// listen 端口守门：`None` 拒绝。
+/// The listen port guard: `None` is refused.
 ///
-/// boringtun/utun 需要显式端口；`None` 落默认 51820 在多网络下第二个接口
-/// 必然撞绑（服务模型时代的 0xc0000022 同源）。端口必须 agent 逐网络
-/// 显式分配。
+/// boringtun/utun need an explicit port; `None` falling back to the default
+/// 51820 must collide on the second interface across multiple networks (the
+/// same root as the 0xc0000022 of the service-model era). The agent must
+/// allocate the port explicitly per network.
 pub fn bt_listen_port(listen_port: Option<u16>) -> Result<u16, BtPlanError> {
     listen_port.ok_or(BtPlanError::ListenPortMissing)
 }
 
-/// peer 计划转换：`PeerConfig` → [BtPeerPlan]，fail closed。
+/// The peer plan conversion: `PeerConfig` -> [BtPeerPlan], fail closed.
 ///
-/// - endpoint 缺失 / 解析失败 → 拒（boringtun peer endpoint 必填）；
-/// - keepalive 超出 `u16` → 拒（绝不静默截断）；
-/// - `allowed_ips` 透传（IPv4 CIDR 已规范化）。
+/// - A missing or unparseable endpoint -> refused (the boringtun peer endpoint
+///   is mandatory);
+/// - A keepalive beyond `u16` -> refused (never silently truncated);
+/// - `allowed_ips` passes through (the IPv4 CIDR is already normalized).
 fn bt_peer_plan(peer: &crate::PeerConfig, index: usize) -> Result<BtPeerPlan, BtPlanError> {
     let endpoint = match peer.endpoint.as_deref() {
         None => return Err(BtPlanError::PeerEndpointMissing { index }),
@@ -226,12 +261,15 @@ fn bt_peer_plan(peer: &crate::PeerConfig, index: usize) -> Result<BtPeerPlan, Bt
     })
 }
 
-/// 计划转换：[TunnelConfig] → [BtInterfacePlan]（纯函数，任意平台）。
+/// The plan conversion: [TunnelConfig] -> [BtInterfacePlan] (a pure function,
+/// any platform).
 ///
-/// 全量 fail closed：端口 `None` 拒、peer endpoint 缺失/坏值拒、
-/// keepalive 越界拒、utun 名不合法拒（[bt_utun_name]）、MTU 非 [BT_INTERFACE_MTU]
-/// 拒。`private_key`/`address` 等按 [TunnelConfig] 语义透传（`None` 私钥 =
-/// 保留现有密钥）。
+/// Fail closed across the board: a `None` port is refused, a missing or
+/// malformed peer endpoint is refused, an out-of-range keepalive is refused,
+/// an illegal utun name is refused ([bt_utun_name]), and an MTU other than
+/// [BT_INTERFACE_MTU] is refused. `private_key`/`address` and the rest pass
+/// through with the [TunnelConfig] semantics (a `None` private key = keep the
+/// existing key).
 pub fn bt_interface_plan(
     tunnel: &TunnelConfig,
     interface_name: &str,
@@ -266,7 +304,8 @@ mod tests {
     use super::*;
     use crate::PeerConfig;
 
-    /// 合法基线计划：端口显式、MTU 恰为守门值、peer endpoint 齐。
+    /// A legal baseline plan: an explicit port, an MTU exactly at the guard
+    /// value, and complete peer endpoints.
     fn tunnel() -> TunnelConfig {
         TunnelConfig {
             name: "net-a".into(),
@@ -292,7 +331,8 @@ mod tests {
         bt_interface_plan(&tunnel(), "utun").unwrap()
     }
 
-    /// ④ 钉：utun 名白名单——`utun`（内核选）与 `utun<digits>` 皆合法。
+    /// ④ pin: the utun name whitelist — both `utun` (kernel picks) and
+    /// `utun<digits>` are legal.
     #[test]
     fn utun_name_accepts_bare_and_numbered() {
         assert_eq!(bt_utun_name("utun").unwrap(), "utun");
@@ -300,7 +340,8 @@ mod tests {
         assert_eq!(bt_utun_name("utun12").unwrap(), "utun12");
     }
 
-    /// ④ 钉：非白名单一律拒（含前缀后拖非数字字符、大小写、前后空白）。
+    /// ④ pin: anything off the whitelist is refused (including trailing
+    /// non-digits after the prefix, case, and leading/trailing whitespace).
     #[test]
     fn utun_name_rejects_empty_nonprefix_and_trailing_junk() {
         assert_eq!(bt_utun_name(""), Err(BtPlanError::UtunNameEmpty));
@@ -315,7 +356,8 @@ mod tests {
         }
     }
 
-    /// ④ 钉：MTU 守门——1420 过，其余（1412/1500/900）拒不静默。
+    /// ④ pin: the MTU guard — 1420 passes, the rest (1412/1500/900) are
+    /// refused, never silently coerced.
     #[test]
     fn mtu_guard_accepts_1420_and_rejects_others() {
         let guard = |got: u32| {
@@ -324,7 +366,8 @@ mod tests {
             bt_interface_plan(&tunnel, "utun")
         };
         assert_eq!(guard(BT_INTERFACE_MTU).unwrap().mtu, Some(1420));
-        // `None` = 不指定，透传（不守门也不补默认）。
+        // `None` = unspecified, passed through (not guarded, and no default
+        // filled in).
         let mut bare = tunnel();
         bare.mtu = None;
         assert_eq!(bt_interface_plan(&bare, "utun").unwrap().mtu, None);
@@ -340,7 +383,8 @@ mod tests {
         }
     }
 
-    /// ④ 钉：listen_port `None` fail-closed（拒，不落默认 51820）。
+    /// ④ pin: a `None` listen_port is fail-closed (refused, never falling back
+    /// to the default 51820).
     #[test]
     fn listen_port_none_is_rejected() {
         assert_eq!(bt_listen_port(None), Err(BtPlanError::ListenPortMissing));
@@ -353,7 +397,7 @@ mod tests {
         );
     }
 
-    /// ④ 钉：peer endpoint 缺失 / 坏值拒。
+    /// ④ pin: a missing or malformed peer endpoint is refused.
     #[test]
     fn peer_endpoint_missing_or_invalid_is_rejected() {
         let mut tunnel = tunnel();
@@ -372,11 +416,12 @@ mod tests {
         );
     }
 
-    /// ④ 钉：keepalive 越界拒（绝不截断），界内保留，`None` 透传。
+    /// ④ pin: an out-of-range keepalive is refused (never truncated), an
+    /// in-range one is kept, and `None` passes through.
     #[test]
     fn keepalive_over_u16_is_rejected_not_truncated() {
         let mut tunnel = tunnel();
-        // 越界拒（绝不截断）。
+        // Out of range is refused (never truncated).
         let mut p = peer("pub-a", Some("100.64.0.2:51820"));
         p.persistent_keepalive_secs = Some(u16::MAX as u32 + 1);
         tunnel.peers = vec![p];
@@ -387,7 +432,8 @@ mod tests {
                 value: u16::MAX as u32 + 1,
             })
         );
-        // 上界内保留原值（无截断、无放大）。
+        // Within the upper bound the original value is kept (no truncation,
+        // no amplification).
         let mut p = peer("pub-a", Some("100.64.0.2:51820"));
         p.persistent_keepalive_secs = Some(u16::MAX as u32);
         tunnel.peers = vec![p];
@@ -395,7 +441,7 @@ mod tests {
             bt_interface_plan(&tunnel, "utun").unwrap().peers[0].keep_alive,
             Some(u16::MAX)
         );
-        // `None` 透传（不发 keepalive）。
+        // `None` passes through (no keepalive sent).
         let mut p = peer("pub-a", Some("100.64.0.2:51820"));
         p.persistent_keepalive_secs = None;
         tunnel.peers = vec![p];
@@ -405,7 +451,8 @@ mod tests {
         );
     }
 
-    /// ④ 钉：计划对象承载地址/前缀/端口/peer（含 `utun` 原名透传）。
+    /// ④ pin: the plan object carries the address/prefix/port/peers (including
+    /// the `utun` name passed through as-is).
     #[test]
     fn interface_plan_carries_address_port_and_peers() {
         let plan = plan();
@@ -420,8 +467,8 @@ mod tests {
         assert_eq!(plan.peers[0].keep_alive, Some(25));
     }
 
-    /// ④ 钉：私钥在 Debug 输出中脱敏（ADR-010）——`<redacted>` 在场，
-    /// 私钥字节一个不出现。
+    /// ④ pin: the private key is redacted in Debug output (ADR-010) —
+    /// `<redacted>` is present and not one byte of the key appears.
     #[test]
     fn debug_output_never_leaks_private_key_bytes() {
         let key = "super-secret-base64-material";
@@ -436,7 +483,8 @@ mod tests {
         );
     }
 
-    /// ④ 钉：`private_key: None` 透传（幂等重应用保留现有密钥）。
+    /// ④ pin: a `private_key: None` passes through (an idempotent re-application
+    /// keeps the existing key).
     #[test]
     fn private_key_none_passes_through() {
         let mut tunnel = tunnel();
@@ -447,8 +495,9 @@ mod tests {
         );
     }
 
-    /// ④ 钉：计划层守门拒绝 → [`NetworkError::ApplyRejected`]（backend 分派
-    /// 用 `?` 直接收编，语义不降级）。
+    /// ④ pin: a plan-layer guard rejection -> [`NetworkError::ApplyRejected`]
+    /// (the backend dispatch absorbs it with `?`, without downgrading the
+    /// semantics).
     #[test]
     fn plan_error_maps_to_apply_rejected() {
         for error in [

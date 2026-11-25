@@ -3,10 +3,11 @@ use super::parsing::mask_to_prefix;
 use crate::windows_console::NoWindowCommand;
 
 impl WindowsNetworkBackend {
-    /// 受管接口的 MTU（`netsh interface ipv4 show subinterfaces`）。
-    /// 读不到（接口未起 / 命令失败）→ `None`，漂移判定对未显式配置 MTU 的
-    /// 计划不触发；显式 MTU 计划则由 [Self::inspect_sync] 的 `tunnel_mtu`
-    /// 驱动（不再恒 None 导致的永不收敛）。
+    /// MTU of the managed interface (`netsh interface ipv4 show subinterfaces`).
+    /// Nothing readable (interface not up / command failure) → `None`; the drift
+    /// verdict does not fire for plans that do not set MTU explicitly, while an
+    /// explicit MTU plan is driven by `tunnel_mtu` from [Self::inspect_sync]
+    /// (no longer permanently None, which used to mean never converging).
     pub(super) fn interface_mtu(&self) -> Option<u32> {
         let output = std::process::Command::new("netsh")
             .args(["interface", "ipv4", "show", "subinterfaces"])

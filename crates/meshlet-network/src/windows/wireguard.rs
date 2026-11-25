@@ -8,10 +8,11 @@ use meshlet_domain::Ipv4Cidr;
 use std::path::PathBuf;
 
 impl WindowsNetworkBackend {
-    /// 隧道服务安装（重配正确性，BUG 修复）：已存在 → 停/卸载/装新 conf；
-    /// 不存在 → 直接装。装完轮询 `sc query` 直到服务 RUNNING（读不到运行
-    /// 证据即报错，绝不假装生效——apply_device_plan_sync 随后有内核回读，
-    /// 此处只负责「服务确实起来了」）。
+    /// Tunnel service install (reconfiguration correctness, BUG fix): existing →
+    /// stop/uninstall/install new conf; absent → install directly. After install, poll
+    /// `sc query` until the service is RUNNING (error out when no running evidence can
+    /// be read, never pretend it took effect — apply_device_plan_sync does a kernel
+    /// read-back afterwards; this only guarantees "the service is really up").
     pub(super) fn install_tunnel_reconfigured(
         &self,
         exe: &std::path::Path,
@@ -24,11 +25,13 @@ impl WindowsNetworkBackend {
                 crate::windows_tunnel::WireGuardCommand::UninstallService { .. }
             ) {
                 run_wireguard_command(&command, Some(exe))?;
-                // 卸载只是发停止信号：旧服务进程退出要时间，退出前仍持有
-                // conf 文件。新服务立刻启动读同一份 conf 会报「The process
-                // cannot access the file because it is being used by another
-                // process」起不来（真机 imac 2026-11-07 事件日志：7045 安装 →
-                // 7023 停止连环失败，隧道永远起不来）。等旧服务退干净再装。
+                // Uninstall only sends a stop signal: the old service process takes
+                // time to exit and still holds the conf file until it does. If the
+                // new service starts right away and reads the same conf, it fails to
+                // come up with "The process cannot access the file because it is
+                // being used by another process" (real-machine imac 2026-11-07 event
+                // log: 7045 install → 7023 stop failing in a chain, the tunnel never
+                // comes up). Wait for the old service to fully exit before installing.
                 self.wait_tunnel_service_gone(&self.interface);
                 continue;
             }
@@ -37,8 +40,9 @@ impl WindowsNetworkBackend {
         self.wait_tunnel_service_running(&self.interface)
     }
 
-    /// 轮询直到旧隧道服务退干净（SCM 里不再 RUNNING / 已删除），最多约 4s；
-    /// 超时也继续装（给一次机会，绝不为等退出卡死 apply）。
+    /// Poll until the old tunnel service has fully exited (no longer RUNNING in the
+    /// SCM / deleted), at most about 4s; on timeout still proceed with the install
+    /// (give it one chance — never let apply deadlock waiting for exit).
     fn wait_tunnel_service_gone(&self, tunnel_name: &str) {
         let service = crate::windows_tunnel::tunnel_service_query_name(tunnel_name);
         for _ in 0..16 {
@@ -49,8 +53,9 @@ impl WindowsNetworkBackend {
         }
     }
 
-    /// 轮询 `sc query WireGuardTunnel$<name>` 直到 RUNNING（装服务后驱动
-    /// 拉起隧道需要一点时间）；超时（约 5s）→ 显式失败。
+    /// Poll `sc query WireGuardTunnel$<name>` until RUNNING (after installing the
+    /// service the driver needs a moment to bring the tunnel up); timeout
+    /// (about 5s) → fail explicitly.
     fn wait_tunnel_service_running(&self, tunnel_name: &str) -> Result<(), NetworkError> {
         let service = crate::windows_tunnel::tunnel_service_query_name(tunnel_name);
         for _ in 0..20 {
@@ -64,8 +69,9 @@ impl WindowsNetworkBackend {
         )))
     }
 
-    /// `sc query <service>` 的数字状态码（zh/en 双标签解析见
-    /// [windows_tunnel::parse_sc_query_state_code]）；命令失败/解析不到 → None。
+    /// Numeric state code from `sc query <service>` (zh/en dual-label parsing lives
+    /// in [windows_tunnel::parse_sc_query_state_code]); command failure /
+    /// unparseable → None.
     fn sc_query_state_code(&self, service: &str) -> Option<u32> {
         let output = std::process::Command::new("sc")
             .args(["query", service])
@@ -81,17 +87,20 @@ impl WindowsNetworkBackend {
     }
 
     pub(super) fn read_tunnel_peers(&self, tunnel_name: &str) -> Vec<PeerObserved> {
-        // 漂移探测：从 `wg.exe show <name> dump` 读回实际生效的 peer。读不到
-        // （wg.exe 缺失 / 隧道未运行 / 输出异常）一律返回空——调用方据存在性
-        // 判定为「与期望不符」宁可重装收敛，绝不因读数缺失假装一致。
+        // Drift probe: read back the peers actually in effect from
+        // `wg.exe show <name> dump`. Always return empty when it cannot be read
+        // (wg.exe missing / tunnel not running / malformed output) — the caller
+        // treats absence as "does not match expectations" and prefers reinstalling
+        // to converge; never pretend to be consistent just because a reading is
+        // missing.
         match self.read_tunnel_dump(tunnel_name) {
             Some(text) => crate::windows_tunnel::parse_wg_dump_peers(&text),
             None => Vec::new(),
         }
     }
 
-    /// `wg.exe show <name> dump` 原文（接口行 + peer 行；解码走
-    /// [windows_console] 的活动代码页兜底）。读不到 → None。
+    /// Raw text of `wg.exe show <name> dump` (interface line + peer lines; decoding
+    /// uses the [windows_console] active code page fallback). Unreadable → None.
     pub(super) fn read_tunnel_dump(&self, tunnel_name: &str) -> Option<String> {
         let exe = self.find_wg_exe()?;
         let out = std::process::Command::new(&exe)
@@ -106,8 +115,9 @@ impl WindowsNetworkBackend {
         ))
     }
 
-    /// 受管接口适配器的实际 IPv4 地址（`netsh interface ipv4 show addresses
-    /// name=<if>` 解析；漂移判定的适配器地址读数，BUG②）。读不到 → None。
+    /// Actual IPv4 address of the managed interface adapter (parsed from
+    /// `netsh interface ipv4 show addresses name=<if>`; the adapter-address
+    /// reading used for drift detection, BUG②). Unreadable → None.
     pub(super) fn interface_address(&self) -> Option<std::net::Ipv4Addr> {
         let output = std::process::Command::new("netsh")
             .args(["interface", "ipv4", "show", "addresses", &self.interface])
@@ -122,8 +132,9 @@ impl WindowsNetworkBackend {
         parse_netsh_interface_ipv4_address(&text)
     }
 
-    /// `wg.exe` 路径解析（与 [Self::find_wireguard_exe] 同纪律：WireGuard for
-    /// Windows 把 wg.exe 与 wireguard.exe 装在同一目录，故优先复用其目录）。
+    /// Resolve the `wg.exe` path (same discipline as [Self::find_wireguard_exe]:
+    /// WireGuard for Windows installs wg.exe and wireguard.exe in the same
+    /// directory, so prefer reusing that directory).
     pub(super) fn find_wg_exe(&self) -> Option<PathBuf> {
         if let Some(wireguard) = self.find_wireguard_exe() {
             if let Some(dir) = wireguard.parent() {
@@ -144,24 +155,28 @@ impl WindowsNetworkBackend {
         None
     }
 
-    /// 私钥 → 公钥（纯 Curve25519，x25519-dalek RFC 7748 clamping，与
-    /// `wg pubkey` 同构——keys.rs 的语义锚定）。服务端据此填充下发给设备的
-    /// hub peer 公钥，ADR-010。
+    /// Private key → public key (pure Curve25519, x25519-dalek RFC 7748
+    /// clamping, isomorphic to `wg pubkey` — the semantic anchor in keys.rs).
+    /// The server uses this to fill in the hub peer public key it sends down to
+    /// devices, ADR-010.
     ///
-    /// 不再依赖 `wg.exe`：nt 模型（wireguard-nt 内嵌绑定）无需安装
-    /// WireGuard for Windows，`wg.exe` 可能不在——账本公钥指纹推导必须
-    /// 在两模型下都成立。
+    /// No longer depends on `wg.exe`: the nt model (wireguard-nt embedded
+    /// bindings) needs no WireGuard for Windows installation, so `wg.exe` may be
+    /// absent — ledger public key fingerprint derivation must hold under both
+    /// models.
     pub fn public_key_from_private(&self, private_key: &str) -> Result<String, NetworkError> {
         crate::keys::public_from_private(private_key).map_err(NetworkError::Io)
     }
 
-    /// P2P 直连执行层（§12）：`wg.exe show <if> latest-handshakes` →
-    /// 公钥 → 秒龄。与 Linux 同一解析器（[crate::parse_handshake_ages]）。
+    /// P2P direct connect execution layer (§12): `wg.exe show <if>
+    /// latest-handshakes` → public key → age in seconds. Same parser as Linux
+    /// ([crate::parse_handshake_ages]).
     pub fn handshake_ages_sync(
         &self,
     ) -> Result<std::collections::BTreeMap<String, u64>, NetworkError> {
-        // nt 模型：握手年龄来自驱动 get_config 的 last_handshake（无需
-        // wg.exe；服务模型走 `wg show <if> latest-handshakes` 同语义）。
+        // nt model: handshake ages come from the driver get_config
+        // last_handshake (no wg.exe needed; the service model uses
+        // `wg show <if> latest-handshakes` with the same semantics).
         if let Some(nt) = &self.nt {
             let adapter_name = nt_adapter_name(&nt_adapter_handle(&self.interface))?;
             return nt.handshake_ages(&adapter_name);
@@ -193,15 +208,17 @@ impl WindowsNetworkBackend {
         ))
     }
 
-    /// P2P 直连 peer 下发（§12）：`wg.exe set <if> peer …`——与 Linux
-    /// [`crate::linux::LinuxNetworkBackend::set_direct_peer_sync`] 同参数形状
-    /// （allowed-ips 对端 overlay /32 + endpoint + persistent-keepalive）。
-    /// WireGuardNT 适配器支持运行期 `wg set`（wireguard.exe 隧道服务创建的
-    /// 适配器同样适用），无需重装隧道；写入要求提升权限（agent 以管理员运行）。
-    /// 幂等：重复调用结果一致。
+    /// P2P direct connect peer push (§12): `wg.exe set <if> peer …` — same
+    /// parameter shape as Linux
+    /// [`crate::linux::LinuxNetworkBackend::set_direct_peer_sync`]
+    /// (allowed-ips peer overlay /32 + endpoint + persistent-keepalive).
+    /// WireGuardNT adapters support runtime `wg set` (equally applicable to
+    /// adapters created by the wireguard.exe tunnel service), so no tunnel
+    /// reinstall is needed; writing requires elevation (the agent runs as admin).
+    /// Idempotent: repeated calls yield the same result.
     ///
-    /// 注意：隧道重装（apply）会重置运行期 peer——调用方（agent）按 tick 重推，
-    /// 与 Linux 的 reconcile 语义一致。
+    /// Note: reinstalling the tunnel (apply) resets runtime peers — the caller
+    /// (agent) re-pushes every tick, matching Linux's reconcile semantics.
     pub fn set_direct_peer_sync(
         &self,
         public_key: &str,
@@ -228,14 +245,17 @@ impl WindowsNetworkBackend {
         ])
     }
 
-    /// P2P 直连 peer 移除（回退 hub，§12）：`wg.exe set <if> peer <key> remove`。
-    /// 幂等：不存在也成功（WireGuard 对缺失 peer 的 remove 是 no-op）。
+    /// P2P direct connect peer removal (fall back to hub, §12):
+    /// `wg.exe set <if> peer <key> remove`. Idempotent: succeeds even when absent
+    /// (WireGuard treats removing a missing peer as a no-op).
     pub fn remove_peer_sync(&self, public_key: &str) -> Result<(), NetworkError> {
         self.run_wg_set(&["peer", public_key, "remove"])
     }
 
-    /// SEL-002 直连 endpoint 漫游：`wg.exe set <if> peer <key> endpoint <ip:port>`。
-    /// WireGuard 在同一 peer 上改 endpoint 是无缝的（不断开已有握手）。幂等。
+    /// SEL-002 direct connect endpoint roaming:
+    /// `wg.exe set <if> peer <key> endpoint <ip:port>`. WireGuard changes a
+    /// peer's endpoint seamlessly (existing handshakes are not dropped).
+    /// Idempotent.
     pub fn set_direct_endpoint_sync(
         &self,
         public_key: &str,
@@ -245,17 +265,20 @@ impl WindowsNetworkBackend {
         self.run_wg_set(&["peer", public_key, "endpoint", &endpoint])
     }
 
-    /// `wg.exe set <if> <args>`：运行期变更受管适配器（成功静默；失败携带
-    /// wg.exe stderr 文本——权限不足/适配器不存在都在其中可读）。
+    /// `wg.exe set <if> <args>`: mutate the managed adapter at runtime (silent on
+    /// success; on failure carries wg.exe stderr text — insufficient privileges /
+    /// missing adapter are all readable there).
     ///
-    /// 接口名必须过 [Self::effective_interface_alias]：service 模型 =
-    /// `self.interface`；nt 模型 = OS 别名（`WireGuard`）。**不能直接用
-    /// `self.interface`**——nt 模型下它是 config 值 `wg-meshlet`，而
-    /// `wg.exe set` 按 OS 别名寻址，`wg-meshlet` 不存在 → 每次
+    /// The interface name must go through [Self::effective_interface_alias]:
+    /// service model = `self.interface`; nt model = OS alias (`WireGuard`).
+    /// **Never use `self.interface` directly** — under the nt model it is the
+    /// config value `wg-meshlet`, while `wg.exe set` addresses adapters by OS
+    /// alias, and `wg-meshlet` does not exist → every call ends in
     /// `wg set wg-meshlet: Unable to modify interface: No such file or
-    /// directory`，direct 快路径在 nt 模型下永远建立不起来（wgnt-seven-item
-    /// 2026-11-22 相邻发现①；nt adapter 本身支持运行期 `wg set`，见
-    /// 本模块 `set_direct_peer_sync` 文档）。
+    /// directory`, so the direct fast path can never be established under the nt
+    /// model (wgnt-seven-item 2026-11-22 adjacent finding ①; the nt adapter
+    /// itself supports runtime `wg set`, see the `set_direct_peer_sync` docs in
+    /// this module).
     fn run_wg_set(&self, args: &[&str]) -> Result<(), NetworkError> {
         let interface = self.effective_interface_alias()?;
         let exe = self.find_wg_exe().ok_or_else(|| {

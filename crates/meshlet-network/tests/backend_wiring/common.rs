@@ -13,13 +13,14 @@ use meshlet_domain::{AliasMapping, AliasMappingId, LanRouteId, NetworkId, Transl
 use meshlet_network::linux::LinuxNetworkBackend;
 use meshlet_network::{NetworkSnapshot, PeerConfig, RouteConfig, TunnelConfig};
 
-/// 对象名前缀（与其它 netns 测试区分）。
+/// Prefix for the object names (to tell these apart from the other netns tests).
 pub(crate) const PREFIX: &str = "mltb";
-/// 握手等待上限。
+/// Upper bound for waiting on the handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(25);
 
-/// §7.4 源观测脚本：B 上一收即退的 UDP echo（10s 无包亦自退，不留孤儿进程），
-/// 应答体为收包源地址。占位符 @BIND@ 换成 B 的 Overlay 地址。
+/// The §7.4 source-observation script: a UDP echo on B that exits after a single receive (it also
+/// exits itself after 10s without a packet, leaving no orphan process), whose reply body is the
+/// source address of the packet received. The @BIND@ placeholder is replaced with B's overlay address.
 const ECHO_SERVER_PY: &str = r#"
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -32,7 +33,7 @@ except Exception:
     pass
 "#;
 
-/// echo 客户端：打一次 @PEER@，打印应答体。占位符 @PEER@ 换成 B 的 Overlay 地址。
+/// The echo client: hit @PEER@ once and print the reply body. The @PEER@ placeholder is replaced with B's overlay address.
 const ECHO_CLIENT_PY: &str = r#"
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -41,7 +42,7 @@ s.sendto(b"hi", ("@PEER@", 15900))
 print(s.recvfrom(2048)[0].decode().strip())
 "#;
 
-// ---------------------------------------------------------------- 进程辅助
+// ---------------------------------------------------------------- process helpers
 
 pub(crate) fn sudo(args: &[&str]) -> Output {
     Command::new("sudo")
@@ -61,7 +62,7 @@ pub(crate) fn netns_exec(ns: &str, args: &[&str]) -> Output {
     sudo(&full)
 }
 
-/// 拓扑搭建阶段的命令失败直接 panic（环境对了而命令失败就是真 bug）。
+/// A failed command during topology setup panics outright (with the environment right, a failing command is a real bug).
 pub(crate) fn require_ok(out: &Output, what: &str) {
     if !out.status.success() {
         panic!(
@@ -76,7 +77,7 @@ pub(crate) fn count_prefix_lines(text: &str) -> usize {
     text.lines().filter(|l| l.starts_with(PREFIX)).count()
 }
 
-// ---------------------------------------------------------------- 前置条件
+// ---------------------------------------------------------------- prerequisites
 
 pub(crate) fn prerequisites() -> Option<()> {
     if !sudo_ok(&["true"]) {
@@ -141,7 +142,7 @@ pub(crate) fn preflight_cleanup() {
     }
 }
 
-// ---------------------------------------------------------------- 密钥
+// ---------------------------------------------------------------- keys
 
 pub(crate) fn wg_genkey() -> Option<String> {
     let out = Command::new("wg").arg("genkey").output().ok()?;
@@ -173,7 +174,7 @@ pub(crate) fn wg_pubkey(private: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-// ---------------------------------------------------------------- 拓扑
+// ---------------------------------------------------------------- topology
 
 pub(crate) struct Node {
     pub(crate) netns: String,
@@ -214,13 +215,13 @@ impl Drop for Guard {
     }
 }
 
-/// 场景 12（宿主机）的兜底清理：测试在**根命名空间**预埋外来对象并配置 wg0，
-/// 任何断言失败都不许把这些对象留在宿主机上。
+/// The fallback cleanup for scenario 12 (the host): the test plants foreign objects in the **root
+/// namespace** and configures wg0, and no assertion failure may leave those objects on the host.
 pub(crate) struct RootGuard;
 
 impl Drop for RootGuard {
     fn drop(&mut self) {
-        // 先按所有权摘掉受管 NAT，再删受管接口（连带其路由与 peer）。
+        // First peel off the managed NAT by ownership, then delete the managed interface (taking its routes and peers along with it).
         let cleanup = LinuxNetworkBackend::new().with_sudo().with_interface("wg0");
         let _ = cleanup.remove_nat_sync(ALIAS_OWNER);
         let _ = sudo(&["ip", "link", "del", "wg0"]);
@@ -258,7 +259,7 @@ impl Drop for RootGuard {
     }
 }
 
-/// 根命名空间里某条路由的精确渲染行（不存在则 None）——外来对象幸存的比对口径。
+/// The exact rendered line of a route in the root namespace (`None` when it does not exist) -- the comparison criterion for whether a foreign object survived.
 pub(crate) fn root_route_exact(destination: &str) -> Option<String> {
     let out = sudo(&["ip", "-4", "route", "show", "exact", destination]);
     if !out.status.success() {
@@ -268,7 +269,7 @@ pub(crate) fn root_route_exact(destination: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// 在 iptables -S 输出里找一条同时命中 `needle` 与所有权注释的行。
+/// Find a line in the `iptables -S` output that matches both `needle` and the ownership comment.
 pub(crate) fn host_rule_line(stdout: &[u8], needle: &str) -> Option<String> {
     String::from_utf8_lossy(stdout)
         .lines()
@@ -277,13 +278,13 @@ pub(crate) fn host_rule_line(stdout: &[u8], needle: &str) -> Option<String> {
 }
 
 pub(crate) struct Topology {
-    #[allow(dead_code)] // 字段只经 Drop 清理
+    #[allow(dead_code)] // The field is only ever used for Drop-based cleanup
     guard: Guard,
     pub(crate) hub: Node,
     pub(crate) a: Node,
     pub(crate) b: Node,
     pub(crate) gw: Node,
-    /// LAN 主机 netns（网关后面的 192.168.1.5）。
+    /// The LAN host netns (192.168.1.5 behind the gateway).
     #[allow(dead_code)]
     lan: String,
 }
@@ -299,7 +300,7 @@ impl Topology {
             bridge: None,
         };
 
-        // --- 密钥（每节点独立）
+        // --- Keys (one pair per node)
         let mut keys = Vec::new();
         for _ in 0..4 {
             let private = match wg_genkey() {
@@ -327,7 +328,7 @@ impl Topology {
             keys.push((private, public));
         }
 
-        // --- 节点身份（H/A/B/G 挂网桥；G 另带 LAN 段）
+        // --- Node identities (H/A/B/G hang off the bridge; G also carries a LAN segment)
         let defs = [
             ("H", "10.99.0.10", "10.240.0.1"),
             ("A", "10.99.0.20", "10.240.0.2"),
@@ -347,7 +348,7 @@ impl Topology {
             });
         }
 
-        // --- 网桥 + netns + veth + 关 offload（wg_forwarding.rs 同款坑位处理）
+        // --- Bridge + netns + veth + turning off offload (the same pitfall handling as wg_forwarding.rs)
         let bridge = format!("{PREFIX}br0");
         guard.bridge = Some(bridge.clone());
         require_ok(
@@ -408,7 +409,7 @@ impl Topology {
                 &netns_exec(&n.netns, &["ip", "link", "set", "lo", "up"]),
                 "lo up",
             );
-            // GRO/GSO/TSO 会让 wg-over-veth 握手静默失败；两端都要关。
+            // GRO/GSO/TSO make a wg-over-veth handshake fail silently; turn them off on both ends.
             for dev in [&n.veth_host, &n.veth_ns] {
                 let _ = sudo(&[
                     "ethtool", "-K", dev, "gro", "off", "gso", "off", "tso", "off", "rx", "off",
@@ -417,7 +418,7 @@ impl Topology {
             }
         }
 
-        // --- 网关 LAN 段（G 的另一个接口 + LAN 主机 netns）
+        // --- Gateway LAN segment (G's second interface + the LAN host netns)
         let lan = format!("{PREFIX}L");
         let (lan0, lan1) = (format!("{PREFIX}X0"), format!("{PREFIX}X1"));
         guard.netns.push(lan.clone());
@@ -506,8 +507,9 @@ impl Topology {
             .to_string()
     }
 
-    /// §7.4 源保留观测：B 起一次性 UDP echo（应答体=收包源地址），A 发一次。
-    /// 返回应答体（`Some("src=<源地址>")`），用于断言 A→B 的源未被改写。
+    /// The §7.4 source-preservation probe: B starts a one-shot UDP echo (reply body = the packet's source
+    /// address) and A sends once. Returns the reply body (`Some("src=<source address>")`) to assert that
+    /// the A -> B source was not rewritten.
     pub(crate) fn overlay_source_seen_by_b(&self) -> Option<String> {
         let server = ECHO_SERVER_PY.replace("@BIND@", &self.b.overlay);
         let mut child = Command::new("sudo")
@@ -524,7 +526,7 @@ impl Topology {
             .stdout(Stdio::null())
             .spawn()
             .ok()?;
-        std::thread::sleep(Duration::from_millis(700)); // echo 服务就绪
+        std::thread::sleep(Duration::from_millis(700)); // give the echo server time to be ready
         let client = ECHO_CLIENT_PY.replace("@PEER@", &self.b.overlay);
         let mut answer = None;
         for _ in 0..3 {
@@ -540,10 +542,10 @@ impl Topology {
     }
 }
 
-// ---------------------------------------------------------------- 配置构造
+// ---------------------------------------------------------------- config builders
 
-/// hub 侧隧道配置（与 server 适配层 `hub_plan` 同构：peer allowed-ips =
-/// 虚拟 IP /32 + 经该设备转发的 Alias 前缀）。
+/// The hub-side tunnel config (isomorphic to the server adapter's `hub_plan`: a peer's allowed-ips =
+/// its virtual IP /32 plus the alias prefixes forwarded through that device).
 pub(crate) fn hub_tunnel(hub: &Node, a: &Node, b: &Node, gw: &Node, with_b: bool) -> TunnelConfig {
     let mut peers = vec![
         PeerConfig {
@@ -584,7 +586,7 @@ pub(crate) fn hub_tunnel(hub: &Node, a: &Node, b: &Node, gw: &Node, with_b: bool
     }
 }
 
-/// hub 的 Alias 转发路由（server 适配层 `hub_plan` 对 Alias 路由的产物）。
+/// The hub's alias forwarding routes (what the server adapter's `hub_plan` produces for alias routes).
 pub(crate) fn hub_routes() -> Vec<RouteConfig> {
     vec![RouteConfig {
         destination: "10.241.1.0/24".parse().unwrap(),
@@ -593,7 +595,7 @@ pub(crate) fn hub_routes() -> Vec<RouteConfig> {
     }]
 }
 
-/// 客户端/网关侧隧道配置（peer = hub，endpoint 指网桥上 hub 的 netns 地址）。
+/// The client/gateway-side tunnel config (peer = hub, endpoint pointing at the hub netns address on the bridge).
 pub(crate) fn leaf_tunnel(node: &Node, hub: &Node, allowed_ips: &[&str]) -> TunnelConfig {
     TunnelConfig {
         name: "wg0".into(),
@@ -611,7 +613,7 @@ pub(crate) fn leaf_tunnel(node: &Node, hub: &Node, allowed_ips: &[&str]) -> Tunn
     }
 }
 
-/// dnat_snat 模式的 Alias 映射（§9.4–§9.5，与 alias_nat.rs 同一形状）。
+/// The alias mapping in dnat_snat mode (§9.4-§9.5, the same shape as alias_nat.rs).
 pub(crate) fn alias_mapping() -> AliasMapping {
     AliasMapping::new(
         AliasMappingId("al-1".into()),
@@ -626,24 +628,26 @@ pub(crate) fn alias_mapping() -> AliasMapping {
 
 pub(crate) const ALIAS_OWNER: &str = "meshlet alias al-1";
 
-/// 快照指纹集合里是否存在受控 SNAT 动作（按指纹内容判读，不靠单独枚举
-/// POSTROUTING 链——与 `collect_evidence` 同一口径）。
+/// Whether the snapshot's fingerprint set contains a controlled SNAT action (read from the fingerprint
+/// content, not by separately enumerating the POSTROUTING chain -- the same criterion as `collect_evidence`).
 pub(crate) fn snapshot_has_snat(snap: &NetworkSnapshot) -> bool {
     snap.nat_rules
         .iter()
         .any(|sig| sig.contains("|snat_to_gateway_lan|"))
 }
 
-/// 指纹集合比较用：两侧都排序。观测侧由 `BTreeSet` 产出（已排序），计划侧
-/// 由 `Vec` 产出（计划顺序），规则顺序不是身份的一部分。
+/// For fingerprint-set comparison: sort both sides. The observed side comes from a `BTreeSet`
+/// (already sorted); the planned side comes from a `Vec` (plan order) -- rule order is not part
+/// of the identity.
 pub(crate) fn sorted_signatures(signatures: &[String]) -> Vec<String> {
     let mut out = signatures.to_vec();
     out.sort();
     out
 }
 
-/// 把快照里的 peer 身份渲染成集合（`公钥:allowed-ips,…`）。集合比对天然不看
-/// 顺序，断言用它就能检查「身份」而非「条数」：条数相同但身份被换的场景由此可见。
+/// Render the snapshot's peer identities into a set (`public key:allowed-ips,...`). Set comparison is
+/// order-insensitive by nature, so an assertion built on it checks "identities" rather than "counts":
+/// that is how the case of an equal count with a swapped identity becomes visible.
 pub(crate) fn peer_identities(snap: &NetworkSnapshot) -> BTreeSet<String> {
     snap.peers
         .iter()
@@ -661,7 +665,7 @@ pub(crate) fn peer_identities(snap: &NetworkSnapshot) -> BTreeSet<String> {
         .collect()
 }
 
-/// 期望的 peer 身份集合（与 `peer_identities` 同一渲染口径）。
+/// The expected set of peer identities (rendered the same way as `peer_identities`).
 pub(crate) fn planned_peer_identities(a: &Node, b: &Node, gw: &Node) -> BTreeSet<String> {
     [
         format!("{}:10.240.0.2/32", a.public_key),
@@ -672,6 +676,7 @@ pub(crate) fn planned_peer_identities(a: &Node, b: &Node, gw: &Node) -> BTreeSet
     .collect()
 }
 
-/// 共享 netns 前缀同时也会出现在宿主机 underlay 上；这把进程内串行锁保证
-/// 本二进制的多场景测试不并发互踩。跨测试二进制的隔离仍由不同前缀承担。
+/// The shared netns prefix also shows up on the host's underlay; this in-process serialization lock
+/// keeps the multi-scenario tests of this binary from trampling each other concurrently. Isolation
+/// across test binaries remains the job of distinct prefixes.
 pub(crate) static NETNS_PREFIX_LOCK: Mutex<()> = Mutex::new(());

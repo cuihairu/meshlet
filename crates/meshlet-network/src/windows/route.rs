@@ -26,10 +26,11 @@ impl WindowsNetworkBackend {
             .unwrap_or(false)
     }
 
-    /// 默认路由底层 MTU 在 Windows 暂无读数实现：`None` = 「读数不可得」，
-    /// 探测回退默认尺寸 1392（lane/dataplane-speed 仅落 Linux 读数；Windows
-    /// 侧以文档建议 `New-NetIPInterface`/`netsh` 手工核对，见
-    /// docs/guide/performance.md）。
+    /// Windows has no underlay-MTU reading implementation yet: `None` means
+    /// "reading unavailable" and the probe falls back to the default 1392
+    /// (lane/dataplane-speed telemetry is Linux-only; on Windows verify by
+    /// hand with the documented `New-NetIPInterface`/`netsh`, see
+    /// docs/guide/performance.md).
     pub fn underlay_path_mtu_sync(&self) -> Option<u32> {
         None
     }

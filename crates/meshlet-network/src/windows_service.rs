@@ -1,30 +1,38 @@
-//! Windows 服务计划层（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
+//! The Windows service plan layer ([ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)).
 //!
-//! 本模块包含**纯规划**与 `#[cfg(windows)]` 执行层：
-//! `sc.exe create/start/stop/delete/config/failure` 的参数构造、失败文本
-//! 分类与受控执行。计划层函数在任意平台编译并单测（本仓 CI 的 Linux 侧
-//! 即可跑绿）；执行层真机验证（2026-10-26，中文 Windows Server）：
-//! create / stop（含从未启动的 1062 幂等）/ delete / re-delete（1060
-//! 幂等）全链路走通；完整验收前 Windows 仍保持
-//! [crate::unsupported] 的显式占位，不接 [crate::SystemBackend]。
+//! This module holds the **pure planning** and the `#[cfg(windows)]` execution
+//! layer: the argument construction for
+//! `sc.exe create/start/stop/delete/config/failure`, failure-text classification,
+//! and controlled execution. The plan-layer functions compile and unit-test on
+//! any platform (the Linux side of this repo's CI already runs green); the
+//! execution layer was verified on a real machine (2026-10-26, a zh-CN Windows
+//! Server): create / stop (including the idempotent 1062 for a never-started
+//! service) / delete / re-delete (idempotent 1060) all work end to end. Until
+//! full acceptance, Windows keeps the explicit placeholder of
+//! [crate::unsupported] and does not wire up [crate::SystemBackend].
 //!
-//! 与 [windows_routes](windows_routes)、[windows_firewall](windows_firewall)
-//! 同一纪律：
+//! The same discipline as [windows_routes](windows_routes) and
+//! [windows_firewall](windows_firewall):
 //!
-//! - **受控命令**：只从受管服务名、受控二进制路径和枚举启动类型渲染；
-//!   `Create` 的启动类型固定 `auto|disabled`；失败恢复固定三段 restart；
-//! - **sc.exe 经典形状**：`binPath=` / `start=` / `reset=` / `actions=`
-//!   是「键词元（含尾等号）+ 值独立词元」，不是 netsh 的单词元
-//!   `key=value`；本模块按公开 CLI 形状锁定；
-//! - **自启 + 恢复语义**：`config start= auto` 表达开机自启，`failure`
-//!   的 reset/restart 动作表达崩溃后重启恢复；
-//! - **fail closed**：权限文案宽匹配映射为
-//!   [`NetworkError::InsufficientPrivileges`]；服务不存在对 Delete/Stop
-//!   按幂等成功；其他未知失败统一 [`NetworkError::ApplyRejected`]。
+//! - **Controlled commands**: rendered only from a managed service name, a
+//!   controlled binary path, and an enum start type; the `Create` start type is
+//!   fixed to `auto|disabled`; failure recovery is fixed to a three-stage
+//!   restart;
+//! - **The classic sc.exe shape**: `binPath=` / `start=` / `reset=` /
+//!   `actions=` are "a key token (with the trailing equals sign) plus the value
+//!   as a separate token", not netsh's single-token `key=value`; this module
+//!   locks to the published CLI shape;
+//! - **Autostart plus recovery semantics**: `config start= auto` expresses
+//!   start-on-boot, and the `failure` reset/restart actions express
+//!   restart-after-crash recovery;
+//! - **fail closed**: privilege texts match broadly and map to
+//!   [`NetworkError::InsufficientPrivileges`]; a missing service counts as an
+//!   idempotent success for Delete/Stop; every other unknown failure becomes
+//!   [`NetworkError::ApplyRejected`].
 
 use crate::NetworkError;
 
-/// 服务启动类型（`sc` 的 `start=` 受控取值）。
+/// The service start type (the controlled values of `sc`'s `start=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceStartMode {
     Auto,
@@ -40,7 +48,7 @@ impl ServiceStartMode {
     }
 }
 
-/// 一条受控 `sc.exe` 命令（计划态；执行见 [exec]）。
+/// One controlled `sc.exe` command (plan state; execution in [exec]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceCommand {
     /// `sc create <name> binPath= <path> start= <auto|disabled>`。
@@ -58,7 +66,8 @@ pub enum ServiceCommand {
     Delete {
         name: String,
     },
-    /// `sc config <name> start= <mode>`，用于把已存在服务恢复为开机自启。
+    /// `sc config <name> start= <mode>`, used to restore an existing service to
+    /// start on boot.
     ConfigAutostart {
         name: String,
         start_mode: ServiceStartMode,
@@ -72,8 +81,9 @@ pub enum ServiceCommand {
 }
 
 impl ServiceCommand {
-    /// `sc.exe` 参数（不含 `sc.exe` 可执行文件路径；计划与未来执行层共用
-    /// 同一构造，避免参数漂移）。
+    /// The `sc.exe` arguments (without the `sc.exe` executable path; the plan and
+    /// the future execution layer share the same construction so the arguments
+    /// never drift).
     pub fn args(&self) -> Vec<String> {
         match self {
             ServiceCommand::Create {
@@ -112,7 +122,7 @@ impl ServiceCommand {
         }
     }
 
-    /// 操作名（错误消息点名用）。
+    /// The operation name (used to name it in error messages).
     pub fn operation(&self) -> &'static str {
         match self {
             ServiceCommand::Create { .. } => "service create",
@@ -124,7 +134,7 @@ impl ServiceCommand {
         }
     }
 
-    /// 受管服务名（错误消息点名用）。
+    /// The managed service name (used to name it in error messages).
     pub fn name(&self) -> &str {
         match self {
             ServiceCommand::Create { name, .. }
@@ -137,7 +147,8 @@ impl ServiceCommand {
     }
 }
 
-/// `sc.exe` 失败恢复动作值：三段失败均重启，延迟以秒表达并固定顺序。
+/// The `sc.exe` failure recovery actions value: all three failure stages
+/// restart, with the delays expressed in seconds and in a fixed order.
 fn recovery_actions(delays_secs: [u32; 3]) -> String {
     delays_secs
         .iter()
@@ -146,49 +157,61 @@ fn recovery_actions(delays_secs: [u32; 3]) -> String {
         .join("/")
 }
 
-/// 判断 `sc.exe` 输出是否表示「服务不存在」（幂等 Stop/Delete 的判据）。
+/// Whether the `sc.exe` output means "the service does not exist" (the
+/// criterion for idempotent Stop/Delete).
 pub fn service_absent(output: &str) -> bool {
     let lowered = output.to_lowercase();
     lowered.contains("service does not exist")
         || lowered.contains("error 1060")
-        // zh-CN 真机取证（2026-10-25）：sc.exe 删除不存在服务返回
-        // 「[SC] OpenService 失败 1060: 指定的服务未安装。」——本地化文本
-        // 不含英文 "error" 前缀，按完整本地化文案匹配。
+        // zh-CN real-machine forensics (2026-10-25): sc.exe deleting a
+        // non-existent service returns "[SC] OpenService FAILED 1060:" followed by
+        // the zh-CN localized "the specified service is not installed" — the
+        // localized text carries no English "error" prefix, so the full localized
+        // wording is matched.
         || output.contains("指定的服务未安装")
 }
 
-/// 判断 `sc.exe` 输出是否表示「服务未运行」（ERROR_SERVICE_NOT_ACTIVE）。
-/// Stop 的目标状态是「已停止」：服务未运行 = 目标已达成，按幂等成功。
+/// Whether the `sc.exe` output means "the service is not running"
+/// (ERROR_SERVICE_NOT_ACTIVE).
+/// Stop's target state is "stopped": a service that is not running = the target
+/// already achieved, counted as an idempotent success.
 pub fn service_not_active(output: &str) -> bool {
     let lowered = output.to_lowercase();
     lowered.contains("has not been started")
         || lowered.contains("service not active")
-        // zh-CN 真机取证（2026-10-26）：从未启动的服务 stop 返回
-        // 「[SC] ControlService 失败 1062: 服务尚未启动。」
+        // zh-CN real-machine forensics (2026-10-26): stopping a never-started
+        // service returns "[SC] ControlService FAILED 1062:" followed by the
+        // zh-CN localized "the service has not been started".
         || output.contains("服务尚未启动")
 }
 
-/// 分类 `sc.exe` 失败：卸载重入按幂等成功，提权失败明示，其余 fail closed。
+/// Classify an `sc.exe` failure: uninstall re-entry counts as an idempotent
+/// success, an elevation failure is stated plainly, and the rest fail closed.
 ///
-/// 权限文案用子串宽匹配（大小写不敏感），覆盖 Windows 版本/语言包差异；
-/// `Delete` 或 `Stop` 遇到 service does not exist（ERROR 1060）视为成功，
-/// 使卸载可从半清理状态重入；`Config*` 遇服务不存在不放行。
+/// Privilege texts match broadly by substring (case-insensitive), covering
+/// Windows version/language-pack differences; `Delete` or `Stop` hitting
+/// service does not exist (ERROR 1060) is treated as success so the uninstall
+/// can re-enter from a half-cleaned state; `Config*` is never let through on a
+/// missing service.
 pub fn classify_sc_failure(
     exit_code: i32,
     output: &str,
     operation: &str,
     name: &str,
 ) -> Result<(), NetworkError> {
-    // 退出码 1060 = ERROR_SERVICE_DOES_NOT_EXIST，与系统语言无关的权威
-    // 信号；service_absent 文本分类是同一事实的宽匹配双通道
-    // （zh-CN 文案见其注记）。
+    // Exit code 1060 = ERROR_SERVICE_DOES_NOT_EXIST, the authoritative signal
+    // independent of the system language; the service_absent text classification
+    // is the broad-match second channel for the same fact
+    // (see its note for the zh-CN wording).
     let absent = exit_code == 1060 || service_absent(output);
     if (operation == "service delete" || operation == "service stop") && absent {
         return Ok(());
     }
-    // Stop 的目标状态是「已停止」（ADR-008 生命周期）：服务未运行（1062）
-    // = 目标已达成，同归幂等成功——卸载可从「建了服务但从未启动」的半
-    // 状态重入；其余操作不借道放行。
+    // Stop's target state is "stopped" (the ADR-008 lifecycle): a service not
+    // running (1062) = the target already achieved, likewise an idempotent
+    // success — the uninstall can re-enter from the half state "created the
+    // service but never started it"; other operations are never let through on
+    // it.
     if operation == "service stop" && (exit_code == 1062 || service_not_active(output)) {
         return Ok(());
     }
@@ -198,8 +221,9 @@ pub fn classify_sc_failure(
         || lowered.contains("requires elevation")
         || lowered.contains("elevation is required")
         || lowered.contains("not authorized")
-        // zh-CN 标准本地化文案（「拒绝访问」= ERROR_ACCESS_DENIED；
-        // 「需要提升」= ERROR_ELEVATION_REQUIRED）。宽匹配纪律不变。
+        // The standard zh-CN localized texts ("access denied" =
+        // ERROR_ACCESS_DENIED; "requires elevation" =
+        // ERROR_ELEVATION_REQUIRED). The broad-match discipline holds.
         || output.contains("拒绝访问")
         || output.contains("需要提升")
     {
@@ -216,7 +240,8 @@ pub fn classify_sc_failure(
     )))
 }
 
-/// 输出的首个非空行（错误消息携带 sc.exe 原文，便于诊断）。
+/// The first non-empty line of the output (error messages carry the raw sc.exe
+/// text for diagnostics).
 fn first_nonempty_line(output: &str) -> &str {
     output
         .lines()
@@ -225,28 +250,33 @@ fn first_nonempty_line(output: &str) -> &str {
         .unwrap_or("(no output)")
 }
 
-/// 执行层（`#[cfg(windows)]`）：只负责把计划函数构造的参数交给 sc.exe、
-/// 把输出交回计划层分类，没有其他逻辑。
+/// The execution layer (`#[cfg(windows)]`): it only hands the arguments built by
+/// the plan functions to sc.exe and hands the output back to the plan layer for
+/// classification; nothing else.
 ///
-/// 真机实测（2026-10-26，中文 Windows Server）：create / stop（含从未启动
-/// 的 1062 幂等）/ delete / re-delete（1060 幂等）全链路走通；本地化输出
-/// 经 [crate::windows_console] 解码后分类闭环。TODO #52 保持未勾：接
-/// [crate::SystemBackend] 仍以完整验收为准。
+/// Real-machine tests (2026-10-26, a zh-CN Windows Server): create / stop
+/// (including the idempotent 1062 for a never-started service) / delete /
+/// re-delete (idempotent 1060) all work end to end; the localized output is
+/// decoded through [crate::windows_console] before classification closes the
+/// loop. TODO #52 stays unchecked: wiring up [crate::SystemBackend] remains
+/// gated on full acceptance.
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_sc_failure, ServiceCommand};
     use crate::windows_console::NoWindowCommand;
     use crate::{ApplyResult, NetworkError};
 
-    /// 执行一条受控 `sc.exe` 命令：成功/幂等成功/分类失败三态。
+    /// Run one controlled `sc.exe` command: success / idempotent success /
+    /// classified failure, three states.
     pub fn run_service_command(command: &ServiceCommand) -> Result<ApplyResult, NetworkError> {
         let output = std::process::Command::new("sc.exe")
             .args(command.args())
             .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn sc.exe: {error}")))?;
-        // sc.exe 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），
-        // UTF-8 优先 + CP_ACP 兑底解码，见 [windows_console]。
+        // sc.exe's redirected output is encoded in the active code page (a
+        // zh-CN real machine yields GBK); decode as UTF-8 first with a CP_ACP
+        // fallback, see [windows_console].
         let text = format!(
             "{}{}",
             crate::windows_console::decode_output(&output.stdout),
@@ -336,8 +366,10 @@ mod tests {
         ));
     }
 
-    /// zh-CN 真机取证（2026-10-25）：中文缺失报文 + 退出码 1060 双通道命中
-    /// 幂等；Config* 对服务不存在不放行（与英文路径同一纪律）。
+    /// zh-CN real-machine forensics (2026-10-25): the zh-CN absent message plus
+    /// exit code 1060 both hit the idempotent path (a dual channel); Config* is
+    /// never let through on a missing service (the same discipline as the English
+    /// path).
     #[test]
     fn localized_absence_is_idempotent_only_for_stop_and_delete() {
         let output = "[SC] OpenService 失败 1060:\r\n\r\n指定的服务未安装。\r\n";
@@ -355,7 +387,7 @@ mod tests {
         ));
     }
 
-    /// zh-CN 标准权限文案归权限类。
+    /// The standard zh-CN privilege texts land in the privilege class.
     #[test]
     fn localized_privilege_text_maps_to_privileges() {
         assert!(matches!(
@@ -369,14 +401,17 @@ mod tests {
         ));
     }
 
-    /// zh-CN 真机取证（2026-10-26）：从未启动的服务 stop 返回 1062
-    /// 「服务尚未启动。」——Stop 的目标状态是「已停止」，未运行 = 已达成，
-    /// 幂等成功（卸载可从「建了服务没启动」的半状态重入）。
+    /// zh-CN real-machine forensics (2026-10-26): stopping a never-started
+    /// service returns 1062 with the zh-CN localized "the service has not been
+    /// started" — Stop's target state is "stopped", so not running = achieved,
+    /// an idempotent success (the uninstall can re-enter from the half state
+    /// "created the service but never started it").
     #[test]
     fn stop_of_never_started_service_is_idempotent_success() {
         let output = "[SC] ControlService 失败 1062:\r\n\r\n服务尚未启动。\r\n";
         assert!(classify_sc_failure(1062, output, "service stop", "meshlet").is_ok());
-        // 英文同事实文案（1062 = ERROR_SERVICE_NOT_ACTIVE）双通道命中。
+        // The English text for the same fact (1062 = ERROR_SERVICE_NOT_ACTIVE)
+        // hits the second channel.
         assert!(classify_sc_failure(
             1,
             "[SC] ControlService failed 1062:\r\n\r\nThe service has not been started.\r\n",
@@ -384,7 +419,8 @@ mod tests {
             "meshlet"
         )
         .is_ok());
-        // 1062 宽容只归 Stop：其余操作不得借道放行。
+        // The 1062 leniency belongs to Stop only: other operations are never let
+        // through on it.
         assert!(matches!(
             classify_sc_failure(1062, output, "service config autostart", "meshlet"),
             Err(NetworkError::ApplyRejected(_))
@@ -420,8 +456,9 @@ mod tests {
         use super::{classify_sc_failure, create, ServiceCommand};
         use crate::NetworkError;
 
-        /// 编译期锁定 exec 入口：签名只接收计划命令、返回计划层结果，测试不
-        /// 启动 sc.exe。
+        /// Lock the exec entry at compile time: the signature takes only plan
+        /// commands and returns the plan-layer result, so tests never launch
+        /// sc.exe.
         #[test]
         fn exec_entrypoint_takes_planned_command_and_returns_planned_result() {
             fn assert_signature(
@@ -431,7 +468,8 @@ mod tests {
             assert_signature(super::super::exec::run_service_command);
         }
 
-        /// exec 的非零退出码交回计划层：权限类必须仍归权限错误。
+        /// exec hands a non-zero exit code back to the plan layer: the privilege
+        /// class must still land in the privilege error.
         #[test]
         fn exec_failure_classification_preserves_privilege_mapping() {
             let command = create();
@@ -441,7 +479,8 @@ mod tests {
             ));
         }
 
-        /// exec 只透传计划层 argv，不重新拼命令形状。
+        /// exec passes the plan-layer argv through unchanged; the command shape is
+        /// never reassembled.
         #[test]
         fn exec_renders_planned_sc_argv_without_shell() {
             assert_eq!(

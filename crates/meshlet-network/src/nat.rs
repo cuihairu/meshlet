@@ -1,18 +1,20 @@
-//! NAT 规则计划（[存档 §9.4–§9.5](../../../docs/review/chatgpt-2026-10-13.md)、
-//! [ADR-006](../../../docs/decisions/adr-006-alias-prefix-nat.md)）。
+//! NAT rule planning ([archive §9.4–§9.5](../../../docs/review/chatgpt-2026-10-13.md),
+//! [ADR-006](../../../docs/decisions/adr-006-alias-prefix-nat.md)).
 //!
-//! 本模块是**纯规划**：从 `AliasMapping` 确定性地推导网关侧应存在的 NAT 规则，
-//! 不执行任何 iptables 调用。执行（规则下发/移除）随修订 apply 交网络后端
-//! （[ADR-007](../../../docs/decisions/adr-007-linux-network-backend.md)），
-//! 数据面未接线前 apply 确定性失败可见（§10.3，不假装成功）。
+//! This module is **pure planning**: it deterministically derives the gateway-side NAT rules
+//! that should exist from an `AliasMapping`, without executing any iptables call. Execution
+//! (pushing/removing rules) follows the revision apply into the network backend
+//! ([ADR-007](../../../docs/decisions/adr-007-linux-network-backend.md)); until the dataplane is
+//! wired up, apply fails deterministically and visibly (§10.3, no pretending to succeed).
 //!
-//! 转换发生在**目标 LAN 网关**上（§9.4）：网关知道真实 LAN 出口、可直接访问
-//! 目标主机，VPS 只按前缀转发（不必在 VPS 上建全部远端 LAN 的重叠路由）。
+//! Translation happens on the **target LAN gateway** (§9.4): the gateway knows the real LAN exit
+//! and reaches the target host directly, while the VPS only forwards by prefix (no need to build
+//! overlapping routes for every remote LAN on the VPS).
 
 use meshlet_domain::{AliasMapping, Ipv4Cidr, TranslationMode};
 
-/// NAT 表链：目的重写在路由决策前（PREROUTING），源重写在离开网关前
-/// （POSTROUTING）。
+/// NAT table chains: destination rewrite before the routing decision (PREROUTING), source rewrite
+/// before the packet leaves the gateway (POSTROUTING).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NatChain {
@@ -21,7 +23,7 @@ pub enum NatChain {
 }
 
 impl NatChain {
-    /// iptables 链名（渲染用）。
+    /// The iptables chain name (for rendering).
     pub fn as_str(self) -> &'static str {
         match self {
             NatChain::Prerouting => "PREROUTING",
@@ -30,21 +32,22 @@ impl NatChain {
     }
 }
 
-/// 规则动作。序列化用 snake_case（计划经 agent API 下发，字段形状与控制面
-/// 其余 snake_case 契约一致：`{"net_map":{"to":"…"}}` / `"snat_to_gateway_lan"`）。
+/// Rule action. Serialized as snake_case (plans go out over the agent API, so the field shape
+/// matches the rest of the control-plane snake_case contract: `{"net_map":{"to":"…"}}` / `"snat_to_gateway_lan"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NatAction {
-    /// 1:1 等长前缀重写（iptables `NETMAP` 语义）。ADR-006 的等长约束保证
-    /// alias 与 target 两侧地址一一对应（`AliasMapping::translate` 同一套
-    /// 偏移数学）。
+    /// 1:1 equal-length prefix rewrite (iptables `NETMAP` semantics). ADR-006's equal-length
+    /// constraint guarantees a one-to-one address mapping between the alias and target sides (the
+    /// same offset math as `AliasMapping::translate`).
     NetMap { to: Ipv4Cidr },
-    /// 受控 SNAT 到网关自身 LAN 地址（§9.5 默认兼容模式）。地址由执行期
-    /// 网关解析——映射本身不携带网关 LAN 地址。
+    /// Controlled SNAT to the gateway's own LAN address (§9.5 default compatibility mode). The
+    /// address is resolved by the gateway at execution time — the mapping itself carries no
+    /// gateway LAN address.
     SnatToGatewayLan,
 }
 
-/// 一条计划态 NAT 规则。
+/// A single planned NAT rule.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NatRule {
     #[serde(default)]
@@ -52,30 +55,35 @@ pub struct NatRule {
     #[serde(default)]
     pub incoming_interface: Option<String>,
     pub chain: NatChain,
-    /// 按**目的**前缀匹配：DNAT 匹配 alias 前缀；受控 SNAT 匹配 target
-    /// 前缀（即刚被 DNAT 改写为真实 LAN 目的、正要进入 LAN 的流量）。
+    /// Matches on the **destination** prefix: DNAT matches the alias prefix; controlled SNAT matches
+    /// the target prefix (i.e. traffic already DNAT-rewritten to the real LAN destination and about
+    /// to enter the LAN).
     pub match_dest: Ipv4Cidr,
     pub action: NatAction,
-    /// 所有权注释（§12.6 清理定位）：`meshlet alias {id}`——删除映射/整单元
-    /// 清理时按注释精确匹配移除 Meshlet 自有规则，绝不触碰非 Meshlet 规则。
+    /// Ownership comment (§12.6 cleanup targeting): `meshlet alias {id}` — when a mapping or the whole
+    /// unit is removed, Meshlet-owned rules are matched and removed exactly by comment; non-Meshlet
+    /// rules are never touched.
     pub owner: String,
 }
 
 impl NatRule {
-    /// 规则身份指纹（`chain|目的|动作|所有权|源|入向接口`），与网关 LAN 地址
-    /// 无关。计划侧与内核侧（[crate::linux] 解析 iptables `-S` 输出）产出
-    /// 同一形状的字符串，因此两侧可直接做集合精确比对。
+    /// Rule identity fingerprint (`chain|dest|action|owner|source|in-iface`), independent of the
+    /// gateway LAN address. The plan side and the kernel side ([crate::linux] parsing the iptables
+    /// `-S` output) produce strings of the same shape, so the two sides can be compared as exact sets.
     ///
-    /// 指纹只反映**内核实际渲染的字段**（见 [`Self::iptables_args`]）：
-    /// `-i` 只对 PREROUTING 渲染，POSTROUTING 规则上的 `incoming_interface`
-    /// 是惰性元数据，指纹一律记 `none`——否则计划侧带接口、内核侧没有，
-    /// 同一条规则两侧指纹对不上，会被误判成计划外的多余对象。
+    /// The fingerprint only reflects the **fields the kernel actually renders** (see
+    /// [`Self::iptables_args`]): `-i` renders only for PREROUTING; on a POSTROUTING rule
+    /// `incoming_interface` is inert metadata and the fingerprint always records `none` — otherwise
+    /// the plan side carries an interface while the kernel side does not, the same rule fingerprints
+    /// differently on each side and is misjudged as an out-of-plan extra object.
     ///
-    /// 可选项写成 CIDR 的 Display 裸串、缺省写 `none`——内核侧从命令行读到的
-    /// 本就是裸串，用 `{:?}` 会打印出结构体内部字段而永远对不上。
+    /// Optional fields render as the bare CIDR Display string and defaults as `none` — the kernel
+    /// side reads bare strings off the command line anyway; `{:?}` would print internal struct
+    /// fields and never match.
     ///
-    /// 账本（`applied.json` 的 `nat_rules`）只与同一计划的另一份指纹比对、从
-    /// 不与内核侧比对，所以这里的口径变更最多触发一次幂等重放。
+    /// The ledger (`nat_rules` in `applied.json`) is only ever compared against another fingerprint
+    /// of the same plan, never against the kernel side, so a convention change here triggers at
+    /// most one idempotent replay.
     pub fn signature(&self) -> String {
         let action = match self.action {
             NatAction::NetMap { to } => format!("net_map:{to}"),
@@ -102,9 +110,9 @@ impl NatRule {
         )
     }
 
-    /// 渲染为 iptables 参数（`-t nat` 之外的部分；单测与未来执行器共用同
-    /// 一渲染，避免计划与执行漂移）。`gateway_lan_addr` 供
-    /// [NatAction::SnatToGatewayLan] 使用，NETMAP 规则不读它。
+    /// Render as iptables arguments (everything except `-t nat`; unit tests and the future executor
+    /// share this one rendering so plan and execution cannot drift). `gateway_lan_addr` is consumed
+    /// by [NatAction::SnatToGatewayLan]; NETMAP rules do not read it.
     pub fn iptables_args(&self, gateway_lan_addr: std::net::Ipv4Addr) -> Vec<String> {
         let mut args = vec![
             "-A".into(),
@@ -143,18 +151,20 @@ impl NatRule {
     }
 }
 
-/// 从 Alias 映射计划网关侧 NAT 规则（§9.4–§9.5）：
+/// Plan gateway-side NAT rules from an Alias mapping (§9.4–§9.5):
 ///
-/// - **DNAT 恒有**：`PREROUTING NETMAP alias → target`——客户端访问 Alias
-///   地址，网关把目的改写为真实 LAN 前缀（等长一一对应）；
-/// - `dnat_snat`（默认兼容模式）追加 `POSTROUTING` 受控 SNAT：进入 LAN 的
-///   Alias 流量源地址改写为网关 LAN 地址——LAN 主机无需指向网关的返回
-///   路由即可回复，代价是 LAN 侧看不到原始源地址（§9.5 明示限制，
-///   控制台随映射显示该模式）；
-/// - `dnat_only` 不加 SNAT（保留原始源地址）：要求 LAN 有指向网关的返回
-///   路由（`dual_route` 语义），否则响应丢失。
+/// - **DNAT is always present**: `PREROUTING NETMAP alias → target` — a client visits the Alias
+///   address and the gateway rewrites the destination to the real LAN prefix (equal-length,
+///   one-to-one);
+/// - `dnat_snat` (the default compatibility mode) adds a controlled `POSTROUTING` SNAT: Alias
+///   traffic entering the LAN gets its source rewritten to the gateway LAN address — LAN hosts
+///   reply without needing a return route pointing at the gateway, at the cost of the LAN side
+///   losing sight of the original source address (a limitation stated in §9.5; the console shows
+///   the mode alongside the mapping);
+/// - `dnat_only` adds no SNAT (keeps the original source address): it requires the LAN to have a
+///   return route pointing at the gateway (`dual_route` semantics), or responses are lost.
 ///
-/// 规则顺序确定（DNAT 在前、SNAT 在后），所有权注释携带映射 id。
+/// Rule order is deterministic (DNAT first, SNAT after); the ownership comment carries the mapping id.
 pub fn alias_nat_rules(alias: &AliasMapping) -> Vec<NatRule> {
     let owner = format!("meshlet alias {}", alias.id);
     let mut rules = vec![NatRule {
@@ -199,7 +209,7 @@ mod tests {
 
     #[test]
     fn dnat_only_plans_a_single_prerouting_netmap() {
-        // §9.4：DNAT 恒有、在目标 LAN 网关上执行。
+        // §9.4: DNAT is always present and executes on the target LAN gateway.
         let rules = alias_nat_rules(&mapping(TranslationMode::DnatOnly));
         assert_eq!(rules.len(), 1);
         let dnat = &rules[0];
@@ -211,27 +221,27 @@ mod tests {
                 to: "192.168.1.0/24".parse().unwrap()
             }
         );
-        // 保留原始源地址：无 SNAT 规则（要求 dual_route 返回路由）。
+        // Original source address preserved: no SNAT rule (requires the dual_route return route).
         assert!(!rules.iter().any(|r| r.chain == NatChain::Postrouting));
     }
 
     #[test]
     fn dnat_snat_adds_controlled_postrouting_snat() {
-        // §9.5 默认兼容模式：进入 LAN 的 Alias 流量受控 SNAT 到网关 LAN 地址。
+        // §9.5 default compatibility mode: Alias traffic entering the LAN is controlled-SNATed to the gateway LAN address.
         let rules = alias_nat_rules(&mapping(TranslationMode::DnatSnat));
         assert_eq!(rules.len(), 2);
-        // 顺序确定：DNAT 在前。
+        // Deterministic order: DNAT first.
         assert_eq!(rules[0].chain, NatChain::Prerouting);
         let snat = &rules[1];
         assert_eq!(snat.chain, NatChain::Postrouting);
-        // SNAT 匹配 target 前缀——刚被 DNAT 改写、正要进入 LAN 的流量。
+        // SNAT matches the target prefix — traffic just DNAT-rewritten and about to enter the LAN.
         assert_eq!(snat.match_dest.to_string(), "192.168.1.0/24");
         assert_eq!(snat.action, NatAction::SnatToGatewayLan);
     }
 
     #[test]
     fn every_rule_carries_the_alias_ownership_comment() {
-        // §12.6：删除映射时按注释精确清理 Meshlet 自有规则。
+        // §12.6: when a mapping is deleted, Meshlet-owned rules are cleaned up exactly by comment.
         for mode in [TranslationMode::DnatOnly, TranslationMode::DnatSnat] {
             for rule in alias_nat_rules(&mapping(mode)) {
                 assert_eq!(rule.owner, "meshlet alias al-7");
@@ -247,23 +257,23 @@ mod tests {
 
     #[test]
     fn overlay_traffic_matches_no_rule_so_sources_stay_original() {
-        // §7.4：普通 Overlay 设备间通信保留原始源地址——禁止把整个 Overlay
-        // 网络无差别 SNAT 到 VPS 地址。这是计划层的结构性保证：规则按
-        // **目的**前缀匹配，前缀只能是 alias 或真实 LAN（target）网段；
-        // 目的落在 Overlay 内的流量匹配不到任何规则，原样通过。
+        // §7.4: ordinary overlay device-to-device traffic keeps its original source address — blanket-SNATing
+        // the whole overlay network to the VPS address is forbidden. The planning layer guarantees this
+        // structurally: rules match on the **destination** prefix, which can only be the alias or the
+        // real LAN (target) subnet; traffic destined inside the overlay matches no rule and passes through as-is.
         let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
         for mode in [TranslationMode::DnatOnly, TranslationMode::DnatSnat] {
             let rules = alias_nat_rules(&mapping(mode));
 
-            // 没有任何规则的匹配前缀与 Overlay 网段重叠（不存在「整个
-            // Overlay 网络无差别 SNAT」的规则形状）。
+            // No rule's match prefix overlaps the overlay subnet (the "blanket-SNAT the whole
+            // overlay network" rule shape does not exist).
             for rule in &rules {
                 assert!(
                     !overlay.overlaps(&rule.match_dest),
                     "rule must not match overlay destinations: {rule:?}"
                 );
             }
-            // Overlay 目的地址匹配不到任何规则。
+            // Overlay destination addresses match no rule at all.
             for dest in ["10.240.0.5", "10.240.200.9"] {
                 let ip = dest.parse::<std::net::Ipv4Addr>().unwrap();
                 assert!(
@@ -271,7 +281,7 @@ mod tests {
                     "overlay dest {dest} must match no NAT rule"
                 );
             }
-            // 而 Alias 目的匹配得到规则——转换只针对 Alias 流量。
+            // Alias destinations do match a rule — translation targets only Alias traffic.
             let alias_dest = "10.241.1.5".parse::<std::net::Ipv4Addr>().unwrap();
             assert!(
                 rules.iter().any(|r| r.match_dest.contains(alias_dest)),
@@ -282,7 +292,7 @@ mod tests {
 
     #[test]
     fn iptables_rendering_matches_the_plan() {
-        // 计划与渲染共用同一结构：规则里出现什么，渲染就下什么。
+        // Plan and rendering share one structure: whatever a rule contains, the rendering pushes.
         let gw: std::net::Ipv4Addr = "192.168.1.1".parse().unwrap();
         let rules = alias_nat_rules(&mapping(TranslationMode::DnatSnat));
         let (dnat, snat) = (&rules[0], &rules[1]);

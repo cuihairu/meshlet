@@ -14,7 +14,7 @@ fn host_namespace_foreign_objects_survive_managed_lifecycle() {
     let _guard = NETNS_PREFIX_LOCK.lock().unwrap();
     let topo = match Topology::setup() {
         Some(t) => t,
-        None => return, // 已打印 SKIP:
+        None => return, // Already printed SKIP:
     };
     let mut hub_backend = topo.hub.backend();
     let mut a_backend = topo.a.backend();
@@ -59,11 +59,11 @@ fn host_namespace_foreign_objects_survive_managed_lifecycle() {
         }])
         .expect("gw baseline apply_routes");
 
-    // ---- 12. 宿主机规则不误删（M3 场景 6）：受管 apply 直接跑在**根命名空间**
-    // （生产形态：agent 就跑在宿主机上，旁边还有别人家的路由/NAT/FORWARD）。
-    // 先预埋三条外来对象，再走完整 apply（tunnel + routes + NAT）与回收
-    // （remove_nat + rollback），要求宿主机侧外来对象逐字幸存、ip_forward 基线
-    // 不动。清理由 RootGuard 兜底——任何断言失败都不把测试对象留在宿主机上。
+    // ---- 12. Host rules are not deleted by mistake (M3 scenario 6): the managed apply runs straight in the **root namespace**
+    // (the production shape: the agent runs on the host, alongside somebody else's routes/NAT/FORWARD rules).
+    // Plant three foreign objects first, then run the full apply (tunnel + routes + NAT) and the reclamation
+    // (remove_nat + rollback), requiring the foreign objects on the host side to survive verbatim and the
+    // ip_forward baseline to be untouched. RootGuard is the safety net for cleanup -- no failed assertion leaves test objects on the host.
     if !sudo_ok(&["ip", "link", "show", "wg0"]) && !root_route_exact("198.51.101.0/24").is_some() {
         let _guard = RootGuard;
         let forward_before = sudo(&["sysctl", "-n", "net.ipv4.ip_forward"])
@@ -110,7 +110,7 @@ fn host_namespace_foreign_objects_survive_managed_lifecycle() {
             "seed host forward rule",
         );
 
-        // 根命名空间后端：无 with_netns。
+        // Root-namespace backend: no with_netns.
         let mut host = LinuxNetworkBackend::new().with_sudo().with_interface("wg0");
         let own_key = wg_genkey().expect("host private key");
         let peer_key = wg_genkey().expect("host peer key");
@@ -141,7 +141,7 @@ fn host_namespace_foreign_objects_survive_managed_lifecycle() {
         host.apply_nat_sync(&rules, "192.168.1.1".parse().unwrap())
             .expect("root apply_nat");
 
-        // apply 确实落到了宿主机：对象在场。
+        // The apply really landed on the host: the objects are present.
         let snap = host.inspect_sync().expect("root inspect");
         assert!(
             snap.tunnel_exists,
@@ -164,7 +164,7 @@ fn host_namespace_foreign_objects_survive_managed_lifecycle() {
             snap.nat_rules
         );
 
-        // 宿主机外来对象逐字幸存。
+        // The host's foreign objects survive verbatim.
         assert_eq!(
             root_route_exact("198.51.101.0/24").as_deref(),
             Some("198.51.101.0/24 dev lo scope link"),
@@ -188,7 +188,7 @@ fn host_namespace_foreign_objects_survive_managed_lifecycle() {
             "the host ip_forward must not be changed by a host apply"
         );
 
-        // 回收：只带走 Meshlet 自有对象。
+        // Reclamation: only Meshlet-owned objects are taken away.
         host.remove_nat_sync(ALIAS_OWNER).expect("root remove_nat");
         host.rollback_sync().expect("root rollback");
         let snap = host.inspect_sync().expect("root inspect after rollback");
@@ -211,7 +211,7 @@ fn host_namespace_foreign_objects_survive_managed_lifecycle() {
             snap.tunnel_exists,
             "the managed interface is system state and must remain"
         );
-        // 外来对象在回收之后依旧在场。
+        // The foreign objects are still present after the reclamation.
         assert_eq!(
             root_route_exact("198.51.101.0/24").as_deref(),
             Some("198.51.101.0/24 dev lo scope link"),
@@ -243,7 +243,7 @@ fn host_namespace_foreign_objects_survive_managed_lifecycle() {
         eprintln!("SKIP: the host namespace already holds wg0 or 198.51.101.0/24");
     }
 
-    // teardown 并断言「跑完不留垃圾」。
+    // Teardown and assert that "nothing is left behind after the run".
     drop(topo);
     let netns_left = sudo(&["ip", "netns", "list"]);
     let links_left = sudo(&["ip", "-br", "link"]);

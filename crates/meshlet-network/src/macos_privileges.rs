@@ -1,25 +1,32 @@
-//! macOS 权限模型（③-A）：sudo 白名单——纯函数层，全平台编译+单测。
+//! macOS privilege model (③-A): the sudo whitelist — a pure-function layer,
+//! compiled and unit-tested on every platform.
 //!
-//! boringtun 数据面的命令（`ifconfig`/`route`/`scutil`）需要 root；meshlet
-//! agent 常驻非特权用户，经 `sudo -n` 前缀执行。本模块定义**可被 sudo 提升
-//! 的程序白名单**：白名单外一律拒绝加 sudo 前缀（fail-closed，绝不静默降级
-//! 为未提升执行——那只会以权限不足再次失败，且错误信息误导）。
+//! The boringtun data-plane commands (`ifconfig`/`route`/`scutil`) require root;
+//! the meshlet agent runs as an unprivileged user and executes them with a
+//! `sudo -n` prefix. This module defines the **whitelist of programs that may be
+//! elevated by sudo**: anything outside the whitelist is refused the sudo prefix
+//! (fail-closed, never silently degrading to an unelevated run — that would just
+//! fail again with insufficient permissions and a misleading error message).
 //!
-//! 完整 sudoers 建议条目与 launchd 特权 helper（SMAppService）后续增强见
-//! [macOS Privileges](../../docs/macos-privileges.md)。
+//! The full suggested sudoers entry and the launchd privileged helper
+//! (SMAppService) follow-up hardening live in
+//! [macOS Privileges](../../docs/macos-privileges.md).
 
 use crate::NetworkError;
 use std::path::Path;
 
-/// 可经 `sudo -n` 提升的程序白名单（argv[0] 的 basename）。
+/// Programs eligible for elevation via `sudo -n` (the basename of argv[0]).
 ///
-/// 与 [macOS Privileges](../../docs/macos-privileges.md) 的 sudoers 条目
-/// 同步：boringtun 数据面经标准工具配哑 utun 的地址/路由/解析器，无需
-/// 任意 shell。`wg`（UAPI socket，非 root 可读写）与 boringtun-cli（跑在
-/// agent 用户）**不在**白名单内——它们不需要提升。
+/// Kept in sync with the sudoers entry in
+/// [macOS Privileges](../../docs/macos-privileges.md): the boringtun data plane
+/// configures the dummy utun's address/routes/resolver through standard tools and
+/// needs no arbitrary shell. `wg` (UAPI socket, readable and writable by a
+/// non-root user) and boringtun-cli (run as the agent user) are **not** in the
+/// whitelist — they need no elevation.
 pub const SUDO_WHITELIST: &[&str] = &["ifconfig", "route", "scutil"];
 
-/// 程序是否在 sudo 白名单内（argv[0] 可能是路径，取 basename 比较）。
+/// Whether a program is in the sudo whitelist (argv[0] may be a path, so
+/// compare the basename).
 pub fn is_sudo_allowed_program(program: &str) -> bool {
     let base = Path::new(program)
         .file_name()
@@ -27,14 +34,16 @@ pub fn is_sudo_allowed_program(program: &str) -> bool {
     base.is_some_and(|base| SUDO_WHITELIST.contains(&base.as_str()))
 }
 
-/// 一条命令（argv）整体是否可加 sudo 前缀。空 argv 拒绝。
+/// Whether a whole command (argv) may carry a sudo prefix. An empty argv is
+/// refused.
 pub fn is_sudo_allowed_command(argv: &[String]) -> bool {
     argv.first()
         .is_some_and(|program| is_sudo_allowed_program(program))
 }
 
-/// 提升前白名单校验：命令在名单内返回 `Ok`，否则 `ApplyRejected`（fail
-/// closed——调用方不得绕过此校验直接前缀 `sudo`）。
+/// Whitelist check before elevation: a command in the list returns `Ok`,
+/// anything else `ApplyRejected` (fail closed — callers must not bypass this
+/// check and prefix `sudo` directly).
 pub fn check_sudo_elevation(argv: &[String]) -> Result<(), NetworkError> {
     if is_sudo_allowed_command(argv) {
         Ok(())
@@ -123,7 +132,8 @@ mod tests {
 
     #[test]
     fn absolute_path_forms_are_whitelisted() {
-        // 执行层渲染 argv[0] 为绝对路径时同样放行（取 basename）。
+        // An absolute path rendered for argv[0] by the execution layer is
+        // allowed too (the basename is taken).
         let argv: Vec<String> = ["/sbin/route", "-n", "add", "-net", "10.99.0.0"]
             .map(String::from)
             .to_vec();

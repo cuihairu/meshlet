@@ -1,7 +1,9 @@
-//! SSH alias 解析（hub 与 agent 共用同一实现，两端口径不漂移）。
+//! SSH alias resolution (hub and agent share one implementation so the two sides
+//! never drift apart).
 
-/// SSH Host 别名三级来源解析：hub 显式覆写 > 节点真实主机名 >
-/// meshlet peer name。返回的 alias 已 sanitize，来源字符串与计划/面板同口径。
+/// Three-tier SSH Host alias source resolution: explicit hub override > the
+/// node's real hostname > meshlet peer name. The returned alias is sanitized,
+/// and the source string matches what the plan/panel report.
 pub fn resolve_alias(
     peer_name: &str,
     hostname: Option<&str>,
@@ -16,8 +18,9 @@ pub fn resolve_alias(
     }
 }
 
-/// SSH Host 别名 sanitize：保留大小写，允许 `A-Za-z0-9._-`；其余字符转连
-/// 字符，空名兜底 `node`。hub 与 agent 同一规则，保证下发段可直接渲染。
+/// SSH Host alias sanitizing: case is preserved and `A-Za-z0-9._-` is allowed;
+/// any other character becomes a hyphen, and an empty name falls back to `node`.
+/// Hub and agent apply the same rule so the distributed section renders as-is.
 pub fn sanitize_alias(name: &str) -> String {
     let cleaned: String = name
         .trim()
@@ -43,7 +46,7 @@ mod tests {
 
     #[test]
     fn ssh_alias_prefers_hub_override_then_hostname_then_peer_name() {
-        // 三级来源如实标注：hub 显式覆写 > 节点真实主机名 > peer name。
+        // The three source tiers are labeled as-is: explicit hub override > the node's real hostname > peer name.
         let (alias, source) = ssh_alias::resolve_alias("win", Some("DESKTOP"), Some("wd"));
         assert_eq!((alias.as_str(), source), ("wd", "hub-config"));
 
@@ -53,7 +56,7 @@ mod tests {
         let (alias, source) = ssh_alias::resolve_alias("win", None, None);
         assert_eq!((alias.as_str(), source), ("win", "peer-name"));
 
-        // 空串/空白覆写与主机名都回落；非法字符 sanitize。
+        // Empty/whitespace overrides and hostnames both fall through; illegal characters are sanitized.
         let (alias, source) = ssh_alias::resolve_alias("win", Some("  "), Some("  "));
         assert_eq!((alias.as_str(), source), ("win", "peer-name"));
         let (alias, source) = ssh_alias::resolve_alias("win", Some("My PC"), None);

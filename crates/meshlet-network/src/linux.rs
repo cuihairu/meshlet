@@ -1,57 +1,74 @@
-//! Linux 数据面实现（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）：
-//! 受控执行 `ip` / `wg` / `iptables` 系统命令（ADR-007 的受控降级路径，
-//! Netlink/nftables 化留待其重评估条件触发）。
+//! The Linux data-plane implementation ([ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)):
+//! controlled execution of the `ip` / `wg` / `iptables` system commands (the
+//! controlled downgrade path of ADR-007; the move to Netlink/nftables is left
+//! until its re-evaluation condition fires).
 //!
-//! 所有命令都经 [LinuxNetworkBackend::run] 以参数数组执行（无 shell 拼接，
-//! §4.3 禁止项）；每个可写操作都幂等（`replace`/`-C` 探测/`peer remove`
-//! 对账），保证重复应用同一修订结果一致（§10.3）。
+//! Every command runs through [LinuxNetworkBackend::run] as an argument array
+//! (no shell concatenation, the §4.3 prohibition); every writable operation is
+//! idempotent (`replace` / a `-C` probe / `peer remove` reconciliation), so
+//! applying the same revision repeatedly yields the same result (§10.3).
 //!
-//! 命令面坑位（netns 集成测试真机验证，见 `tests/wg_forwarding.rs` 头注）：
-//! - `wg set` 的 private-key 与 peer 必须**分两次**调用（合并调用会静默丢 peer）；
-//! - `wg setconf` 在本环境触发 fopen EPERM，只用 `wg set`；
-//! - peer 的 endpoint 指向对端 **netns 侧** 地址（宿主侧 veth 地址会让握手
-//!   对错端口）；
-//! - 回滚只删 Meshlet 自有对象：所有权标记为 iptables 注释（`meshlet alias
-//!   {id}` / `meshlet tunnel`）与「本后端的隧道接口上的对象」，绝不触碰
-//!   系统路由与用户已有规则（§10.3、ADR-007）。
+//! Command-surface pitfalls (verified on real machines by the netns
+//! integration tests, see the header note of `tests/wg_forwarding.rs`):
+//! - The private key and the peers of `wg set` must be issued in **two
+//!   separate** calls (a merged call silently drops the peer);
+//! - `wg setconf` triggers fopen EPERM in this environment, so only `wg set`
+//!   is used;
+//! - A peer's endpoint points at the peer's **netns-side** address (a host-side
+//!   veth address would handshake on the wrong port);
+//! - Rollback only removes Meshlet's own objects: ownership is marked by
+//!   iptables comments (`meshlet alias {id}` / `meshlet tunnel`) and by "objects
+//!   on this backend's tunnel interface" — system routes and the user's existing
+//!   rules are never touched (§10.3, ADR-007).
 //!
-//! `netns` / `sudo` 两个字段是测试钩子：生产以特权进程直连宿主网络栈
-//! （`netns=None, sudo=false`）；集成测试在无特权 runner 上用 `sudo -n` 进
-//! 入 netns 操作（`with_netns(..).with_sudo()`）。
+//! The two fields `netns` / `sudo` are test hooks: in production a privileged
+//! process talks to the host network stack directly
+//! (`netns=None, sudo=false`); the integration tests run on an unprivileged
+//! runner and use `sudo -n` to work inside a netns
+//! (`with_netns(..).with_sudo()`).
 
 mod backend;
 mod operations;
 mod parser;
 
-/// iptables 所有权注释前缀：nat 规则带 `meshlet alias {id}`（§12.6），filter
-/// 的 FORWARD 放行规则带 `meshlet tunnel`——回滚/清理只按注释精确定位。
+/// The iptables ownership comment prefix: nat rules carry `meshlet alias {id}`
+/// (§12.6) and the filter FORWARD allowance rules carry `meshlet tunnel` —
+/// rollback/cleanup locate the target precisely by the comment only.
 pub const MESHLET_NAT_COMMENT_PREFIX: &str = "meshlet alias";
 pub const MESHLET_FILTER_COMMENT: &str = "meshlet tunnel";
 /// Routing-protocol number used as Meshlet's route ownership marker.
 pub const MESHLET_ROUTE_PROTO: &str = "198";
 
-/// 宿主防火墙放行动作（AGENT-FW-2）。
+/// A host firewall allowance action (AGENT-FW-2).
 ///
-/// 背景：Linux 宿主若启用 ufw/firewalld，其默认 INPUT 策略可能挡 mesh 接口
-/// 的 ICMP/业务流量（与 Windows Public 档挡 ICMP 同源）。检测到管理器活跃
-/// 时自动放行 mesh 接口流量，幂等。
+/// Background: when a Linux host has ufw/firewalld enabled, its default INPUT
+/// policy can block the mesh interface's ICMP/application traffic (the same
+/// root as Windows's Public profile blocking ICMP). When a manager is detected
+/// as active, the mesh interface traffic is allowed automatically, idempotently.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostFirewallAction {
-    /// `ufw allow in on <if>`：放行接口入向。
+    /// `ufw allow in on <if>`: allow inbound on the interface.
     UfwAllowInOn { interface: String },
-    /// `firewall-cmd --zone=trusted --add-interface=<if>`：接口入 trusted 区
-    /// （全放行）。运行时配置；agent 每次 apply 重探，重启后对账恢复。
+    /// `firewall-cmd --zone=trusted --add-interface=<if>`: put the interface
+    /// into the trusted zone (allow everything). This is runtime configuration;
+    /// the agent re-probes on every apply, and the reconcile restores it after a
+    /// reboot.
     FirewalldTrustedInterface { interface: String },
-    /// `ufw allow in proto udp to any port <p>`：放行直连 UDP 端口（§12.4）。
-    /// 直连 peer 经 LAN/公网接口到达本机 wg 监听端口，接口级放行（wg0）不
-    /// 覆盖，必须按端口开。
+    /// `ufw allow in proto udp to any port <p>`: allow the direct-connect UDP
+    /// port (§12.4).
+    /// A direct-connect peer reaches this host's wg listen port through a LAN or
+    /// public interface, which the interface-level allowance (wg0) does not
+    /// cover, so it must be opened by port.
     UfwAllowPort { port: u16 },
-    /// `firewall-cmd --zone=trusted --add-port=<p>/udp`：同上（firewalld）。
+    /// `firewall-cmd --zone=trusted --add-port=<p>/udp`: the same as above
+    /// (firewalld).
     FirewalldAllowPort { port: u16 },
 }
 
-/// 纯规划（AGENT-FW-2，跨平台单测）：给定 ufw/firewalld 活跃态与规则现状，
-/// 产出放行动作。全幂等——已放行 → 空计划；管理器未活跃 → 不动作。
+/// Pure planning (AGENT-FW-2, unit-tested cross-platform): given the
+/// ufw/firewalld active states and the current rule state, produce the allowance
+/// actions. Fully idempotent — already allowed -> an empty plan; no manager
+/// active -> no action.
 pub fn host_firewall_allow_actions(
     ufw_active: bool,
     ufw_interface_allowed: bool,
@@ -73,9 +90,12 @@ pub fn host_firewall_allow_actions(
     actions
 }
 
-/// 纯规划（§12.4 防火墙联动，跨平台单测）：直连 UDP 端口的宿主放行计划。
-/// 全幂等——已放行 → 空计划；管理器未活跃 → 不动作。直连 peer 的入向流量
-/// 经 LAN/公网接口到达，接口级放行不覆盖，须按端口开。
+/// Pure planning (the §12.4 firewall linkage, unit-tested cross-platform): the
+/// host allowance plan for the direct-connect UDP port.
+/// Fully idempotent — already allowed -> an empty plan; no manager active -> no
+/// action. A direct-connect peer's inbound traffic arrives through a LAN or
+/// public interface, which the interface-level allowance does not cover, so it
+/// must be opened by port.
 pub fn direct_udp_firewall_allow_actions(
     ufw_active: bool,
     ufw_port_allowed: bool,
@@ -93,58 +113,72 @@ pub fn direct_udp_firewall_allow_actions(
     actions
 }
 
-/// 外来 overlay 隔离规则的 iptables 所有权注释（AGENT-ISO-1）：回滚/清理按
-/// 注释精确定位，与 [MESHLET_FILTER_COMMENT] 同一纪律（§10.3）。
+/// The iptables ownership comment of the foreign overlay isolation rules
+/// (AGENT-ISO-1): rollback/cleanup locate the target precisely by the comment,
+/// the same discipline as [MESHLET_FILTER_COMMENT] (§10.3).
 pub const MESHLET_ISOLATION_COMMENT: &str = "meshlet foreign-overlay isolation";
 
-/// 外来 overlay 的守护进程用户名（`id -u` 取 uid 的对象）。
+/// The daemon user name of the foreign overlay (the object `id -u` reads the
+/// uid for).
 pub const FOREIGN_OVERLAY_USER: &str = "zerotier-one";
 
-/// 外来 overlay 主协议的知名源端口（ZeroTier 为 9993）。
+/// The well-known source port of the foreign overlay's primary protocol
+/// (9993 for ZeroTier).
 pub const FOREIGN_OVERLAY_WELLKNOWN_PORT: u16 = 9993;
 
-/// 外来 overlay 隔离规则（AGENT-ISO-1）。
+/// A foreign overlay isolation rule (AGENT-ISO-1).
 ///
-/// 一条规则 = 目标链 + 规则主体；`-C`（探测）与 `-I`（插入）共用 `spec`，
-/// 执行侧只需换动词。
+/// One rule = the target chain plus the rule body; `-C` (the probe) and `-I`
+/// (the insert) share the `spec`, so the execution side only swaps the verb.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayIsolationRule {
-    /// 目标链（`OUTPUT` / `INPUT`）。
+    /// The target chain (`OUTPUT` / `INPUT`).
     pub chain: String,
-    /// 规则主体（不含 `iptables`、`-t`、链名与插入位置）。
+    /// The rule body (excluding `iptables`, `-t`, the chain name, and the insert
+    /// position).
     pub spec: Vec<String>,
 }
 
-/// 外来 overlay（ZeroTier 类）的身份输入（AGENT-ISO-1）。
+/// The identity input of the foreign overlay (ZeroTier-like) (AGENT-ISO-1).
 ///
-/// 读不到的字段为 `None` / 空——**不臆测**（§7.5）：对端不存在时不编造 uid
-/// 或端口，对应规则直接缺席。
+/// Fields that cannot be read are `None` / empty — **never guessed** (§7.5):
+/// when there is no such peer, no uid or port is invented, and the matching
+/// rule is simply absent.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ForeignOverlay {
-    /// 对方守护进程的 uid（`id -u <user>`）。`None` = 用户不存在 / 读取失败。
+    /// The uid of the peer's daemon (`id -u <user>`). `None` = the user does not
+    /// exist / the read failed.
     pub uid: Option<u32>,
-    /// 对方主套接字的本地 UDP 监听端口（ZeroTier 重启会变，须每次现读）。
+    /// The local UDP listen ports of the peer's primary socket (they change on a
+    /// ZeroTier restart, so they must be read live every time).
     pub local_ports: Vec<u16>,
-    /// 对方主协议的知名源端口（ZeroTier 为 9993）。
+    /// The well-known source port of the peer's primary protocol (9993 for
+    /// ZeroTier).
     pub wellknown_port: u16,
 }
 
-/// 纯规划（AGENT-ISO-1，跨平台单测）：产出「外来 overlay 不得借道 meshlet
-/// 隧道」的期望规则。
+/// Pure planning (AGENT-ISO-1, unit-tested cross-platform): produce the
+/// expected rules for "the foreign overlay must not ride the meshlet tunnel".
 ///
-/// 递归封装的成因是两条隧道**互为路径**：meshlet 的 WG endpoint 落在 ZeroTier
-/// 网段（出向借道），ZeroTier 又把 meshlet overlay 学成对端路径（入向借道）。
-/// 任一方向被切断即不成环，本函数给出双向规则：
+/// Recursive encapsulation happens because the two tunnels **serve as each
+/// other's path**: meshlet's WG endpoint lands in the ZeroTier segment
+/// (outbound borrowing), while ZeroTier learns the meshlet overlay as a peer
+/// path (inbound borrowing). Cutting either direction prevents the loop, and
+/// this function emits rules in both directions:
 ///
-/// 1. `OUTPUT -o <if> -m owner --uid-owner <uid>`：对方进程不得往 meshlet
-///    隧道发包（切断出向，硬保证）；
-/// 2. `INPUT -i <if> -p udp --dport <port>`：对方套接字不得从 meshlet 隧道
-///    收包（其 overlay 路径随之过期，回落公网路径）；
-/// 3. `INPUT -i <if> -p udp --sport <wellknown>`：对方协议不得从 meshlet
-///    隧道进本机（拦截对端借道进来的同款包）。
+/// 1. `OUTPUT -o <if> -m owner --uid-owner <uid>`: the peer's processes may not
+///    send packets into the meshlet tunnel (cutting the outbound direction, a
+///    hard guarantee);
+/// 2. `INPUT -i <if> -p udp --dport <port>`: the peer's sockets may not receive
+///    packets from the meshlet tunnel (its overlay paths then expire and fall
+///    back to the public paths);
+/// 3. `INPUT -i <if> -p udp --sport <wellknown>`: the peer's protocol may not
+///    enter this host from the meshlet tunnel (blocking the same kind of packet
+///    that the peer borrows in).
 ///
-/// `interface` 为空、或 `foreign` 未给出任何身份 → 空计划（不臆测）。
-/// 全部规则带 [MESHLET_ISOLATION_COMMENT] 所有权标记。
+/// An empty `interface`, or a `foreign` that supplies no identity at all -> an
+/// empty plan (no guessing).
+/// Every rule carries the [MESHLET_ISOLATION_COMMENT] ownership marker.
 pub fn overlay_isolation_rules(
     interface: &str,
     foreign: &ForeignOverlay,
@@ -213,14 +247,19 @@ pub fn overlay_isolation_rules(
     rules
 }
 
-/// `ss -H -ulnp` → 某进程名的本地 UDP 监听端口（去重升序，纯解析）。
+/// `ss -H -ulnp` -> the local UDP listen ports of a given process name (deduped
+/// and ascending, pure parsing).
 ///
-/// 行形如（列序：State Recv-Q Send-Q **Local** Peer Process）：
+/// Lines look like (column order: State Recv-Q Send-Q **Local** Peer
+/// Process):
 /// `UNCONN 0 0 10.240.0.4%wg-mlt:63614 0.0.0.0:* users:(("zerotier-one",pid=1579,fd=25))`
 ///
-/// 取**第 4 列**（本地地址）末段端口——地址可能带 `%接口` 作用域后缀，
-/// `rsplit(':')` 取末段即可剥掉。仅收含 `needle`（进程名）的行；`users:` 列
-/// 需要读他人进程的权限（root 才有），缺失不影响按行内进程名过滤。
+/// Take the port at the end of the **4th column** (the local address) — the
+/// address may carry an `%interface` scope suffix, and taking the last segment
+/// with `rsplit(':')` strips it. Only lines containing `needle` (the process
+/// name) are taken; the `users:` column requires permission to read other
+/// processes (root only), and its absence does not affect the per-line process
+/// name filter.
 pub fn parse_ss_udp_listen_ports(output: &str, needle: &str) -> Vec<u16> {
     let mut ports: Vec<u16> = output
         .lines()

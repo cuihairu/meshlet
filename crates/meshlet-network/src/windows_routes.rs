@@ -1,33 +1,44 @@
-//! Windows 路由计划层（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
+//! The Windows route plan layer ([ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)).
 //!
-//! 本模块是**纯规划**（与 [nat](../../../crates/meshlet-network/src/nat.rs) 模块同一
-//! 模式）：netsh 路由命令的参数构造、`show route` 输出解析与失败文本分类，
-//! 不执行任何命令——计划层函数在任意平台编译并单测（本仓 CI 的 Linux 侧
-//! 即可跑绿）。
+//! This module is **pure planning** (the same pattern as the
+//! [nat](../../../crates/meshlet-network/src/nat.rs) module): the argument
+//! construction for netsh route commands, the parsing of the `show route`
+//! output, and the classification of failure texts — no command is ever run.
+//! The plan-layer functions compile and unit-test on any platform (the Linux
+//! side of this repo's CI already runs green).
 //!
-//! 执行层是 [exec] 子模块，`#[cfg(windows)]` 下只调本模块的计划函数。
-//! 真机验证（2026-10-16 CI runner en-US；2026-10-26 中文 Windows Server
-//! 本机）：add / show 读回 / delete / 幂等 re-delete 全链路走通，本地化
-//! 输出经 [windows_console](crate::windows_console) 解码后分类闭环。
-//! TODO #52 保持未勾：接 [crate::SystemBackend] 仍以完整验收为准
-//! （wireguardnt 隧道全生命周期，见 ADR-008）；非 Linux 平台仍保持
-//! [unsupported](../../../crates/meshlet-network/src/unsupported.rs) 的显式
-//! 占位，绝不假装有数据面（§10.3、§12.2）。
+//! The execution layer is the [exec] submodule, which under `#[cfg(windows)]`
+//! only calls this module's plan functions. Real-machine verification
+//! (2026-10-16 CI runner en-US; 2026-10-26 a zh-CN Windows Server machine):
+//! the whole chain of add / show read-back / delete / idempotent re-delete works,
+//! and the localized output is decoded through
+//! [windows_console](crate::windows_console) before classification closes the
+//! loop.
+//! TODO #52 stays unchecked: wiring up [crate::SystemBackend] is still gated on
+//! full acceptance (the full wireguardnt tunnel lifecycle, see ADR-008);
+//! non-Linux platforms keep the explicit placeholder of
+//! [unsupported](../../../crates/meshlet-network/src/unsupported.rs) and never
+//! pretend to have a data plane (§10.3, §12.2).
 //!
-//! ADR-008 的取舍在本模块落成三件事：
+//! ADR-008's tradeoffs land in this module as three things:
 //!
-//! - **受控命令**：只构造 `netsh interface ipv4 add/delete route` 的命名
-//!   参数形式（`prefix=` / `interface=` / `nexthop=` / `store=active`），
-//!   不拼接自由文本；含空格的接口名（WireGuard 隧道名允许空格）保持单个
-//!   argv 词元，命令行引号交给进程生成器（见 [named_value] 的实测注记）；
-//! - **权限不足提示明确**：`requires elevation` / `access is denied` 文案
-//!   归入 [`NetworkError::InsufficientPrivileges`]，消息点名操作与接口；
-//! - **失败可清理**：删除目标不存在的路由（`element not found` 等）按
-//!   幂等成功处理；未知失败文本 fail closed 为
-//!   [`NetworkError::ApplyRejected`] 并携带 netsh 原始行。
+//! - **Controlled commands**: only the named-argument form of
+//!   `netsh interface ipv4 add/delete route` is constructed
+//!   (`prefix=` / `interface=` / `nexthop=` / `store=active`); no free text is
+//!   concatenated. An interface name containing spaces (WireGuard tunnel names
+//!   allow spaces) stays a single argv token, and command-line quoting is left
+//!   to the process builder (see the field-tested note on [named_value]);
+//! - **Clear privilege messages**: `requires elevation` / `access is denied`
+//!   texts map to [`NetworkError::InsufficientPrivileges`], with the message
+//!   naming the operation and the interface;
+//! - **Cleanable failures**: deleting a route that does not exist
+//!   (`element not found` and the like) counts as an idempotent success;
+//!   an unknown failure text fails closed as
+//!   [`NetworkError::ApplyRejected`] carrying the raw netsh line.
 //!
-//! `store=active`（非持久）与 agent 对账模型一致：路由不跨重启残留，漂移
-//! 由 agent 重放纠回（重启重放语义见 ADR-009）。
+//! `store=active` (non-persistent) matches the agent reconciliation model: no
+//! routes survive a reboot, and drift is corrected by the agent replay (see
+//! ADR-009 for the reboot replay semantics).
 
 use std::net::Ipv4Addr;
 
@@ -35,12 +46,13 @@ use meshlet_domain::Ipv4Cidr;
 
 use crate::{NetworkError, RouteConfig};
 
-/// 一条受控 netsh 路由命令（计划态；执行见 [exec]）。
+/// One controlled netsh route command (plan state; execution in [exec]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetshRouteCommand {
-    /// 添加一条路由（`gateway = None` 为 on-link 路由，无 `nexthop=`）。
+    /// Add a route (`gateway = None` is an on-link route, without `nexthop=`).
     Add { route: RouteConfig },
-    /// 删除一条路由；目标不存在按幂等成功处理（失败可清理）。
+    /// Delete a route; a missing target counts as an idempotent success
+    /// (cleanable failure).
     Delete {
         destination: Ipv4Cidr,
         interface: String,
@@ -49,10 +61,10 @@ pub enum NetshRouteCommand {
 }
 
 impl NetshRouteCommand {
-    /// netsh 参数（含 `interface ipv4 add/delete route` 前缀；单测与执行层
-    /// 共用同一构造，计划与执行不漂移——与
-    /// [nat::NatRule::iptables_args](../../../crates/meshlet-network/src/nat.rs)
-    /// 同一纪律）。
+    /// The netsh arguments (including the `interface ipv4 add/delete route`
+    /// prefix; unit tests and the execution layer share the same construction,
+    /// so the plan and the execution never drift — the same discipline as
+    /// [nat::NatRule::iptables_args](../../../crates/meshlet-network/src/nat.rs)).
     pub fn args(&self) -> Vec<String> {
         let mut args = vec!["interface".into(), "ipv4".into()];
         let (verb, destination, interface, gateway) = match self {
@@ -72,12 +84,13 @@ impl NetshRouteCommand {
         if let Some(gateway) = gateway {
             args.push(format!("nexthop={gateway}"));
         }
-        // store=active：路由不跨重启持久（agent 对账重放纠回，ADR-009）。
+        // store=active: routes are not persistent across reboots (the agent
+        // replay reconciles them back, ADR-009).
         args.push("store=active".into());
         args
     }
 
-    /// 操作名（错误消息点名用）。
+    /// The operation name (used to name it in error messages).
     pub fn operation(&self) -> &'static str {
         match self {
             NetshRouteCommand::Add { .. } => "route add",
@@ -85,7 +98,7 @@ impl NetshRouteCommand {
         }
     }
 
-    /// 受管接口名（错误消息点名用）。
+    /// The managed interface name (used to name it in error messages).
     pub fn interface(&self) -> &str {
         match self {
             NetshRouteCommand::Add { route } => &route.interface,
@@ -98,21 +111,25 @@ impl NetshRouteCommand {
     }
 }
 
-/// `key=value` 形式的 netsh 命名参数，**整个键值对是单个 argv 词元**（含空格
-/// 的接口名不拆词：`interface=Meshlet Office` 就是一个词元）。
+/// A netsh named argument in `key=value` form; **the whole key-value pair is a
+/// single argv token** (an interface name containing spaces is not split into
+/// words: `interface=Meshlet Office` is one token).
 ///
-/// 刻意**不内嵌引号**（2026-10-16 CI runner 实测报文）：netsh 自己的分词器
-/// 不认 `\"` 转义——内嵌引号会把 `interface="…"` 拆碎，`Loopback` 落到
-/// `siteprefixlength` 位（`Invalid siteprefixlength parameter (Loopback)`）。
-/// 命令行层的引号由进程生成器负责：std `Command::args` 对含空格的词元自动
-/// 整体加引号，netsh 认这种包住整个键值对的引号。
+/// Deliberately **no embedded quotes** (the 2026-10-16 CI runner field-test
+/// message): netsh's own tokenizer does not understand `\"` escapes — embedded
+/// quotes would shred `interface="…"`, landing `Loopback` on the
+/// `siteprefixlength` slot (`Invalid siteprefixlength parameter (Loopback)`).
+/// Quoting at the command-line level is the process builder's job: std
+/// `Command::args` automatically quotes a token containing spaces as a whole,
+/// and netsh accepts quotes wrapping the entire key-value pair.
 fn named_value(key: &str, value: &str) -> String {
     format!("{key}={value}")
 }
 
-/// 修改一条路由 = **删除重建**（与控制面路由同习语：无 PATCH，修改 = 删除
-/// 重建）。netsh 没有 `set route`；语义上等价于先删旧前缀再建新前缀，
-/// 两步各是一次受控调用。
+/// Modifying a route = **delete and rebuild** (the same idiom as the control
+/// plane routes: no PATCH, modify = delete and rebuild). netsh has no
+/// `set route`; semantically it is deleting the old prefix then creating the new
+/// prefix, each step being one controlled call.
 pub fn replace_route_commands(old: &RouteConfig, new: &RouteConfig) -> Vec<NetshRouteCommand> {
     vec![
         NetshRouteCommand::Delete {
@@ -124,13 +141,16 @@ pub fn replace_route_commands(old: &RouteConfig, new: &RouteConfig) -> Vec<Netsh
     ]
 }
 
-/// 把 netsh 的退出码与输出分类为后端错误（纯函数，任意平台单测）。
+/// Classify the netsh exit code and output into a backend error (a pure
+/// function, unit-tested on any platform).
 ///
-/// 权限类文案**刻意宽匹配**（不区分大小写的子串）：Windows 各版本对
-/// ERROR_ELEVATION_REQUIRED（740）与 ERROR_ACCESS_DENIED（5）的文案不完全
-/// 一致，宁可把模糊的权限失败归入「权限不足」（提示明确），也绝不把
-/// 权限问题误报成别的原因。其余失败 fail closed 为
-/// [`NetworkError::ApplyRejected`]（未知 ≠ 成功，§8.3）。
+/// Privilege-class texts are **deliberately matched broadly**
+/// (case-insensitive substrings): Windows versions disagree on the exact wording
+/// for ERROR_ELEVATION_REQUIRED (740) and ERROR_ACCESS_DENIED (5). It is better
+/// to put an ambiguous privilege failure under "insufficient privileges" (a
+/// clear message) than to misreport a privilege problem as some other cause.
+/// Any other failure fails closed as [`NetworkError::ApplyRejected`]
+/// (unknown does not mean success, §8.3).
 pub fn classify_netsh_route_failure(
     exit_code: i32,
     output: &str,
@@ -140,9 +160,11 @@ pub fn classify_netsh_route_failure(
     let lowered = output.to_lowercase();
     if lowered.contains("requires elevation")
         || lowered.contains("access is denied")
-        // zh-CN 标准本地化文案（真机取证：「请求的操作需要提升(作为管理员
-        // 运行)。」= ERROR_ELEVATION_REQUIRED；「拒绝访问」=
-        // ERROR_ACCESS_DENIED）。宽匹配纪律不变：宁可归权限类也不误报。
+        // The standard zh-CN localized texts (real-machine forensics: the
+        // zh-CN wording of ERROR_ELEVATION_REQUIRED is "the requested operation
+        // requires elevation (running as administrator)", and
+        // ERROR_ACCESS_DENIED is "access denied"). The broad-match discipline
+        // holds: better to land in the privilege class than to misreport.
         || output.contains("需要提升")
         || output.contains("拒绝访问")
     {
@@ -158,18 +180,22 @@ pub fn classify_netsh_route_failure(
     ))
 }
 
-/// netsh 删除报「目标不存在」= 幂等成功（清理路径清到空态不算失败，
-/// §10.3 失败可清理）。同样按子串宽匹配，覆盖各版本文案差异。
+/// A netsh delete reporting "the target does not exist" = an idempotent
+/// success (a cleanup path reaching an empty state is not a failure; §10.3
+/// cleanable failures). Also matched broadly by substring to cover wording
+/// differences across versions.
 pub fn route_already_absent(output: &str) -> bool {
     let lowered = output.to_lowercase();
     lowered.contains("element not found")
         || lowered.contains("cannot find")
-        // zh-CN 真机取证（2026-10-25，CP936 解码后）：netsh 删除不存在路由
-        // 的完整报文为「找不到元素。」——按本地化原文匹配。
+        // zh-CN real-machine forensics (2026-10-25, decoded from CP936): the
+        // full netsh message for deleting a non-existent route is the zh-CN
+        // localized "element not found" — matched as the localized original.
         || output.contains("找不到元素")
 }
 
-/// 输出的首个非空行（错误消息携带 netsh 原文，便于诊断）。
+/// The first non-empty line of the output (error messages carry the raw netsh
+/// text for diagnostics).
 fn first_nonempty_line(output: &str) -> &str {
     output
         .lines()
@@ -178,12 +204,16 @@ fn first_nonempty_line(output: &str) -> &str {
         .unwrap_or("(no output)")
 }
 
-/// 解析 `netsh interface ipv4 show route` 的表格式输出，取**落在指定接口**
-/// 上的 IPv4 前缀（对账用：Windows 侧 `installed_routes` 的读数来源）。
+/// Parse the tabular output of `netsh interface ipv4 show route`, keeping the
+/// IPv4 prefixes that **land on the given interface** (for reconciliation: the
+/// reading source of the Windows-side `installed_routes`).
 ///
-/// 判定按行进行：行内唯一可解析为 [Ipv4Cidr] 的词元是前缀列；行尾词元
-/// 序列等于接口名词元序列（接口名可含空格，如 `Loopback Pseudo-Interface 1`）。
-/// IPv6 行（`::/0` 等）解析失败自然跳过；表头/分隔行无 CIDR 词元自然跳过。
+/// The judgment runs per line: the only token in the line parseable as
+/// [Ipv4Cidr] is the prefix column, and the trailing token sequence equals the
+/// interface-name token sequence (the interface name may contain spaces, such
+/// as `Loopback Pseudo-Interface 1`). IPv6 lines (`::/0` etc.) fail to parse and
+/// are skipped naturally; header/divider lines carry no CIDR token and are
+/// skipped naturally.
 pub fn route_prefixes_on_interface(output: &str, interface: &str) -> Vec<Ipv4Cidr> {
     let name: Vec<&str> = interface.split_whitespace().collect();
     output
@@ -197,29 +227,34 @@ pub fn route_prefixes_on_interface(output: &str, interface: &str) -> Vec<Ipv4Cid
         .collect()
 }
 
-/// 执行层（`#[cfg(windows)]`）：只负责把计划函数构造的参数交给 netsh、
-/// 把输出交回计划层分类，没有其他逻辑。
+/// The execution layer (`#[cfg(windows)]`): it only hands the arguments built
+/// by the plan functions to netsh and hands the output back to the plan layer
+/// for classification; nothing else.
 ///
-/// 真机实测：2026-10-16 CI runner（en-US）与 2026-10-26 中文 Windows
-/// Server 本机——add / show 读回 / delete / 幂等 re-delete 全链路走通，
-/// 本地化（zh-CN）输出经 [crate::windows_console] 解码后分类闭环。
-/// TODO #52 保持未勾：接 [crate::SystemBackend] 仍以完整验收为准
-/// （wireguardnt 隧道全生命周期与提权路径见 ADR-008）。
+/// Real-machine tests: 2026-10-16 CI runner (en-US) and 2026-10-26 a zh-CN
+/// Windows Server machine — the whole chain of add / show read-back / delete /
+/// idempotent re-delete works, and the localized (zh-CN) output is decoded
+/// through [crate::windows_console] before classification closes the loop.
+/// TODO #52 stays unchecked: wiring up [crate::SystemBackend] is still gated on
+/// full acceptance (the full wireguardnt tunnel lifecycle and the elevation
+/// path, see ADR-008).
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{classify_netsh_route_failure, route_already_absent, NetshRouteCommand};
     use crate::windows_console::NoWindowCommand;
     use crate::{ApplyResult, NetworkError};
 
-    /// 执行一条受控 netsh 路由命令：成功/幂等成功/分类失败三态。
+    /// Run one controlled netsh route command: success / idempotent success /
+    /// classified failure, three states.
     pub fn run_route_command(command: &NetshRouteCommand) -> Result<ApplyResult, NetworkError> {
         let output = std::process::Command::new("netsh")
             .args(command.args())
             .no_window()
             .output()
             .map_err(|error| NetworkError::Io(format!("spawn netsh: {error}")))?;
-        // netsh 重定向输出按活动代码页编码（zh-CN 真机取证为 GBK），
-        // UTF-8 优先 + CP_ACP 兑底解码，见 [windows_console]。
+        // netsh's redirected output is encoded in the active code page (a
+        // zh-CN real machine yields GBK); decode as UTF-8 first with a CP_ACP
+        // fallback, see [windows_console].
         let text = format!(
             "{}{}",
             crate::windows_console::decode_output(&output.stdout),
@@ -228,7 +263,8 @@ pub mod exec {
         if output.status.success() {
             return Ok(ApplyResult::ok());
         }
-        // 删除目标已不存在 = 幂等成功（清理路径清到空态不算失败）。
+        // Deleting an already-absent target = an idempotent success (a cleanup
+        // path reaching an empty state is not a failure).
         if command.is_delete() && route_already_absent(&text) {
             return Ok(ApplyResult::ok());
         }
@@ -253,7 +289,8 @@ mod tests {
         }
     }
 
-    /// 命名参数形式 + store=active；带网关的路由含 nexthop=。
+    /// The named-argument form plus store=active; a route with a gateway carries
+    /// nexthop=.
     #[test]
     fn add_route_renders_named_netsh_form_with_gateway() {
         let command = NetshRouteCommand::Add {
@@ -274,7 +311,7 @@ mod tests {
         );
     }
 
-    /// on-link 路由（无网关）不产生 nexthop= 词元。
+    /// An on-link route (no gateway) produces no nexthop= token.
     #[test]
     fn add_route_without_gateway_is_on_link() {
         let command = NetshRouteCommand::Add {
@@ -294,7 +331,8 @@ mod tests {
         assert_eq!(args.last().unwrap(), "store=active");
     }
 
-    /// 删除与添加共用同一命名参数形式（动词不同）。
+    /// Delete and add share the same named-argument form (only the verb
+    /// differs).
     #[test]
     fn delete_route_renders_named_netsh_form() {
         let command = NetshRouteCommand::Delete {
@@ -319,9 +357,11 @@ mod tests {
         assert!(command.is_delete());
     }
 
-    /// 接口名含空格（WireGuard 隧道名允许）时**键值对仍是单个词元且不内嵌
-    /// 引号**——命令行引号由进程生成器加；netsh 分词器不认 `\"` 转义
-    /// （runner 实测报文见 named_value 注记）。
+    /// When the interface name contains spaces (allowed for WireGuard tunnel
+    /// names), the **key-value pair stays a single token with no embedded
+    /// quotes** — command-line quoting is added by the process builder; netsh's
+    /// tokenizer does not understand `\"` escapes
+    /// (see the named_value note for the runner field-test message).
     #[test]
     fn interface_names_with_spaces_stay_one_unquoted_arg() {
         let command = NetshRouteCommand::Add {
@@ -336,7 +376,8 @@ mod tests {
         assert!(plain.args().contains(&"interface=meshlet".to_string()));
     }
 
-    /// 修改 = 删除重建，顺序固定（先删旧前缀再建新前缀）。
+    /// Modify = delete and rebuild, in a fixed order (delete the old prefix
+    /// first, then create the new one).
     #[test]
     fn replace_is_delete_then_add_in_order() {
         let old = route("meshlet", Some("10.240.0.4".parse().unwrap()));
@@ -358,8 +399,9 @@ mod tests {
         );
     }
 
-    /// 「权限不足提示明确」：elevation 文案 → InsufficientPrivileges，
-    /// 消息点名操作与接口，并带 netsh 原文（管理员提示可执行）。
+    /// "Clear privilege messages": an elevation text -> InsufficientPrivileges,
+    /// with the message naming the operation and the interface and carrying the
+    /// raw netsh text (the administrator hint is actionable).
     #[test]
     fn elevation_failure_maps_to_insufficient_privileges_naming_operation_and_interface() {
         let error = classify_netsh_route_failure(
@@ -379,15 +421,17 @@ mod tests {
         }
     }
 
-    /// access denied 与 elevation 同归权限类（不区分大小写的子串宽匹配）。
+    /// Access denied lands in the privilege class together with elevation
+    /// (a case-insensitive broad substring match).
     #[test]
     fn access_denied_also_maps_to_insufficient_privileges() {
         let error = classify_netsh_route_failure(1, "Access is denied.", "route delete", "meshlet");
         assert!(matches!(error, NetworkError::InsufficientPrivileges(_)));
     }
 
-    /// 未知失败文本 fail closed 为 ApplyRejected：携带操作、接口、退出码与
-    /// netsh 原始行（未知 ≠ 成功，§8.3）。
+    /// An unknown failure text fails closed as ApplyRejected: it carries the
+    /// operation, the interface, the exit code, and the raw netsh line
+    /// (unknown does not mean success, §8.3).
     #[test]
     fn unknown_failure_fails_closed_as_rejection_with_raw_line() {
         let error = classify_netsh_route_failure(
@@ -407,7 +451,8 @@ mod tests {
         }
     }
 
-    /// 「失败可清理」：删除目标不存在按幂等成功处理——各版本文案宽匹配。
+    /// "Cleanable failures": deleting a target that does not exist counts as an
+    /// idempotent success — matched broadly across version wordings.
     #[test]
     fn absent_route_output_counts_as_idempotent_delete() {
         assert!(route_already_absent("Element not found."));
@@ -418,14 +463,17 @@ mod tests {
         assert!(!route_already_absent(""));
     }
 
-    /// zh-CN 真机取证（2026-10-25）：中文 Windows 的缺失报文按原文命中
-    /// 幂等判定（`windows_netsh` 集成测试的真机失败正是这里红过）。
+    /// zh-CN real-machine forensics (2026-10-25): the zh-CN Windows absent
+    /// message hits the idempotent judgment as its original text (the
+    /// real-machine failure in the `windows_netsh` integration test went red
+    /// exactly here).
     #[test]
     fn localized_absence_output_counts_as_idempotent_delete() {
         assert!(route_already_absent("找不到元素。"));
     }
 
-    /// zh-CN 真机取证：本地化权限文案归入权限类，绝不误报成 ApplyRejected。
+    /// zh-CN real-machine forensics: localized privilege texts land in the
+    /// privilege class and are never misreported as ApplyRejected.
     #[test]
     fn localized_privilege_text_maps_to_insufficient_privileges() {
         assert!(matches!(
@@ -443,8 +491,9 @@ mod tests {
         ));
     }
 
-    /// `show route` 表输出按接口过滤前缀：表头/分隔行与 IPv6 行自然跳过，
-    /// 接口名可含空格（行尾词元序列匹配）。
+    /// The `show route` tabular output filters prefixes by interface: header /
+    /// divider lines and IPv6 lines are skipped naturally, and the interface name
+    /// may contain spaces (a trailing token sequence match).
     #[test]
     fn show_route_output_scopes_prefixes_to_the_interface() {
         let output = "\
@@ -459,7 +508,7 @@ No       Manual    0     10.242.1.0/24             12  10.240.0.9 Meshlet Office
             route_prefixes_on_interface(output, "meshlet"),
             vec![
                 "10.241.1.0/24".parse::<Ipv4Cidr>().unwrap(),
-                // ::/0 解析不出 IPv4 CIDR，自然跳过。
+                // ::/0 cannot parse into an IPv4 CIDR and is skipped naturally.
             ]
         );
         assert_eq!(

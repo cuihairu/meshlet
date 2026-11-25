@@ -7,19 +7,23 @@ use crate::{NetworkDiagnostics, NetworkError, WgPeerDiagnostic};
 use std::net::Ipv4Addr;
 
 impl WindowsNetworkBackend {
-    /// R-DIAG 网络诊断信息面采集（Windows，2026-11-01 用户令）：三类快照。
+    /// R-DIAG network diagnostics information surface collection (Windows,
+    /// ordered by the user 2026-11-01): three kinds of snapshots.
     ///
-    /// - 路由表：`route print`（IPv4 全表原文）；
-    /// - 接口清单：`Get-NetIPConfiguration`（Name / IPv4 / Prefix / MTU /
-    ///   InterfaceOperationalStatus）；
-    /// - wg-mlt 读数：`wg.exe show <if> dump` 解析（[parse_wg_dump_peers] 同
-    ///   源但保留 endpoint / 握手 / 流量列，[WgPeerDiagnostic]）。
+    /// - route table: `route print` (raw full IPv4 table);
+    /// - interface list: `Get-NetIPConfiguration` (Name / IPv4 / Prefix / MTU /
+    ///   InterfaceOperationalStatus);
+    /// - wg-mlt readings: parsed from `wg.exe show <if> dump` (same source as
+    ///   [parse_wg_dump_peers] but keeping the endpoint / handshake / transfer
+    ///   columns, [WgPeerDiagnostic]).
     ///
-    /// 采集只读；单项失败按空/缺上报（诊断面如实展示「未取到」）。
+    /// Collection is read-only; a failing item is reported as empty/missing
+    /// (the diagnostic surface faithfully shows "not fetched").
     pub fn diagnostics_sync(&self) -> Result<NetworkDiagnostics, NetworkError> {
-        // 控制台工具重定向输出是 OEM/ANSI 代码页字节（zh-CN 为 GBK/936），
-        // 必须经 windows_console::decode_output 解码——raw from_utf8_lossy
-        // 会把中文接口名/网关描述打成 U+FFFD 乱码（真机实锤 imac）。
+        // Console tools emit redirected output as OEM/ANSI code page bytes
+        // (GBK/936 on zh-CN); it must go through windows_console::decode_output —
+        // a raw from_utf8_lossy would turn Chinese interface names / gateway
+        // descriptions into U+FFFD garbage (pinned down on the imac real machine).
         let route_table = std::process::Command::new("route")
             .args(["print"])
             .no_window()
@@ -58,7 +62,8 @@ impl WindowsNetworkBackend {
         })
     }
 
-    /// 读 `wg.exe show <if> dump` 的诊断读数（保留 endpoint / 握手 / 流量列）。
+    /// Read diagnostic readings from `wg.exe show <if> dump` (keeps the
+    /// endpoint / handshake / transfer columns).
     fn read_tunnel_diag(&self, tunnel_name: &str) -> Vec<WgPeerDiagnostic> {
         let Some(exe) = self.find_wg_exe() else {
             return Vec::new();
@@ -77,9 +82,10 @@ impl WindowsNetworkBackend {
             .collect()
     }
 
-    /// 以 `ping -n 1` 实测直连路径 RTT（毫秒）。Windows 输出
-    /// `Reply from 10.0.0.2: bytes=32 time=12ms TTL=64`（中文为
-    /// `时间=12ms`，二者 `time` / `时间` 均匹配）；失败按 `None`。
+    /// Measure the direct path RTT (milliseconds) with `ping -n 1`. Windows
+    /// prints `Reply from 10.0.0.2: bytes=32 time=12ms TTL=64` (Chinese output
+    /// uses the localized `time=` label; both the `time` form and the localized
+    /// label are matched); failure → `None`.
     pub fn ping_rtt_ms(&self, target: Ipv4Addr) -> Option<u128> {
         let out = std::process::Command::new("ping")
             .args(["-n", "1", "-w", "2000", &target.to_string()])
@@ -90,8 +96,8 @@ impl WindowsNetworkBackend {
     }
 }
 
-/// 当前 UTC 时刻的 ISO-8601 字符串（Windows；不引 chrono）。用
-/// `powershell` 读取，失败回退纪元秒。
+/// ISO-8601 string for the current UTC time (Windows; no chrono dependency).
+/// Read via `powershell`, falling back to epoch seconds on failure.
 fn now_iso_utc() -> String {
     let out = std::process::Command::new("powershell")
         .args([

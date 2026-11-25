@@ -1,43 +1,51 @@
-//! AGENT-DOC-1 `meshlet agent doctor`：外来 overlay 共存体检。
+//! AGENT-DOC-1 `meshlet agent doctor`: the health check for coexisting with a
+//! foreign overlay.
 //!
-//! 背景（2026-11-23 真机取证）：本机同时跑 ZeroTier 与 meshlet 时，两条隧道
-//! **互为路径**——meshlet 的 WG endpoint 落在 ZeroTier 网段（出向借道），
-//! ZeroTier 又把 meshlet overlay 学成对端路径（入向借道）。互相封装成环，
-//! 包长一路涨到超 MTU 后**内部包全死**，同时把带宽烧在不出物理网卡的循环里
-//! （实测内部/物理 = 185:1、wg-mlt 累计 301 GB 而物理口仅 3 GB）。
+//! Background (2026-11-23 real-machine forensics): when this host runs ZeroTier
+//! and meshlet at the same time, the two tunnels **serve as each other's path** —
+//! meshlet's WG endpoint lands in the ZeroTier segment (outbound borrowing),
+//! and ZeroTier learns the meshlet overlay as a peer path (inbound borrowing).
+//! They encapsulate each other into a loop, packet sizes climb past MTU and
+//! **every inner packet dies**, while the bandwidth is burned in a loop that
+//! never leaves the physical NIC (measured internal/physical = 185:1, wg-mlt
+//! 301 GB cumulative against only 3 GB on the physical port).
 //!
-//! 本模块把当时靠翻日志、逐条 `iptables`/`zerotier-cli` 手工排查的判据固化成
-//! 5 项可复跑的检查。**纪律与 [crate::diag] 一致**：只读、缺数据一律
-//! `not_assessed`（§7.5 不臆测），绝不因为读不到就报 PASS。
+//! This module turns the criteria that were once hunted down by digging through
+//! logs and running `iptables`/`zerotier-cli` by hand into five repeatable
+//! checks. **The discipline matches [crate::diag]**: read-only, missing data is
+//! always `not_assessed` (§7.5, no guessing), and never report PASS merely
+//! because something could not be read.
 //!
-//! 纯判定与采集分离：判定函数（[check_*]）无 IO、跨平台单测；采集由
-//! [Doctor::collect] 各平台后端补齐。
+//! Pure verdicts are separated from collection: the check functions ([check_*])
+//! do no IO and are unit-tested cross-platform; collection is filled in by the
+//! [Doctor::collect] backends per platform.
 
 use serde::{Deserialize, Serialize};
 
-/// 单项检查结论。
+/// Verdict of a single check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
-    /// 通过。
+    /// Passed.
     Pass,
-    /// 有风险但不致命（当前未观测到故障，条件已具备）。
+    /// Risky but not fatal (no fault observed yet, the conditions are in place).
     Warn,
-    /// 已观测到故障条件，需要处理。
+    /// Fault conditions observed; needs attention.
     Fail,
-    /// 数据不足，**不判定**（缺 zerotier / 无流量 / 命令缺失）。
+    /// Insufficient data, **not judged** (no zerotier / no traffic / command
+    /// missing).
     NotAssessed,
 }
 
-/// 一项体检结论。
+/// The verdict of one health check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Check {
-    /// 稳定标识（CLI / JSON / 控制台过滤用）。
+    /// Stable identifier (used by the CLI / JSON / console filtering).
     pub id: String,
-    /// 一句话结论。
+    /// One-line verdict.
     pub title: String,
     pub status: CheckStatus,
-    /// 支撑结论的原始证据（命令读数、比值、命中条数）。
+    /// Raw evidence backing the verdict (command readings, ratios, hit counts).
     pub evidence: String,
 }
 
@@ -57,21 +65,21 @@ impl Check {
     }
 }
 
-/// 一次体检报告。
+/// A single health-check report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoctorReport {
-    /// 采集时刻（ISO-8601，UTC）。
+    /// Collection timestamp (ISO-8601, UTC).
     pub collected_at: String,
     pub checks: Vec<Check>,
 }
 
 impl DoctorReport {
-    /// 是否存在 FAIL（CLI 退出码 / 控制台告警用）。
+    /// Whether any check FAILED (for the CLI exit code / console alerts).
     pub fn has_failure(&self) -> bool {
         self.checks.iter().any(|c| c.status == CheckStatus::Fail)
     }
 
-    /// 各状态计数（摘要行用）。
+    /// Counts per status (for the summary line).
     pub fn counts(&self) -> [usize; 4] {
         let mut counts = [0usize; 4];
         for check in &self.checks {
@@ -86,20 +94,25 @@ impl DoctorReport {
     }
 }
 
-/// 放大比超过该值判 FAIL（实测正常共存时 ≈ 0，事故时 185:1）。
+/// An amplification ratio above this value is a FAIL (measured ≈ 0 under normal
+/// coexistence, 185:1 during the incident).
 pub const AMPLIFICATION_FAIL_RATIO: f64 = 5.0;
 
-/// 速率采样窗口（秒）：够短不拖慢体检，够长让计数器差值可分辨。
+/// Rate sampling window (seconds): short enough not to slow the check down,
+/// long enough that the counter difference is resolvable.
 pub const DOCTOR_SAMPLE_SECS: u64 = 2;
 
-/// 判定 1：隧道流量放大。
+/// Verdict 1: tunnel traffic amplification.
 ///
-/// 比值 = (受管隧道 TX + 外来 overlay TX) / 物理口 TX。两条隧道互为路径时，
-/// 循环流量只在虚拟口之间打转、**不出物理网卡**，比值会远超 1。
+/// Ratio = (managed tunnel TX + foreign overlay TX) / physical port TX. When
+/// the two tunnels serve as each other's path, the circulating traffic spins
+/// only between virtual interfaces and **never leaves the physical NIC**, so
+/// the ratio far exceeds 1.
 ///
-/// - 物理口与内部都几乎无流量 → `not_assessed`（无流量无从判断，不臆测）；
-/// - 比值 > [AMPLIFICATION_FAIL_RATIO] → `fail`；
-/// - 其余 → `pass`。
+/// - Physical port and internals both nearly idle -> `not_assessed` (with no
+///   traffic there is nothing to judge, no guessing);
+/// - Ratio > [AMPLIFICATION_FAIL_RATIO] -> `fail`;
+/// - Otherwise -> `pass`.
 pub fn check_tunnel_amplification(
     tunnel_tx_bps: f64,
     foreign_tx_bps: f64,
@@ -108,7 +121,8 @@ pub fn check_tunnel_amplification(
     const ID: &str = "tunnel-amplification";
     const TITLE: &str = "隧道流量未在内部空转";
     let internal = tunnel_tx_bps + foreign_tx_bps;
-    // 双侧都近于 0 → 没有可判定的流量（阈值 1 KiB/s：低于此不算「在传数据」）。
+    // Both sides near zero -> there is no traffic to judge (the threshold is 1
+    // KiB/s: below it does not count as "transferring data").
     if internal < 1024.0 && physical_tx_bps < 1024.0 {
         return Check::new(
             ID,
@@ -145,13 +159,15 @@ pub fn check_tunnel_amplification(
     }
 }
 
-/// 判定 2：ZeroTier 把 meshlet overlay 当成对端路径（入向借道）。
+/// Verdict 2: ZeroTier treats the meshlet overlay as a peer path (inbound
+/// borrowing).
 ///
-/// `zt_paths` 是 `zerotier-cli -j listpeers` 里所有 active 路径的 `ip` 字段；
-/// `overlay_prefix` 形如 `10.240.`。任一路径落在 overlay 网段即 `fail`——
-/// 这正是事故现场（`402477b104 -> 10.240.0.3/9993 preferred`）。
+/// `zt_paths` holds the `ip` field of every active path in
+/// `zerotier-cli -j listpeers`; `overlay_prefix` looks like `10.240.`. Any
+/// path landing in the overlay segment is a `fail` — that is exactly the
+/// incident scene (`402477b104 -> 10.240.0.3/9993 preferred`).
 ///
-/// 读不到 zerotier → `zt_paths = None` → `not_assessed`。
+/// zerotier unreadable -> `zt_paths = None` -> `not_assessed`.
 pub fn check_foreign_overlay_paths(zt_paths: Option<&[String]>, overlay_prefix: &str) -> Check {
     const ID: &str = "foreign-overlay-paths";
     const TITLE: &str = "ZeroTier 路径未借道 meshlet overlay";
@@ -185,18 +201,22 @@ pub fn check_foreign_overlay_paths(zt_paths: Option<&[String]>, overlay_prefix: 
     }
 }
 
-/// 从 `ip:port` / `[v6]:port` / `ip%scope:port` 形态剥出地址部分。
+/// Strip the address out of an `ip:port` / `[v6]:port` / `ip%scope:port`
+/// form.
 ///
-/// 三种形态在 `wg show` / `ss` 读数里都出现（`10.147.19.49:51820`、
-/// `10.240.0.4%wg-mlt:63614`、`[2001:db8::1]:51820`）。本判定只认 IPv4 网段
-/// 前缀，IPv6 原样返回即可——但**不能把端口当成地址**（`rsplit(':')` 会取到
-/// 端口号，导致 `10.147.19.49:51820` 被判成 `51820`、借道信号整个漏掉）。
+/// All three forms show up in `wg show` / `ss` readings (`10.147.19.49:51820`,
+/// `10.240.0.4%wg-mlt:63614`, `[2001:db8::1]:51820`). This verdict only
+/// recognizes IPv4 segment prefixes, so IPv6 is returned as-is — but the **port
+/// must never be mistaken for an address** (`rsplit(':')` would pick up the
+/// port number, so that `10.147.19.49:51820` gets judged as `51820` and the
+/// whole borrowing signal is missed).
 fn endpoint_ip(endpoint: &str) -> &str {
     let s = endpoint.split('%').next().unwrap_or(endpoint);
     if let Some(rest) = s.strip_prefix('[') {
         return rest.split(']').next().unwrap_or(rest);
     }
-    // `a.b.c.d:port` → 冒号前是地址；地址里没有点（IPv6）则不剥。
+    // `a.b.c.d:port` -> the address is what precedes the colon; an address
+    // without a dot (IPv6) is left alone.
     if let Some((head, tail)) = s.split_once(':') {
         if head.contains('.') && !tail.contains(':') {
             return head;
@@ -205,16 +225,21 @@ fn endpoint_ip(endpoint: &str) -> &str {
     s
 }
 
-/// 判定 3：meshlet 的 WG endpoint 落在外来 overlay / 自身 overlay 网段。
+/// Verdict 3: meshlet's WG endpoints land in a foreign overlay / its own
+/// overlay segment.
 ///
-/// 两类都要报：
-/// - 落在**外来 overlay**（如 `10.147.`）→ 出向借道，事故的另一半成因；
-/// - 落在**自身 overlay**（如 `10.240.`）→ 把包发进自己隧道去够隧道内的
-///   地址，纯 hairpin 空转。
+/// Both kinds are reported:
+/// - Landing in a **foreign overlay** (such as `10.147.`) -> outbound
+///   borrowing, the other half of the incident's cause;
+/// - Landing in **its own overlay** (such as `10.240.`) -> sending packets
+///   into its own tunnel to reach an address inside the tunnel, pure hairpin
+///   spinning.
 ///
-/// 只给 `warn`：[check_isolation_rules] 已从反向硬切断循环，本项是「不该发生
-/// 但发生也不会成环」的源头治理信号（对应 L2 降级候选的输入）。
-/// 无 peer / 读不到 → `not_assessed`。
+/// Only a `warn` is given: [check_isolation_rules] already cuts the loop hard
+/// from the reverse direction, so this item is a root-cause governance signal
+/// for the "should not happen, and even if it does it cannot form a loop"
+/// case (the input for the L2 downgrade candidates).
+/// No peer / unreadable -> `not_assessed`.
 pub fn check_foreign_endpoints(
     endpoints: Option<&[String]>,
     foreign_prefixes: &[&str],
@@ -267,14 +292,17 @@ pub fn check_foreign_endpoints(
     Check::new(ID, TITLE, CheckStatus::Warn, parts.join("；"))
 }
 
-/// 判定 4：隔离规则是否在位。
+/// Verdict 4: whether the isolation rules are in place.
 ///
-/// `isolation_rules` = 当前 iptables 里带所有权注释的规则条数；`foreign_uid`
-/// = 外来 overlay 进程 uid（`None` = 未安装）。
+/// `isolation_rules` = the number of rules carrying the ownership comment in
+/// iptables right now; `foreign_uid` = the uid of the foreign overlay process
+/// (`None` = not installed).
 ///
-/// - 未安装 → `pass`（本机无共存对象，无需隔离）；
-/// - 已安装但 0 条 → `fail`（事故现场状态：规则整批丢失）；
-/// - 已安装且有 → `pass`。
+/// - Not installed -> `pass` (no coexisting peer on this host, no isolation
+///   needed);
+/// - Installed but zero rules -> `fail` (the incident state: the whole batch of
+///   rules is gone);
+/// - Installed and present -> `pass`.
 pub fn check_isolation_rules(isolation_rules: usize, foreign_uid: Option<u32>) -> Check {
     const ID: &str = "isolation-rules";
     const TITLE: &str = "外来 overlay 隔离规则在位";
@@ -300,14 +328,17 @@ pub fn check_isolation_rules(isolation_rules: usize, foreign_uid: Option<u32>) -
     }
 }
 
-/// 判定 5：受管隧道 MTU 与物理口 MTU 是否悬殊。
+/// Verdict 5: whether the managed tunnel MTU and the physical port MTU differ
+/// markedly.
 ///
-/// 隧道 MTU 高于物理口时，大包必须靠 IP 分片过网——分片一旦被路径上的
-/// 运营商/云安全组丢弃即静默卡死（2026-11-23 实测全网 ZT 都是 2800 vs 1500）。
+/// When the tunnel MTU is higher than the physical one, large packets must cross
+/// the network via IP fragmentation — the moment an ISP or a cloud security
+/// group along the path drops the fragments it stalls silently (measured on
+/// 2026-11-23, every ZT across the whole network sat at 2800 vs 1500).
 ///
-/// - 任一读不到 → `not_assessed`；
-/// - 差值 > [MTU_WARN_DELTA] → `warn`；
-/// - 其余 → `pass`。
+/// - Either one unreadable -> `not_assessed`;
+/// - Difference > [MTU_WARN_DELTA] -> `warn`;
+/// - Otherwise -> `pass`.
 pub fn check_mtu_consistency(tunnel_mtu: Option<u32>, physical_mtu: Option<u32>) -> Check {
     const ID: &str = "mtu-consistency";
     const TITLE: &str = "隧道 MTU 与物理口匹配";
@@ -334,40 +365,46 @@ pub fn check_mtu_consistency(tunnel_mtu: Option<u32>, physical_mtu: Option<u32>)
     }
 }
 
-/// MTU 差值告警阈值（字节）。
+/// MTU difference warning threshold (bytes).
 pub const MTU_WARN_DELTA: u32 = 200;
 
-/// 体检所需的原始读数（**采集与判定分离**：采集是平台相关 IO，判定是纯函数）。
+/// The raw readings a health check needs (**collection is separated from
+/// verdicts**: collection is platform-dependent IO, verdicts are pure
+/// functions).
 ///
-/// 各字段的 `None` / 空语义见对应 [check_*]：缺数据一律 `not_assessed`。
+/// See the matching [check_*] for the `None` / empty semantics of each field:
+/// missing data is always `not_assessed`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DoctorInputs {
-    /// 采集时刻（ISO-8601，UTC）。
+    /// Collection timestamp (ISO-8601, UTC).
     pub collected_at: String,
-    /// 受管隧道接口名（如 `wg-mlt`）。
+    /// Name of the managed tunnel interface (such as `wg-mlt`).
     pub tunnel_interface: String,
-    /// 承载物理出口的接口名。
+    /// Name of the interface carrying the physical egress.
     pub physical_interface: String,
-    /// `(隧道 TX, 外来 overlay TX, 物理口 TX)`，单位 B/s，已按采样窗口换算。
-    /// `None` = 采样失败。
+    /// `(tunnel TX, foreign overlay TX, physical port TX)` in B/s, already scaled
+    /// by the sampling window.
+    /// `None` = the sampling failed.
     pub rates: Option<(f64, f64, f64)>,
-    /// 当前带所有权注释的隔离规则条数。
+    /// Number of isolation rules currently carrying the ownership comment.
     pub isolation_rules: usize,
-    /// 外来 overlay 进程 uid；`None` = 未安装。
+    /// uid of the foreign overlay process; `None` = not installed.
     pub foreign_uid: Option<u32>,
-    /// `zerotier-cli` 对端路径（`ip` 字段）；`None` = 未安装/读取失败。
+    /// `zerotier-cli` peer paths (the `ip` field); `None` = not installed /
+    /// read failed.
     pub foreign_paths: Option<Vec<String>>,
-    /// wg peer endpoint 列表；`None` = 无读数。
+    /// The list of wg peer endpoints; `None` = no reading.
     pub endpoints: Option<Vec<String>>,
     pub tunnel_mtu: Option<u32>,
     pub physical_mtu: Option<u32>,
 }
 
-/// 跑全部 5 项判定（纯函数，无 IO）。
+/// Run all five verdicts (a pure function, no IO).
 pub fn run_doctor(inputs: &DoctorInputs) -> DoctorReport {
     let (tunnel_bps, foreign_bps, physical_bps) = inputs.rates.unwrap_or((0.0, 0.0, 0.0));
-    // 采样失败时 rates 为 None —— 交给放大项按「无流量」判 not_assessed，
-    // 但证据里要能看出是采样失败而非真的没流量。
+    // When sampling fails, rates is None — leave it to the amplification item
+    // to judge not_assessed as "no traffic", but the evidence must show that it
+    // was a sampling failure rather than genuinely idle.
     let amplification = match inputs.rates {
         Some(_) => check_tunnel_amplification(tunnel_bps, foreign_bps, physical_bps),
         None => Check::new(
@@ -393,10 +430,13 @@ pub fn run_doctor(inputs: &DoctorInputs) -> DoctorReport {
     }
 }
 
-/// 本平台未实现体检时的报告：5 项全部 `not_assessed` 并注明原因。
+/// The report returned when this platform does not implement the health
+/// check: all five items are `not_assessed`, each stating why.
 ///
-/// **绝不返回 PASS**——「没实现」与「检查过了没问题」是两回事（§7.5）。
-/// 调用方（CLI / 控制台）看到全 SKIP 就知道该换机器或换平台跑。
+/// **Never return PASS** — "not implemented" and "checked and fine" are two
+/// different things (§7.5).
+/// When the callers (CLI / console) see everything skipped, they know they must
+/// run on another machine or another platform.
 pub fn unsupported_report() -> DoctorReport {
     let note = "本平台未实现外来 overlay 体检（当前仅 Linux 后端采集）";
     DoctorReport {
@@ -414,23 +454,28 @@ pub fn unsupported_report() -> DoctorReport {
     }
 }
 
-/// 当前 UTC 时刻（ISO-8601，秒精度，`Z` 后缀）。
+/// The current UTC time (ISO-8601, second precision, `Z` suffix).
 fn chrono_iso_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-/// meshlet overlay 的 IPv4 网段前缀（判定 2/3 用）。
+/// The IPv4 segment prefix of the meshlet overlay (used by verdicts 2/3).
 pub const OVERLAY_PREFIX: &str = "10.240.";
 
-/// 外来 overlay（ZeroTier）的 IPv4 网段前缀（判定 3 用）。
+/// The IPv4 segment prefix of the foreign overlay (ZeroTier) (used by
+/// verdict 3).
 pub const FOREIGN_OVERLAY_IPV4_PREFIX: &str = "10.147.";
 
-/// `zerotier-cli -j listpeers` → 所有**已建路径**的地址（纯解析）。
+/// `zerotier-cli -j listpeers` -> the addresses of every **established path**
+/// (pure parsing).
 ///
-/// 只收 `paths[]` 里 `active` 且非 `expired` 的项——已过期的路径不算在用，
-/// 报它等于误报（隔离生效后旧路径会陆续过期，正是靠这条口径让检查转绿）。
-/// JSON 结构不对 / 顶层不是数组 → `None`（**不臆测成空列表**，§7.5：
-/// 「读不到」与「读到但没有」是两回事，前者必须走 `not_assessed`）。
+/// Only items in `paths[]` that are `active` and not `expired` are taken — an
+/// expired path is no longer in use, and reporting it would be a false alarm
+/// (once isolation takes effect the old paths expire one after another, and it
+/// is exactly this criterion that turns the check green).
+/// Malformed JSON / a top level that is not an array -> `None` (**do not guess
+/// it as an empty list**, §7.5: "unreadable" and "read but empty" are two
+/// different things, and the former must go to `not_assessed`).
 pub fn parse_zerotier_paths(json: &str) -> Option<Vec<String>> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let peers = value.as_array()?;
@@ -452,7 +497,8 @@ pub fn parse_zerotier_paths(json: &str) -> Option<Vec<String>> {
                 continue;
             }
             if let Some(address) = path.get("address").and_then(|v| v.as_str()) {
-                // `ip:port` → 只要地址部分（判定比的是网段前缀）。
+                // `ip:port` -> keep only the address part (the verdict compares
+                // segment prefixes).
                 paths.push(address.split('%').next().unwrap_or(address).to_string());
             }
         }
@@ -464,8 +510,9 @@ pub fn parse_zerotier_paths(json: &str) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
-    /// 事故现场 `zerotier-cli -j listpeers` 片段（2026-11-23 取证）：
-    /// `402477b104 -> 10.240.0.3/9993 active preferred`。
+    /// A snippet of `zerotier-cli -j listpeers` from the incident scene
+    /// (2026-11-23 forensics):
+    /// `402477b104 -> 10.240.0.3/9993 active preferred`.
     const INCIDENT_JSON: &str = r#"[
       {"address":"402477b104","paths":[
         {"address":"10.240.0.3/9993","active":true,"expired":false},
@@ -478,9 +525,9 @@ mod tests {
     #[test]
     fn zerotier_paths_keep_only_active_unexpired() {
         let paths = parse_zerotier_paths(INCIDENT_JSON).unwrap();
-        // inactive 的 60912 与 expired 的 58075 都不收。
+        // Neither the inactive 60912 nor the expired 58075 is taken.
         assert_eq!(paths, vec!["10.240.0.3/9993", "180.153.160.8/29566"]);
-        // 事故路径必须判 FAIL。
+        // The incident path must be judged FAIL.
         let report = run_doctor(&DoctorInputs {
             foreign_paths: Some(paths),
             ..DoctorInputs::default()
@@ -495,15 +542,18 @@ mod tests {
 
     #[test]
     fn zerotier_paths_malformed_json_is_none_not_empty() {
-        // 结构读不出 → None（not_assessed），不能当成「没有借道」。
+        // Structure unreadable -> None (not_assessed); never treat it as "no
+        // borrowing".
         assert_eq!(parse_zerotier_paths(""), None);
         assert_eq!(parse_zerotier_paths("not json"), None);
         assert_eq!(parse_zerotier_paths(r#"{"address":"x"}"#), None);
-        // 顶层是数组但没有 paths → Some(空)：确实读到了、确实没有路径。
+        // Top level is an array but has no paths -> Some(empty): it really
+        // was read, and there really are no paths.
         assert_eq!(parse_zerotier_paths(r#"[{"address":"x"}]"#), Some(vec![]));
     }
 
-    /// 事故现场读数复原（2026-11-23 真机）：应 5 项里至少放大 + 借道路径 FAIL。
+    /// Restored incident-scene readings (2026-11-23 real machine): at least
+    /// amplification plus the borrowing paths should FAIL among the five.
     #[test]
     fn incident_inputs_produce_failures() {
         let inputs = DoctorInputs {
@@ -529,7 +579,8 @@ mod tests {
         assert_eq!(by_id("mtu-consistency").status, CheckStatus::Pass);
     }
 
-    /// 修复后读数（隔离在位、无借道、流量出网）→ 全绿。
+    /// Post-fix readings (isolation in place, no borrowing, traffic leaving the
+    /// wire) -> all green.
     #[test]
     fn healthy_inputs_produce_no_failure() {
         let inputs = DoctorInputs {
@@ -549,7 +600,8 @@ mod tests {
         assert_eq!(report.counts()[2], 0);
     }
 
-    /// 采样失败不能伪装成「流量正常」——必须 not_assessed。
+    /// A sampling failure must not be disguised as "traffic fine" — it has to
+    /// be not_assessed.
     #[test]
     fn failed_sampling_is_not_assessed_not_passed() {
         let inputs = DoctorInputs {
@@ -570,7 +622,8 @@ mod tests {
         );
     }
 
-    /// 默认输入（什么都没读到）下不得出现 FAIL——缺数据不等于故障（§7.5）。
+    /// Under default inputs (nothing read) no FAIL may appear — missing data
+    /// is not a fault (§7.5).
     #[test]
     fn default_inputs_never_report_failure() {
         let report = run_doctor(&DoctorInputs::default());
@@ -578,16 +631,18 @@ mod tests {
         assert_eq!(report.counts()[3], 4, "缺数据项应为 not_assessed");
     }
 
-    // ---------------------------------------------------- 原始样本 ----
+    // ---------------------------------------------------- raw samples ----
 
     #[test]
     fn amplification_flags_internal_circulation() {
-        // 事故现场：内部狂发、物理口完全不出包 → 走「不出网卡」分支。
+        // Incident scene: the internals hammering while the physical port sends
+        // nothing at all -> the "never leaves the NIC" branch.
         let check = check_tunnel_amplification(108e6, 0.0, 0.0);
         assert_eq!(check.status, CheckStatus::Fail);
         assert!(check.evidence.contains("不出网卡"), "{}", check.evidence);
 
-        // 物理口有极少量流量但内部仍在空转 → 走比值分支，同样 FAIL。
+        // A trace of traffic on the physical port while the internals still spin
+        // -> the ratio branch, likewise FAIL.
         let check = check_tunnel_amplification(108e6, 0.0, 0.5e6);
         assert_eq!(check.status, CheckStatus::Fail);
         assert!(check.evidence.contains("216.0:1"), "{}", check.evidence);
@@ -602,14 +657,15 @@ mod tests {
 
     #[test]
     fn amplification_passes_when_traffic_leaves_the_wire() {
-        // 内部 3 MB/s、物理 2 MB/s → 1.5:1，正常。
+        // 3 MB/s internally, 2 MB/s physically -> 1.5:1, normal.
         let check = check_tunnel_amplification(3e6, 0.0, 2e6);
         assert_eq!(check.status, CheckStatus::Pass);
     }
 
     #[test]
     fn amplification_is_not_assessed_without_traffic() {
-        // 双侧都近 0：无流量无从判断，**不臆测**成 PASS（§7.5）。
+        // Both sides near zero: with no traffic there is nothing to judge, so
+        // **never guess** it as PASS (§7.5).
         let check = check_tunnel_amplification(0.0, 0.0, 0.0);
         assert_eq!(check.status, CheckStatus::NotAssessed);
         assert!(
@@ -621,18 +677,19 @@ mod tests {
 
     #[test]
     fn amplification_never_reports_pass_on_zero_physical_alone() {
-        // 物理口 0 但内部有量 → 必须 FAIL，不能因比值无穷小而误判。
+        // Physical port 0 while the internals carry traffic -> must FAIL; do
+        // not misjudge on an infinite ratio.
         let check = check_tunnel_amplification(0.0, 5e6, 0.0);
         assert_eq!(check.status, CheckStatus::Fail);
     }
 
-    // ------------------------------------------------ 借道路径判定 ----
+    // ------------------------------------------------ borrowing-path verdict ----
 
     #[test]
     fn foreign_paths_fail_when_any_path_is_on_the_overlay() {
         let paths = vec![
             "180.153.160.8/9993".to_string(),
-            "10.240.0.3/9993".to_string(), // 事故现场的 preferred 路径
+            "10.240.0.3/9993".to_string(), // the preferred path from the incident scene
         ];
         let check = check_foreign_overlay_paths(Some(&paths), "10.240.");
         assert_eq!(check.status, CheckStatus::Fail);
@@ -659,14 +716,15 @@ mod tests {
             check_foreign_overlay_paths(None, "10.240.").status,
             CheckStatus::NotAssessed
         );
-        // 空列表（zerotier 在但无 peer）同样是「无从判定」而非 PASS。
+        // An empty list (zerotier present but no peer) is likewise "nothing to
+        // judge" rather than PASS.
         assert_eq!(
             check_foreign_overlay_paths(Some(&[]), "10.240.").status,
             CheckStatus::Pass
         );
     }
 
-    // ------------------------------------------------ endpoint 归属 ----
+    // ------------------------------------------------ endpoint tenancy ----
 
     #[test]
     fn endpoint_on_foreign_overlay_is_warned() {
@@ -685,7 +743,7 @@ mod tests {
 
     #[test]
     fn endpoint_hairpinning_own_overlay_is_warned() {
-        // 2026-11-23 日志实录：`from=10.147.19.226:51820 to=10.240.0.7:51820`。
+        // 2026-11-23 log verbatim: `from=10.147.19.226:51820 to=10.240.0.7:51820`.
         let eps = vec!["10.240.0.7:51820".to_string()];
         let check = check_foreign_endpoints(Some(&eps), &["10.147."], "10.240.");
         assert_eq!(check.status, CheckStatus::Warn);
@@ -704,7 +762,8 @@ mod tests {
 
     #[test]
     fn endpoint_scope_suffix_and_bracket_forms_are_stripped() {
-        // 带 `%接口` 作用域与 IPv6 方括号端口的形态都要能剥出 IP。
+        // The `%interface` scope form and the IPv6 bracketed port form must
+        // both have their IP stripped out.
         let eps = vec![
             "fe80::1%wg-mlt:51820".to_string(),
             "[2001:db8::1]:51820".to_string(),
@@ -725,11 +784,11 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------ 隔离规则判定 ----
+    // ------------------------------------------------ isolation rules ----
 
     #[test]
     fn isolation_missing_while_foreign_present_is_fail() {
-        // 事故现场：uid 读得到、规则 0 条。
+        // Incident scene: the uid is readable, the rules number zero.
         let check = check_isolation_rules(0, Some(995));
         assert_eq!(check.status, CheckStatus::Fail);
         assert!(check.evidence.contains("0 条"), "{}", check.evidence);
@@ -741,7 +800,8 @@ mod tests {
             check_isolation_rules(5, Some(995)).status,
             CheckStatus::Pass
         );
-        // 本机没装 zerotier → 无需隔离，是 PASS 而非 not_assessed。
+        // No zerotier on this host -> no isolation needed; it is a PASS, not
+        // not_assessed.
         assert_eq!(check_isolation_rules(0, None).status, CheckStatus::Pass);
     }
 
@@ -749,7 +809,7 @@ mod tests {
 
     #[test]
     fn mtu_gap_over_threshold_is_warned() {
-        // 全网实况：ZT 2800 vs 物理 1500。
+        // Whole-network reality: ZT 2800 vs physical 1500.
         let check = check_mtu_consistency(Some(2800), Some(1500));
         assert_eq!(check.status, CheckStatus::Warn);
         assert!(check.evidence.contains("差 1300"), "{}", check.evidence);
@@ -771,7 +831,7 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------- 报告聚合 ----
+    // ---------------------------------------------------- report aggregation ----
 
     #[test]
     fn report_counts_and_failure_flag() {

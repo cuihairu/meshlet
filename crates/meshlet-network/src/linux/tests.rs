@@ -3,8 +3,9 @@ use crate::{parse_handshake_ages, NetworkBackend, NetworkError, TunnelConfig, DE
 use meshlet_domain::Ipv4Cidr;
 use std::net::Ipv4Addr;
 
-// 文件本身经 `mod tests;` 引入，内层再叫 tests 触发 module_inception；
-// 这是测试组织惯例而非缺陷，局部放行。
+// The file itself is pulled in via `mod tests;`, and calling the inner module
+// `tests` again would trigger module_inception;
+// that is a test-organization convention rather than a defect, allowed locally.
 #[allow(clippy::module_inception)]
 mod tests {
     use super::*;
@@ -12,9 +13,11 @@ mod tests {
 
     #[test]
     fn ip_octet_subnets_mask_interface_host_bits_into_the_lan_subnet() {
-        // `ip -4 -o addr show` 的地址带主机位（接口地址不是网络地址）——
-        // 回归：按规范化 CIDR 解析曾整行失败，LAN 枚举恒为空，直连永不
-        // 触发（netns 真机测试抓到）。
+        // The addresses of `ip -4 -o addr show` carry host bits (an interface
+        // address is not a network address) —
+        // regression: parsing as a normalized CIDR once failed the whole line,
+        // the LAN enumeration was always empty, and direct connect never
+        // fired (caught by the netns real-machine test).
         let output = "1: lo    inet 127.0.0.1/8 scope host lo\\\n\
                       2: wg0    inet 10.240.0.2/24 scope global wg0\\\n\
                       18623: eth0    inet 10.98.0.20/24 brd 10.98.0.255 scope global eth0\\\n";
@@ -25,8 +28,9 @@ mod tests {
         assert_eq!(subnets[2].0, "eth0");
         assert_eq!(subnets[2].1.to_string(), "10.98.0.0/24");
 
-        // 与 lan_subnets_sync 同一口径的过滤：lo/受管隧道出局、非私网出局
-        // → 只剩 eth0 的网段。
+        // Filtering under the same convention as lan_subnets_sync: lo/the
+        // managed tunnel are out, non-private is out
+        // -> only eth0's segment is left.
         let lan: Vec<String> = subnets
             .iter()
             .filter(|(ifname, _)| is_lan_interface(ifname, "wg0"))
@@ -36,23 +40,25 @@ mod tests {
             .collect();
         assert_eq!(lan, vec!["10.98.0.0/24"]);
 
-        // 前缀越界/非地址的行被跳过，不 panic。
+        // Lines with an out-of-range prefix or a non-address are skipped
+        // without panicking.
         assert!(parse_ip_octet_subnets("3: eth1 inet 1.2.3.4/99 x\n").is_empty());
         assert!(parse_ip_octet_subnets("3: eth1 inet junk/24 x\n").is_empty());
     }
 
     #[test]
     fn handshake_ages_parses_peer_lines_and_skips_never_handshaked() {
-        // 标准三列：公钥 握手时间 距今秒。
+        // The standard three columns: public key, handshake time, seconds ago.
         let pk_a = "A".repeat(43) + "=";
         let pk_b = "B".repeat(43) + "=";
-        // 从未握手的 peer：握手时间戳为 0（WireGuard 语义），非「距今 0 秒」。
+        // A peer that never handshaked: its handshake timestamp is 0 (WireGuard
+        // semantics), not "0 seconds ago".
         let text = format!("{pk_a} 1750000000 12\n{pk_b} 0 0\nnot-a-key 1750000000 5\n");
         let ages = parse_handshake_ages(&text, 1750000060);
         assert_eq!(ages.len(), 1, "zero-handshake and junk lines are skipped");
         assert_eq!(ages.get(&pk_a), Some(&12));
 
-        // 缺第三列：按 now - 握手时间兜底。
+        // Missing third column: fall back to now - handshake time.
         let two_col = format!("{pk_b} 1750000000\n");
         let ages = parse_handshake_ages(&two_col, 1750000060);
         assert_eq!(ages.get(&pk_b), Some(&60));
@@ -127,7 +133,8 @@ mod tests {
             .filter(|(ifname, _)| is_lan_interface(ifname, "wg0"))
             .map(|(_, addr)| *addr)
             .collect();
-        // eth0 两条 RFC1918 保留；lo/wg0/docker0/br-* 全部排除。
+        // eth0's two RFC1918 addresses are kept; lo/wg0/docker0/br-* are all
+        // excluded.
         assert_eq!(
             addrs,
             vec![
@@ -137,9 +144,12 @@ mod tests {
         );
         assert!(!is_lan_interface("lo", "wg0"));
         assert!(!is_lan_interface("wg0", "wg0"));
-        assert!(!is_lan_interface("wg9", "wg0")); // 其它 wg 接口同样排除
-                                                  // 外来 overlay（ZeroTier 的 `zt*` 接口）出局：保留会把它的网段当本机
-                                                  // LAN，对端 ZT 地址被判成同网段直连 → WG endpoint 借道另一套隧道成环。
+        assert!(!is_lan_interface("wg9", "wg0")); // other wg interfaces are
+                                                  // excluded the same way
+                                                  // A foreign overlay (ZeroTier's `zt*` interfaces) is out too: keeping it
+                                                  // would treat its segment as this host's LAN, the peer's ZT address would
+                                                  // be judged same-segment direct connect -> the WG endpoint would ride the
+                                                  // other tunnel into a loop.
         assert!(!is_lan_interface("ztksetoehl", "wg0"));
         assert!(!is_lan_interface("ztabc123def", "wg0"));
         assert!(is_lan_interface("eth0", "wg0"));
@@ -167,7 +177,7 @@ mod tests {
         assert_eq!(del[1], "POSTROUTING");
         assert_eq!(del[2], "-d");
 
-        // 精确 owner 匹配：al-1 的规则不被 al-2 的清理命中。
+        // Exact owner matching: al-1's rule is not hit by al-2's cleanup.
         assert!(
             LinuxNetworkBackend::meshlet_rule_deletion(line, Some("meshlet alias al-2")).is_none()
         );
@@ -175,7 +185,7 @@ mod tests {
             LinuxNetworkBackend::meshlet_rule_deletion(line, Some("meshlet alias al-1")).is_some()
         );
 
-        // 非 Meshlet 规则（无注释 / 用户注释）不命中。
+        // Non-Meshlet rules (no comment / a user comment) are not hit.
         assert!(LinuxNetworkBackend::meshlet_rule_deletion(
             "-A PREROUTING -d 203.0.113.0/24 -j ACCEPT -m comment --comment \"user rule\"",
             None
@@ -186,7 +196,7 @@ mod tests {
             None
         )
         .is_none());
-        // 非规则行（注释头 / 链声明）不命中。
+        // Non-rule lines (comment headers / chain declarations) are not hit.
         assert!(
             LinuxNetworkBackend::meshlet_rule_deletion(":PREROUTING ACCEPT [0:0]", None).is_none()
         );
@@ -215,7 +225,8 @@ mod tests {
             \x20   link/none";
         assert_eq!(parse_link_mtu(link_show), Some(1380));
 
-        // 读数不可得（缺字段 / 非数字）时按 None 处理，不臆测默认值。
+        // When a reading is unavailable (a missing field / non-numeric), it is
+        // treated as None rather than guessing a default.
         assert_eq!(
             parse_link_mtu("7: wg0: <...> state UNKNOWN\n link/none"),
             None
@@ -241,8 +252,8 @@ mod tests {
 
     #[test]
     fn parse_wg_dump_diag_line_reads_peer_readings() {
-        // Linux `wg show dump` 的 peer 行：pubkey preshared endpoint
-        // allowed-ips latest-handshake rx tx keepalive。
+        // A peer line of Linux `wg show dump`: pubkey preshared endpoint
+        // allowed-ips latest-handshake rx tx keepalive.
         let line = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= (preshared) 198.51.100.10:51820 \
             10.240.0.1/32,10.241.0.0/24 1234567 1024 2048 25";
         let diag = super::parse_wg_dump_diag_line(line).expect("valid line");
@@ -256,7 +267,8 @@ mod tests {
         assert_eq!(diag.rx_bytes, 1024);
         assert_eq!(diag.tx_bytes, 2048);
 
-        // 缺列 / 空行 / 非公钥行 → None（不臆造 peer）。
+        // A missing column / an empty line / a non-public-key line -> None (never
+        // inventing a peer).
         assert!(super::parse_wg_dump_diag_line("").is_none());
         assert!(super::parse_wg_dump_diag_line("short-row").is_none());
         assert!(super::parse_wg_dump_diag_line("bad-key not-a-peer").is_none());
@@ -264,7 +276,9 @@ mod tests {
 
     #[test]
     fn wg_dump_diag_defaults_missing_numeric_columns_to_zero() {
-        // 端点/流量列缺失时按 0/空串处理（读数不可得可见，不吞行）。
+        // When the endpoint/traffic columns are missing, default to 0/empty
+        // strings (the unavailable reading stays visible, the line is not
+        // swallowed).
         let diag =
             super::parse_wg_dump_diag_line("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= x y")
                 .expect("row");
@@ -276,8 +290,9 @@ mod tests {
 
     #[test]
     fn nat_apply_probes_with_the_same_rule_shape() {
-        // apply_nat_sync 组装 `iptables -t nat <args>`；-C 探测与 -A 下发只差
-        // flag 位（index 3），保证探测与实际规则形状一致。
+        // apply_nat_sync assembles `iptables -t nat <args>`; the -C probe and the
+        // -A application differ only in the flag position (index 3), keeping the
+        // probe and the real rule in the same shape.
         let rule = NatRule {
             source_cidr: None,
             incoming_interface: None,
@@ -303,7 +318,8 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_tunnel_name_is_rejected() {
-        // 后端只受管自己的接口：拒绝别的隧道名（防误操作系统接口）。
+        // The backend only manages its own interface: another tunnel name is
+        // refused (protecting against clobbering a system interface).
         let backend = LinuxNetworkBackend::new();
         let config = TunnelConfig {
             name: "wg-user".into(),
@@ -333,13 +349,15 @@ mod tests {
         )
         .unwrap();
         let rules = alias_nat_rules(&mapping);
-        // 计划含两条：DNAT 匹配 alias，SNAT 匹配 target（真实 LAN 段）。
+        // The plan holds two rules: DNAT matches the alias, SNAT the target (the
+        // real LAN segment).
         assert_eq!(
             LinuxNetworkBackend::snat_target_cidr(&rules),
             Some("192.168.9.0/24".parse().unwrap())
         );
 
-        // dnat_only 计划无 SNAT 规则——网关 LAN 地址不适用（§9.5）。
+        // A dnat_only plan has no SNAT rule — the gateway LAN address does not
+        // apply (§9.5).
         let dnat_only: Vec<NatRule> = rules
             .iter()
             .filter(|r| r.chain == NatChain::Prerouting)
@@ -360,14 +378,16 @@ mod tests {
             Some("10.244.0.0/24 dev eth0")
         );
 
-        // 经受管接口：Meshlet 自有对象，幂等改写不冲突。
+        // Through the managed interface: a Meshlet-owned object, and an idempotent
+        // rewrite is not a conflict.
         assert!(foreign_route_line("10.241.1.0/24 via 10.240.0.4 dev wg0", "wg0").is_none());
     }
 
     #[test]
     fn foreign_route_line_fails_closed_without_a_dev_field() {
-        // blackhole / 输出格式变化：解析不出 dev 即按冲突处理，不放过
-        // 未知对象（fail closed）。
+        // blackhole / a changed output format: failing to parse a dev field is
+        // treated as a conflict, never letting an unknown object through (fail
+        // closed).
         assert_eq!(
             foreign_route_line("blackhole 10.244.0.0/24", "wg0").as_deref(),
             Some("blackhole 10.244.0.0/24")
@@ -377,17 +397,19 @@ mod tests {
 
     #[test]
     fn connected_route_line_is_not_a_conflict_on_its_own_interface() {
-        // connected 路由（proto kernel，地址自带）：dev 字段在 exact 输出
-        // 里照常出现，经受管接口则不算冲突。
+        // A connected route (proto kernel, the address is self-carried): the dev
+        // field still appears in the exact output, and going through the managed
+        // interface is not a conflict.
         let line = "10.240.0.0/24 proto kernel scope link src 10.240.0.1 dev wg0";
         assert!(foreign_route_line(line, "wg0").is_none());
     }
 
     #[test]
     fn peer_dump_line_yields_identity_not_a_count() {
-        // dump 行序：pubkey presharedkey endpoint allowed-ips …（endpoint
-        // none、allowed-ips 空串是未握手 peer 的常态）。allowed-ips 用逗号
-        // 连接且**不带空格**（`wg show dump` 的实测输出）。
+        // The dump column order: pubkey presharedkey endpoint allowed-ips ... (an
+        // endpoint of none and an empty allowed-ips string are the normal state of
+        // an unhandshaked peer). allowed-ips are comma-joined with **no spaces**
+        // (the field-tested `wg show dump` output).
         let key = "B".repeat(43) + "=";
         let peer = LinuxNetworkBackend::parse_peer_dump_line(&format!(
             "{key} (none) 10.240.0.3:16190 10.240.0.3/32,10.241.1.0/24 0 0 0 0"
@@ -402,25 +424,28 @@ mod tests {
             ]
         );
 
-        // 未握手 / 未放行任何前缀的 peer：allowed-ips 为空是合法状态，
-        // 不等于「少了一条 peer」。
+        // A peer that has not handshaked and allows no prefix: an empty
+        // allowed-ips is a legal state, not "a peer is missing".
         let none = LinuxNetworkBackend::parse_peer_dump_line(&format!(
             "{key} (none) (none) (none) 0 0 0 0"
         ))
         .unwrap();
         assert!(none.allowed_ips.is_empty());
 
-        // 缺 44 字符公钥的残行不产 peer（不臆造身份）。
+        // A mangled line missing the 44-character public key yields no peer
+        // (never inventing an identity).
         assert!(LinuxNetworkBackend::parse_peer_dump_line("(none) 10.240.0.3/32 0 0 0").is_none());
         assert!(LinuxNetworkBackend::parse_peer_dump_line("tooshort").is_none());
     }
 
     #[test]
     fn nat_signature_round_trips_through_kernel_rendering() {
-        // 计划侧指纹必须能从内核渲染出的 iptables 参数读回同值——两侧据此
-        // 做集合精确比对，形状不一致就等于看不见漂移。用 `-S` 的字段顺序
-        // （`-s` 在 `-d` 前、`-m comment` 在 `-j` 前）而非 `iptables_args`
-        // 的顺序，证明解析与字段顺序无关。
+        // The plan-side fingerprint must be readable back to the same value from
+        // the iptables arguments rendered by the kernel — both sides compare
+        // exactly as sets on it, and a shape mismatch would mean drift is
+        // invisible. The field order of `-S` (`-s` before `-d`, `-m comment`
+        // before `-j`) is used rather than the order of `iptables_args`,
+        // proving the parsing is independent of the field order.
         let rules = [
             NatRule {
                 source_cidr: Some("10.240.0.0/16".parse().unwrap()),
@@ -432,8 +457,10 @@ mod tests {
                 },
                 owner: "meshlet alias al-2".into(),
             },
-            // POSTROUTING 不渲染 `-i`：`incoming_interface` 对它是惰性元数据，
-            // 两侧都必须按 `none` 对齐（曾因此把在表内的 SNAT 规则误判为多余）。
+            // POSTROUTING does not render `-i`: `incoming_interface` is inert
+            // metadata for it, and both sides must align on `none` (an SNAT rule
+            // already inside the table was once misjudged as surplus this
+            // way).
             NatRule {
                 source_cidr: Some("10.240.0.0/16".parse().unwrap()),
                 incoming_interface: Some("wg0".into()),
@@ -466,8 +493,10 @@ mod tests {
 
     #[test]
     fn nat_signature_rejects_shapes_the_renderer_never_emits() {
-        // 认了 Meshlet 所有权、形状却超出本网关渲染器产出的范围 → 不产指纹：
-        // 既不冒充计划内规则，也不会被差集清理误删（交由整单元清理路径处置）。
+        // Claims Meshlet ownership but with a shape beyond what this gateway's
+        // renderer emits -> no fingerprint is produced:
+        // neither pretending to be a planned rule nor being mis-deleted by the
+        // set-difference cleanup (left to the whole-unit cleanup path).
         let unparsable = [
             (
                 "POSTROUTING",
@@ -512,8 +541,9 @@ mod tests {
             );
         }
 
-        // 非 Meshlet 注释的规则带进来的也是它自己的注释：指纹永远撞不上计划
-        // 侧的任何指纹，所以差集清理碰不到它。
+        // A non-Meshlet-comment rule brings its own comment with it: its
+        // fingerprint can never collide with any plan-side fingerprint, so the
+        // set-difference cleanup never reaches it.
         let foreign = vec![
             "-d".to_string(),
             "10.0.0.0/24".into(),
@@ -533,11 +563,13 @@ mod tests {
 
     #[test]
     fn host_firewall_plan_is_idempotent_and_manager_gated() {
-        // 管理器都未活跃 → 不动作（放行规则存不存在都不影响）。
+        // No manager active -> no action (whether an allowance rule exists or not
+        // does not matter).
         assert!(host_firewall_allow_actions(false, false, false, false, "wg0").is_empty());
         assert!(host_firewall_allow_actions(false, true, false, true, "wg0").is_empty());
 
-        // ufw 活跃且接口已放行 → 只补 firewalld 侧（若有）。
+        // ufw active and the interface already allowed -> supplement only the
+        // firewalld side (if any).
         assert_eq!(
             host_firewall_allow_actions(true, true, false, false, "wg0"),
             vec![]
@@ -549,7 +581,8 @@ mod tests {
             }]
         );
 
-        // firewalld 活跃且接口未入 trusted → 补 trusted 接口。
+        // firewalld active and the interface not in trusted -> supplement the
+        // trusted interface.
         assert_eq!(
             host_firewall_allow_actions(false, false, true, false, "wg0"),
             vec![HostFirewallAction::FirewalldTrustedInterface {
@@ -557,7 +590,8 @@ mod tests {
             }]
         );
 
-        // 双管理器都活跃且都未放行 → 两条动作，顺序确定（ufw 在前）。
+        // Both managers active and both not allowed -> two actions, in a fixed
+        // order (ufw first).
         assert_eq!(
             host_firewall_allow_actions(true, false, true, false, "wg0"),
             vec![
@@ -573,24 +607,27 @@ mod tests {
 
     #[test]
     fn direct_udp_firewall_plan_is_idempotent_and_manager_gated() {
-        // 管理器未活跃 → 不动作；已放行 → 不动作（幂等）。
+        // Manager not active -> no action; already allowed -> no action
+        // (idempotent).
         assert!(direct_udp_firewall_allow_actions(false, false, false, false, 51820).is_empty());
         assert!(direct_udp_firewall_allow_actions(true, true, false, false, 51820).is_empty());
         assert!(direct_udp_firewall_allow_actions(false, false, true, true, 51820).is_empty());
 
-        // ufw 活跃且端口未放行 → 按端口开。
+        // ufw active and the port not allowed -> open by port.
         assert_eq!(
             direct_udp_firewall_allow_actions(true, false, false, false, 51820),
             vec![HostFirewallAction::UfwAllowPort { port: 51820 }]
         );
 
-        // firewalld 活跃且端口未放行 → trusted 端口开。
+        // firewalld active and the port not allowed -> open as a trusted
+        // port.
         assert_eq!(
             direct_udp_firewall_allow_actions(false, false, true, false, 51820),
             vec![HostFirewallAction::FirewalldAllowPort { port: 51820 }]
         );
 
-        // 双管理器都活跃且都未放行 → 两条，顺序确定（ufw 在前）。
+        // Both managers active and both not allowed -> two actions, in a fixed
+        // order (ufw first).
         assert_eq!(
             direct_udp_firewall_allow_actions(true, false, true, false, 20000),
             vec![
@@ -600,10 +637,11 @@ mod tests {
         );
     }
 
-    // -------------------------------------- AGENT-ISO-1 外来 overlay 隔离 ----
+    // -------------------------------------- AGENT-ISO-1 foreign overlay isolation ----
 
-    /// 完整身份 → 三条规则齐全：出向 owner 拦截 + 入向端口拦截（逐本地端口）
-    /// + 入向知名源端口拦截。顺序确定（OUTPUT 在前，端口升序）。
+    /// A full identity -> all rules present: the outbound owner block + the
+    /// inbound port blocks (per local port) + the inbound well-known source port
+    /// block. Fixed order (OUTPUT first, ports ascending).
     #[test]
     fn overlay_isolation_plan_covers_both_directions() {
         let foreign = ForeignOverlay {
@@ -625,14 +663,16 @@ mod tests {
         assert!(rules[3].spec.contains(&"--sport".to_string()));
     }
 
-    /// 读不到身份（uid 与端口都缺席）→ 空计划，绝不编造 uid（§7.5）。
+    /// Identity unreadable (both uid and ports absent) -> an empty plan, never
+    /// inventing a uid (§7.5).
     #[test]
     fn overlay_isolation_plan_absent_without_identity() {
         let foreign = ForeignOverlay::default();
         assert!(overlay_isolation_rules("wg-mlt", &foreign).is_empty());
     }
 
-    /// 接口名为空 → 空计划（规则必须绑在受管隧道上，不能落到宿主全接口）。
+    /// An empty interface name -> an empty plan (the rules must bind to the
+    /// managed tunnel, never the host's whole interface set).
     #[test]
     fn overlay_isolation_plan_requires_a_managed_interface() {
         let foreign = ForeignOverlay {
@@ -643,7 +683,8 @@ mod tests {
         assert!(overlay_isolation_rules("", &foreign).is_empty());
     }
 
-    /// uid 缺席但端口读到 → 仍出端口规则（部分身份也要拦，能拦一条是一条）。
+    /// A uid absent but ports read -> the port rules are still emitted (partial
+    /// identity must also be blocked, block one rule at a time).
     #[test]
     fn overlay_isolation_plan_keeps_port_rules_when_uid_is_unknown() {
         let foreign = ForeignOverlay {
@@ -656,7 +697,8 @@ mod tests {
         assert!(rules.iter().all(|r| r.chain == "INPUT"));
     }
 
-    /// `wellknown_port = 0`（对方无知名端口）→ 不出 sport 规则。
+    /// `wellknown_port = 0` (no well-known port on the peer side) -> no sport
+    /// rule is emitted.
     #[test]
     fn overlay_isolation_plan_skips_sport_rule_without_wellknown_port() {
         let foreign = ForeignOverlay {
@@ -669,8 +711,9 @@ mod tests {
         assert_eq!(rules[0].chain, "OUTPUT");
     }
 
-    /// 全部规则带所有权注释——回滚/清理按注释精确定位（§10.3），与
-    /// `meshlet tunnel` / `meshlet alias` 同一纪律。
+    /// Every rule carries the ownership comment — rollback/cleanup locates the
+    /// target precisely by the comment (§10.3), the same discipline as
+    /// `meshlet tunnel` / `meshlet alias`.
     #[test]
     fn overlay_isolation_rules_carry_ownership_comment() {
         let foreign = ForeignOverlay {
@@ -691,8 +734,9 @@ mod tests {
         }
     }
 
-    /// `ss -H -ulnp` → 端口解析：按进程名过滤、取本地地址端口（含 `%接口`
-    /// 作用域后缀）、去重升序、不串到其他进程。
+    /// `ss -H -ulnp` -> port parsing: filter by process name, take the local
+    /// address/port (including the `%interface` scope suffix), dedupe and sort
+    /// ascending, never bleeding into another process.
     #[test]
     fn ss_udp_listen_ports_parse_dedupes_and_sorts() {
         let out = "UNCONN 0 0 10.147.19.130%ztksetoehl:9993 0.0.0.0:* users:((\"zerotier-one\",pid=1579,fd=25))\n\
@@ -705,7 +749,7 @@ mod tests {
         assert_eq!(
             ports,
             vec![9993, 28162, 63614],
-            "去重升序，`%接口` 后缀剥掉，不串到其他进程"
+            "deduped and ascending, the `%interface` suffix stripped, never bleeding into another process"
         );
         assert!(parse_ss_udp_listen_ports(out, "no-such-user").is_empty());
         assert!(parse_ss_udp_listen_ports("", "zerotier-one").is_empty());
@@ -713,8 +757,9 @@ mod tests {
 
     #[test]
     fn ufw_status_port_line_detects_direct_udp_allow() {
-        // `ufw status` 的端口行是 `51820/udp ALLOW IN Anywhere`；放行后
-        // contains("{port}/udp") 命中，plan 不再补规则（幂等）。
+        // The `ufw status` port line is `51820/udp ALLOW IN Anywhere`; once
+        // allowed, contains("{port}/udp") hits, and the plan adds no rule
+        // (idempotent).
         let allowed = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n51820/udp                 ALLOW IN    Anywhere\n";
         assert!(allowed.to_lowercase().contains("51820/udp"));
         let not_allowed = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\n";

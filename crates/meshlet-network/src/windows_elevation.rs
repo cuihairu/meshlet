@@ -1,37 +1,47 @@
-//! Windows 提权计划层（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
+//! Windows elevation planning layer
+//! ([ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)).
 //!
-//! 本模块包含**纯规划**与 `#[cfg(windows)]` 执行层：受管客户端可执行路径
-//! 校验、`ShellExecuteW(runas)` 等价命令行构造、当前进程 TokenElevation
-//! 检查与 UAC 拒绝分类。计划层在任意平台编译并单测；执行层
-//! **未在 Windows 上实测前**不得接为 [crate::SystemBackend]，非 Linux
-//! 平台仍保持 [crate::unsupported] 的显式占位（§10.3、§12.2）。
+//! This module contains **pure planning** plus a `#[cfg(windows)]` execution
+//! layer: managed client executable path validation, construction of the
+//! `ShellExecuteW(runas)` equivalent command line, the current process
+//! TokenElevation check, and UAC denial classification. The plan layer compiles
+//! and unit-tests on any platform; the execution layer **must not be wired into**
+//! [crate::SystemBackend] **before it has been real-machine tested on Windows**,
+//! and non-Linux platforms keep the explicit placeholder of
+//! [crate::unsupported] (§10.3, §12.2).
 //!
-//! 与 [windows_cleanup](windows_cleanup)、[windows_routes](windows_routes)、
-//! [windows_firewall](windows_firewall)、[windows_service](windows_service)
-//! 同一纪律：
+//! Same discipline as [windows_cleanup](windows_cleanup),
+//! [windows_routes](windows_routes), [windows_firewall](windows_firewall),
+//! [windows_service](windows_service):
 //!
-//! - **受管路径**：只接受绝对 `.exe` 且位于 Meshlet 受管安装目录前缀下，
-//!   其他可执行文件一律 [NetworkError::ApplyRejected]；
-//! - **参数不拆词**：每个受管参数按 Windows 命令行引号规则整体转义，
-//!   含空格或引号的路径保持单个参数；
-//! - **受控执行**：执行层只调用 ShellExecuteW 的 `runas` 动词和当前进程
-//!   TokenElevation 查询，不拼接自由 Shell；
-//! - **fail closed**：elevation/denied 文案映射为
-//!   [`NetworkError::InsufficientPrivileges`]，其余失败保持原错误分类。
+//! - **managed paths**: only absolute `.exe` files under the Meshlet managed
+//!   installation directory prefix are accepted; every other executable is
+//!   [NetworkError::ApplyRejected];
+//! - **no argument splitting**: each managed argument is escaped as a whole under
+//!   the Windows command-line quoting rules, so paths containing spaces or quotes
+//!   stay a single argument;
+//! - **controlled execution**: the execution layer only calls ShellExecuteW with
+//!   the `runas` verb and the current process TokenElevation query — no free
+//!   Shell text is assembled;
+//! - **fail closed**: elevation/denied wording maps to
+//!   [`NetworkError::InsufficientPrivileges`], and all other failures keep their
+//!   original error classification.
 
 use std::path::{Path, PathBuf};
 
 use crate::NetworkError;
 
-/// Meshlet 受管安装目录前缀；路径校验只允许该目录下的客户端可执行文件。
+/// The Meshlet managed installation directory prefix; the path validation only
+/// accepts client executables under this directory.
 pub const MANAGED_EXECUTABLE_DIRECTORY: &str = r"C:\Program Files\Meshlet";
 
-/// Meshlet 受管客户端可执行文件。
+/// Meshlet managed client executable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedExecutablePath(PathBuf);
 
 impl ManagedExecutablePath {
-    /// 校验并封装受管可执行路径；拒绝相对路径、非 `.exe` 和受管目录外路径。
+    /// Validate and wrap the managed executable path; relative paths, non-`.exe`
+    /// files, and paths outside the managed directory are refused.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, NetworkError> {
         let path = path.as_ref();
         let path_text = path.to_string_lossy();
@@ -67,8 +77,10 @@ impl ManagedExecutablePath {
                 path_text
             )));
         }
-        // fail closed：含 `..` 段的路径规范化后可逃出受管目录，计划层不解析
-        // 只拒绝（受管安装路径是规范的，正常路径不含父段）。
+        // fail closed: a path containing `..` segments can escape the managed
+        // directory after normalization, so the plan layer does not parse it —
+        // it is refused outright (the managed installation path is canonical, and
+        // a normal path contains no parent segments).
         if windows_path_segments(path)
             .iter()
             .any(|segment| segment == "..")
@@ -81,12 +93,13 @@ impl ManagedExecutablePath {
         Ok(Self(path.to_path_buf()))
     }
 
-    /// 受管可执行路径。
+    /// The managed executable path.
     pub fn as_path(&self) -> &Path {
         &self.0
     }
 
-    /// 整体带引号转义的 Windows 命令行字符串（`lpFile` + `lpParameters`）。
+    /// The Windows command-line string quoted as a whole (`lpFile` +
+    /// `lpParameters`).
     pub fn command_line(&self, args: &[String]) -> String {
         format!(
             "{} {}",
@@ -96,13 +109,15 @@ impl ManagedExecutablePath {
     }
 }
 
-/// 构造 `ShellExecuteW(runas)` 等价命令行；计划断言与执行层共用同一形状。
+/// Construct the `ShellExecuteW(runas)` equivalent command line; the plan
+/// assertions and the execution layer share this one shape.
 pub fn elevation_runas_command(path: &ManagedExecutablePath, args: &[String]) -> String {
     path.command_line(args)
 }
 
-/// ShellExecuteW 的 `lpParameters`：不含 `lpFile`，参数逐个按 Windows 命令行
-/// 规则整体转义（计划层可断言、执行层消费）。
+/// ShellExecuteW's `lpParameters`: excluding `lpFile`, each argument is escaped
+/// as a whole under the Windows command-line rules (assertable at the plan layer,
+/// consumed by the execution layer).
 pub fn parameter_command_line(args: &[String]) -> String {
     args.iter()
         .map(|argument| quote_windows_argument(argument))
@@ -110,10 +125,12 @@ pub fn parameter_command_line(args: &[String]) -> String {
         .join(" ")
 }
 
-/// 路径是否位于受管安装目录之下。**Windows 路径语义**：按 `\` / `/` 切段、
-/// 逐段比较且大小写不敏感（NTFS 不区分大小写）——不能用
-/// [`std::path::Path::starts_with`]，它在非 Windows 平台把整串反斜杠路径当作
-/// 单个组件，导致校验在 Linux 单测与 Windows 实测行为分叉。
+/// Whether the path is under the managed installation directory. **Windows
+/// path semantics**: split on `\` / `/`, compare segment by segment, and
+/// case-insensitively (NTFS is case-insensitive) — [`std::path::Path::starts_with`]
+/// cannot be used, because on non-Windows platforms it treats a whole
+/// backslash-separated string as a single component, which would split the
+/// behavior between Linux unit tests and Windows real-machine tests.
 pub fn under_managed_directory(path: &Path) -> bool {
     let segments = windows_path_segments(path);
     let managed = windows_path_segments(Path::new(MANAGED_EXECUTABLE_DIRECTORY));
@@ -124,7 +141,8 @@ pub fn under_managed_directory(path: &Path) -> bool {
             .all(|(segment, base)| segment.eq_ignore_ascii_case(base))
 }
 
-/// Windows 路径切段：`\` 与 `/` 都算分隔符，空段（重复分隔符 / 前导分隔符）跳过。
+/// Windows path segments: both `\` and `/` are separators, and empty segments
+/// (repeated / leading separators) are skipped.
 fn windows_path_segments(path: &Path) -> Vec<String> {
     path.to_string_lossy()
         .split(['\\', '/'])
@@ -133,12 +151,14 @@ fn windows_path_segments(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// 当前进程是否已提权的受控检查命令 argv；输出供上层诊断，不解析自由文本。
+/// The argv of the controlled check command for whether the current process is
+/// elevated; the output is for upper-layer diagnostics, and no free text is
+/// parsed.
 pub fn is_elevated_check_command() -> Vec<String> {
     vec!["whoami.exe".into(), "/groups".into()]
 }
 
-/// 供上层复用的统一客户端操作提示。
+/// The unified client action hint, reusable for upper layers.
 pub fn elevation_required_hint() -> &'static str {
     "请以管理员身份运行 meshlet 客户端"
 }
@@ -171,14 +191,18 @@ fn quote_windows_argument(argument: &str) -> String {
     quoted
 }
 
-/// 权限类 Windows 失败码：`ERROR_ACCESS_DENIED`(5)、`ERROR_ELEVATION_REQUIRED`(740)、
-/// 以及 ShellExecuteW 失败返回里的 `SE_ERR_ACCESSDENIED`(5) 与提升必需(1101)。
-/// 这些码都表示「需要管理员」，其余失败保持 [`NetworkError::Io`] 分类。
+/// Privilege-class Windows failure codes: `ERROR_ACCESS_DENIED`(5),
+/// `ERROR_ELEVATION_REQUIRED`(740), and the ShellExecuteW failure return's
+/// `SE_ERR_ACCESSDENIED`(5) and elevation required (1101). These codes all mean
+/// "administrator required"; the remaining failures keep the
+/// [`NetworkError::Io`] classification.
 pub const PRIVILEGE_ERROR_CODES: [u32; 3] = [5, 740, 1101];
 
-/// 失败分类（纯函数，Linux 可单测）：权限类错误码或 UAC 文案 →
-/// [`NetworkError::InsufficientPrivileges`]，其余 → [`NetworkError::Io`]；
-/// 两类都保留原始报错文本，不吞信息（fail closed 见 [`ManagedExecutablePath::new`]）。
+/// Failure classification (a pure function, unit-testable on Linux): a
+/// privilege-class error code or a UAC text ->
+/// [`NetworkError::InsufficientPrivileges`], everything else ->
+/// [`NetworkError::Io`]; both keep the original error text, nothing is swallowed
+/// (fail closed, see [`ManagedExecutablePath::new`]).
 pub fn classify_elevation_failure(code: u32, message: &str) -> NetworkError {
     let lowered = message.to_lowercase();
     let needs_privileges = PRIVILEGE_ERROR_CODES.contains(&code)
@@ -191,9 +215,11 @@ pub fn classify_elevation_failure(code: u32, message: &str) -> NetworkError {
     NetworkError::Io(message.to_string())
 }
 
-/// Windows 执行层（`#[cfg(windows)]`）：UAC 重启与 TokenElevation 查询。
+/// The Windows execution layer (`#[cfg(windows)]`): the UAC relaunch and the
+/// TokenElevation query.
 ///
-/// **未在 Windows 上实测**；实测前不得接为 [crate::SystemBackend]。
+/// **Not yet real-machine tested on Windows**; it must not be wired into
+/// [crate::SystemBackend] before that happens.
 #[cfg(target_os = "windows")]
 pub mod exec {
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
@@ -210,7 +236,7 @@ pub mod exec {
     };
     use crate::NetworkError;
 
-    /// 以 UAC `runas` 动词启动受管可执行文件。
+    /// Launch the managed executable with the UAC `runas` verb.
     pub fn relaunch_elevated(
         path: &ManagedExecutablePath,
         args: &[String],
@@ -239,7 +265,8 @@ pub mod exec {
         ))
     }
 
-    /// 查询当前进程 TokenElevation；无法判定时 fail closed。
+    /// Query the current process TokenElevation; when it cannot be determined,
+    /// fail closed.
     pub fn current_process_is_elevated() -> Result<bool, NetworkError> {
         let mut token = HANDLE::default();
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
@@ -320,8 +347,10 @@ mod tests {
         );
     }
 
-    /// CommandLineToArgvW 的规则子集（测试用）：2n 个反斜杠后跟引号 → n 个字面
-    /// 反斜杠 + 引号定界；奇数个则末位反斜杠转义引号本身；引号外的空白分词。
+    /// A rule subset of CommandLineToArgvW (for tests): 2n backslashes followed by
+    /// a quote -> n literal backslashes plus the quote as a delimiter; an odd
+    /// number -> the trailing backslash escapes the quote itself; whitespace
+    /// outside the quotes separates words.
     fn parse_windows_arguments(command_line: &str) -> Vec<String> {
         let mut arguments = Vec::new();
         let mut current = String::new();
@@ -361,8 +390,9 @@ mod tests {
 
     #[test]
     fn quoted_command_line_round_trips_through_the_windows_parser() {
-        // 嵌入引号 / 尾随反斜杠 / 路径内空格：标准解析器必须还原出原参数，
-        // 证明转义不是「看起来对」而是可被系统还原。
+        // Embedded quotes / trailing backslashes / spaces in the path: the
+        // standard parser must restore the original arguments, proving the
+        // escaping is not merely "plausible-looking" but system-recoverable.
         let arguments = [
             r"C:\Program Files\Meshlet\meshlet.exe",
             r#"argument with " quote and \ tail\"#,
@@ -393,7 +423,8 @@ mod tests {
             ManagedExecutablePath::new(r"C:\Program Files\Meshlet\config.toml"),
             Err(NetworkError::ApplyRejected(_))
         ));
-        // 组件边界：受管目录**前缀字符串相同但不是同一目录**的路径必须拒绝。
+        // Component boundary: a path with the **same prefix string as but a
+        // different directory from** the managed one must be refused.
         assert!(matches!(
             ManagedExecutablePath::new(r"C:\Program Files\MeshletX\evil.exe"),
             Err(NetworkError::ApplyRejected(_))
@@ -406,7 +437,7 @@ mod tests {
 
     #[test]
     fn managed_directory_matches_case_insensitive_and_forward_slashes() {
-        // NTFS 不区分大小写；`/` 也是合法的 Windows 分隔符。
+        // NTFS is case-insensitive; `/` is also a legal Windows separator.
         assert!(ManagedExecutablePath::new(r"c:\program files\MESHLET\Meshlet.exe").is_ok());
         assert!(ManagedExecutablePath::new(r"C:/Program Files/Meshlet/meshlet.exe").is_ok());
     }
@@ -425,7 +456,8 @@ mod tests {
 
     #[test]
     fn parameter_command_line_omits_the_executable_path() {
-        // lpParameters 只带参数：UAC 提示窗显示的是 lpFile，参数里不再重复路径。
+        // lpParameters carries only the arguments: the UAC prompt window shows
+        // lpFile, so the path is not repeated in the arguments.
         let parameters = parameter_command_line(&[
             "--config".into(),
             r"C:\Program Files\Meshlet\config one.toml".into(),
@@ -439,7 +471,8 @@ mod tests {
 
     #[test]
     fn privilege_error_codes_map_to_insufficient_privileges() {
-        // 5 = ERROR_ACCESS_DENIED / SE_ERR_ACCESSDENIED，740/1101 = 提升必需。
+        // 5 = ERROR_ACCESS_DENIED / SE_ERR_ACCESSDENIED; 740/1101 = elevation
+        // required.
         for code in PRIVILEGE_ERROR_CODES {
             assert!(
                 matches!(
@@ -449,7 +482,8 @@ mod tests {
                 "code {code} must map to InsufficientPrivileges"
             );
         }
-        // UAC 文案（ShellExecuteW 不给码的旧版本文案）仍按文本宽匹配。
+        // UAC texts (older-version texts where ShellExecuteW gives no code) still
+        // match broadly by text.
         assert!(matches!(
             classify_elevation_failure(0, "The requested operation requires elevation"),
             NetworkError::InsufficientPrivileges(_)
@@ -462,7 +496,8 @@ mod tests {
 
     #[test]
     fn non_privilege_failures_stay_io_with_the_original_text() {
-        // 2 = ERROR_FILE_NOT_FOUND；其余失败不是权限问题，不得误报提权。
+        // 2 = ERROR_FILE_NOT_FOUND; the remaining failures are not privilege
+        // issues and must not be misreported as elevation.
         let error = classify_elevation_failure(2, "ShellExecuteW runas failed (code 2)");
         assert!(matches!(error, NetworkError::Io(_)));
         assert_eq!(

@@ -1,38 +1,42 @@
-//! WireGuard 中心转发原型的真实网络集成测试（[存档 §7.3](../../../docs/review/chatgpt-2026-10-13.md)）。
+//! Real-network integration tests for the WireGuard central-forwarding prototype
+//! ([archive §7.3](../../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 在四个网络命名空间里搭出 hub-and-spoke 拓扑（hub + 客户端 A + 客户端 B +
-//! 未授权 C），用 `ip netns exec` 驱动真实 WireGuard 数据面，证明四项转发
-//! 保证：
+//! Builds a hub-and-spoke topology in four network namespaces (hub + client A + client B +
+//! unauthorized C) and drives the real WireGuard dataplane with `ip netns exec`, proving four
+//! forwarding guarantees:
 //!
-//! 1. **A → B 可达**：经 hub 转发，双向都通；
-//! 2. **B → A 可达**；
-//! 3. **未授权第三节点不可达**：C 不在 hub 的 peer 列表里，C 打不到 A/B，
-//!    hub 上也没有 C 的 peer 条目；
-//! 4. **撤销 peer 立即失效**：hub 上 `wg set wg0 peer <A> remove` 之后，
-//!    A→B 与 B→A 立刻不通，且 hub 的 peer 列表里 A 已消失。
+//! 1. **A -> B is reachable**: forwarded through the hub, working in both directions;
+//! 2. **B -> A is reachable**;
+//! 3. **The unauthorized third node is not reachable**: C is not in the hub's peer list, C cannot
+//!    reach A/B, and the hub carries no peer entry for C;
+//! 4. **Revoking a peer takes effect immediately**: after `wg set wg0 peer <A> remove` on the hub,
+//!    A->B and B->A stop working right away and A is gone from the hub's peer list.
 //!
-//! 拓扑要点（踩过的坑，全部在拓扑里体现）：
+//! Topology essentials (pitfalls that were actually stepped on, all reflected in the topology):
 //!
-//! - **underlay 用网桥（L2 star）**：四个 netns 的 veth 都挂到同一网桥。
-//!   若把网桥换成「宿主 4 个 veth 共用一个 /24 + 宿主转发」，宿主有四个接口
-//!   落在同一子网，路由歧义，握手包到不了 hub 的 netns；
-//! - **veth 两端都关 offload**（`ethtool -K ... gro/gso/tso/rx/tx/sg off`）：
-//!   默认 GRO/GSO/TSO 会让 wg 握手静默失败（tx 有字节、rx=0）；
-//! - **peer endpoint 指向 hub 的 netns 侧 veth 地址**（网桥上的 10.99.0.10），
-//!   不是宿主侧地址——否则包送到宿主自己的 UDP 栈，那里没有 wg0；
-//! - **hub 的 `ip_forward` 必须在 hub 的 netns 里单独开**（每个 netns 有自己
-//!   的 `net.ipv4.ip_forward`，宿主的值不继承）；
-//! - **`wg set` 而非 `wg setconf`**：本环境 `setconf` 读配置文件报
-//!   `fopen: Permission denied`（rc=1），`wg set` 正常；
-//! - **private-key 与 peer 分两次 `wg set`**：合在一条命令里 peer 会被静默丢掉；
-//! - **每个节点独立密钥对**：peer 公钥与自身公钥相同时 `wg set peer` 静默忽略。
+//! - **The underlay uses a bridge (an L2 star)**: the veth of all four netns hang off the same
+//!   bridge. Swap the bridge for "the host holding 4 veth on one shared /24 + host forwarding" and
+//!   the host ends up with four interfaces on the same subnet: routes become ambiguous and the
+//!   handshake packets never reach the hub's netns;
+//! - **Offload is disabled on both ends of every veth** (`ethtool -K ... gro/gso/tso/rx/tx/sg off`):
+//!   the default GRO/GSO/TSO makes the wg handshake fail silently (bytes go out on tx, rx = 0);
+//! - **Peer endpoints point at the hub's netns-side veth address** (10.99.0.10 on the bridge), not
+//!   the host-side address -- otherwise the packets land in the host's own UDP stack, where no wg0 exists;
+//! - **The hub's `ip_forward` must be turned on inside the hub's netns specifically** (each netns has
+//!   its own `net.ipv4.ip_forward`; the host's value is not inherited);
+//! - **`wg set`, not `wg setconf`**: in this environment `setconf` fails reading the config file with
+//!   `fopen: Permission denied` (rc=1), while `wg set` works;
+//! - **private-key and peers go in two separate `wg set` calls**: combining them into one command
+//!   silently drops the peer;
+//! - **Every node gets its own key pair**: when a peer's public key equals the interface's own,
+//!   `wg set peer` is silently ignored.
 //!
-//! 前置条件：免密 sudo、`wg`（wireguard-tools）、`wireguard` 内核模块。
-//! 缺任一项时打印 `SKIP:` 并正常返回——`cargo test --workspace` 在没有特权
-//! 的 CI runner 上仍是全绿。
+//! Prerequisites: passwordless sudo, `wg` (wireguard-tools), and the `wireguard` kernel module.
+//! When any of them is missing, print `SKIP:` and return normally -- `cargo test --workspace` stays
+//! green on CI runners without privileges.
 //!
-//! 清理：`Topology` 的 `Drop` 删掉所有 netns、veth、网桥与临时密钥目录；
-//! 测试最后再断言一次「跑完不留垃圾」。
+//! Cleanup: `Topology`'s `Drop` removes all netns, veth, the bridge and the temp key directory; the
+//! test finally asserts once more that "nothing is left behind after the run".
 
 #![cfg(target_os = "linux")]
 
@@ -41,20 +45,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// 本测试创建的所有对象（netns / veth / 网桥）共用的名称前缀。
+/// The name prefix shared by every object (netns / veth / bridge) this test creates.
 ///
-/// 各 netns 测试的前缀必须**互不为前缀**：`preflight_cleanup` 按
-/// `starts_with` 批量清理，"mlt" 会连带删掉 "mlta"/"mltb"/"mltd" 的对象，
-/// `cargo test --workspace` 并行跑时互相清场（对象跑到一半被删掉）。
+/// The prefixes of the netns tests must **never be prefixes of one another**: `preflight_cleanup`
+/// clears objects in bulk by `starts_with`, so "mlt" would also wipe the objects of
+/// "mlta"/"mltb"/"mltd" -- when `cargo test --workspace` runs them in parallel they would clear each
+/// other's stage (objects deleted mid-test).
 const PREFIX: &str = "mltw";
-/// 客户端路由经由 hub 的 Overlay 网段。
+/// The overlay range that client routes traverse via the hub.
 const OVERLAY_CIDR: &str = "10.240.0.0/16";
-/// 握手等待上限。
+/// Upper bound for waiting on the handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(25);
 
-// ---------------------------------------------------------------- 进程辅助
+// ---------------------------------------------------------------- process helpers
 
-/// 以 root（`sudo -n`，无密码提示）执行命令。
+/// Run a command as root (`sudo -n`, no password prompt).
 fn sudo(args: &[&str]) -> Output {
     Command::new("sudo")
         .arg("-n")
@@ -67,21 +72,21 @@ fn sudo_ok(args: &[&str]) -> bool {
     sudo(args).status.success()
 }
 
-/// 在 netns 内执行命令。
+/// Run a command inside a netns.
 fn netns_exec(ns: &str, args: &[&str]) -> Output {
     let mut full = vec!["ip", "netns", "exec", ns];
     full.extend_from_slice(args);
     sudo(&full)
 }
 
-/// 在 netns 内执行一段 bash。用 bash（而非 sh）是因为 `wg set` 的
-/// `private-key <(echo ...)` 需要进程替换。
+/// Run a bash snippet inside a netns. bash (not sh) because `wg set`'s
+/// `private-key <(echo ...)` needs process substitution.
 fn netns_bash(ns: &str, script: &str) -> Output {
     netns_exec(ns, &["bash", "-c", script])
 }
 
-/// 建拓扑阶段：任何命令失败都 panic 并带上 stderr——环境对了而命令失败就是
-/// 真 bug，不该静默。
+/// Topology-building phase: any failing command panics with the stderr attached -- with the
+/// environment right, a failing command is a real bug and must not be swallowed.
 fn require_ok(out: &Output, what: &str) {
     if !out.status.success() {
         panic!(
@@ -96,9 +101,10 @@ fn count_prefix_lines(text: &str) -> usize {
     text.lines().filter(|l| l.starts_with(PREFIX)).count()
 }
 
-// ---------------------------------------------------------------- 前置条件
+// ---------------------------------------------------------------- prerequisites
 
-/// 缺任一前置条件就返回 `None`（并打印 `SKIP:`），让 CI 无特权环境保持全绿。
+/// Return `None` (after printing `SKIP:`) when any prerequisite is missing, keeping CI's
+/// unprivileged environments green.
 fn prerequisites() -> Option<()> {
     if !sudo_ok(&["true"]) {
         assert!(
@@ -119,7 +125,7 @@ fn prerequisites() -> Option<()> {
             return None;
         }
     }
-    // 已加载则 modprobe 可能报错，所以两个条件取「或」。
+    // When already loaded, modprobe may error out -- hence the OR of the two conditions.
     if !sudo_ok(&["modprobe", "wireguard"]) && !Path::new("/sys/module/wireguard").exists() {
         assert!(
             std::env::var_os("MESHLET_REQUIRE_DATAPLANE").is_none(),
@@ -131,7 +137,8 @@ fn prerequisites() -> Option<()> {
     Some(())
 }
 
-/// 幂等清场：删掉上一次（崩溃的）运行留下的 mlt* 对象与临时密钥目录。
+/// Idempotent pre-cleanup: delete the mlt* objects and temp key directories left by a previous
+/// (crashed) run.
 fn preflight_cleanup() {
     let out = sudo(&["ip", "netns", "list"]);
     let text = String::from_utf8_lossy(&out.stdout);
@@ -154,7 +161,7 @@ fn preflight_cleanup() {
     let _ = std::fs::remove_dir_all(format!("/tmp/{PREFIX}-keys"));
 }
 
-// ---------------------------------------------------------------- 密钥
+// ---------------------------------------------------------------- keys
 
 fn wg_genkey() -> std::io::Result<String> {
     let out = Command::new("wg").arg("genkey").output()?;
@@ -182,9 +189,9 @@ fn wg_pubkey(private: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-// ---------------------------------------------------------------- 拓扑
+// ---------------------------------------------------------------- topology
 
-/// 一个节点（hub 或客户端）的配置与身份。
+/// One node's (hub or client) configuration and identity.
 struct Node {
     netns: String,
     veth_host: String,
@@ -209,8 +216,8 @@ impl Node {
     }
 }
 
-/// 从 netns / veth / 网桥 / 密钥目录中追踪已建对象，保证无论 setup 走到哪
-/// 一步 panic 都能清干净。
+/// Tracks the objects built so far (netns / veth / bridge / key directory), guaranteeing that a
+/// panic at any step of setup can still clean everything up.
 struct Guard {
     netns: Vec<String>,
     veth: Vec<String>,
@@ -254,7 +261,7 @@ struct Topology {
 }
 
 impl Topology {
-    /// 建拓扑。前置条件不满足返回 `None`（已打印 `SKIP:`）。
+    /// Build the topology. Returns `None` when a prerequisite is not met (`SKIP:` already printed).
     fn setup() -> Option<Topology> {
         prerequisites()?;
         preflight_cleanup();
@@ -279,7 +286,7 @@ impl Topology {
         let mut guard = Guard::new();
         guard.keys_dir = Some(keys_dir.clone());
 
-        // --- 密钥（每个节点独立密钥对）
+        // --- Keys (an independent key pair per node)
         let mut nodes = Vec::new();
         for (name, underlay, overlay, port) in [
             ("H", "10.99.0.10", "10.240.0.1", 15180),
@@ -322,7 +329,7 @@ impl Topology {
         }
         let hub = &nodes[0];
 
-        // --- underlay：网桥 star
+        // --- Underlay: a bridge star
         let bridge = format!("{PREFIX}br0");
         guard.bridge = Some(bridge.clone());
         require_ok(
@@ -331,7 +338,7 @@ impl Topology {
         );
         require_ok(&sudo(&["ip", "link", "set", &bridge, "up"]), "bridge up");
 
-        // --- netns + veth + underlay 地址 + 关 offload
+        // --- netns + veth + underlay addresses + turning off offload
         for n in &nodes {
             guard.netns.push(n.netns.clone());
             guard.veth.push(n.veth_host.clone());
@@ -378,7 +385,7 @@ impl Topology {
                 "veth ns up",
             );
             require_ok(&n.netns_exec(&["ip", "link", "set", "lo", "up"]), "lo up");
-            // GRO/GSO/TSO 会让 wg-over-veth 握手静默失败；两端都要关。
+            // GRO/GSO/TSO make a wg-over-veth handshake fail silently; turn them off on both ends.
             let offload = [
                 "gro", "off", "gso", "off", "tso", "off", "rx", "off", "tx", "off", "sg", "off",
             ];
@@ -390,7 +397,7 @@ impl Topology {
             let _ = n.netns_exec(&ns_offload);
         }
 
-        // --- wg 接口 + 地址
+        // --- wg interfaces + addresses
         for n in &nodes {
             let script = format!(
                 "ip link add wg0 type wireguard && ip address add {}/24 dev wg0 && ip link set wg0 up",
@@ -398,20 +405,20 @@ impl Topology {
             );
             require_ok(&n.netns_bash(&script), "wg interface");
         }
-        // 每个 netns 有自己的 net.ipv4.ip_forward，宿主的值不继承。
+        // Every netns has its own net.ipv4.ip_forward; the host's value is not inherited.
         require_ok(
             &hub.netns_exec(&["sysctl", "-w", "net.ipv4.ip_forward=1"]),
             "hub ip_forward",
         );
 
-        // --- hub 的 wg 配置：private-key 先设，peer 分条设置
+        // --- The hub's wg config: set the private key first, then each peer in its own statement
         let script = format!(
             "wg set wg0 listen-port {} private-key <(echo {})",
             hub.port, hub.private_key
         );
         require_ok(&hub.netns_bash(&script), "hub private key");
         for peer in &nodes[1..3] {
-            // 只有 A 和 B——C 是未授权节点，hub 上没有它的 peer 条目。
+            // Only A and B -- C is an unauthorized node, and the hub carries no peer entry for it.
             let script = format!(
                 "wg set wg0 peer {} allowed-ips {}/32",
                 peer.public_key, peer.overlay
@@ -419,7 +426,7 @@ impl Topology {
             require_ok(&hub.netns_bash(&script), "hub peer");
         }
 
-        // --- 客户端的 wg 配置
+        // --- The clients' wg config
         for n in &nodes[1..] {
             let script = format!(
                 "wg set wg0 listen-port {} private-key <(echo {})",
@@ -440,7 +447,7 @@ impl Topology {
         })
     }
 
-    /// 等某个节点看到「latest handshake」；超时返回 false。
+    /// Wait until some node reports a "latest handshake"; return false on timeout.
     fn wait_handshake(&self, ns: &str) -> bool {
         let start = Instant::now();
         while start.elapsed() < HANDSHAKE_TIMEOUT {
@@ -463,7 +470,7 @@ impl Topology {
         self.nodes[0].wg_show()
     }
 
-    /// 握手失败时把四个节点的 `wg show wg0` 全打出来，便于定位。
+    /// When the handshake fails, dump `wg show wg0` for all four nodes to help locate the problem.
     fn dump_all(&self) {
         for n in &self.nodes {
             eprintln!("--- wg show wg0 in {} ---", n.netns);
@@ -476,7 +483,7 @@ impl Topology {
 fn wg_hub_forwarding() {
     let topo = match Topology::setup() {
         Some(t) => t,
-        None => return, // 已打印 SKIP:
+        None => return, // Already printed SKIP:
     };
 
     let [hub, a, b, c] = topo.nodes.as_slice() else {
@@ -490,18 +497,18 @@ fn wg_hub_forwarding() {
         }
     }
 
-    // 1. A -> B 经 hub 转发可达。
+    // 1. A -> B is reachable forwarded through the hub.
     assert!(
         topo.ping(&a.netns, &b.overlay),
         "A -> B must reach through the hub"
     );
-    // 2. B -> A 反向也通。
+    // 2. B -> A works in the other direction as well.
     assert!(
         topo.ping(&b.netns, &a.overlay),
         "B -> A must reach through the hub"
     );
 
-    // 3. 未授权第三节点不可达，且 hub 上无其 peer 条目。
+    // 3. The unauthorized third node is unreachable, and the hub holds no peer entry for it.
     assert!(
         !topo.ping(&c.netns, &a.overlay),
         "unauthorized C must not reach A"
@@ -515,13 +522,13 @@ fn wg_hub_forwarding() {
         !hub_peers.contains(&c.public_key),
         "hub must not have a peer entry for unauthorized C:\n{hub_peers}"
     );
-    // C 在场不影响已授权节点的连通性。
+    // C being present does not affect connectivity between the authorized nodes.
     assert!(
         topo.ping(&a.netns, &b.overlay),
         "A -> B must still work while unauthorized C is present"
     );
 
-    // 4. 撤销 A：hub 上移除 peer 后立刻失效。
+    // 4. Revoke A: removing the peer on the hub takes effect immediately.
     require_ok(
         &hub.netns_bash(&format!("wg set wg0 peer {} remove", a.public_key)),
         "revoke peer A",
@@ -540,7 +547,7 @@ fn wg_hub_forwarding() {
         "hub must not list revoked peer A:\n{hub_peers}"
     );
 
-    // teardown 并断言「跑完不留垃圾」。
+    // Teardown and assert that "nothing is left behind after the run".
     let keys_dir = topo.keys_dir.clone();
     drop(topo);
     let netns_left = sudo(&["ip", "netns", "list"]);

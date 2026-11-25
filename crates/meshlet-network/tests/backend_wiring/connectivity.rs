@@ -13,16 +13,16 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
     let _guard = NETNS_PREFIX_LOCK.lock().unwrap();
     let topo = match Topology::setup() {
         Some(t) => t,
-        None => return, // 已打印 SKIP:
+        None => return, // Already printed SKIP:
     };
 
-    // ---- 全部数据面配置经 LinuxNetworkBackend 下发 ------------------------
+    // ---- All dataplane configuration is handed down through LinuxNetworkBackend ------------------------
     let mut hub_backend = topo.hub.backend();
     let mut a_backend = topo.a.backend();
     let mut b_backend = topo.b.backend();
     let mut gw_backend = topo.gw.backend();
 
-    // hub：tunnel（peer A/B/G）+ Alias 前缀转发路由。
+    // Hub: tunnel (peers A/B/G) + the forwarding routes for the alias prefixes.
     hub_backend
         .apply_tunnel_sync(
             &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true),
@@ -33,7 +33,7 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
         .apply_routes_sync(&hub_routes())
         .expect("hub apply_routes");
 
-    // 客户端 A/B：tunnel + Alias 段进隧道的路由。
+    // Clients A/B: tunnel + the routes sending the alias range into the tunnel.
     for (node, backend) in [(&topo.a, &mut a_backend), (&topo.b, &mut b_backend)] {
         backend
             .apply_tunnel_sync(
@@ -50,7 +50,7 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
             .unwrap_or_else(|e| panic!("{} apply_routes: {e}", node.netns));
     }
 
-    // 网关 G：tunnel + 回程路由 + Alias NAT（计划层渲染执行）。
+    // Gateway G: tunnel + the return route + alias NAT (rendered and executed by the planning layer).
     gw_backend
         .apply_tunnel_sync(
             &leaf_tunnel(&topo.gw, &topo.hub, &["10.240.0.0/16", "10.241.0.0/16"]),
@@ -70,7 +70,7 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
         .apply_nat_sync(&rules, "192.168.1.1".parse().unwrap())
         .expect("gw apply_nat");
 
-    // ---- 1. 握手完成 + inspect 快照 ---------------------------------------
+    // ---- 1. Handshake complete + inspect snapshot ---------------------------------------
     for ns in [&topo.a.netns, &topo.b.netns, &topo.gw.netns] {
         assert!(
             topo.wait_handshake(ns),
@@ -80,7 +80,7 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
     let snap = hub_backend.inspect_sync().expect("hub inspect");
     assert!(snap.tunnel_exists);
     assert_eq!(snap.peers.len(), 3, "hub peers: A + B + G");
-    // 身份级（M2）：条数之外的公钥 + allowed-ips 身份必须如实读出。
+    // Identity level (M2): beyond the count, the public-key + allowed-ips identities must be read out faithfully.
     assert_eq!(
         peer_identities(&snap),
         planned_peer_identities(&topo.a, &topo.b, &topo.gw),
@@ -99,16 +99,16 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
         snap.nat_rules
     );
 
-    // 网关 G 的快照：规则在场 + 受控 SNAT 读数在场（dnat_snat 模式，
-    // §8.2「内核实测所采用模式」的证据源）。
+    // Gateway G's snapshot: the rule is present + a reading of the controlled SNAT is present
+    // (dnat_snat mode, the evidence source for §8.2's "the mode the kernel actually uses").
     let gw_snap = gw_backend.inspect_sync().expect("gw inspect");
     assert!(
         !gw_snap.nat_rules.is_empty(),
         "gw carries meshlet NAT rules: {:?}",
         gw_snap.nat_rules
     );
-    // 计划侧与内核侧指纹逐字节一致（M2：同一计划升级前后产出同一指纹，
-    // 存量账本不作废）。
+    // The planning side and the kernel side match byte for byte (M2: the same plan produces the same
+    // fingerprint before and after an upgrade, so an existing ledger is not invalidated).
     assert_eq!(
         gw_snap.nat_rules,
         sorted_signatures(
@@ -124,17 +124,17 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
         "dnat_snat mode: controlled SNAT rule kernel-verified"
     );
 
-    // ---- 2. A -> B 经 hub 转发可达（双向） --------------------------------
+    // ---- 2. A -> B is reachable forwarded through the hub (both directions) --------------------------------
     assert!(topo.ping(&topo.a.netns, &topo.b.overlay), "A -> B via hub");
     assert!(topo.ping(&topo.b.netns, &topo.a.overlay), "B -> A via hub");
 
-    // ---- 3. Alias 路径：A 经 hub + G + NAT 打到 G 后真实 LAN --------------
+    // ---- 3. Alias path: A reaches G's real LAN behind G via hub + G + NAT --------------
     assert!(
         topo.ping(&topo.a.netns, "10.241.1.5"),
         "A -> alias 10.241.1.5 (real LAN 192.168.1.5 behind G)"
     );
 
-    // ---- 4. 幂等：同一配置重复应用结果一致（§10.3） ------------------------
+    // ---- 4. Idempotence: applying the same configuration repeatedly gives the same result (§10.3) ------------------------
     hub_backend
         .apply_tunnel_sync(
             &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, true),
@@ -153,8 +153,8 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
         "alias after re-apply"
     );
 
-    // ---- 5. Overlay 源保留（§7.4）：NAT 在场，A→B 源仍是原始地址 ----------
-    // G 的 NAT 规则此刻在场——若存在无差别 SNAT，B 看到的源就会被改写。
+    // ---- 5. Overlay source preservation (§7.4): with the NAT present, the A -> B source is still the original address ----------
+    // G's NAT rule is present at this point -- if an indiscriminate SNAT existed, the source B sees would be rewritten.
     let expected_source = format!("src={}", topo.a.overlay);
     let observed = topo.overlay_source_seen_by_b();
     assert_eq!(
@@ -163,8 +163,8 @@ fn tunnel_routes_nat_connectivity_and_idempotence() {
         "overlay A->B must keep the original source address (7.4)"
     );
 
-    // ---- 6. remove_nat 只删 Meshlet 规则，不触碰用户规则（§12.6） ----------
-    // 预埋一条非 Meshlet 规则（用户视角的外来规则）。
+    // ---- 6. remove_nat removes only Meshlet rules and never touches user rules (§12.6) ----------
+    // Plant one non-Meshlet rule (a foreign rule from the user's viewpoint).
     require_ok(
         &netns_exec(
             &topo.gw.netns,

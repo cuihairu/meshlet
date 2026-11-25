@@ -1,39 +1,41 @@
-//! meshlet-network：`NetworkBackend` 统一抽象（[存档 §15.1](../../docs/review/chatgpt-2026-10-13.md)、
-//! [ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）。
+//! meshlet-network: the unified `NetworkBackend` abstraction ([archive §15.1](../../docs/review/chatgpt-2026-10-13.md),
+//! [ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)).
 //!
-//! Linux 实现在 [linux](linux) 模块（受控执行 `ip` / `wg` / `iptables` 命令，
-//! ADR-007 的降级路径先行落地，通路已在 netns 集成测试中真机验证）；
-//! Windows 实现按 ADR-008 后续接入——在那之前，非 Linux 平台得到
-//! [unsupported] 模块的**明确占位**（每个数据面操作显式报
-//! [NetworkError::Unsupported]，绝不静默假装生效）。
+//! The Linux implementation lives in the [linux](linux) module (running `ip` / `wg` / `iptables`
+//! commands under control; ADR-007's degraded path landed first, and the path has been verified on
+//! real machines via netns integration tests);
+//! the Windows implementation joins later per ADR-008 — until then, non-Linux platforms get
+//! the **explicit placeholder** of the [unsupported] module (every dataplane operation explicitly
+//! reports [NetworkError::Unsupported] and never silently pretends to work).
 //!
-//! 注意：使用原生 `async fn` trait（Rust 1.75+）。原生 async trait 暂不支持
-//! `dyn` 分发；如后续需要对象安全，再评估 `async-trait`（存档 §15.1 已预留该决策点）。
+//! Note: native `async fn` traits are used (Rust 1.75+). Native async traits do not yet support
+//! `dyn` dispatch; if object safety is needed later, evaluate `async-trait` (the archive §15.1 reserves this decision point).
 //!
-//! [nat](nat) 模块是纯**计划**层（§9.4–§9.5）：从 Alias 映射确定性推导网关侧
-//! NAT 规则；执行随数据面接线（ADR-007）。
+//! The [nat](nat) module is a pure **planning** layer (§9.4–§9.5): it deterministically derives the
+//! gateway-side NAT rules from Alias mappings; execution follows dataplane wiring (ADR-007).
 //!
-//! [windows_routes](windows_routes) / [windows_firewall](windows_firewall) /
-//! [windows_service](windows_service) / [windows_tunnel](windows_tunnel) 是
-//! Windows 数据面的**计划层**（ADR-008）：命令参数构造、解析与失败文本
-//! 分类，Linux 上单测跑绿；执行层 `#[cfg(windows)]` 只调计划层。路由/防火
-//! 墙/服务执行层已在真机验证（2026-10-16 CI runner en-US；2026-10-26 中文
-//! Windows Server）；隧道执行层原语已交付，但 WireGuardNT 驱动安装后的全
-//! 生命周期仍未真机验证（见 [windows_tunnel] 模块文档）。完整验收前
-//! Windows 不接为 [SystemBackend]。
+//! [windows_routes](windows_routes) / [windows_firewall](windows_firewall) / [windows_service](windows_service) /
+//! [windows_tunnel](windows_tunnel) are the **planning layer** of the Windows dataplane (ADR-008):
+//! command argument construction, parsing, and failure-text classification, unit-tested green on
+//! Linux; the `#[cfg(windows)]` execution layer only calls the planning layer. The route/firewall/
+//! service execution layers are verified on real machines (2026-10-16 CI runner en-US;
+//! 2026-10-26 Chinese Windows Server); tunnel execution primitives are delivered, but the full
+//! lifecycle after WireGuardNT driver install is still unverified on real machines (see the
+//! [windows_tunnel] module docs). Windows is not wired in as [SystemBackend] until full acceptance.
 //!
-//! 接线决策的完成状态前置审计（M5，2026-10-27）见
-//! [docs/analysis/todo-completion-audit-2026-10-27.md](../../docs/analysis/todo-completion-audit-2026-10-27.md)
-//! 「Focus area 3 / Windows 后端」：结论是隧道实现整体缺席，接线需新建子
-//! 系统而非改这一行 `cfg`。`windows_tunnel` 计划层 + `#[cfg(windows)]` 执行
-//! 层原语已于 2026-10-27 落地；`apply_tunnel` 接线与真机全生命周期仍缺席。
+//! Pre-audit of wiring-decision completion status (M5, 2026-10-27): see "Focus area 3 / Windows
+//! backend" in [docs/analysis/todo-completion-audit-2026-10-27.md](../../docs/analysis/todo-completion-audit-2026-10-27.md).
+//! Conclusion: the tunnel implementation was entirely absent, so wiring meant a new subsystem
+//! rather than flipping one `cfg`. The `windows_tunnel` planning layer + `#[cfg(windows)]` execution
+//! primitives landed 2026-10-27; `apply_tunnel` wiring and the real-machine full lifecycle remain missing.
 //!
-//! [DevicePlan] 是 server → agent 的**结构化配置对象**（§16.4）：agent 只消费
-//! 类型化的隧道/路由/NAT 计划，绝不执行服务端下发的任意 Shell 命令。
+//! [DevicePlan] is the **structured configuration object** from server → agent (§16.4): the agent only
+//! consumes typed tunnel/route/NAT plans and never executes arbitrary shell commands handed down by the server.
 
-// 按职责分档：计划类型（plan）/ 错误（error）/ 纯解析与对账（reconcile）/
-// 诊断载体（types）/ SSH alias（ssh_alias）；本文件保留模块声明、全量
-// re-export、平台默认后端别名与 NetworkBackend trait。
+// Grouped by responsibility: plan types (plan) / errors (error) / pure parsing and
+// reconciliation (reconcile) / diagnostics carriers (types) / SSH alias (ssh_alias);
+// this file keeps the module declarations, the full re-exports, the platform default
+// backend alias, and the NetworkBackend trait.
 mod error;
 mod plan;
 mod reconcile;
@@ -68,9 +70,9 @@ pub mod windows_service;
 pub mod windows_tunnel;
 pub mod windows_wireguard_nt;
 
-/// boringtun 计划层（全平台编译+单测）与 macOS 后端模块（命令计划全平台、
-/// `cfg(macos)` 执行器）。见 [crate::macos_wireguard_bt] 模块文档（②-3 路径
-/// 决策：spawn boringtun-cli + wg.sock UAPI）。
+/// boringtun planning layer (compiles and unit-tests on every platform) and the macOS
+/// backend modules (command plans on every platform, `cfg(macos)` executors). See the
+/// [crate::macos_wireguard_bt] module docs (②-3 path decision: spawn boringtun-cli + wg.sock UAPI).
 pub mod macos;
 pub mod macos_dns;
 pub mod macos_privileges;
@@ -85,34 +87,34 @@ pub mod windows;
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub mod unsupported;
 
-/// 平台默认后端：Linux 为真实内核后端（[linux] 模块，ADR-007）。
+/// Platform default backend: on Linux this is the real kernel backend ([linux] module, ADR-007).
 ///
-/// 调用方一律经本别名构造（`SystemBackend::new()` + `with_*` 装配），平台
-/// 差异收敛在这里：Linux 真实执行。
+/// Callers always construct through this alias (`SystemBackend::new()` + `with_*` assembly); platform
+/// differences converge here — on Linux it really executes.
 #[cfg(target_os = "linux")]
 pub type SystemBackend = linux::LinuxNetworkBackend;
 
-/// 平台默认后端（Windows）：真实 Windows 后端（[windows] 模块，ADR-008
-/// tunnel-only v1 已接线；NAT-bearing 计划显式拒绝，绝不静默假装生效）。
+/// Platform default backend (Windows): the real Windows backend ([windows] module; ADR-008
+/// tunnel-only v1 wired in; NAT-bearing plans are explicitly rejected, never silently pretended to work).
 #[cfg(target_os = "windows")]
 pub type SystemBackend = windows::WindowsNetworkBackend;
 
-/// 平台默认后端（macOS）：[macos::system::MacSystemBackend]——默认占位
-/// （行为与旧 [unsupported] 占位一致）+ `mac-boringtun` 数据面分派
-/// （③-C 接线；`tunnel_backend` 未选时行为零变化）。
+/// Platform default backend (macOS): [macos::system::MacSystemBackend] — a placeholder by
+/// default (behavior identical to the old [unsupported] placeholder) + `mac-boringtun`
+/// dataplane dispatch (③-C wiring; zero behavior change when `tunnel_backend` is not selected).
 #[cfg(target_os = "macos")]
 pub type SystemBackend = macos::system::MacSystemBackend;
 
-/// 平台默认后端（其余平台）：[unsupported] 模块的明确占位，每个数据面操作
-/// 都失败可见（`NetworkError::Unsupported`），绝不静默假装生效。
+/// Platform default backend (all other platforms): the [unsupported] module's explicit placeholder;
+/// every dataplane operation fails visibly (`NetworkError::Unsupported`), never silently pretending to work.
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub type SystemBackend = unsupported::UnsupportedBackend;
 
-/// 统一网络后端抽象：inspect → apply → rollback。
+/// The unified network backend abstraction: inspect → apply → rollback.
 ///
-/// 原生 async fn 在 trait 里无法声明 `Send` 边界；这里改用 RPITIT + `Send`
-/// （Rust 1.75+），使未来能在 axum handler / `spawn_blocking` 间安全传递，
-/// 不引入 `async-trait` 宏依赖。
+/// A native async fn inside a trait cannot declare `Send` bounds; here we use RPITIT + `Send`
+/// (Rust 1.75+) so the futures can later be passed safely between axum handlers and
+/// `spawn_blocking`, without pulling in the `async-trait` macro dependency.
 pub trait NetworkBackend {
     fn inspect<'s>(
         &'s self,
@@ -128,58 +130,62 @@ pub trait NetworkBackend {
         routes: Vec<RouteConfig>,
     ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
-    /// 在网关侧下发 NAT 规则（计划层 [nat::NatRule] 渲染执行）。规则携带
-    /// `meshlet alias {id}` 所有权注释（§12.6），[NetworkBackend::remove_nat]
-    /// 按注释精确移除。
+    /// Push NAT rules at the gateway side (planning-layer [nat::NatRule] rendered and executed).
+    /// Rules carry the `meshlet alias {id}` ownership comment (§12.6), and [NetworkBackend::remove_nat]
+    /// removes them exactly by that comment.
     fn apply_nat<'s>(
         &'s self,
         rules: Vec<nat::NatRule>,
         gateway_lan_addr: std::net::Ipv4Addr,
     ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
-    /// 按所有权注释移除属于 `owner`（如 `meshlet alias al-1`）的 NAT 规则；
-    /// 只触碰携带该注释的规则，绝不改写用户已有规则（ADR-007）。
+    /// Remove the NAT rules owned by `owner` (e.g. `meshlet alias al-1`) by their ownership comment;
+    /// only rules carrying that comment are touched, and the user's own rules are never rewritten (ADR-007).
     fn remove_nat<'s>(
         &'s self,
         owner: &'s str,
     ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
-    /// 回滚只允许触碰 Meshlet 自有对象（§10.3）。
+    /// Rollback may only touch Meshlet-owned objects (§10.3).
     fn rollback<'s>(
         &'s self,
         revision: ConfigRevisionRef,
     ) -> impl std::future::Future<Output = Result<ApplyResult, NetworkError>> + Send + 's;
 
-    /// AGENT-ISO-1：外来 overlay（ZeroTier 类）隔离**自愈**。
+    /// AGENT-ISO-1: **self-healing** isolation of foreign overlays (ZeroTier-like).
     ///
-    /// 与 [`NetworkBackend::apply_tunnel`] 等「有变更才跑」的接口不同，本方法
-    /// **每轮 reconcile 都要跑**：隔离规则可能被外部 flush，且受管隧道与外来
-    /// overlay 的启动存在竞态（2026-11-23 实测 zerotier 的 ExecStartPost 早于
-    /// wg-mlt 起来 0.7s，规则整批丢失 → 两条隧道互为路径、递归封装 185:1
-    /// 放大）。只挂在 apply 上会漏掉「无计划变更」的轮次，规则丢了补不回来。
+    /// Unlike interfaces such as [`NetworkBackend::apply_tunnel`] that only run when something
+    /// changed, this method **must run on every reconcile round**: isolation rules can be flushed
+    /// externally, and there is a startup race between the managed tunnel and a foreign overlay
+    /// (measured on 2026-11-23: zerotier's ExecStartPost ran 0.7s before wg-mlt came up and the
+    /// whole rule batch was lost → the two tunnels became each other's path with 185:1 recursive
+    /// encapsulation). Hooking only into apply misses the rounds with no plan change, and lost
+    /// rules never come back.
     ///
-    /// 默认 no-op（无外来 overlay 需要隔离的平台）；Linux 实现幂等补
-    /// iptables 规则。失败由调用方记日志——隔离是加固而非数据面前提，
-    /// 不因它中断隧道（[`crate::diag`] / `doctor` 面负责把它报成 FAIL）。
+    /// Default is a no-op (platforms with no foreign overlay to isolate); the Linux implementation
+    /// idempotently re-adds the iptables rules. Failures are logged by the caller — isolation is
+    /// hardening, not a dataplane prerequisite, and tunnels must not be interrupted over it
+    /// ([`crate::diag`] / the `doctor` surface report it as FAIL).
     fn ensure_overlay_isolation(&self) -> Result<(), NetworkError> {
         Ok(())
     }
 
-    /// AGENT-DOC-1：外来 overlay 共存体检（见 [crate::doctor]）。
+    /// AGENT-DOC-1: coexistence health check for foreign overlays (see [crate::doctor]).
     ///
-    /// 默认返回 [crate::doctor::unsupported_report]——未实现的平台全项
-    /// `not_assessed`，**绝不返回 PASS**（§7.5「没实现」≠「检查过没问题」）。
-    /// Linux 后端覆盖为真实采集。
+    /// By default returns [crate::doctor::unsupported_report] — on unimplemented platforms every
+    /// item is `not_assessed` and it **never returns PASS** (§7.5: "not implemented" ≠ "checked and fine").
+    /// The Linux backend overrides this with real collection.
     fn doctor(&self) -> crate::doctor::DoctorReport {
         crate::doctor::unsupported_report()
     }
 }
 
-/// 探测本机 WireGuard 类型接口名（`ip -o link show type wireguard` 首个命中）。
+/// Probe the local WireGuard-type interface name (first hit of `ip -o link show type wireguard`).
 ///
-/// CLI / MCP 都没有「受管接口名」的硬编码来源——配置里写 `wg0`、真机却叫
-/// `wg-mlt` 时，按默认名读会读到空（`diag` 的 wg 段长期 `(not collected)` 就是
-/// 这么来的）。按链路类型现探，读不到返回 `None` 由调用方回落默认。
+/// Neither the CLI nor MCP has a hardcoded source for the "managed interface name" — when the
+/// config says `wg0` but the real machine named it `wg-mlt`, reading by the default name comes up
+/// empty (this is how the `diag` wg section stayed `(not collected)` for so long). Probe by link
+/// type at runtime; return `None` when it cannot be read and let the caller fall back to the default.
 #[cfg(target_os = "linux")]
 pub fn detect_wireguard_interface() -> Option<String> {
     let out = std::process::Command::new("ip")
@@ -196,7 +202,7 @@ pub fn detect_wireguard_interface() -> Option<String> {
         .next()
 }
 
-/// 非 Linux 平台暂无同款探测（wireguard-nt / boringtun 的接口枚举另走后端）。
+/// Non-Linux platforms have no equivalent probe for now (wireguard-nt / boringtun enumerate interfaces through their own backend).
 #[cfg(not(target_os = "linux"))]
 pub fn detect_wireguard_interface() -> Option<String> {
     None
@@ -206,7 +212,7 @@ pub fn detect_wireguard_interface() -> Option<String> {
 mod tests {
     use super::*;
 
-    /// 证明 trait 可实现、可泛型分发（§15.1 概念接口落地）。
+    /// Proves the trait can be implemented and dispatched generically (the §15.1 concept interface, realized).
     struct DummyBackend;
 
     impl NetworkBackend for DummyBackend {

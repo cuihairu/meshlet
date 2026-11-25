@@ -1,34 +1,40 @@
-//! macOS DNS 面（③-B）：resolver 文件计划——纯函数层，全平台编译+单测。
+//! macOS DNS surface (③-B): resolver file plan — a pure-function layer,
+//! compiled and unit-tested on every platform.
 //!
-//! macOS 的按域解析器是**文件机制**（`/etc/resolver/<domain>`），不需要改
-//! `scutil` 状态：写文件即可。本模块产出写文件计划（路径/内容/权限）并
-//! 守门路径穿越；执行器经 [ResolverSink] 落盘（`cfg(macos)` 的真实现
-//! 在 [crate::macos::backend]）。
+//! macOS per-domain resolvers are a **file mechanism**
+//! (`/etc/resolver/<domain>`) and need no `scutil` state change: writing the
+//! file is enough. This module produces write-file plans (path/content/
+//! permissions) and guards against path traversal; the executor writes to
+//! disk through [ResolverSink] (the real `cfg(macos)` implementation lives in
+//! [crate::macos::backend]).
 //!
-//! 只读诊断面是命令计划的 [crate::macos::backend::BtCommand::DumpDns]
-//! （`scutil --dns`），不在本模块。
+//! The read-only diagnostics surface is the
+//! [crate::macos::backend::BtCommand::DumpDns] command plan (`scutil --dns`),
+//! which is not part of this module.
 
 use crate::NetworkError;
 use std::path::PathBuf;
 
-/// 解析器根目录（`/etc/resolver/<domain>`，macOS 标准机制）。
+/// Resolver root directory (`/etc/resolver/<domain>`, the standard macOS
+/// mechanism).
 pub const RESOLVER_ROOT: &str = "/etc/resolver";
 
-/// resolver 文件计划的固定权限：普通文件、644（组/其他可读，属主可写）。
+/// Fixed permissions for a resolver file plan: a regular file, mode 644
+/// (group/others readable, owner writable).
 pub const RESOLVER_FILE_MODE: u32 = 0o644;
 
-/// 一条写文件计划（`/etc/resolver/<domain>`）。
+/// A single write-file plan (`/etc/resolver/<domain>`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolverFilePlan {
-    /// 绝对路径（[RESOLVER_ROOT] 内，无穿越）。
+    /// Absolute path (inside [RESOLVER_ROOT], no traversal).
     pub path: PathBuf,
-    /// 文件内容（每行一条 `nameserver <ip>`）。
+    /// File content (one `nameserver <ip>` line each).
     pub content: String,
-    /// 权限位（[RESOLVER_FILE_MODE]）。
+    /// Permission bits ([RESOLVER_FILE_MODE]).
     pub mode: u32,
 }
 
-/// resolver 计划错误（→ [NetworkError::ApplyRejected]）。
+/// Resolver plan error (-> [NetworkError::ApplyRejected]).
 #[derive(Debug, thiserror::Error)]
 pub enum DnsPlanError {
     #[error("invalid resolver domain {0:?}")]
@@ -43,14 +49,16 @@ impl From<DnsPlanError> for NetworkError {
     }
 }
 
-/// 域计划：`domain` + nameserver 列表 → [ResolverFilePlan]（纯函数）。
+/// Domain plan: `domain` + a list of nameservers -> [ResolverFilePlan] (pure
+/// function).
 ///
-/// - **路径守门**：domain 必须是单段 DNS 标签（或点分标签），拒绝分隔符、
-///   空标签、`..`、绝对路径与空白——保证计划路径恒在 [RESOLVER_ROOT] 内，
-///   绝不写出根目录。
-/// - **内容**：每条 nameserver 一行 `nameserver <ip>`（无 nameserver 拒绝，
-///   不写空文件）。
-/// - **权限**：[RESOLVER_FILE_MODE]。
+/// - **Path gate**: the domain must be a single DNS label (or dot-separated
+///   labels); separators, empty labels, `..`, absolute paths and whitespace are
+///   rejected — this keeps the planned path always inside [RESOLVER_ROOT] and
+///   never writes outside the root directory.
+/// - **Content**: one `nameserver <ip>` line per nameserver (no nameservers is
+///   refused, so no empty file is written).
+/// - **Permissions**: [RESOLVER_FILE_MODE].
 pub fn resolver_file_plan(
     domain: &str,
     nameservers: &[std::net::Ipv4Addr],
@@ -66,7 +74,8 @@ pub fn resolver_file_plan(
         content.push_str(&format!("nameserver {nameserver}\n"));
     }
     let path = PathBuf::from(RESOLVER_ROOT).join(domain);
-    // 双保险：路径必须落在 resolver 根目录内（穿越即拒，不依赖标签校验）。
+    // Belt and braces: the path must land inside the resolver root directory
+    // (traversal is refused outright, not relying on the label validation).
     if !path.starts_with(RESOLVER_ROOT) {
         return Err(DnsPlanError::InvalidDomain(domain.to_string()));
     }
@@ -77,7 +86,8 @@ pub fn resolver_file_plan(
     })
 }
 
-/// 域是否可作为 resolver 文件名（单段或点分标签；无路径成分）。
+/// Whether the domain can be used as a resolver file name (a single label or
+/// dot-separated labels; no path components).
 pub fn is_valid_resolver_domain(domain: &str) -> bool {
     if domain.is_empty() || domain.len() > 253 {
         return false;
@@ -88,7 +98,7 @@ pub fn is_valid_resolver_domain(domain: &str) -> bool {
     {
         return false;
     }
-    // 标签内：字母数字 + 连字符；标签间：单个点。
+    // Within a label: alphanumerics plus hyphen; between labels: a single dot.
     domain.split('.').all(|label| {
         !label.is_empty()
             && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
@@ -97,15 +107,18 @@ pub fn is_valid_resolver_domain(domain: &str) -> bool {
     })
 }
 
-/// 解析器文件落盘端口：计划层产出计划，执行器经本 trait 落盘。
+/// Sink port for resolver file writes: the plan layer produces the plan and
+/// the executor writes to disk through this trait.
 ///
-/// Linux 侧测试用 [RecordingResolverSink] 断言落盘调用序列（内存 mock，
-/// 不真写盘）；`cfg(macos)` 真实现在 [crate::macos::backend]。
+/// Linux-side tests use [RecordingResolverSink] to assert the write call
+/// sequence (an in-memory mock, nothing is really written); the real
+/// `cfg(macos)` implementation is in [crate::macos::backend].
 pub trait ResolverSink {
     fn write(&self, plan: &ResolverFilePlan) -> Result<(), NetworkError>;
 }
 
-/// 内存 mock 落盘端口（测试钩子）：记录写入序列，不真写盘。
+/// In-memory mock sink port (test hook): records the write sequence without
+/// really writing to disk.
 #[cfg(test)]
 #[derive(Debug, Default)]
 pub struct RecordingResolverSink {
@@ -118,7 +131,7 @@ impl RecordingResolverSink {
         Self::default()
     }
 
-    /// 已记录的落盘计划序列（断言用）。
+    /// The recorded write-plan sequence (for assertions).
     pub fn written(&self) -> Vec<ResolverFilePlan> {
         self.written.borrow().clone()
     }
@@ -205,18 +218,22 @@ mod tests {
         assert_eq!(written.len(), 1);
         assert_eq!(written[0].path, PathBuf::from("/etc/resolver/a.b"));
         assert_eq!(written[0].content, "nameserver 1.1.1.1\n");
-        // 内存 mock 断言的是落盘计划序列，不真写盘。
+        // The in-memory mock asserts the write-plan sequence, it does not
+        // really write to disk.
     }
 
-    /// 钉：解析器根目录是 macOS 标准路径（跨平台只钉字符串本身）。
+    /// Pin: the resolver root is the standard macOS path (cross-platform we
+    /// only pin the string itself).
     #[test]
     fn resolver_root_is_the_expected_directory() {
         assert_eq!(RESOLVER_ROOT, "/etc/resolver");
     }
 
-    /// Unix 路径语义下 `/etc/resolver` 是绝对路径。Windows 的 `Path::is_absolute`
-    /// 要求盘符/UNC 前缀，同一字符串在此不成立——本模块是 macOS 机制，只钉
-    /// Unix 侧（Windows CI 跑 `cargo test --workspace`，该断言在 Win32 为 false）。
+    /// Under Unix path semantics `/etc/resolver` is an absolute path. Windows'
+    /// `Path::is_absolute` requires a drive letter or UNC prefix, so the same
+    /// string does not qualify there — this module is a macOS mechanism and
+    /// only pins the Unix side (Windows CI runs `cargo test --workspace`, where
+    /// that assertion is false on Win32).
     #[cfg(unix)]
     #[test]
     fn resolver_root_is_absolute_on_unix() {

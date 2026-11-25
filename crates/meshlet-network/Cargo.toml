@@ -30,6 +30,6 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 wireguard-nt = "0.5.0"
-# wireguard-nt 的 SetInterface.allowed_ips/地址装配用 ipnet 类型；与
-# wireguard-nt 0.5.0 锁定的同一 2.12 线，不引入第二版本。
+# wireguard-nt's SetInterface.allowed_ips/address assembly uses the ipnet types;
+# pinned to the same 2.12 line that wireguard-nt 0.5.0 resolves, so no second version is pulled in.
 ipnet = "2.12"

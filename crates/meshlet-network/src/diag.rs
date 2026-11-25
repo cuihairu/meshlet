@@ -1,70 +1,72 @@
-//! R-DIAG 诊断快照：路由表 / 接口清单 / wg 接口读数三类只读采集。
+//! R-DIAG diagnostics snapshot: three kinds of read-only collection — the route table, the
+//! interface inventory, and wg interface readings.
 //!
-//! 类型与纯解析层跨平台共享（Linux 本机单测）；各平台后端（[crate::linux] /
-//! [crate::windows]）负责取数——Linux `ip route` / `ip -o link` / `ip -o addr`
-//! / `wg show dump`，Windows `route print` / `netsh interface ipv4` /
-//! `wg.exe show dump`。**只读诊断**：不写任何内核状态，失败按该段缺失记录
-//! （[DiagSnapshot::errors]），绝不臆测（§7.5 同纪律）。
+//! The types and the pure parsing layer are shared cross-platform (unit-tested on a local Linux box);
+//! each platform backend ([crate::linux] / [crate::windows]) is responsible for gathering data —
+//! Linux via `ip route` / `ip -o link` / `ip -o addr` / `wg show dump`, Windows via `route print`
+//! / `netsh interface ipv4` / `wg.exe show dump`. **Read-only diagnostics**: no kernel state is
+//! written; a failure is recorded as that section being missing ([DiagSnapshot::errors]) and never
+//! guessed (§7.5, the same discipline).
 //!
-//! 复用既有解析惯例而非重写：wg dump 字段布局与
-//! [crate::windows_tunnel::parse_wg_dump_peers] 同一套（制表符分隔，
-//! fields[0] 公钥 / fields[3] allowed-ips，本模块在此之上扩展 endpoint /
-//! 握手 / 流量）；`ip route` 目的地解析与 [crate::linux] 的
-//! `routes_on_interface` 同一套 token 扫掠。链路 MTU 复用
-//! [crate::linux::parse_link_mtu] 的「`mtu` 后一 token」判据。
+//! Existing parsing conventions are reused rather than rewritten: the wg dump field layout is the
+//! same scheme as [crate::windows_tunnel::parse_wg_dump_peers] (tab-separated, fields[0] public key
+//! / fields[3] allowed-ips; this module extends it with endpoint / handshake / traffic on top);
+//! `ip route` destination parsing uses the same token sweep as [crate::linux]'s
+//! `routes_on_interface`. Link MTU reuses the "the token after `mtu`" criterion of
+//! [crate::linux::parse_link_mtu].
 
 use meshlet_domain::Ipv4Cidr;
 
-/// 一条 IPv4 路由表目（全表，非仅受管接口）。
+/// One IPv4 route-table entry (the full table, not just the managed interface).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiagRoute {
-    /// 目的地（`default` 或 CIDR / 单地址 / 特殊类型行如 `blackhole 10.0.0.0/8`）。
+    /// The destination (`default`, a CIDR / single address, or a special-type line such as `blackhole 10.0.0.0/8`).
     pub destination: String,
-    /// 下一跳网关（`via`）；无网关（直连 / on-link）为 `None`。
+    /// The next-hop gateway (`via`); `None` when there is no gateway (direct / on-link).
     pub via: Option<String>,
-    /// 出接口名（`dev`）。读不到（特殊路由）为 `None`。
+    /// The output interface name (`dev`). `None` when unreadable (a special route).
     pub dev: Option<String>,
-    /// 路由协议标记（`proto`；`None` = 未标注）。
+    /// The route protocol marker (`proto`; `None` = unmarked).
     pub proto: Option<String>,
-    /// 路由 metric。
+    /// The route metric.
     pub metric: Option<String>,
 }
 
-/// 接口清单原始行（`ip -o link` / `netsh interface ipv4` 两平台的共同形状）。
+/// A raw interface inventory line (the shape common to `ip -o link` and `netsh interface ipv4`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LinkRow {
     pub name: String,
-    /// 接口管理态（Linux `UP`/`DOWN`；Windows `connected`/`disconnected` 原样）。
+    /// The interface's administrative state (Linux `UP`/`DOWN`; Windows `connected`/`disconnected` verbatim).
     pub state: Option<String>,
     pub mtu: Option<u32>,
 }
 
-/// 一个网络接口的清单条目（名称 / 状态 / MTU / 地址）。
+/// One network interface's inventory entry (name / state / MTU / addresses).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiagInterface {
     pub name: String,
     pub state: Option<String>,
     pub mtu: Option<u32>,
-    /// 接口上的 IPv4 地址（带前缀，如 `10.240.0.2/16`）。
+    /// The IPv4 addresses on the interface (with prefix, e.g. `10.240.0.2/16`).
     pub addrs: Vec<String>,
-    /// 是否 meshlet 受管隧道接口。
+    /// Whether this is the meshlet-managed tunnel interface.
     pub managed: bool,
 }
 
-/// wg 接口读数（单 peer）。
+/// The wg interface reading (a single peer).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiagWgPeer {
     pub public_key: String,
-    /// 当前 endpoint（`ip:port`）；`None` = 未配置 / 未握手。
+    /// The current endpoint (`ip:port`); `None` = not configured / never shook hands.
     pub endpoint: Option<String>,
     pub allowed_ips: Vec<Ipv4Cidr>,
-    /// 最近握手距今秒数；`None` = 从未握手（或读数缺失）。
+    /// Seconds since the most recent handshake; `None` = never shook hands (or the reading is missing).
     pub latest_handshake_age_secs: Option<u64>,
     pub transfer_rx: Option<u64>,
     pub transfer_tx: Option<u64>,
 }
 
-/// wg 受管接口整体读数。
+/// The whole wg managed-interface reading.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiagWg {
     pub interface: String,
@@ -73,25 +75,25 @@ pub struct DiagWg {
     pub peers: Vec<DiagWgPeer>,
 }
 
-/// 三类快照的聚合（agent 采集 → 心跳上报 → console / CLI 展示）。
+/// The aggregate of the three snapshot kinds (agent collects → heartbeat reports → console / CLI display).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct DiagSnapshot {
-    /// 采集时刻（unix 秒）。
+    /// The collection instant (unix seconds).
     pub collected_at_secs: u64,
     pub routes: Vec<DiagRoute>,
     pub interfaces: Vec<DiagInterface>,
-    /// `None` = 受管 wg 接口当前不可读（未创建 / 读数失败）。
+    /// `None` = the managed wg interface is currently unreadable (not created / the reading failed).
     pub wg: Option<DiagWg>,
-    /// 各段采集失败的说明（空 = 全部成功）。
+    /// Explanations for the sections that failed to collect (empty = everything succeeded).
     pub errors: Vec<String>,
 }
 
-/// `ip -4 route show`（全表）→ 路由条目。
+/// `ip -4 route show` (the full table) → route entries.
 ///
-/// 行形如 `default via 192.168.1.1 dev eth0 proto dhcp metric 100`、
-/// `10.240.0.0/16 dev wg0 scope link src 10.240.0.2`、
-/// `blackhole 10.99.0.0/8 proto static`。首个 token 是目的地（特殊路由类型
-/// 为 `类型 目的地` 两 token）；其后是 `key value` 对，取 via/dev/proto/metric。
+/// Lines look like `default via 192.168.1.1 dev eth0 proto dhcp metric 100`,
+/// `10.240.0.0/16 dev wg0 scope link src 10.240.0.2`,
+/// `blackhole 10.99.0.0/8 proto static`. The first token is the destination (special route types
+/// take two tokens, `type destination`); what follows is `key value` pairs, and via/dev/proto/metric are taken from them.
 pub fn parse_ip_route_table(output: &str) -> Vec<DiagRoute> {
     const ROUTE_TYPES: &[&str] = &[
         "blackhole",
@@ -147,12 +149,12 @@ pub fn parse_ip_route_table(output: &str) -> Vec<DiagRoute> {
         .collect()
 }
 
-/// `ip -o link show` → 接口原始行（名称 / 状态 / MTU）。
+/// `ip -o link show` → raw interface lines (name / state / MTU).
 ///
-/// 行形如 `2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel
-/// state UP mode DEFAULT ...`。名称 = 第二 token 去尾冒号；MTU 复用
-/// 「`mtu` 后一 token」判据（与 [crate::linux::parse_link_mtu] 同一惯例）；
-/// 状态 = `state` 后一 token（读不到 → `None`）。
+/// Lines look like `2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel
+/// state UP mode DEFAULT ...`. The name = the second token with the trailing colon stripped; MTU
+/// reuses the "the token after `mtu`" criterion (the same convention as [crate::linux::parse_link_mtu]);
+/// the state = the token after `state` (`None` when unreadable).
 pub fn parse_ip_o_link(output: &str) -> Vec<LinkRow> {
     output
         .lines()
@@ -180,11 +182,11 @@ pub fn parse_ip_o_link(output: &str) -> Vec<LinkRow> {
         .collect()
 }
 
-/// `ip -4 -o addr show` → `(接口, "地址/前缀")` 对（仅 `inet` 行）。
+/// `ip -4 -o addr show` → `(interface, "address/prefix")` pairs (only `inet` lines).
 ///
-/// 行形如 `2: eth0    inet 192.168.1.50/24 brd 192.168.1.255 scope global
-/// dynamic eth0`。与 [crate::linux::parse_ip_octet_addrs] 同一判据
-/// （fields[2] == "inet"），保留前缀长度。
+/// Lines look like `2: eth0    inet 192.168.1.50/24 brd 192.168.1.255 scope global
+/// dynamic eth0`. The same criterion as [crate::linux::parse_ip_octet_addrs]
+/// (fields[2] == "inet"), keeping the prefix length.
 pub fn parse_ip_o_addr(output: &str) -> Vec<(String, String)> {
     output
         .lines()
@@ -200,10 +202,11 @@ pub fn parse_ip_o_addr(output: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// 把接口原始行与地址对合并成清单条目（纯函数，单测覆盖）。
+/// Merge raw interface lines with address pairs into inventory entries (a pure function, covered by unit tests).
 ///
-/// 每个 `LinkRow` 一条；无 `LinkRow` 但有地址的接口（`ip -o link` 读不到时
-/// 兜底）也产出一条（state/mtu 均 `None`）。`managed` = 名称等于受管接口。
+/// One entry per `LinkRow`; interfaces that have addresses but no `LinkRow` (the fallback when
+/// `ip -o link` cannot be read) also produce one entry (both state and mtu `None`). `managed` = the
+/// name equals the managed interface.
 pub fn assemble_interfaces(
     links: &[LinkRow],
     addrs: &[(String, String)],
@@ -231,15 +234,15 @@ pub fn assemble_interfaces(
         .collect()
 }
 
-/// `wg show <if> dump`（或 `wg.exe show <name> dump`）→ `(listen_port, peers)`。
+/// `wg show <if> dump` (or `wg.exe show <name> dump`) → `(listen_port, peers)`.
 ///
-/// 官方 dump 为制表符分隔：首行 `private-key public-key listen-port fwmark`，
-/// 其后每行 `public-key preshared-key endpoint allowed-ips latest-handshake
-/// transfer-rx transfer-tx keepalive`。字段布局与
-/// [crate::windows_tunnel::parse_wg_dump_peers] 同一套（fields[0] 公钥 /
-/// fields[3] allowed-ips），此处扩展 fields[2] endpoint / fields[4] 握手 /
-/// fields[5..7] 流量。未设值为 `(none)` / `off` / 空。握手时间 0（从未握手）
-/// 按 `None`（调用方按「无读数」处理，不臆造）。
+/// The official dump is tab-separated: the first line is `private-key public-key listen-port fwmark`,
+/// and each following line is `public-key preshared-key endpoint allowed-ips latest-handshake
+/// transfer-rx transfer-tx keepalive`. The field layout is the same scheme as
+/// [crate::windows_tunnel::parse_wg_dump_peers] (fields[0] public key / fields[3] allowed-ips); here we
+/// extend it with fields[2] endpoint / fields[4] handshake / fields[5..7] traffic. Unset values read
+/// as `(none)` / `off` / empty. A handshake time of 0 (never shook hands) becomes `None` (the caller
+/// treats it as "no reading" rather than fabricating one).
 pub fn parse_wg_dump(dump: &str, now_secs: u64) -> (Option<u16>, Vec<DiagWgPeer>) {
     let mut listen_port = None;
     let mut peers = Vec::new();
@@ -287,18 +290,18 @@ pub fn parse_wg_dump(dump: &str, now_secs: u64) -> (Option<u16>, Vec<DiagWgPeer>
     (listen_port, peers)
 }
 
-/// `route print -4` 的活动路由段 → 路由条目（Windows）。
+/// The active routes section of `route print -4` → route entries (Windows).
 ///
-/// 段形如（en-US 稳定布局）：
+/// The section looks like this (en-US stable layout):
 /// ```text
 /// Active Routes:
 /// Network Destination        Netmask          Gateway       Interface  Metric
 ///          0.0.0.0          0.0.0.0     192.168.1.1    192.168.1.50     25
 ///       10.240.0.0      255.255.0.0       On-link         10.240.0.2    291
 /// ```
-/// 列位置无关，按空白切 5 列（目的地 / 掩码 / 网关 / 接口 / metric）。
-/// `0.0.0.0/0.0.0.0` → `default`；网关 `On-link` → `None`；`dev` 是接口
-/// 地址（调用方再映射为接口名）。遇 `===` 结束段。
+/// Column positions do not matter; split 5 columns on whitespace (destination / mask / gateway
+/// / interface / metric). `0.0.0.0/0.0.0.0` → `default`; gateway `On-link` → `None`; `dev` is the
+/// interface address (the caller maps it back to an interface name). A run of `===` ends the section.
 pub fn parse_route_print(output: &str) -> Vec<DiagRoute> {
     let mut active = false;
     let mut routes = Vec::new();
@@ -318,7 +321,7 @@ pub fn parse_route_print(output: &str) -> Vec<DiagRoute> {
             break;
         }
         if line.starts_with("Network Destination") {
-            continue; // 表头
+            continue; // the header row
         }
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() < 5 {
@@ -347,7 +350,7 @@ pub fn parse_route_print(output: &str) -> Vec<DiagRoute> {
     routes
 }
 
-/// 点分十进制掩码 → 前缀长度（仅连续掩码，如 `255.255.0.0` → 16）。
+/// A dotted-decimal mask → the prefix length (contiguous masks only, e.g. `255.255.0.0` → 16).
 fn netmask_prefix(mask: &str) -> Option<u8> {
     let octets: [u8; 4] = mask
         .split('.')
@@ -360,11 +363,10 @@ fn netmask_prefix(mask: &str) -> Option<u8> {
     (ones + v.trailing_zeros() == 32).then_some(ones as u8)
 }
 
-/// `netsh interface ipv4 show interfaces` → 接口原始行。
+/// `netsh interface ipv4 show interfaces` → raw interface lines.
 ///
-/// 行形如 ` 12          25        1420  connected     WireGuard`；前 4 列
-/// （索引 / metric / MTU / 状态）+ 其余为名称。表头与分隔行（`Idx`/`---`）
-/// 跳过。
+/// Lines look like ` 12          25        1420  connected     WireGuard`; the first 4 columns
+/// (idx / metric / MTU / state) with the rest being the name. Header and separator rows (`Idx`/`---`) are skipped.
 pub fn parse_netsh_interfaces(output: &str) -> Vec<LinkRow> {
     output
         .lines()
@@ -384,11 +386,12 @@ pub fn parse_netsh_interfaces(output: &str) -> Vec<LinkRow> {
         .collect()
 }
 
-/// `netsh interface ipv4 show config` → 每接口的 IPv4 地址列表。
+/// `netsh interface ipv4 show config` → each interface's IPv4 address list.
 ///
-/// 段形如 `Configuration for interface "WireGuard"` 下含 `IP Address: 10.240.0.2`
-/// 行（`Subnet Prefix:` 单独一行，地址不带前缀——Windows 侧接口地址前缀由
-/// 该接口的 `Subnet Prefix` 行给出，此处只取地址本身，展示时与路由表互证）。
+/// The sections look like `Configuration for interface "WireGuard"` containing `IP Address: 10.240.0.2`
+/// lines (the `Subnet Prefix:` is on its own line and the address carries no prefix — on the Windows
+/// side the interface address prefix comes from that interface's `Subnet Prefix` line; we take only the
+/// address itself and it is cross-checked against the routing table at display time).
 pub fn parse_netsh_config_addrs(output: &str) -> Vec<(String, Vec<String>)> {
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
     let mut current: Option<usize> = None;
@@ -412,11 +415,11 @@ pub fn parse_netsh_config_addrs(output: &str) -> Vec<(String, Vec<String>)> {
     out
 }
 
-/// 从 `ping` 输出解析首个往返时延（毫秒，四舍五入）。
+/// Parse the first round-trip time from `ping` output (milliseconds, rounded).
 ///
-/// 兼容 iputils（`time=0.512 ms`，小数带空格）与 Windows（`time=1ms` /
-/// `时间=1ms`，整数不带空格）——统一取「数字后可选空格 + `ms`」首次出现。
-/// 取到子毫秒按四舍五入成整毫秒（RTT 展示与对账粒度）。
+/// Compatible with iputils (`time=0.512 ms`, decimal with a space) and Windows (`time=1ms`
+/// or the localized zh-CN form, integer with no space) — uniformly take the first occurrence of "digits, then an
+/// optional space, then `ms`". A sub-millisecond value is rounded to a whole millisecond (the RTT display and reconciliation granularity).
 pub fn parse_ping_rtt_ms(output: &str) -> Option<u64> {
     let bytes = output.as_bytes();
     let mut i = 0;

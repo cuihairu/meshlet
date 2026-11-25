@@ -1,8 +1,9 @@
 use crate::{InterfaceDiagnostic, NetworkError, WgPeerDiagnostic};
 use std::net::Ipv4Addr;
 
-/// 解析 `reg query IPEnableRouter` 输出为布尔（`0x1` → true、`0x0` → false，
-/// 值缺失/其他 → None）。纯字符串判定：Windows 语言包不影响 `0x` 前缀。
+/// Parse `reg query IPEnableRouter` output into a boolean (`0x1` → true,
+/// `0x0` → false, value missing / anything else → None). Pure string verdict:
+/// the Windows language pack does not affect the `0x` prefix.
 pub(super) fn parse_ip_enable_router(text: &str) -> Option<bool> {
     if text.contains("0x1") {
         Some(true)
@@ -13,14 +14,17 @@ pub(super) fn parse_ip_enable_router(text: &str) -> Option<bool> {
     }
 }
 
-/// 解析 `netsh interface ipv4 show addresses name=<if>` 输出中该接口的首个
-/// IPv4 地址（BUG② 漂移判定的适配器地址读数；纯函数，跨平台单测）。
+/// Parse the interface's first IPv4 address out of
+/// `netsh interface ipv4 show addresses name=<if>` output (the adapter address
+/// reading for the BUG② drift verdict; pure function, cross-platform unit
+/// tests).
 ///
-/// 行形如 en `   IP Address:                           10.240.0.7` 或
-/// zh-CN `   IP 地址:                           10.240.0.7`——标签宽匹配
-/// （`IP Address` / `IP 地址`），取行内最后一个可解析为 IPv4 的词元。
-/// 「子网前缀」行的 `(masked …)` 不含独立 IPv4 词元、且匹配不到地址标签，
-/// 不会误命中。读不到 → None。
+/// Lines look like en `   IP Address:                           10.240.0.7` or
+/// the zh-CN "IP address" label followed by the same value — the label is
+/// matched broadly (`IP Address` plus the Chinese label) and the last token in
+/// the line that parses as IPv4 is taken. The subnet prefix line's
+/// `(masked …)` holds no standalone IPv4 token and does not match the address
+/// label, so it cannot false-hit. Nothing readable → None.
 pub(super) fn parse_netsh_interface_ipv4_address(text: &str) -> Option<std::net::Ipv4Addr> {
     for line in text.lines() {
         let is_address_label =
@@ -52,8 +56,9 @@ pub(super) fn mask_to_prefix(mask: &str) -> u8 {
     octets.iter().map(|b| b.count_ones() as u8).sum()
 }
 
-/// 从 Windows `ping` 输出解析首个 RTT（毫秒），支持英文 `time=1ms` 与
-/// 中文 `时间=1ms`；无读数返回 `None`。
+/// Parse the first RTT (milliseconds) from Windows `ping` output, supporting
+/// both the English `time=1ms` and the Chinese `time=<ms>` (localized label)
+/// forms; returns `None` when there is no reading.
 pub(super) fn parse_ping_rtt_ms_windows(text: &str) -> Option<u128> {
     let marker = if text.contains("time") {
         "time"
@@ -72,10 +77,11 @@ pub(super) fn parse_ping_rtt_ms_windows(text: &str) -> Option<u128> {
     rest[..end].parse::<f64>().ok().map(|v| v.round() as u128)
 }
 
-/// 解析 `wg.exe show <name> dump` 的 peer 行为诊断读数（纯函数，任意平台
-/// 单测）。官方格式为制表符分隔：首行接口，其后每行
+/// Parse a peer line of `wg.exe show <name> dump` into diagnostic readings
+/// (pure function, unit-tested on any platform). The official format is
+/// tab-separated: the first line is the interface, then one line per peer as
 /// `pubkey preshared endpoint allowed-ips latest-handshake transfer-rx
-/// transfer-tx keepalive`。缺列按 0/空补。
+/// transfer-tx keepalive`. Missing columns are padded with 0/empty.
 pub(super) fn parse_wg_dump_diag_line_windows(line: &str) -> Option<WgPeerDiagnostic> {
     let fields: Vec<&str> = line.split('\t').collect();
     let public_key = fields.first()?.trim();
@@ -106,8 +112,9 @@ pub(super) fn parse_wg_dump_diag_line_windows(line: &str) -> Option<WgPeerDiagno
     })
 }
 
-/// 解析 `Get-NetIPConfiguration | ConvertTo-Json` 的接口清单（纯函数，任意
-/// 平台单测）。输出为对象数组或单个对象；字段缺省按空/None 处理。
+/// Parse the interface list out of `Get-NetIPConfiguration | ConvertTo-Json`
+/// (pure function, unit-tested on any platform). The output is either an object
+/// array or a single object; missing fields default to empty/None.
 pub(super) fn parse_windows_interfaces_json(text: &str) -> Vec<InterfaceDiagnostic> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -158,14 +165,19 @@ pub(super) fn parse_windows_interfaces_json(text: &str) -> Vec<InterfaceDiagnost
         .collect()
 }
 
-/// Windows 局域网接口判定（§12 P2P 候选口径，镜像 Linux `is_lan_interface`）：
-/// 排除本受管 wg 接口、回环、Hyper-V vEthernet、Tailscale、其余 wg 接口与
-/// wireguard-nt 隧道（nt 模型 OS 别名恰为 `WireGuard`，隧道名只在 InterfaceDescription——
-/// 不排除会把隧道当 LAN 候选，lan 过收）；
-/// **外来 overlay 同样出局**（`zerotier*` = `ZeroTier One [nwid]` 别名，与 Linux
-/// 侧 `zt*` 对位）：它的网段当成本机 LAN 会把对端 ZeroTier 地址判成同网段直连，
-/// WG endpoint 指进另一套隧道即互相封装成环（2026-11-23 真机事故）。别名比对
-/// 大小写不敏感（Windows 接口别名如 `Tailscale`、`vEthernet (WSL …)`）。
+/// Windows LAN interface verdict (§12 P2P candidate criterion, mirroring Linux
+/// `is_lan_interface`): excludes this managed wg interface, loopback, Hyper-V
+/// vEthernet, Tailscale, other wg interfaces, and wireguard-nt tunnels (the nt
+/// model's OS alias is exactly `WireGuard`, and the tunnel name appears only in
+/// InterfaceDescription — not excluding it would treat the tunnel as a LAN
+/// candidate, lan over-capture);
+/// **foreign overlays are excluded too** (`zerotier*` = `ZeroTier One [nwid]`
+/// aliases, the counterpart of Linux's `zt*`): treating their subnet as the
+/// local LAN would classify the peer's ZeroTier address as same-subnet direct,
+/// and pointing the WG endpoint into another tunnel makes the two sides wrap
+/// each other into a loop (2026-11-23 real-machine incident). Alias comparison
+/// is case-insensitive (Windows interface aliases such as `Tailscale`,
+/// `vEthernet (WSL …)`).
 pub(super) fn is_windows_lan_interface(alias: &str, wg_interface: &str) -> bool {
     let lower = alias.to_ascii_lowercase();
     if alias == wg_interface || lower.starts_with("loopback") {
@@ -187,10 +199,12 @@ pub(super) fn is_windows_lan_interface(alias: &str, wg_interface: &str) -> bool 
     true
 }
 
-/// `Get-NetIPAddress … | ConvertTo-Json -Compress` 解析：`(别名, 地址, 前缀)`
-/// 列表。PowerShell **单结果**输出对象、多结果输出数组——按 `Value` 统一归一
-/// （[parse_windows_interfaces_json] 同惯例）。畸形行（缺字段/解析失败）
-/// 逐条跳过，不吞掉整批读数。
+/// Parse `Get-NetIPAddress … | ConvertTo-Json -Compress` into a list of
+/// `(alias, address, prefix)`. PowerShell emits an object for a **single
+/// result** and an array for multiple — both are normalized over `Value`
+/// (same convention as [parse_windows_interfaces_json]). Malformed entries
+/// (missing fields / parse failures) are skipped one by one instead of
+/// discarding the whole batch of readings.
 pub(super) fn parse_lan_ip_json(text: &str) -> Result<Vec<(String, Ipv4Addr, u8)>, NetworkError> {
     let trimmed = text.trim();
     if trimmed.is_empty() {

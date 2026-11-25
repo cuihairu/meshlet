@@ -1,25 +1,34 @@
-//! Windows 完整卸载计划层（[ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)）。
+//! Windows full uninstall planning layer
+//! ([ADR-008](../../../docs/decisions/adr-008-windows-network-backend.md)).
 //!
-//! 本模块只包含**纯规划**：把 Meshlet 自有卸载步骤渲染成既有模块已经定义、
-//! 已经分类过的受控命令，不执行任何命令。计划层在任意平台编译并单测。
-//! 执行层复用 routes/service/firewall 三个已真机验证的 exec 薄封装
-//! （2026-10-26 中文 Windows Server：卸载链重入集成测试
-//! `windows_cleanup_e2e` 闭环）；TODO #52 保持未勾：接
-//! [crate::SystemBackend] 仍以完整验收为准，非 Linux 平台仍保持
-//! [crate::unsupported] 的显式占位（§10.3、§12.2）。
+//! This module contains **pure planning only**: it renders Meshlet's own
+//! uninstall steps into controlled commands already defined and already
+//! classified by existing modules, and executes nothing. The plan layer
+//! compiles and unit-tests on any platform. The execution layer reuses the
+//! three real-machine-verified exec thin wrappers (routes/service/firewall;
+//! 2026-10-26 Chinese Windows Server: the reentrant uninstall-chain
+//! integration test `windows_cleanup_e2e` is closed loop); TODO #52 stays
+//! unchecked: wiring up [crate::SystemBackend] still requires full acceptance,
+//! and non-Linux platforms keep the explicit placeholder of
+//! [crate::unsupported] (§10.3, §12.2).
 //!
-//! 与 [windows_service](windows_service)、[windows_routes](windows_routes)、
-//! [windows_firewall](windows_firewall) 同一纪律：
+//! Same discipline as [windows_service](windows_service),
+//! [windows_routes](windows_routes), [windows_firewall](windows_firewall):
 //!
-//! - **受控命令**：只复用既有 pub 命令构造器（`sc` 服务停止/删除、
-//!   `netsh interface ipv4 delete route`、`netsh advfirewall firewall delete
-//!   rule`），不拼接自由文本；含空格的服务/接口/规则名保持单个 argv 词元；
-//! - **确定性顺序**：固定为 service stop → service delete → 已知前缀逐条
-//!   route delete → Meshlet 受管规则名逐条 firewall delete；
-//! - **失败可清理**：每一步的「目标已缺失 = 可重入跳过」判定只调用对应
-//!   模块已有的 absent 分类函数，不在此重复实现分类逻辑；
-//! - **所有权边界**：只接收显式列出的 Meshlet 服务、已知前缀和受管规则名，
-//!   绝不扫描或清理机器全局服务/路由/防火墙表。
+//! - **controlled commands**: only reuse existing pub command constructors
+//!   (`sc` service stop/delete, `netsh interface ipv4 delete route`,
+//!   `netsh advfirewall firewall delete rule`), never free-form text;
+//!   service/interface/rule names containing spaces stay a single argv token;
+//! - **deterministic order**: fixed as service stop → service delete → route
+//!   delete one by one for the known prefixes → firewall delete one by one for
+//!   the Meshlet managed rule names;
+//! - **cleanable failures**: the per-step "target already absent = skippable
+//!   on re-entry" verdict only calls the absent classification functions the
+//!   corresponding module already has; the classification logic is not
+//!   reimplemented here;
+//! - **ownership boundary**: accepts only explicitly listed Meshlet services,
+//!   known prefixes, and managed rule names — never scans or cleans the
+//!   machine-global service/route/firewall tables.
 
 use std::path::PathBuf;
 
@@ -30,25 +39,31 @@ use crate::windows_routes::{route_already_absent, NetshRouteCommand};
 use crate::windows_service::{service_absent, ServiceCommand};
 use crate::NetworkError;
 
-/// 完整卸载的输入计划（只描述 Meshlet 自有对象，不描述机器全局状态）。
+/// Input plan for the full uninstall (describes only Meshlet-owned objects,
+/// not machine-global state).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanupPlan {
-    /// 受管服务名；先 Stop 再 Delete，缺失时对两步均按成功处理。
+    /// Managed service name; Stop first, then Delete. Missing counts as success
+    /// for both steps.
     pub service_name: String,
-    /// 本设备 WireGuard 隧道接口；仅在 `route_prefixes` 非空时用于删除路由。
+    /// This device's WireGuard tunnel interface; used to delete routes only when
+    /// `route_prefixes` is non-empty.
     pub route_interface: String,
-    /// 已知由本接口承载、需要逐条删除的 on-link 前缀；空列表不产生路由步。
+    /// On-link prefixes known to be carried by this interface, deleted one by
+    /// one; an empty list produces no route steps.
     pub route_prefixes: Vec<Ipv4Cidr>,
-    /// Meshlet 受管防火墙规则名；按输入顺序逐条删除。
+    /// Meshlet managed firewall rule names; deleted one by one in input order.
     pub firewall_rule_names: Vec<String>,
-    /// Meshlet 写出的临时文件；按输入顺序逐个删除。
+    /// Temporary files written by Meshlet; deleted one by one in input order.
     pub temp_files: Vec<PathBuf>,
-    /// Meshlet 私钥文件；按输入顺序逐个删除，绝不按目录扫描。
+    /// Meshlet private key files; deleted one by one in input order, never by
+    /// directory scanning.
     pub key_material_files: Vec<PathBuf>,
 }
 
 impl CleanupPlan {
-    /// 受控卸载命令序列；顺序和参数形状均可在任意平台确定性断言。
+    /// Controlled uninstall command sequence; order and argument shapes can be
+    /// asserted deterministically on any platform.
     pub fn commands(&self) -> Vec<CleanupCommand> {
         let mut commands = vec![
             CleanupCommand::Service(ServiceCommand::Stop {
@@ -88,30 +103,37 @@ impl CleanupPlan {
     }
 }
 
-/// 一条计划态卸载命令。
+/// One planned uninstall command.
 ///
-/// 本枚举只包装既有模块的计划命令，不新增命令语法；执行器可直接遍历本序列
-/// 并按包装类型调用各模块的既有执行入口（本轮不实现执行层）。
+/// This enum only wraps the plan commands of existing modules and introduces no
+/// new command syntax; an executor can walk this sequence directly and dispatch
+/// by wrapped type to each module's existing execution entry points (the
+/// execution layer is not implemented in this round).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanupCommand {
-    /// `sc stop/delete <service>`；服务不存在时按幂等成功跳过。
+    /// `sc stop/delete <service>`; skipped as an idempotent success when the
+    /// service does not exist.
     Service(ServiceCommand),
-    /// `netsh interface ipv4 delete route ... store=active`；前缀不存在时跳过。
+    /// `netsh interface ipv4 delete route ... store=active`; skipped when the
+    /// prefix does not exist.
     Route(NetshRouteCommand),
-    /// `netsh advfirewall firewall delete rule name=...`；规则不存在时跳过。
+    /// `netsh advfirewall firewall delete rule name=...`; skipped when the rule
+    /// does not exist.
     Firewall(FirewallRuleCommand),
-    /// 删除一个显式列出的临时文件或私钥文件。
+    /// Deletes one explicitly listed temporary or private key file.
     File(CleanupFileCommand),
 }
 
-/// 文件清理的对象类别；类别只决定审计语义，不扩大删除范围。
+/// Object category of a file cleanup; the category only affects audit
+/// semantics and never widens the deletion scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CleanupFileKind {
     Temporary,
     KeyMaterial,
 }
 
-/// 一次受控文件删除；目标必须由卸载计划显式列出。
+/// One controlled file deletion; the target must be explicitly listed in the
+/// uninstall plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanupFileCommand {
     pub path: PathBuf,
@@ -119,7 +141,8 @@ pub struct CleanupFileCommand {
 }
 
 impl CleanupCommand {
-    /// 进程参数（复用既有模块 `args()`；不含程序名，执行层决定）。
+    /// Process arguments (reuses the existing modules' `args()`; no program
+    /// name — the execution layer decides that).
     pub fn args(&self) -> Vec<String> {
         match self {
             CleanupCommand::Service(command) => command.args(),
@@ -129,7 +152,8 @@ impl CleanupCommand {
         }
     }
 
-    /// 操作名（复用既有模块的操作名，错误消息不漂移）。
+    /// Operation name (reuses the existing modules' operation names so error
+    /// messages do not drift).
     pub fn operation(&self) -> &'static str {
         match self {
             CleanupCommand::Service(command) => command.operation(),
@@ -139,10 +163,11 @@ impl CleanupCommand {
         }
     }
 
-    /// 目标对象已缺失时是否可重入跳过。
+    /// Whether a missing target object is skippable on re-entry.
     ///
-    /// 该函数本身不做文本分类：sc/netsh 的 absent 判据分别留在
-    /// [windows_service] / [windows_routes] / [windows_firewall] 三个权威模块中。
+    /// This function does no text classification itself: the sc/netsh absent
+    /// verdicts stay in the three authoritative modules [windows_service] /
+    /// [windows_routes] / [windows_firewall].
     pub fn absent_is_skippable(&self, output: &str) -> bool {
         match self {
             CleanupCommand::Service(_) => service_absent(output),
@@ -154,12 +179,13 @@ impl CleanupCommand {
 }
 
 impl CleanupFileCommand {
-    /// 审计用操作名；文件清理没有外部进程参数。
+    /// Operation name for auditing; file cleanup has no external process
+    /// arguments.
     pub fn args(&self) -> Vec<String> {
         vec![self.path.display().to_string()]
     }
 
-    /// 审计用操作名。
+    /// Operation name for auditing.
     pub fn operation(&self) -> &'static str {
         match self.kind {
             CleanupFileKind::Temporary => "cleanup temporary file",
@@ -167,7 +193,8 @@ impl CleanupFileCommand {
         }
     }
 
-    /// 删除显式列出的文件；缺失返回 `Ok(false)` 以支持卸载重入。
+    /// Deletes the explicitly listed file; returns `Ok(false)` when missing so
+    /// uninstall re-entry keeps working.
     pub fn remove(self) -> Result<bool, NetworkError> {
         let metadata = match std::fs::symlink_metadata(&self.path) {
             Ok(metadata) => metadata,
@@ -194,8 +221,9 @@ impl CleanupFileCommand {
     }
 }
 
-/// 执行层（`#[cfg(windows)]`）：服务/路由/防火墙复用既有薄封装；文件清理
-/// 使用跨平台受控 std API，只删除计划中显式列出的路径。
+/// Execution layer (`#[cfg(windows)]`): service/route/firewall reuse the
+/// existing thin wrappers; file cleanup uses controlled cross-platform std
+/// APIs and deletes only paths explicitly listed in the plan.
 #[cfg(target_os = "windows")]
 pub mod exec {
     use super::{CleanupCommand, CleanupFileCommand};
@@ -204,7 +232,8 @@ pub mod exec {
     use crate::windows_service::exec::run_service_command;
     use crate::{ApplyResult, NetworkError};
 
-    /// 执行一条完整卸载计划命令：成功/幂等成功/分类失败三态。
+    /// Runs one full-uninstall plan command: success / idempotent success /
+    /// classified failure.
     pub fn run_cleanup_command(command: &CleanupCommand) -> Result<ApplyResult, NetworkError> {
         match command {
             CleanupCommand::Service(command) => run_service_command(command),

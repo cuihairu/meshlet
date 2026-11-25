@@ -1,18 +1,22 @@
-//! Windows 隧道计划层 + 执行层可运行面的集成测试（[ADR-008]）。
+//! Integration tests for the runnable surface of the Windows tunnel planning layer + execution layer
+//! ([ADR-008]).
 //!
-//! 与 [windows_netsh](windows_netsh)、[windows_cleanup_e2e](windows_cleanup_e2e)
-//! 同一文件级 `#![cfg]` 纪律：仅 Windows 编译执行，CI windows-latest job 的
-//! `cargo test --workspace` 真跑本文件，Linux job 不受影响。
+//! The same file-level `#![cfg]` discipline as [windows_netsh](windows_netsh) and
+//! [windows_cleanup_e2e](windows_cleanup_e2e): compiled and executed on Windows only; the CI
+//! windows-latest job's `cargo test --workspace` really runs this file, and the Linux job is
+//! unaffected.
 //!
-//! **不触发真实隧道安装**（CI hosted runner 未装 WireGuardNT 驱动，也无
-//! 意在此创建内核隧道）：本文件只覆盖无需驱动、无需提权的执行面——conf
-//! 写入回读（字节一致、覆盖重写 = 幂等 re-apply）与 exec 入口签名锁定。
+//! **No real tunnel installation is triggered** (the CI hosted runner has no WireGuardNT driver, and
+//! there is no intention to create kernel tunnels here): this file covers only the execution surface
+//! that needs neither a driver nor elevation -- writing the conf and reading it back (byte-identical,
+//! an overwrite rewrite = an idempotent re-apply) and pinning the exec entry-point signature.
 //!
-//! **仍未覆盖（如实留缺口，R-05 保持未勾）**：WireGuardNT 驱动安装后的
-//! 隧道全生命周期（install → start → stop → uninstall）、提权执行层真机
-//! 报文、开机恢复重启验证，以及据此做出的 [crate::SystemBackend] 接线决策；
-//! 见 ADR-008 复审条件。wireguard.exe 命令形状在计划层单测锁定（Windows
-//! canonical argv），真实二进制的透传语义待上述真机验收闭环。
+//! **Still uncovered (an honestly kept gap; R-05 stays unchecked)**: the tunnel's full lifecycle after
+//! the WireGuardNT driver is installed (install -> start -> stop -> uninstall), the elevated execution
+//! layer's real-machine messages, the boot-recovery reboot verification, and the
+//! [crate::SystemBackend] wiring decision made on that basis; see ADR-008's review conditions. The
+//! wireguard.exe command shape is pinned by the planning layer's unit tests (the Windows canonical
+//! argv); the real binary's pass-through semantics await the above real-machine acceptance.
 
 #![cfg(target_os = "windows")]
 
@@ -25,7 +29,7 @@ use meshlet_network::windows_tunnel::{
 use meshlet_network::{ApplyResult, NetworkError, PeerConfig, TunnelConfig};
 use std::path::{Path, PathBuf};
 
-/// 隧道探针名：专用前缀，绝不触碰机器全局服务/隧道对象。
+/// The probe tunnel name: a dedicated prefix, never touching machine-global service/tunnel objects.
 const PROBE_TUNNEL: &str = "__meshlet_probe_tunnel";
 
 fn probe_tunnel_config() -> TunnelConfig {
@@ -56,8 +60,9 @@ fn probe_conf_path() -> PathBuf {
     ))
 }
 
-/// exec 入口签名锁定：只接收计划命令与可执行覆盖、返回计划层结果；测试不
-/// 启动 wireguard.exe、不触碰真实隧道。
+/// Pinning the exec entry-point signature: it takes only a planned command and an executable
+/// override and returns the planning layer's result; the test starts no wireguard.exe and touches
+/// no real tunnel.
 #[test]
 fn exec_entrypoint_takes_planned_command_and_returns_planned_result() {
     fn assert_signature(
@@ -67,8 +72,8 @@ fn exec_entrypoint_takes_planned_command_and_returns_planned_result() {
     assert_signature(run_wireguard_command);
 }
 
-/// conf 写入回读：字节一致（私钥 base64 不被转码破坏），覆盖重写 = 幂等
-/// re-apply。
+/// Writing the conf and reading it back: byte-identical (the private key's base64 is not mangled by
+/// re-encoding), and an overwrite rewrite = an idempotent re-apply.
 #[test]
 fn conf_write_round_trips_and_overwrite_is_idempotent() {
     let path = probe_conf_path();
@@ -86,9 +91,10 @@ fn conf_write_round_trips_and_overwrite_is_idempotent() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// 计划层渲染经 exec 写盘闭环：文件即渲染文本；隧道名由 .conf 文件名派生
-/// （conf_file_name 断言），conf 内不再有 Name 键（ADR-008 移除），密钥行
-/// 原样保留。
+/// The planning layer's rendering closing the loop through the exec write path: the file is exactly
+/// the rendered text; the tunnel name is derived from the .conf file name (asserted via
+/// conf_file_name), no Name key remains inside the conf (removed by ADR-008), and the key lines
+/// are preserved verbatim.
 #[test]
 fn plan_renders_through_write_path_unchanged() {
     let path = probe_conf_path();

@@ -9,7 +9,7 @@ fn revocation_rollback_route_conflict_and_identity_repair() {
     let _guard = NETNS_PREFIX_LOCK.lock().unwrap();
     let topo = match Topology::setup() {
         Some(t) => t,
-        None => return, // 已打印 SKIP:
+        None => return, // Already printed SKIP:
     };
     let mut hub_backend = topo.hub.backend();
     let mut a_backend = topo.a.backend();
@@ -54,7 +54,7 @@ fn revocation_rollback_route_conflict_and_identity_repair() {
         }])
         .expect("gw baseline apply_routes");
 
-    // ---- 7. 撤销即失效：hub 重应用去掉 B，其余 peer 不受影响（§11.5） -------
+    // ---- 7. Revocation takes effect immediately: re-applying the hub without B leaves the other peers untouched (§11.5) -------
     hub_backend
         .apply_tunnel_sync(
             &hub_tunnel(&topo.hub, &topo.a, &topo.b, &topo.gw, false),
@@ -74,13 +74,13 @@ fn revocation_rollback_route_conflict_and_identity_repair() {
         !topo.ping(&topo.a.netns, &topo.b.overlay),
         "A -> B must fail after B revoked"
     );
-    // Alias 通路（A→G）不受 B 撤销影响（G 的 NAT 尚未恢复）。
+    // The alias path (A->G) is unaffected by B's revocation (G's NAT has not been restored yet).
     assert!(
         hub_peers.contains(&topo.gw.public_key),
         "G must survive B's revoke:\n{hub_peers}"
     );
 
-    // ---- 8. 回滚只删 Meshlet 自有对象（§10.3） -----------------------------
+    // ---- 8. Rollback removes only Meshlet-owned objects (§10.3) -----------------------------
     hub_backend.rollback_sync().expect("hub rollback");
     let snap = hub_backend
         .inspect_sync()

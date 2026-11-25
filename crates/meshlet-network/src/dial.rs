@@ -1,148 +1,152 @@
-//! CLI↔agent 直连拨号契约（`peer dial <node>`，R-AGENT-WIN-1 补充 ③）。
+//! CLI↔agent direct-connect dialing contract (`peer dial <node>`, R-AGENT-WIN-1 supplement ③).
 //!
-//! CLI（`apps/cli`）与 agent（`apps/agent`）是两个进程，且 CLI 运行在用户
-//! 会话（无权限做 `wg set`），agent 以服务身份持有数据面后端。因此拨号走
-//! **文件意图**而非 CLI 直改内核：
-//! - CLI 把 [DirectDialRequest] 写到 `{state_dir}/direct-dial.json`；
-//! - agent 在下一探测周期读到后，经
-//!   [`NetworkBackend`](crate::NetworkBackend) 的 `set_direct_peer_sync`
-//!   发起对目标节点的直连拨号（这就是「executor 接 meshlet-network 发起
-//!   直连拨号」），把结果写回 `{state_dir}/direct-dial-result.json`；
-//! - CLI 轮询结果文件，成功/失败结果据此显示。
+//! The CLI (`apps/cli`) and the agent (`apps/agent`) are separate processes, and the CLI runs in the
+//! user session (without permission to `wg set`), while the agent holds the dataplane backend as a
+//! service identity. Dialing therefore goes through a **file-based intent** rather than the CLI
+//! touching the kernel directly:
+//! - the CLI writes the [DirectDialRequest] to `{state_dir}/direct-dial.json`;
+//! - the agent, having read it on the next probe cycle, uses
+//!   `set_direct_peer_sync` of [`NetworkBackend`](crate::NetworkBackend) to
+//!   start a direct dial to the target node (this is what "the executor hooks meshlet-network up to
+//!   initiate a direct dial" means), and writes the outcome back to `{state_dir}/direct-dial-result.json`;
+//! - the CLI polls the result file and renders success/failure from it.
 //!
-//! 走文件而非 HTTP/信号：agent 已是文件状态驱动（`status.json` /
-//! `direct.json` / `applied.json`），同构零新增机制。`request_id` 对账防
-//! 误读上一轮结果。
+//! Files rather than HTTP/signals: the agent is already file-state driven (`status.json` /
+//! `direct.json` / `applied.json`), so this is isomorphic with zero new machinery. `request_id`
+//! reconciliation prevents misreading the previous round's result.
 //!
-//! agent 同时把「直连对端视图」（[DirectPeerView]）发布到
-//! `{state_dir}/direct-peers.json`——CLI `peer dial` 用它解析 `<node>`，
-//! 托盘「直连节点 / 连接节点…」子菜单也读它（数据源与 `peers` 命令同一
-//! 链路：都来自 agent 直连探测周期对内核的读数）。
+//! The agent also publishes the "direct peer view" ([DirectPeerView]) to
+//! `{state_dir}/direct-peers.json` — CLI `peer dial` uses it to resolve `<node>`, and the tray's
+//! "Direct node / Connect node..." submenu reads it too (same data path as the `peers` command:
+//! both come from the agent's direct-probe cycle reading the kernel).
 
 use std::path::{Path, PathBuf};
 
-/// 直连拨号请求（CLI → agent）。
+/// Direct dial request (CLI → agent).
 ///
-/// `node` 是用户输入的标识（名称 / IP / 公钥前缀，原样保留展示用）；
-/// `public_key`/`virtual_ipv4` 是 CLI 解析 `direct-peers.json` 的结果——
-/// agent 按 `public_key` 在**本周期**的候选集里对账，端点取服务端候选。
+/// `node` is the identifier the user typed (name / IP / public key prefix, kept verbatim for display);
+/// `public_key`/`virtual_ipv4` are the result of the CLI parsing `direct-peers.json` —
+/// the agent reconciles by `public_key` against the candidate set of **this cycle**, taking the
+/// endpoint from the server-side candidate.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DirectDialRequest {
-    /// 用户输入的节点标识（原样保留，展示用）。
+    /// The node identifier typed by the user (kept verbatim, for display).
     pub node: String,
-    /// 目标 wg 公钥（agent 据此对账 + `wg set`）。
+    /// The target wg public key (the agent reconciles by it and issues `wg set`).
     pub public_key: String,
-    /// 目标 overlay 地址（AllowedIPs `/32` 来源）。
+    /// The target overlay address (the source of the AllowedIPs `/32`).
     pub virtual_ipv4: std::net::Ipv4Addr,
-    /// 请求 ID（CLI 生成，与结果对账；防误读上一轮结果）。
+    /// Request id (CLI-generated, reconciled against the result; prevents misreading a previous round's result).
     pub request_id: String,
-    /// 请求时刻（Unix 毫秒字符串，排查用）。
+    /// Request time (Unix millis as a string, for troubleshooting).
     pub requested_at: String,
 }
 
-/// 直连拨号结果（agent → CLI）。`ok=false` 必须带可读 `message`——绝不
-/// 静默假装成功（与 [crate::ApplyResult] 同一纪律）。
+/// Direct dial result (agent → CLI). `ok=false` must carry a human-readable `message` —
+/// never silently pretend success (the same discipline as [crate::ApplyResult]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DirectDialResult {
     pub request_id: String,
     pub ok: bool,
-    /// `p2p_direct` / `direct_pending`（成功）/ `hub_relay`（失败或中继）。
+    /// `p2p_direct` / `direct_pending` (success) / `hub_relay` (failure or relay).
     pub mode: String,
     pub message: String,
     pub finished_at: String,
 }
 
-/// `direct-peers.json` 单条：一个服务端直连候选 + 当前链路状态。
+/// One `direct-peers.json` entry: one server-side direct candidate + the current link state.
 ///
-/// 供 `peer dial` 解析 `<node>` 与托盘子菜单展示。`mode`：
-/// - `p2p_direct`：直连已建立（最近握手在健康窗口内）；
-/// - `direct_pending`：endpoint 已下发，等握手验证；
-/// - `hub_relay`：候选但无可行直连路径（走中继），是可拨号目标。
+/// Used by `peer dial` to resolve `<node>` and by the tray submenu. `mode`:
+/// - `p2p_direct`: the direct link is up (the most recent handshake is within the healthy window);
+/// - `direct_pending`: the endpoint has been dispatched and is awaiting handshake validation;
+/// - `hub_relay`: a candidate with no feasible direct path (relay in use), still a dialable target.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DirectPeerView {
-    /// 对端设备名（旧服务端缺省为空）。
+    /// The peer's device name (old servers leave it empty).
     pub name: String,
-    /// 对端设备 id（托盘直连表露出零散短 ID 用；zerotier 式截断展示）。
-    /// 旧文件缺省为空——新读者按空处理，不判异常。
+    /// The peer's device id (the tray's direct table exposes a loose short id; zerotier-style
+    /// truncated display). Old files default to empty — new readers treat empty as normal, not
+    /// an anomaly.
     #[serde(default)]
     pub device_id: String,
-    /// 对端 overlay 地址。
+    /// The peer's overlay address.
     pub virtual_ipv4: std::net::Ipv4Addr,
-    /// 对端 wg 公钥。
+    /// The peer's wg public key.
     pub public_key: String,
-    /// `p2p_direct` / `direct_pending` / `hub_relay`。
+    /// `p2p_direct` / `direct_pending` / `hub_relay`.
     pub mode: String,
-    /// 最近一次直连路径实测 RTT（毫秒）；未测为 `None`。
+    /// The measured RTT of the most recent direct path (milliseconds); `None` when unmeasured.
     pub rtt_ms: Option<u64>,
-    /// RTT 读数来源（`overlay` / `endpoint` / `unreachable`；未测 / 旧 agent
-    /// 为 `None`）。托盘/面板据此标注 RTT 列的来源（见 `meshlet-domain`
-    /// `DirectLinkStatus::rtt_source`）。
+    /// Where the RTT reading comes from (`overlay` / `endpoint` / `unreachable`; `None` for
+    /// unmeasured / old agents). The tray/console use this to annotate the RTT column's source
+    /// (see `meshlet-domain` `DirectLinkStatus::rtt_source`).
     #[serde(default)]
     pub rtt_source: Option<String>,
-    /// 当前直连 endpoint（`ip:port`）；未建立 / 无候选为空。
+    /// The current direct endpoint (`ip:port`); empty when unestablished / no candidate.
     pub endpoint: String,
-    /// 最近握手 Unix 秒；未握手为 `None`。
+    /// The most recent handshake as Unix seconds; `None` when there has been no handshake.
     pub last_handshake_at: Option<u64>,
 }
 
-/// SEL-002 直连 endpoint 切换事件（[`direct_switch_events_path`] 追加记录）。
+/// SEL-002 direct endpoint switch event (appended by [`direct_switch_events_path`]).
 ///
-/// 事件可查（任务书「切换事件可查」）：agent 每成功执行一次
-/// `wg set endpoint` 漫游就追加一条到 `{state_dir}/direct-switch-events.json`
-/// （JSON Lines），CLI / 运维可直接读该文件审计切换历史。
+/// Events are queryable (the task sheet "switch events are queryable"): every successful
+/// `wg set endpoint` roam appends one entry to `{state_dir}/direct-switch-events.json`
+/// (JSON Lines); the CLI / ops can read that file directly to audit switch history.
 ///
-/// 事件类型由可选 `kind` 区分（缺省 = endpoint 漫游，旧事件/旧读者零感知）：
-/// - 缺省：`from`/`to` 为 endpoint（`ip:port`）；
-/// - [`SWITCH_KIND_MODE_FLIP`]：直连模式翻转，`from`/`to` 为
-///   `p2p_direct` / `direct_pending` / `hub_relay`，`detail` 携带判据摘要。
+/// The optional `kind` distinguishes event types (default = endpoint roam, old events/old readers
+/// zero-change):
+/// - default: `from`/`to` are endpoints (`ip:port`);
+/// - [`SWITCH_KIND_MODE_FLIP`]: a direct mode flip, `from`/`to` are
+///   `p2p_direct` / `direct_pending` / `hub_relay`, and `detail` carries the criterion summary.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SwitchEvent {
-    /// 对端 wg 公钥。
+    /// The peer's wg public key.
     pub public_key: String,
-    /// 切换前 endpoint（`ip:port`）或模式（`kind = mode_flip` 时）。
+    /// The endpoint before the switch (`ip:port`) or the mode (when `kind = mode_flip`).
     pub from: String,
-    /// 切换后 endpoint（`ip:port`）或模式（`kind = mode_flip` 时）。
+    /// The endpoint after the switch (`ip:port`) or the mode (when `kind = mode_flip`).
     pub to: String,
-    /// 切换理由（SEL-002 迟滞闸给出）。
+    /// The reason for the switch (given by the SEL-002 hysteresis gate).
     pub reason: String,
-    /// 事件时刻（Unix 毫秒字符串）。
+    /// Event time (Unix millis as a string).
     pub at_ms: String,
-    /// 事件类型（缺省 = endpoint 漫游；[`SWITCH_KIND_MODE_FLIP`] = 模式翻转）。
+    /// The event kind (default = endpoint roam; [`SWITCH_KIND_MODE_FLIP`] = mode flip).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    /// 判据摘要（模式翻转事件携带：握手年龄 / 劣化 / endpoint）。
+    /// Criterion summary (carried by mode-flip events: handshake age / degradation / endpoint).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// RFC3339 UTC 时刻（新事件携带；旧事件只有 `at_ms`）。
+    /// RFC3339 UTC instant (carried by new events; old events have only `at_ms`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ts: Option<String>,
 }
 
-/// [`SwitchEvent::kind`]：直连模式翻转事件（`p2p_direct` ↔ `hub_relay` /
-/// `direct_pending` 之间迁移，含降级回中继与再晋升）。
+/// [`SwitchEvent::kind`]: a direct mode-flip event (migration among `p2p_direct` ↔ `hub_relay` /
+/// `direct_pending`, including demotion back to relay and re-promotion).
 pub const SWITCH_KIND_MODE_FLIP: &str = "mode_flip";
 
-/// 拨号请求路径：`{state_dir}/direct-dial.json`。
+/// Dial request path: `{state_dir}/direct-dial.json`.
 pub fn dial_request_path(state_dir: &Path) -> PathBuf {
     state_dir.join("direct-dial.json")
 }
 
-/// SEL-002 切换事件路径：`{state_dir}/direct-switch-events.json`。
+/// SEL-002 switch events path: `{state_dir}/direct-switch-events.json`.
 pub fn direct_switch_events_path(state_dir: &Path) -> PathBuf {
     state_dir.join("direct-switch-events.json")
 }
 
-/// 拨号结果路径：`{state_dir}/direct-dial-result.json`。
+/// Dial result path: `{state_dir}/direct-dial-result.json`.
 pub fn dial_result_path(state_dir: &Path) -> PathBuf {
     state_dir.join("direct-dial-result.json")
 }
 
-/// 直连对端视图路径：`{state_dir}/direct-peers.json`。
+/// Direct peer view path: `{state_dir}/direct-peers.json`.
 pub fn direct_peers_path(state_dir: &Path) -> PathBuf {
     state_dir.join("direct-peers.json")
 }
 
-/// 当前 Unix 毫秒（字符串；请求/结果时间戳，无 chrono 依赖）。
+/// The current Unix millis as a string (request/result timestamps, no chrono dependency).
 pub fn now_millis() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -158,7 +162,7 @@ pub fn write_request(state_dir: &Path, req: &DirectDialRequest) -> std::io::Resu
     write_json(state_dir, &dial_request_path(state_dir), req)
 }
 
-/// 清除拨号请求（处理完即删；不存在视为成功——幂等）。
+/// Clear the dial request (deleted once processed; a missing file counts as success — idempotent).
 pub fn clear_request(state_dir: &Path) -> std::io::Result<()> {
     std::fs::remove_file(dial_request_path(state_dir)).or_else(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -185,7 +189,7 @@ pub fn write_direct_peers(state_dir: &Path, views: &[DirectPeerView]) -> std::io
     write_json(state_dir, &direct_peers_path(state_dir), views)
 }
 
-/// 追加一条 SEL-002 切换事件（JSON Lines 追加；事件可查）。
+/// Append one SEL-002 switch event (JSON Lines append; events are queryable).
 pub fn append_switch_event(state_dir: &Path, event: &SwitchEvent) -> std::io::Result<()> {
     std::fs::create_dir_all(state_dir)?;
     let path = direct_switch_events_path(state_dir);
@@ -199,7 +203,7 @@ pub fn append_switch_event(state_dir: &Path, event: &SwitchEvent) -> std::io::Re
     f.write_all(&line)
 }
 
-/// 读取全部 SEL-002 切换事件（缺失/损坏文件 → 空列表；可查）。
+/// Read all SEL-002 switch events (missing/corrupt file → empty list; queryable).
 pub fn load_switch_events(state_dir: &Path) -> Vec<SwitchEvent> {
     let Ok(raw) = std::fs::read_to_string(direct_switch_events_path(state_dir)) else {
         return Vec::new();
@@ -210,56 +214,57 @@ pub fn load_switch_events(state_dir: &Path) -> Vec<SwitchEvent> {
 }
 
 // ---------------------------------------------------------------------------
-// 决策日志（无控制台上下文的事后回放）
+// Decision log (post-hoc replay for contexts without a console)
 // ---------------------------------------------------------------------------
 
-/// agent 决策日志事件（[`decision_log_path`] JSONL 追加）：classify / 切换闸
-/// 判定逐条入账，Windows 服务 / schtasks SYSTEM 等无控制台上下文也能事后
-/// 回放降级/晋升的原因与判据输入（2026-11-14 巡检单：真机 demote 原因无
-/// 文件级回放能力的诊断缺口）。
+/// Agent decision-log event (JSONL append via [`decision_log_path`]): classify / switch-gate
+/// verdicts are booked one by one, so console-less contexts such as the Windows service or
+/// schtasks SYSTEM can still replay the reasons and criterion inputs behind demotions/promotions
+/// afterwards (2026-11-14 inspection sheet: a diagnostics gap — no file-level replay of the real
+/// demote reasons on real machines).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DecisionEvent {
-    /// 时刻（RFC3339 真 UTC；PS 5.1 `Get-Date -UFormat %s` 有 +28800s 伪影，
-    /// 禁用该口径——这里由 chrono `Utc` 生成）。
+    /// Instant (RFC3339 true UTC; PS 5.1 `Get-Date -UFormat %s` carries a +28800s artifact and is
+    /// banned as a source — this field is generated by chrono `Utc`).
     pub ts: String,
-    /// 对端 wg 公钥。
+    /// The peer's wg public key.
     pub public_key: String,
-    /// 对端名称（候选里读到的展示名）。
+    /// The peer's name (the display name read from the candidate list).
     pub peer_name: String,
-    /// 动作：`promote` / `demote` / `hold_relay` / `probe` / `defer`。
+    /// The action: `promote` / `demote` / `hold_relay` / `probe` / `defer`.
     pub action: String,
-    /// 判定前模式（`p2p_direct` / `direct_pending` / `hub_relay`）。
+    /// The mode before the verdict (`p2p_direct` / `direct_pending` / `hub_relay`).
     pub from_mode: String,
-    /// 判定后模式。
+    /// The mode after the verdict.
     pub to_mode: String,
-    /// 判定原因（人读）。
+    /// The verdict reason (human-readable).
     pub reason: String,
-    /// 判据输入：最近直连握手年龄（秒；内核读数快照）。
+    /// Criterion input: the age of the most recent direct handshake (seconds; a kernel-reading snapshot).
     pub handshake_age_secs: Option<u64>,
-    /// 判据输入：SEL-003 探测窗口劣化判定。
+    /// Criterion input: the SEL-003 probe-window degradation verdict.
     pub degraded: bool,
-    /// 涉事 endpoint（promote 目标 / demote 时的现役面；空 = 无）。
+    /// The endpoint involved (the promote target / the active face when demoting; empty = none).
     pub endpoint: String,
-    /// 判据输入：现役路径探测窗口摘要（如 `23,31,L,L loss=50% med=27ms`；
-    /// 探测关 / 未采样为 `None`）。
+    /// Criterion input: a probe-window summary of the active path (e.g. `23,31,L,L loss=50% med=27ms`;
+    /// `None` when probing is off / not sampled).
     pub probe_window: Option<String>,
 }
 
-/// 决策日志路径：`{state_dir}/agent-decisions.jsonl`。
+/// Decision log path: `{state_dir}/agent-decisions.jsonl`.
 pub fn decision_log_path(state_dir: &Path) -> PathBuf {
     state_dir.join("agent-decisions.jsonl")
 }
 
-/// 决策日志单文件上限（超过即滚动为 `.jsonl.1`，覆盖上一份滚动件）。
-/// 逐事件一行的量级 ≈ 300B × 每周期每对端一条，8MiB 足以覆盖数周。
+/// Per-file size cap for the decision log (beyond it the file rolls to `.jsonl.1`, overwriting the
+/// previous roll). One event per line is roughly 300B × one line per peer per cycle, so 8MiB covers weeks.
 pub const DECISION_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-/// 追加一条决策日志（JSON Lines；超限滚动）。
+/// Append one decision-log entry (JSON Lines; rolls when over the cap).
 pub fn append_decision_event(state_dir: &Path, event: &DecisionEvent) -> std::io::Result<()> {
     append_decision_event_capped(state_dir, event, DECISION_LOG_MAX_BYTES)
 }
 
-/// 读取全部决策日志（缺失/损坏文件 → 空列表）。
+/// Read all decision-log entries (missing/corrupt file → empty list).
 pub fn load_decision_events(state_dir: &Path) -> Vec<DecisionEvent> {
     let Ok(raw) = std::fs::read_to_string(decision_log_path(state_dir)) else {
         return Vec::new();
@@ -293,7 +298,7 @@ fn append_decision_event_capped(
     f.write_all(&line)
 }
 
-/// 当前时刻 RFC3339 UTC（秒精度；决策日志时间戳口径）。
+/// The current instant as RFC3339 UTC (second precision; the decision-log timestamp convention).
 pub fn rfc3339_now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -335,7 +340,7 @@ mod tests {
         write_request(&dir, &req).unwrap();
         assert_eq!(load_request(&dir), Some(req));
 
-        // 结果对账：request_id 区分不同拨号。
+        // Result reconciliation: request_id distinguishes different dials.
         let res = DirectDialResult {
             request_id: "req-1".into(),
             ok: true,
@@ -346,12 +351,12 @@ mod tests {
         write_result(&dir, &res).unwrap();
         assert_eq!(load_result(&dir), Some(res));
 
-        // 清除请求：幂等（不存在也成功）。
+        // Clearing the request is idempotent (a missing file also succeeds).
         clear_request(&dir).unwrap();
         assert_eq!(load_request(&dir), None);
         clear_request(&dir).unwrap();
 
-        // 缺失/损坏文件 → None（调用方按「无待处理拨号」处理）。
+        // Missing/corrupt file -> None (the caller treats it as "no dial pending").
         assert_eq!(load_result(&dir.join("missing")), None);
         std::fs::write(dial_result_path(&dir), "not json").unwrap();
         assert_eq!(load_result(&dir), None);
@@ -411,16 +416,16 @@ mod tests {
         };
         append_switch_event(&dir, &e1).unwrap();
         append_switch_event(&dir, &e2).unwrap();
-        // 事件可查：顺序保持追加序。
+        // Events are queryable: ordering matches the append order.
         assert_eq!(load_switch_events(&dir), vec![e1, e2]);
-        // 缺失文件 → 空。
+        // Missing file -> empty.
         assert!(load_switch_events(&dir.join("missing")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn switch_event_parses_legacy_lines_without_new_fields() {
-        // 旧事件行（无 kind/detail/ts）必须原样可读——向后兼容红线。
+        // Legacy event lines (no kind/detail/ts) must still parse as-is — a backward-compatibility red line.
         let legacy = r#"{"public_key":"k","from":"1.2.3.4:51820","to":"5.6.7.8:51820","reason":"score","at_ms":"42"}"#;
         let parsed: SwitchEvent = serde_json::from_str(legacy).unwrap();
         assert_eq!(parsed.at_ms, "42");
@@ -475,7 +480,7 @@ mod tests {
         assert_eq!(load_decision_events(&dir), vec![e1, e2]);
         assert!(load_decision_events(&dir.join("missing")).is_empty());
 
-        // 滚动：超过上限后旧内容整体挪到 .jsonl.1，主文件重新起头。
+        // Rotation: once the cap is exceeded the old content moves wholesale to .jsonl.1 and the main file starts fresh.
         let e3 = decision_event("hold_relay", "hub_relay", "hub_relay");
         append_decision_event_capped(&dir, &e3, 1).unwrap();
         assert_eq!(load_decision_events(&dir), vec![e3]);
@@ -489,7 +494,7 @@ mod tests {
     #[test]
     fn rfc3339_now_is_true_utc_with_z_suffix() {
         let ts = rfc3339_now();
-        // 真 UTC（Z 结尾、无 +28800 偏移伪影），可被标准解析器往返。
+        // True UTC (ends in Z, no +28800 offset artifact), round-trippable by a standard parser.
         assert!(ts.ends_with('Z'), "ts={ts}");
         assert!(chrono::DateTime::parse_from_rfc3339(&ts).is_ok());
     }

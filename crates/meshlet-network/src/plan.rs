@@ -1,10 +1,11 @@
-//! 计划层类型（从 lib.rs 拆出）：server → agent 的结构化配置对象、快照载体
-//! 与应用结果；纯数据 + 派生，无 IO。
+//! Planning-layer types (split out from lib.rs): the structured configuration object from server
+//! to agent, the snapshot carriers and the apply result; pure data + derivation, no IO.
 
 use crate::nat;
 use meshlet_domain::Ipv4Cidr;
 
-/// Peer 配置：AllowedIPs 与目标路由一致（§7.2），不得全量指隧道。
+/// Peer configuration: AllowedIPs must line up with the target routes (§7.2) and must never point
+/// everything at the tunnel.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PeerConfig {
     pub public_key: String,
@@ -15,76 +16,79 @@ pub struct PeerConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TunnelConfig {
-    /// 接口名（Linux）或隧道名（Windows）。
+    /// The interface name (Linux) or the tunnel name (Windows).
     pub name: String,
     pub address: std::net::Ipv4Addr,
-    /// 接口地址前缀长度（Linux 侧 `ip address replace <addr>/<prefix>`）。
+    /// The prefix length of the interface address (on Linux, `ip address replace <addr>/<prefix>`).
     pub address_prefix: u8,
     pub listen_port: Option<u16>,
     pub peers: Vec<PeerConfig>,
     pub mtu: Option<u32>,
-    /// 私钥（base64）。`None` = 保留接口现有私钥（幂等重应用）；
-    /// `Some` = 以 `wg set <if> private-key` 显式设置。
+    /// The private key (base64). `None` = keep the interface's current private key (an idempotent
+    /// re-apply); `Some` = set it explicitly via `wg set <if> private-key`.
     pub private_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RouteConfig {
     pub destination: Ipv4Cidr,
-    /// 下一跳接口名。
+    /// The next-hop interface name.
     pub interface: String,
-    /// 下一跳网关地址（对端设备虚拟 IP）；`None` = 直连路由。
+    /// The next-hop gateway address (the peer device's virtual IP); `None` = a direct route.
     pub gateway: Option<std::net::Ipv4Addr>,
 }
 
-/// SSH 别名同步单条主机（hub 下发的 SSH config 分发段，`ssh_config`）。
+/// One host of the SSH alias sync (the SSH config distribution section `ssh_config` pushed by the hub).
 ///
-/// 每个网络内 Active 节点一条；agent 据此渲染 `~/.ssh/meshlet.conf` 的
-/// `Host <alias>` 块。alias 来源三级：hub 显式覆写 > 节点真实主机名 >
-/// meshlet peer name（`alias_source` 如实标注来源，面板/文档同口径）。
+/// One entry per Active node in the network; the agent renders the `Host <alias>` blocks of
+/// `~/.ssh/meshlet.conf` from it. The alias has three source tiers: an explicit hub override > the
+/// node's real hostname > the meshlet peer name (`alias_source` states the source as-is; the
+/// panel/docs use the same convention).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SshHostConfig {
-    /// meshlet peer name（与控制台设备名一致，日志/排障锚点）。
+    /// The meshlet peer name (matches the console device name; the anchor for logs/troubleshooting).
     pub name: String,
-    /// SSH Host 别名（已 sanitize 成合法 Host 字符）。
+    /// The SSH Host alias (already sanitized into legal Host characters).
     pub alias: String,
-    /// 对端 overlay VIP（`HostName`）。
+    /// The peer's overlay VIP (the `HostName`).
     pub address: std::net::Ipv4Addr,
-    /// SSH 端口；`None` = agent 用默认 22。
+    /// The SSH port; `None` = the agent uses the default 22.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
-    /// SSH 登录用户；`None` = 不下发（用本地 ssh 默认）。
+    /// The SSH login user; `None` = not distributed (the local ssh default is used).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
-    /// alias 来源（`hub-config` / `hostname` / `peer-name`）。
+    /// Where the alias came from (`hub-config` / `hostname` / `peer-name`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias_source: Option<String>,
 }
 
-/// SSH config 分发段（hub 侧显式开启才出现在计划里）：网络内全部 Active
-/// 节点的别名表。缺省（旧服务端 / hub 未开启）表示 hub 未下发——agent 用
-/// 本机默认（主机名 + 自身 overlay VIP + 22）自生成单条。
+/// The SSH config distribution section (appears in the plan only when the hub turns it on
+/// explicitly): the alias table for all Active nodes in the network. Absent (old servers / hub not
+/// enabled) means the hub pushed nothing — the agent self-generates a single entry from the local
+/// defaults (hostname + its own overlay VIP + 22).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SshConfigPlan {
     pub hosts: Vec<SshHostConfig>,
 }
 
-/// 设备数据面计划：服务端下发给 agent 的**结构化配置对象**（§16.4：agent 只
-/// 执行类型化对象，绝不执行服务端下发的任意 Shell 命令）。
+/// The device dataplane plan: the **structured configuration object** the server pushes to the agent
+/// (§16.4: the agent only executes typed objects and never runs arbitrary shell commands handed down
+/// by the server).
 ///
-/// - `tunnel`：本设备隧道（私钥由 agent 本地注入，服务端永不携带——私钥不
-///   出客户端，ADR-010）；
-/// - `routes`：本设备经隧道转发的目的段（Overlay + 他人已发布 LAN/Alias，
-///   自己本地网段不回灌）；
-/// - `nat_rules`：本设备作为网关时应下发的 NAT 规则（计划层渲染，所有权
-///   注释 `meshlet alias {id}`）；为空 = 非网关或映射已删；
-/// - `hub_address`：hub 的 overlay 地址（服务端 IPAM 分配）——只作 agent
-///   本地诊断（计划 MTU 的大包探测目标），不是内核配置的一部分；
-/// - `publish`：服务发布计划（R-06，[`meshlet_publish::PublishPlan`]）：本
-///   设备应绑定的 L4 转发 / HTTP 路由 / DNS 套接字与探针排程；缺省
-///   （`None`，旧服务端）表示本设备无发布配置；
-/// - `desired_config_hash`：本计划对应的期望配置哈希——agent 据此判断「有
-///   变更才重放」（§10.1）。
+/// - `tunnel`: this device's tunnel (the private key is injected locally by the agent and never
+///   carried by the server — the private key never leaves the client, ADR-010);
+/// - `routes`: the destination subnets this device forwards over the tunnel (the overlay + LANs/Aliases
+///   published by others; its own local subnet is not fed back);
+/// - `nat_rules`: the NAT rules this device should push when acting as a gateway (planning-layer
+///   rendering, ownership comment `meshlet alias {id}`); empty = not a gateway or the mapping was deleted;
+/// - `hub_address`: the hub's overlay address (allocated by the server IPAM) — used only for agent-local
+///   diagnostics (the target of the planned-MTU large-packet probe), not part of the kernel configuration;
+/// - `publish`: the service publishing plan (R-06, [`meshlet_publish::PublishPlan`]): the L4 forwarding /
+///   HTTP routes / DNS sockets and probe schedule this device should bind; absent (`None`, old servers)
+///   means this device has no publishing configuration;
+/// - `desired_config_hash`: the desired configuration hash this plan corresponds to — the agent uses it
+///   to decide "replay only when something changed" (§10.1).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DevicePlan {
     #[serde(default)]
@@ -94,54 +98,57 @@ pub struct DevicePlan {
     pub tunnel: TunnelConfig,
     pub routes: Vec<RouteConfig>,
     pub nat_rules: Vec<nat::NatRule>,
-    /// hub overlay 地址；缺省（旧服务端）表示未知——探测随之省略。
+    /// The hub overlay address; absent (old servers) means unknown — probing is skipped accordingly.
     #[serde(default)]
     pub hub_address: Option<std::net::Ipv4Addr>,
-    /// 服务发布计划；缺省（旧服务端 / 本设备无发布项）表示 `None`。
+    /// The service publishing plan; absent (old servers / this device has nothing to publish) means `None`.
     #[serde(default)]
     pub publish: Option<meshlet_publish::PublishPlan>,
-    /// SSH 别名分发段（`ssh_config`）：hub 显式开启才携带。缺省不序列化
-    /// （`skip_serializing_if`）——旧服务端计划的哈希不变，升级不触发全网
-    /// 无谓重放。
+    /// The SSH alias distribution section (`ssh_config`): carried only when the hub turns it on
+    /// explicitly. Omitted from serialization when absent (`skip_serializing_if`) — so the hash of
+    /// plans from old servers is unchanged and an upgrade triggers no needless network-wide replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_config: Option<SshConfigPlan>,
     pub desired_config_hash: String,
 }
 
-/// 隧道 MTU 缺省值（WireGuard 默认）：计划未显式配置时的有效计划值，也是
-/// 大包探测的尺寸来源之一（1420 − 28 = 1392）。
+/// Default tunnel MTU (the WireGuard default): the effective plan value when the plan sets no MTU
+/// explicitly, and one of the size sources for the large-packet probe (1420 − 28 = 1392).
 pub const DEFAULT_TUNNEL_MTU: u32 = 1420;
 
-/// WireGuard 隧道对底层网络的 IPv4 封装开销（字节）：外层 IPv4 头 20B +
-/// UDP 头 8B + WireGuard 数据通道头/标签 52B ≈ 80B（IPv6 外层为 80B + 20B，
-/// 取更保守的 80B 与 WireGuard 文档惯例一致）。
+/// WireGuard tunnel IPv4 encapsulation overhead over the underlay (bytes): outer IPv4 header 20B +
+/// UDP header 8B + WireGuard data channel header/tag 52B ≈ 80B (an IPv6 outer header is 80B + 20B,
+/// and the more conservative 80B is used to stay consistent with WireGuard documentation convention).
 pub const WG_TUNNEL_OVERHEAD_BYTES: u32 = 80;
 
-/// SEL-003 hub 兜底：hub peer 的 persistent-keepalive（秒）。hub 是中继的生命线，
-/// 掉 keepalive 会让 hub 端看不到本设备（NAT 映射过期），直连回退后无处可回。
-/// agent 在 reconcile 里对 hub peer 强制取 max(计划值, 此值)，保证「永不掉」。
+/// SEL-003 hub backstop: the hub peer's persistent-keepalive (seconds). The hub is the relay's
+/// lifeline; if keepalive drops, the hub side loses sight of this device (the NAT mapping expires)
+/// and there is nowhere to fall back to after a direct-connect demotion. The agent forces
+/// max(plan value, this value) for the hub peer during reconcile, guaranteeing it "never drops".
 pub const HUB_KEEPALIVE_SECS: u32 = 25;
 
-/// 由底层接口 MTU 推导隧道 MTU（lane/dataplane-speed）：`underlay − 80`，
-/// 下限 1280（IPv6 最小 MTU，低于它 IPv6-in-tunnel 与常见 TLS 路径直接断，
-/// 与 meshlet-config 的 `MIN_TUNNEL_MTU` 同源）。
+/// Derive the tunnel MTU from the underlay interface MTU (lane/dataplane-speed): `underlay − 80`,
+/// floored at 1280 (the IPv6 minimum MTU — below it IPv6-in-tunnel and common TLS paths break
+/// outright, the same source as `MIN_TUNNEL_MTU` in meshlet-config).
 ///
-/// - 底层 1500（标准以太网）→ 1420，与 [`DEFAULT_TUNNEL_MTU`] 相同——默认
-///   行为不变，**不是保守值**，是 1500 底层的正确值；
-/// - 底层 9000（jumbo）→ 8920，实测（netns 基线，见 docs/guide/performance）
-///   单流吞吐 1.5 → 8.5 Gbps；
-/// - 底层 1492（PPPoE）→ 1412，比默认 1420 更贴合真路径。
+/// - underlay 1500 (standard Ethernet) → 1420, identical to [`DEFAULT_TUNNEL_MTU`] — default
+///   behavior is unchanged; this is **not a conservative value**, it is the correct one for a 1500
+///   underlay;
+/// - underlay 9000 (jumbo) → 8920; measured (netns baseline, see docs/guide/performance) single-flow
+///   throughput 1.5 → 8.5 Gbps;
+/// - underlay 1492 (PPPoE) → 1412, closer to the real path than the default 1420.
 ///
-/// 这是**推导辅助**，不是自动下发：服务端 `tunnel_mtu` 计划仍是唯一内核
-/// 权威（漂移纠回按计划执行）。agent 只把它用于大包探测载荷（§7.5 证据），
-/// 运维据此在服务端配置里钉一个显式 `tunnel_mtu`。
+/// This is a **derivation aid**, not automatic distribution: the server's `tunnel_mtu` plan remains
+/// the sole kernel authority (drift correction runs per plan). The agent only uses it for the
+/// large-packet probe payload (§7.5 evidence), and ops pin an explicit `tunnel_mtu` in the server
+/// configuration based on it.
 pub fn derive_tunnel_mtu(underlay_mtu: u32) -> u32 {
     underlay_mtu
         .saturating_sub(WG_TUNNEL_OVERHEAD_BYTES)
         .max(1280)
 }
 
-/// 应用结果：**applied=false 时必须携带错误说明**，不得假装成功（§10.3）。
+/// Apply result: **when applied=false an error explanation must be carried** — never pretend success (§10.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyResult {
     pub applied: bool,
@@ -164,56 +171,64 @@ impl ApplyResult {
     }
 }
 
-/// 配置版本引用（回滚目标，ADR-009）。
+/// A configuration revision reference (the rollback target, ADR-009).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigRevisionRef {
     pub network_id: String,
     pub revision: u64,
 }
 
-/// inspect 快照：诊断与配置协调的事实来源（§12.7、§17.3）。
+/// The inspect snapshot: the source of truth for diagnostics and configuration reconciliation (§12.7, §17.3).
 ///
-/// 全部字段按**身份**而非**数量**采集：peer 是公钥集合、路由是带所有权标记的
-/// 目的地集合、NAT 是所有权注释下的规则指纹集合。漂移判定因此能区分「少装了」
-/// 与「多装了本不该在的」，且只看 Meshlet 自有对象——非本 meshlet 资源永不动。
+/// Every field is collected by **identity**, not by **count**: peers form a public-key set, routes a
+/// destination set carrying ownership marks, and NAT a rule-fingerprint set under the ownership
+/// comment. Drift verdicts can therefore distinguish "installed too little" from "installed things
+/// that should not be there", and only Meshlet-owned objects are looked at — resources outside this
+/// meshlet are never touched.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NetworkSnapshot {
     pub tunnel_exists: bool,
     pub forwarding_enabled: Option<bool>,
-    /// 受管接口上实际存在的 WireGuard peer（公钥 + allowed-ips 原样读出）。
+    /// The WireGuard peers actually present on the managed interface (public key + allowed-ips read as-is).
     pub peers: Vec<PeerObserved>,
-    /// 带 Meshlet 所有权标记的路由目的地（后端只枚举标记过的对象）。
+    /// Route destinations carrying the Meshlet ownership mark (the backend only enumerates marked objects).
     pub installed_routes: Vec<Ipv4Cidr>,
-    /// 内核中 Meshlet 所有权注释下的 NAT 规则指纹（`NatRule::signature` 同一
-    /// 形状）；计划侧与内核侧据此做集合精确比对。
+    /// Fingerprints of the kernel's NAT rules under the Meshlet ownership comment (the same shape
+    /// as `NatRule::signature`); the plan side and the kernel side do exact set comparison by it.
     pub nat_rules: Vec<String>,
-    /// 隧道接口的实际 MTU 读数（`ip link show` 解析；计划显式配置 MTU
-    /// 时用于漂移判定：内核读数与计划不符即重放纠回）。
+    /// The tunnel interface's actual MTU reading (parsed from `ip link show`; used for drift
+    /// verdicts when the plan configures an MTU explicitly: a kernel reading that disagrees with
+    /// the plan triggers a replay to correct).
     pub tunnel_mtu: Option<u32>,
-    /// 受管接口的本机公钥指纹（`wg show dump` 接口行第 2 列，44 字符
-    /// base64）。漂移判定据此识别「peer 恰与计划一致但本机私钥被换」的
-    /// 手动隧道（todo.md Windows 部署发现第二项）；读不到 → `None`
-    /// （证据缺失不判，不进重放死循环）。
+    /// The local public-key fingerprint of the managed interface (`wg show dump` interface line,
+    /// column 2, 44 characters of base64). Drift verdicts use it to recognize a hand-made tunnel
+    /// where "peers happen to match the plan but the local private key was swapped" (the second
+    /// finding of the todo.md Windows deployment); unreadable → `None` (missing evidence is not
+    /// judged, no replay loop).
     pub local_public_key: Option<String>,
-    /// 受管接口适配器的实际 IPv4 地址。漂移判定比对计划地址——手动隧道
-    /// 换了地址也必须重放纠回；读不到 → `None`（证据缺失不判）。
+    /// The managed interface adapter's actual IPv4 address. Drift verdicts compare it against the
+    /// planned address — even a hand-made tunnel that changed its address must be replay-corrected;
+    /// unreadable → `None` (missing evidence is not judged).
     pub tunnel_address: Option<std::net::Ipv4Addr>,
-    /// 受管接口的 WireGuard 实际监听端口（`wg show dump` 接口行第 3 列）。
-    /// 直连开启时计划钉住固定端口（`plan.tunnel.listen_port`）——实际端口
-    /// 与计划不符必须判不匹配（否则对端按上报端口发包，本机收不到，
-    /// 打洞静默失败）；读不到 → `None`（证据缺失不判，不进重放死循环）。
+    /// The managed interface's actual WireGuard listening port (`wg show dump` interface line,
+    /// column 3). When direct connect is on, the plan pins a fixed port (`plan.tunnel.listen_port`)
+    /// — an actual port that disagrees with the plan must read as not matching (otherwise the peer
+    /// sends to the reported port, this machine never receives, and hole punching fails silently);
+    /// unreadable → `None` (missing evidence is not judged, no replay loop).
     pub tunnel_listen_port: Option<u16>,
-    /// 路由来源语义（后端声明）：`true` = 本后端的内核路由完全由 peer
-    /// allowed-ips 装配（wireguard-nt 的 adapter `set_default_route`；
-    /// `plan.routes` 在此后端不经独立路径下发，netsh route apply 显式拒绝）。
-    /// 漂移判定据此不再按 `plan.routes` 判「缺路由/计划外路由」——路由
-    /// 已由 peer 身份级比对（公钥 → allowed-ips 逐项）完全决定；否则 hub
-    /// `/16` 在叶节点 `routes=[]` 下恒判「计划外路由」→ KernelDrift 每
-    /// 轮重放死循环（2026-11-22 imac 真机实锤：旧二进制 pre 边界 185 次）。
+    /// Route-provenance semantics (declared by the backend): `true` = this backend's kernel routes
+    /// are assembled entirely from peer allowed-ips (wireguard-nt's adapter `set_default_route`;
+    /// `plan.routes` is never pushed through an independent path on this backend, and netsh route
+    /// apply is explicitly rejected). Drift verdicts accordingly stop judging "missing route /
+    /// out-of-plan route" against `plan.routes` — routes are already fully determined by the
+    /// peer identity-level comparison (public key → allowed-ips, item by item); otherwise the hub's
+    /// `/16` on a leaf node with `routes=[]` always reads as "out-of-plan route" → a KernelDrift
+    /// replay loop every round (confirmed on a real imac on 2026-11-22: the old binary hit the
+    /// pre boundary 185 times).
     pub routes_from_peers: bool,
 }
 
-/// 受管接口上读出的一个 WireGuard peer（身份级事实：公钥 + allowed-ips）。
+/// One WireGuard peer read off the managed interface (an identity-level fact: public key + allowed-ips).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PeerObserved {
     pub public_key: String,
@@ -226,11 +241,11 @@ mod tests {
 
     #[test]
     fn derived_tunnel_mtu_tracks_the_underlay_with_floor() {
-        assert_eq!(derive_tunnel_mtu(1500), 1420); // 以太网：默认值 = 正确值
+        assert_eq!(derive_tunnel_mtu(1500), 1420); // Ethernet: the default is the correct value
         assert_eq!(derive_tunnel_mtu(9000), 8920); // jumbo underlay
         assert_eq!(derive_tunnel_mtu(1492), 1412); // PPPoE
-        assert_eq!(derive_tunnel_mtu(1300), 1280); // 下限钳制
-        assert_eq!(derive_tunnel_mtu(0), 1280); // 读数异常也不产生 0/回绕
+        assert_eq!(derive_tunnel_mtu(1300), 1280); // floor clamped
+        assert_eq!(derive_tunnel_mtu(0), 1280); // a bad reading still yields no 0/underflow
     }
 
     #[test]
@@ -244,12 +259,12 @@ mod tests {
 
     #[test]
     fn peer_allowed_ips_explicit() {
-        // §7.2：AllowedIPs 必须与目标路由一致——类型层面强制显式列出。
+        // §7.2: AllowedIPs must line up with the target routes — the types force listing them explicitly.
         let peer = PeerConfig {
             public_key: "hub-pub".into(),
             allowed_ips: vec![
                 "10.240.0.0/16".parse().unwrap(),
-                "10.241.1.0/24".parse().unwrap(), // 已发布 LAN 的 alias
+                "10.241.1.0/24".parse().unwrap(), // the alias of a published LAN
             ],
             endpoint: Some("203.0.113.10:51820".into()),
             persistent_keepalive_secs: Some(25),
@@ -259,7 +274,7 @@ mod tests {
 
     #[test]
     fn device_plan_round_trips_as_a_structured_object() {
-        // §16.4：server→agent 传的是类型化对象（CIDR 序列化为 a.b.c.d/p 字符串）。
+        // §16.4: server→agent transfers typed objects (a CIDR serializes to an a.b.c.d/p string).
         let plan = DevicePlan {
             desired_revision: 0,
             hub_port: None,
@@ -295,13 +310,14 @@ mod tests {
             "10.240.0.0/16"
         );
         assert_eq!(value["routes"][0]["destination"], "10.241.1.0/24");
-        // 缺省（旧服务端 / hub 未开启）不携带 ssh_config：计划序列化不新增
-        // 字段，旧服务端下发的哈希不变——升级不触发全网无谓重放。
+        // Absent (old servers / hub not enabled) means no ssh_config is carried: the plan's serialization
+        // adds no field and the hash pushed by old servers is unchanged — an upgrade triggers no
+        // needless network-wide replay.
         assert!(value.get("ssh_config").is_none());
         let round = serde_json::from_value::<DevicePlan>(value).unwrap();
         assert_eq!(round, plan);
 
-        // 缺 hub_address 的计划仍能解析（旧服务端下发的计划向前兼容）。
+        // A plan without hub_address still parses (forward compatibility with plans from old servers).
         let without_hub = serde_json::json!({
             "tunnel": plan.tunnel,
             "routes": [],
@@ -314,7 +330,7 @@ mod tests {
 
     #[test]
     fn device_plan_rejects_a_non_canonical_cidr() {
-        // 反序列化同样走校验：主机位非零的网段不是合法计划输入（§6.1）。
+        // Deserialization runs the same validation: a subnet with host bits set is not legal plan input (§6.1).
         let plan = DevicePlan {
             desired_revision: 0,
             hub_port: None,

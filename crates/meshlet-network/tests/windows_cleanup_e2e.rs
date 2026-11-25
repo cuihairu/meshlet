@@ -1,18 +1,22 @@
-//! Windows 卸载链真机集成测试（ADR-008 TODO #52 取证）：在真实 sc.exe /
-//! netsh 上走服务 create → stop（从未启动 1062 幂等）→ delete → re-delete
-//! （1060 幂等）与防火墙 add → delete → re-delete（本地化缺失文案幂等）
-//! 全程，最后以空态 CleanupPlan 重入验证「清理清到空态不算失败」（§10.3）。
+//! Real-machine integration tests for the Windows uninstall chain (evidence for ADR-008 TODO #52):
+//! the full loop on a real sc.exe / netsh -- service create -> stop (1062 idempotent when never
+//! started) -> delete -> re-delete (1060 idempotent) -- and firewall add -> delete -> re-delete
+//! (idempotent on localized "not found" wording), closing with a re-entry into an empty-state
+//! CleanupPlan to verify that "cleaning down to an empty state does not count as a failure" (§10.3).
 //!
-//! 真机取证（2026-10-26，中文 Windows Server，CP936 输出经
-//! `windows_console` 解码）：
-//! - `sc stop` 从未启动的服务 → exit 1062「[SC] ControlService 失败 1062:
-//!   服务尚未启动。」——Stop 的目标状态是「已停止」，未运行 = 已达成；
-//! - `sc delete` 不存在的服务 → exit 1060「指定的服务未安装。」；
-//! - `netsh firewall delete rule` 无匹配 →「没有与指定标准相匹配的规则。」。
+//! Real-machine evidence (2026-10-26, a Chinese Windows Server, CP936 output decoded through
+//! `windows_console`):
+//! - `sc stop` on a service that never started -> exit 1062 "[SC] ControlService failed 1062: The
+//!   service has not been started." (the quoted wording is the Chinese localization; the target state
+//!   of a Stop is "stopped", so not running = already achieved);
+//! - `sc delete` on a nonexistent service -> exit 1060 "The specified service is not installed.";
+//! - `netsh firewall delete rule` with no match -> "There are no rules matching the specified
+//!   standard."
 //!
-//! 测试卫生：服务/规则名用 `__meshlet_probe_*` 专用前缀（绝不扫描或触碰
-//! 机器全局对象）；服务 binPath 指向系统内置 cmd.exe 且从不 start；
-//! RouteGuard 式 Drop 兜底清理，断言失败时重复删除均幂等无害。
+//! Test hygiene: the service/rule names use the dedicated `__meshlet_probe_*` prefix (machine-global
+//! objects are never scanned or touched); the service's binPath points at the system's built-in
+//! cmd.exe and is never started; a RouteGuard-style Drop provides the fallback cleanup, and repeated
+//! deletions after a failed assertion are idempotent and harmless.
 
 #![cfg(target_os = "windows")]
 
@@ -25,9 +29,9 @@ use meshlet_network::windows_service::{
     exec::run_service_command, ServiceCommand, ServiceStartMode,
 };
 
-/// 服务探针名：专用前缀，绝不触碰机器全局服务。
+/// The probe service name: a dedicated prefix, never touching the machine's global services.
 const PROBE_SERVICE: &str = "__meshlet_probe_svc";
-/// 防火墙探针规则名：专用前缀。
+/// The probe firewall rule name: a dedicated prefix.
 const PROBE_RULE: &str = "__meshlet_probe_rule";
 
 fn delete_probe_service() -> ServiceCommand {
@@ -42,8 +46,8 @@ fn delete_probe_rule() -> FirewallRuleCommand {
     }
 }
 
-/// 失败兜底：Drop 时尽力删除两个探针目标（删除已不存在者幂等，重复清理
-/// 无害）。
+/// The fallback on failure: Drop makes a best-effort deletion of the two probe targets (deleting
+/// something already absent is idempotent, and repeated cleanup is harmless).
 struct ProbeGuard;
 
 impl Drop for ProbeGuard {
@@ -67,18 +71,19 @@ fn probe_rule() -> FirewallRule {
     }
 }
 
-/// 卸载重入主干：任意半状态（已删/从未启动/规则缺失）下每一步都幂等成功。
+/// The uninstall re-entry backbone: from any half-state (already deleted / never started / the rule
+/// missing) every step succeeds idempotently.
 #[test]
 fn uninstall_chain_is_reentrant_from_partial_states() {
-    // 0) 空态预热：直接删除不存在的服务/规则必须幂等成功（Drop 兜底清理
-    //    走的同一条路径）。
+    // 0) Empty-state warm-up: deleting a service/rule that does not exist must succeed idempotently
+    //    (the very same path the Drop fallback cleanup walks).
     run_service_command(&delete_probe_service())
         .expect("delete of absent service must be idempotent");
     run_firewall_command(&delete_probe_rule()).expect("delete of absent rule must be idempotent");
 
     let _guard = ProbeGuard;
 
-    // 1) create（disabled，从不 start）：卸载链的入口。
+    // 1) create (disabled, never started): the entry point of the uninstall chain.
     let create = ServiceCommand::Create {
         name: PROBE_SERVICE.into(),
         bin_path: r"C:\Windows\System32\cmd.exe".into(),
@@ -87,23 +92,23 @@ fn uninstall_chain_is_reentrant_from_partial_states() {
     let result = run_service_command(&create).expect("sc create probe service");
     assert!(result.applied);
 
-    // 2) stop 从未启动的服务：真机 1062「服务尚未启动。」→ 幂等成功
-    //    （Stop 的目标状态是「已停止」）。
+    // 2) stop a service that never started: real-machine 1062 "The service has not been started" -> an
+    //    idempotent success (the target state of a Stop is "stopped").
     let result = run_service_command(&ServiceCommand::Stop {
         name: PROBE_SERVICE.into(),
     })
     .expect("stop of never-started service must be idempotent success");
     assert!(result.applied);
 
-    // 3) delete → 4) re-delete：真机 1060 本地化文案 → 幂等成功。
+    // 3) delete -> 4) re-delete: the real-machine 1060 localized wording -> an idempotent success.
     let result = run_service_command(&delete_probe_service()).expect("sc delete probe service");
     assert!(result.applied);
     let result = run_service_command(&delete_probe_service())
         .expect("re-delete of absent service must be idempotent success");
     assert!(result.applied);
 
-    // 5) 防火墙 add → delete → re-delete：本地化缺失文案经 windows_console
-    //    解码后命中幂等判定。
+    // 5) Firewall add -> delete -> re-delete: the localized "missing" wording, once decoded by
+    //    windows_console, hits the idempotence verdict.
     let result = run_firewall_command(&FirewallRuleCommand::Add { rule: probe_rule() })
         .expect("netsh add probe rule");
     assert!(result.applied);
@@ -113,9 +118,9 @@ fn uninstall_chain_is_reentrant_from_partial_states() {
         .expect("re-delete of absent rule must be idempotent success");
     assert!(result.applied);
 
-    // 6) 空态 CleanupPlan 重入：计划里的每一步（服务 stop/delete、路由
-    //    delete、防火墙 delete）目标都已缺失，全部必须幂等成功——
-    //    卸载可从任意半状态重入到空态。
+    // 6) Re-entry into an empty-state CleanupPlan: every step in the plan (service stop/delete, route
+    //    delete, firewall delete) already has its target missing, and all of them must succeed
+    //    idempotently -- uninstalling can re-enter from any half-state down to the empty state.
     let plan = CleanupPlan {
         service_name: PROBE_SERVICE.into(),
         route_interface: "Loopback Pseudo-Interface 1".into(),
