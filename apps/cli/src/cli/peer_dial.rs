@@ -2,16 +2,16 @@ use crate::cli::local_state::state_dir;
 use crate::cli::render::format_dial_targets;
 use meshlet_network::dial::{self, DirectDialRequest, DirectPeerView};
 
-/// 拨号结果等待上限（秒）：agent 探测周期 30s，留足一个周期 + 处理余量。
+/// Upper bound (seconds) to wait for the dial result: the agent probes every 30s, so allow a full cycle plus headroom.
 const DIAL_RESULT_TIMEOUT_SECS: u64 = 45;
-/// 结果轮询间隔（毫秒）。
+/// Result polling interval (milliseconds).
 const DIAL_POLL_MILLIS: u64 = 500;
 
-/// `meshlet peer dial [<node>]`（R-AGENT-WIN-1 补充 ③）。
+/// `meshlet peer dial [<node>]` (R-AGENT-WIN-1 supplement ③).
 ///
-/// 无 `<node>`：列出可拨号候选（名称/IP/模式/延时/端点）——托盘「连接节点…」
-/// 子菜单的数据源。有 `<node>`：解析目标（名称/IP/公钥前缀）→ 写拨号意图 →
-/// 轮询 agent 结果 → 显示成功/失败。
+/// Without `<node>`: list dialable candidates (name/IP/mode/RTT/endpoint) — the data source for
+/// the tray's "connect to node..." submenu. With `<node>`: resolve the target (name/IP/public key
+/// prefix), write the dial intent, poll the agent's result, and print success/failure.
 pub(crate) fn cmd_peer_dial(node: Option<&str>) {
     let state = state_dir();
     let views = dial::load_direct_peers(&state);
@@ -21,7 +21,7 @@ pub(crate) fn cmd_peer_dial(node: Option<&str>) {
     }
 }
 
-/// 无参模式：打印可拨号候选表。
+/// Argumentless mode: print the table of dialable candidates.
 fn print_dial_targets(views: &Option<Vec<DirectPeerView>>) {
     let views = match views {
         Some(views) => views,
@@ -37,8 +37,8 @@ fn print_dial_targets(views: &Option<Vec<DirectPeerView>>) {
     print!("{}", format_dial_targets(views));
 }
 
-/// 解析 `<node>`：名称精确 / overlay IP / 公钥前缀（大小写不敏感）。
-/// 纯函数（可测），无匹配返回 `None`。
+/// Resolve `<node>`: exact name / overlay IP / public key prefix (case-insensitive).
+/// Pure function (testable); returns `None` when nothing matches.
 fn resolve_dial_target<'a>(views: &'a [DirectPeerView], node: &str) -> Option<&'a DirectPeerView> {
     let node = node.trim();
     let lower = node.to_ascii_lowercase();
@@ -49,7 +49,7 @@ fn resolve_dial_target<'a>(views: &'a [DirectPeerView], node: &str) -> Option<&'
     })
 }
 
-/// 有参模式：解析目标 → 写意图 → 轮询结果 → 打印成功/失败。
+/// Argument mode: resolve the target, write the intent, poll the result, print success/failure.
 fn dial_node(state: &std::path::Path, views: Option<Vec<DirectPeerView>>, node: &str) {
     let views = match views {
         Some(views) => views,
@@ -100,7 +100,7 @@ fn dial_node(state: &std::path::Path, views: Option<Vec<DirectPeerView>>, node: 
     std::process::exit(1);
 }
 
-/// 拨号请求 ID：Unix 毫秒 + 本进程号（跨进程唯一性足够）。
+/// Dial request ID: Unix millis plus this process id (unique enough across processes).
 fn dial_request_id() -> String {
     format!("{}-{}", dial::now_millis(), std::process::id())
 }
@@ -110,7 +110,7 @@ mod tests {
     use super::{format_dial_targets, resolve_dial_target};
     use meshlet_network::dial::DirectPeerView;
 
-    /// `peer dial <node>`：解析目标（名称/IP/公钥前缀），未知目标不误配。
+    /// `peer dial <node>`: resolve the target (name/IP/public key prefix); unknown targets must not mis-match.
     #[test]
     fn resolve_dial_target_matches_name_ip_and_key_prefix() {
         let views = vec![DirectPeerView {
@@ -140,7 +140,7 @@ mod tests {
         assert!(resolve_dial_target(&views, "10.240.0.9").is_none());
     }
 
-    /// 无参 `peer dial`：候选表含表头与每节点一行。
+    /// Argumentless `peer dial`: the candidate table has a header and one row per node.
     #[test]
     fn format_dial_targets_lists_every_candidate() {
         let views = vec![DirectPeerView {

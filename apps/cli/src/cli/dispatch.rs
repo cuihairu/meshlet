@@ -8,7 +8,7 @@ use crate::cli::windows_diagnostics::{cmd_agent_diag, cmd_agent_doctor};
 pub(crate) fn dispatch(args: Vec<String>) {
     let cmd = args.first().map(String::as_str).unwrap_or("");
 
-    // `meshlet agent diag [--peers]`：二层子命令。
+    // `meshlet agent diag [--peers]`: a level-2 subcommand.
     if cmd == "agent" {
         let sub = args.get(1).map(String::as_str).unwrap_or("");
         match sub {
@@ -25,7 +25,7 @@ pub(crate) fn dispatch(args: Vec<String>) {
         return;
     }
 
-    // `meshlet peer dial [<node>]`：二层子命令。
+    // `meshlet peer dial [<node>]`: a level-2 subcommand.
     if cmd == "peer" {
         let sub = args.get(1).map(String::as_str).unwrap_or("");
         match sub {
@@ -40,7 +40,7 @@ pub(crate) fn dispatch(args: Vec<String>) {
         return;
     }
 
-    // `meshlet task <sub>`（MT-003）：控制台任务队列的 CLI 面。
+    // `meshlet task <sub>` (MT-003): the CLI surface of the console task queue.
     if cmd == "task" {
         let sub = args.get(1).map(String::as_str).unwrap_or("");
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
@@ -49,7 +49,7 @@ pub(crate) fn dispatch(args: Vec<String>) {
             "ls" | "list" => cmd_task_ls(&rest),
             "confirm" => cmd_task_confirm(&rest),
             "retry" => cmd_task_retry(&rest),
-            // `meshlet task` / `--help`：任务域用法（比全局帮助更聚焦）。
+            // `meshlet task` / `--help`: task-domain usage (narrower than the global help).
             "help" | "--help" | "-h" | "" => print_task_usage(),
             other => {
                 eprintln!("error: unknown task subcommand '{other}'");
@@ -81,8 +81,8 @@ pub(crate) fn dispatch(args: Vec<String>) {
 }
 
 pub(crate) fn print_usage() {
-    // R-TRAY-1：帮助文本由命令目录生成（单一事实源），与托盘「命令」区
-    // 同源——新增命令自动出现在两处，`--help` 与目录不可能漂移。
+    // R-TRAY-1: help text comes from the command catalog (single source of truth),
+    // shared with the tray's "commands" area — new commands land in both, no drift.
     print!(
         "{}",
         meshlet_commands::usage_text(env!("CARGO_PKG_VERSION"))

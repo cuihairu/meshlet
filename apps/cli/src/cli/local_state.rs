@@ -14,10 +14,10 @@ pub(crate) fn cmd_info() {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
-    // 从 WireGuard 获取本机 IP
+    // Get this machine's IP from WireGuard
     let wg_ip = wg_local_ip().unwrap_or_else(|| "not connected".to_string());
 
-    // 从 status.json 获取状态
+    // Read the status out of status.json
     let status = read_status();
     let state = status
         .get("state")
@@ -38,7 +38,7 @@ pub(crate) fn cmd_status() {
         .unwrap_or("unknown");
     let tooltip = status.get("tooltip").and_then(|v| v.as_str()).unwrap_or("");
 
-    // agent 进程是否存活
+    // Whether the agent process is alive
     let agent_alive = cfg!(windows) && process_exists("meshlet-agent");
     let tray_alive = cfg!(windows) && process_exists("meshlet-tray");
 
@@ -55,20 +55,20 @@ pub(crate) fn cmd_status() {
         println!("detail:    {tooltip}");
     }
 
-    // WireGuard 隧道（实际隧道名按 install.ps1/README 为 wg-meshlet，后端
-    // 默认 meshlet；旧硬编码 "WireGuard" 查不到真实隧道服务）。
+    // WireGuard tunnel (the real tunnel name is wg-meshlet per install.ps1/README,
+    // backend defaulting to meshlet; the old hardcoded "WireGuard" finds no real tunnel service).
     if cfg!(windows) {
         let tunnel = tunnel_service_running();
         println!("tunnel:    {}", if tunnel { "up" } else { "down" });
     }
 }
 
-/// `meshlet peers`（R-DIAG-2）：本机直连对端表——overlay IP / 连接模式 /
-/// 直连端点 / 实测 RTT / 最近握手 / 累计流量。
+/// `meshlet peers` (R-DIAG-2): the local direct peer table — overlay IP /
+/// connection mode / direct endpoint / measured RTT / last handshake / traffic.
 ///
-/// 数据源为本机 wg 读数（`diagnostics_sync` 的 wg 段）+ 对 overlay 地址实测
-/// RTT：wg 里存在即直连候选（agent 已下发 `wg set`），握手新鲜判 P2P 直连、
-/// 否则直连 pending。中继对端不出现在 wg（走 hub 整段路由），不在此列。
+/// Data: local wg readings (the wg section of `diagnostics_sync`) plus RTT
+/// measured against the overlay address. Present in wg marks a direct candidate
+/// (the agent already issued `wg set`); a fresh handshake means P2P direct, else pending; relayed peers are hub-routed and never appear in wg, so they are not listed.
 pub(crate) fn cmd_peers() {
     let backend = diag_backend();
     let ifname = detect_wg_interface().unwrap_or_else(|| "wg0".into());
@@ -76,7 +76,7 @@ pub(crate) fn cmd_peers() {
 }
 
 pub(crate) fn cmd_networks() {
-    // 从 WireGuard 配置和路由表获取
+    // Taken from the WireGuard config and the route table
     if cfg!(windows) {
         let routes = wg_routes();
         if routes.is_empty() {
@@ -102,19 +102,19 @@ pub(crate) fn cmd_config() {
 }
 
 pub(crate) fn state_dir() -> std::path::PathBuf {
-    // 与安装脚本/agent/tray 约定一致：状态写 `%LOCALAPPDATA%\meshlet\state`
-    // （install.ps1 的 state_dir；tray `meshlet_state_dir` 同源）。旧的
-    // ProgramData/config.toml 读不到真实 agent 状态，故废弃。
+    // Same convention as the installer/agent/tray: status lives in `%LOCALAPPDATA%\meshlet\state`
+    // (install.ps1's state_dir; the tray's `meshlet_state_dir` is the same source). The old
+    // ProgramData/config.toml cannot see real agent state, so it is retired.
     state_dir_from_local(&local_appdata().to_string_lossy())
 }
 
 pub(crate) fn config_path() -> std::path::PathBuf {
-    // 与安装脚本/agent/tray 约定一致：agent 配置 `%LOCALAPPDATA%\meshlet\agent.toml`
-    // （install.ps1 写该路径；tray `config_path_from_local` 同源）。
+    // Same convention as the installer/agent/tray: agent config is `%LOCALAPPDATA%\meshlet\agent.toml`
+    // (install.ps1 writes that path; the tray's `config_path_from_local` is the same source).
     config_path_from_local(&local_appdata().to_string_lossy())
 }
 
-/// `%LOCALAPPDATA%`（回退 `%USERPROFILE%\AppData\Local`，再回退 Public）。
+/// `%LOCALAPPDATA%` (falling back to `%USERPROFILE%\AppData\Local`, then to Public).
 fn local_appdata() -> std::path::PathBuf {
     std::env::var("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
@@ -125,16 +125,16 @@ fn local_appdata() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("C:/Users/Public/AppData/Local"))
 }
 
-/// 纯路径构造（可测）：`<local>/meshlet/state`——与 tray
-/// `state_dir_from_local` 同一约定。
+/// Pure path construction (testable): `<local>/meshlet/state` — the same
+/// convention as the tray's `state_dir_from_local`.
 fn state_dir_from_local(local: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(local)
         .join("meshlet")
         .join("state")
 }
 
-/// 纯路径构造（可测）：`<local>/meshlet/agent.toml`——与 tray
-/// `config_path_from_local` 同一约定。
+/// Pure path construction (testable): `<local>/meshlet/agent.toml` — the same
+/// convention as the tray's `config_path_from_local`.
 fn config_path_from_local(local: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(local)
         .join("meshlet")

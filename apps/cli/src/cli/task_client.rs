@@ -1,7 +1,7 @@
 use crate::cli::local_state::read_config;
 use std::collections::HashMap;
 
-/// `meshlet task` 域内用法（子命令 + 必选参数速查）。
+/// Task-domain usage for `meshlet task` (subcommands + required-argument quick reference).
 pub(crate) fn print_task_usage() {
     print!(
         "meshlet task <subcommand> [options]\n\
@@ -18,13 +18,13 @@ pub(crate) fn print_task_usage() {
     );
 }
 
-/// 任务子命令错误退出。
+/// Error exit for the task subcommands.
 fn task_fail(message: &str) -> ! {
     eprintln!("error: {message}");
     std::process::exit(1);
 }
 
-/// 解析 `--flag value` 与位置参数（纯函数，可测）。
+/// Parse `--flag value` pairs and positional arguments (pure function, testable).
 pub(crate) fn parse_flags(args: &[String]) -> (HashMap<String, String>, Vec<String>) {
     let mut flags = HashMap::new();
     let mut positional = Vec::new();
@@ -32,7 +32,7 @@ pub(crate) fn parse_flags(args: &[String]) -> (HashMap<String, String>, Vec<Stri
     while index < args.len() {
         let arg = &args[index];
         if let Some(key) = arg.strip_prefix("--") {
-            // `--flag value`：下一 token 不以 `--` 开头即视为值；否则裸开关。
+            // `--flag value`: the next token counts as the value unless it starts with `--`; otherwise a bare switch.
             if let Some(value) = args.get(index + 1) {
                 if !value.starts_with("--") {
                     flags.insert(key.to_string(), value.clone());
@@ -50,7 +50,7 @@ pub(crate) fn parse_flags(args: &[String]) -> (HashMap<String, String>, Vec<Stri
     (flags, positional)
 }
 
-/// 服务器地址：`--server` > `MESHLET_SERVER` > 配置 `server_url`。
+/// Server address: `--server` > `MESHLET_SERVER` > config `server_url`.
 fn task_server(flags: &HashMap<String, String>) -> String {
     if let Some(server) = flags.get("server").filter(|server| !server.is_empty()) {
         return server.clone();
@@ -67,7 +67,7 @@ fn task_server(flags: &HashMap<String, String>) -> String {
         .to_string()
 }
 
-/// API Token：`--token` > `MESHLET_TOKEN` > 配置 `api_token`。
+/// API token: `--token` > `MESHLET_TOKEN` > config `api_token`.
 fn task_token(flags: &HashMap<String, String>) -> String {
     if let Some(token) = flags.get("token").filter(|token| !token.is_empty()) {
         return token.clone();
@@ -84,7 +84,7 @@ fn task_token(flags: &HashMap<String, String>) -> String {
         .to_string()
 }
 
-/// 任务 API 调用（Bearer + CSRF 头）。`body=None` 为 GET。返回 JSON。
+/// Task API call (Bearer + CSRF headers). `body=None` means GET. Returns JSON.
 pub(crate) fn task_request(
     method: &str,
     server: &str,
@@ -141,7 +141,7 @@ pub(crate) fn cmd_task_assign(args: &[String]) {
     if let Some(workdir) = flags.get("workdir").filter(|workdir| !workdir.is_empty()) {
         body["workdir"] = serde_json::json!(workdir);
     }
-    // `--timeout` 必须是秒数；非法值不静默丢（否则用默认超时跑，行为悄悄变）。
+    // `--timeout` must be a number of seconds; an invalid value is not silently dropped (otherwise it would run with the default timeout and the behaviour would change quietly).
     if let Some(raw) = flags.get("timeout") {
         match raw.parse::<u64>() {
             Ok(timeout) => {
@@ -191,7 +191,7 @@ pub(crate) fn cmd_task_ls(args: &[String]) {
     }
 }
 
-/// `meshlet task confirm <task-id> --network <id>`（用户侧确认完成）。
+/// `meshlet task confirm <task-id> --network <id>` (user-side completion confirmation).
 pub(crate) fn cmd_task_confirm(args: &[String]) {
     let (flags, positional) = parse_flags(args);
     let server = task_server(&flags);
@@ -216,7 +216,7 @@ pub(crate) fn cmd_task_confirm(args: &[String]) {
     }
 }
 
-/// `meshlet task retry <task-id> --network <id>`（驳回重跑，新代任务）。
+/// `meshlet task retry <task-id> --network <id>` (reject and re-run, spawning a new-generation task).
 pub(crate) fn cmd_task_retry(args: &[String]) {
     let (flags, positional) = parse_flags(args);
     let server = task_server(&flags);
@@ -244,7 +244,7 @@ pub(crate) fn cmd_task_retry(args: &[String]) {
     }
 }
 
-/// 命令摘要（列宽 `{:&<12}` 内截断：11 字符 + 省略号 = 12 列，纯函数）。
+/// Command summary (truncated inside the column width `{:&<12}`: 11 chars + ellipsis = 12 columns; pure function).
 fn cmd_short(command: &str) -> String {
     let count = command.chars().count();
     if count > 12 {
@@ -255,7 +255,7 @@ fn cmd_short(command: &str) -> String {
     }
 }
 
-/// 单任务视图（纯函数，可测）。
+/// Single task view (pure function, testable).
 pub(crate) fn format_task_view(task: &serde_json::Value) -> String {
     format!(
         "  id={} state={} target={} confirmed={} rejected={} parent={}\n  cmd={} exit_code={}\n",
@@ -273,7 +273,7 @@ pub(crate) fn format_task_view(task: &serde_json::Value) -> String {
     )
 }
 
-/// 任务列表渲染（纯函数，可测）。
+/// Task list rendering (pure function, testable).
 pub(crate) fn format_task_list(tasks: &serde_json::Value) -> String {
     let rows = match tasks.as_array() {
         Some(rows) if !rows.is_empty() => rows,
@@ -303,7 +303,7 @@ mod tests {
     use super::{format_task_list, parse_flags, task_request};
     use std::collections::HashMap;
 
-    /// 微型 mock 服务器记录：每个请求的 (method, path, authorization, csrf)。
+    /// Miniature mock server log: (method, path, authorization, csrf) per request.
     type MockLog = Vec<(String, String, String, String)>;
 
     #[test]
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(flags.get("timeout").map(String::as_str), Some("30"));
         assert_eq!(flags.get("verbose").map(String::as_str), Some(""));
 
-        // flag 后随的非 `--` token 是它的值；末尾裸开关值为空。
+        // A non-`--` token following a flag is its value; a trailing bare switch has an empty value.
         let (flags, positional) = parse_flags(&[
             "--x".to_string(),
             "task-2".to_string(),
@@ -338,7 +338,7 @@ mod tests {
         assert_eq!(flags.get("bare").map(String::as_str), Some(""));
         assert!(positional.is_empty());
 
-        // 位置参数在前、flag 在后（实际用法 `task confirm <id> --network <id>`）。
+        // Positional arguments first, flags after (real usage: `task confirm <id> --network <id>`).
         let (flags, positional) = parse_flags(&[
             "task-9".to_string(),
             "--network".to_string(),
@@ -366,18 +366,18 @@ mod tests {
         assert!(text.contains("ID"));
         assert!(text.contains("task-1"));
         assert!(text.contains("task-1-r1"));
-        assert!(text.contains("yes")); // confirmed 标记
-        assert!(text.contains("…")); // cmd 截断
-        assert!(text.contains("PARENT")); // 父链列
-        assert!(text.contains("task-1")); // r1 行的父链指向原任务
+        assert!(text.contains("yes")); // confirmed marker
+        assert!(text.contains("…")); // cmd truncation
+        assert!(text.contains("PARENT")); // parent-chain column
+        assert!(text.contains("task-1")); // r1's parent chain points at the original task
 
-        // 空列表 → 明确空态。
+        // Empty list -> an explicit empty state.
         assert_eq!(format_task_list(&serde_json::json!([])), "(no tasks)\n");
     }
 
-    /// MT-003 验收「CLI 交互测试」：真实 socket + 真实 ureq 客户端 + 真实
-    /// JSON 解析/渲染。起微型 HTTP 服务器按路径应答，验证 CLI 任务客户端
-    /// 发出正确方法/路径/Bearer/CSRF 头并正确解析响应。
+    /// MT-003 acceptance "CLI interaction test": a real socket + a real ureq client + real
+    /// JSON parsing/rendering. A miniature HTTP server answers per path, verifying that the CLI
+    /// task client sends the right method/path/Bearer/CSRF headers and parses responses correctly.
     #[test]
     fn task_cli_interacts_with_live_server() {
         let mut routes = HashMap::new();
@@ -427,7 +427,7 @@ mod tests {
         );
         let (base_url, handle) = spawn_mock(routes, 3);
 
-        // ls：GET 拉队列。
+        // ls: GET to pull the queue.
         let tasks = task_request(
             "GET",
             &base_url,
@@ -438,7 +438,7 @@ mod tests {
         .unwrap();
         assert!(format_task_list(&tasks).contains("task-1"));
 
-        // confirm：POST + 空 JSON 体。
+        // confirm: POST + empty JSON body.
         let confirmed = task_request(
             "POST",
             &base_url,
@@ -449,7 +449,7 @@ mod tests {
         .unwrap();
         assert_eq!(confirmed["confirmed_at"], "t");
 
-        // retry：POST 返回新代（parent 链）。
+        // retry: POST returns a new generation (parent chain).
         let rerun = task_request(
             "POST",
             &base_url,
@@ -461,8 +461,8 @@ mod tests {
         assert_eq!(rerun["id"], "task-1-r1");
         assert_eq!(rerun["parent_task_id"], "task-1");
 
-        // 符合管理面约定（服务端对写操作硬性要求 x-requested-with，丢头会
-        // 403——回归必须被看见）。
+        // Matches the management-plane convention (the server hard-requires x-requested-with on write
+        // operations; dropping the header is a 403 — the regression must be visible).
         let log = handle.join().unwrap();
         assert_eq!(log.len(), 3);
         assert_eq!(
@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(log[2].3, "XMLHttpRequest");
     }
 
-    /// 微型 HTTP 服务器（测试）：按路径应答脚本，记录 (method, path, auth)。
+    /// Miniature HTTP server (test): answers per a path-based script, logging (method, path, auth).
     fn spawn_mock(
         routes: HashMap<String, (u16, serde_json::Value)>,
         requests: usize,
@@ -502,7 +502,7 @@ mod tests {
                 let mut buffer = Vec::new();
                 let mut chunk = [0u8; 4096];
 
-                // 读请求头（\r\n\r\n 结束）。
+                // Read the request headers (terminated by \r\n\r\n).
                 let header_end;
                 loop {
                     let read = stream.read(&mut chunk).unwrap();

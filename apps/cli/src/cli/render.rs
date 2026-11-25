@@ -1,6 +1,6 @@
 use meshlet_network::SystemBackend;
 
-/// 候选表渲染（纯函数，可测）：名称/overlay/模式/延时/端点。
+/// Candidate table rendering (pure function, testable): name/overlay/mode/RTT/endpoint.
 pub(crate) fn format_dial_targets(views: &[meshlet_network::dial::DirectPeerView]) -> String {
     let mut output = format!(
         "{:<24} {:<16} {:<14} {:>8}  {}\n",
@@ -24,7 +24,7 @@ pub(crate) fn format_dial_targets(views: &[meshlet_network::dial::DirectPeerView
     output
 }
 
-/// 打印 wg 段：读数为空时如实区分「无直连对端」与「读数需提权」。
+/// Print the wg section: when the reading is empty, honestly distinguish "no direct peers" from "reading requires elevation".
 pub(crate) fn print_wg_peers(peers: &[meshlet_network::WgPeerDiagnostic], interface: &str) {
     if peers.is_empty() {
         if wg_readable(interface) {
@@ -58,7 +58,7 @@ pub(crate) fn print_wg_peers(peers: &[meshlet_network::WgPeerDiagnostic], interf
     }
 }
 
-/// wg 配置读数是否可访问（`wg show <if> dump` 需 root/CAP_NET_ADMIN）。
+/// Whether the wg config reading is accessible (`wg show <if> dump` needs root/CAP_NET_ADMIN).
 fn wg_readable(interface: &str) -> bool {
     std::process::Command::new("wg")
         .args(["show", interface, "dump"])
@@ -67,7 +67,7 @@ fn wg_readable(interface: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 打印直连对端表（`meshlet peers` 与 `agent diag --peers` 共用）。
+/// Print the direct peer table (shared by `meshlet peers` and `agent diag --peers`).
 pub(crate) fn print_peers_table(backend: &SystemBackend, interface: &str) {
     let network = match backend.diagnostics_sync() {
         Ok(network) => network,
@@ -125,9 +125,9 @@ pub(crate) fn print_peers_table(backend: &SystemBackend, interface: &str) {
     }
 }
 
-/// 直连对端表一行判定（纯函数，可测）：allowed_ips 首个 CIDR 为 /32 =
-/// 直连对端（agent 下发 `wg set` 时只写对端 /32），整段（如 /16）= hub
-/// 中继对端。直连对端再按握手新鲜度分 p2p_direct / direct_pending。
+/// Row verdict for the direct peer table (pure function, testable): the first CIDR of
+/// allowed_ips being /32 = direct peer (the agent's `wg set` writes only the peer /32);
+/// a whole block (e.g. /16) = hub relay peer. Direct peers then split by handshake freshness into p2p_direct / direct_pending.
 pub(crate) fn peer_mode(
     allowed_ips: &str,
     last_handshake: u64,
@@ -178,29 +178,29 @@ mod tests {
         let _ = format_bytes(0);
     }
 
-    /// R-DIAG-2：allowed_ips 判直连（/32）与 hub（整段），握手判 P2P/pending。
+    /// R-DIAG-2: allowed_ips decides direct (/32) vs hub (whole block); the handshake decides P2P/pending.
     #[test]
     fn peer_mode_distinguishes_direct_from_hub() {
         let now = 1_000_000u64;
-        // hub 中继：整段 /16，无论握手多新都是 relay，overlay 不显示。
+        // Hub relay: a whole /16 block — relay no matter how fresh the handshake; overlay not shown.
         let (mode, overlay, is_direct) = peer_mode("10.240.0.0/16", now - 5, now);
         assert_eq!(mode, "hub_relay");
         assert_eq!(overlay, "—");
         assert!(!is_direct);
 
-        // 直连对端 /32 + 新鲜握手 → p2p_direct，overlay 取地址。
+        // Direct peer /32 + fresh handshake -> p2p_direct, overlay takes the address.
         let (mode, overlay, is_direct) = peer_mode("10.240.0.3/32", now - 5, now);
         assert_eq!(mode, "p2p_direct");
         assert_eq!(overlay, "10.240.0.3");
         assert!(is_direct);
 
-        // 直连对端 /32 + 陈旧/从未握手 → pending。
+        // Direct peer /32 + stale or never handshake -> pending.
         let (mode, _, _) = peer_mode("10.240.0.3/32", now - 5000, now);
         assert_eq!(mode, "direct_pending");
         let (mode, _, _) = peer_mode("10.240.0.3/32", 0, now);
         assert_eq!(mode, "direct_pending");
 
-        // 多 allowed-ips 取首个；空/无前缀按非直连处理（不误报）。
+        // Multiple allowed-ips: take the first; empty or prefix-less is treated as non-direct (no false alarm).
         let (mode, _, is_direct) = peer_mode("10.240.0.3/32,192.168.1.0/24", now - 5, now);
         assert_eq!(mode, "p2p_direct");
         assert!(is_direct);

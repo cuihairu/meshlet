@@ -1,8 +1,8 @@
 use crate::cli::render::{print_peers_table, print_wg_peers};
 use meshlet_network::{NetworkBackend, SystemBackend};
 
-/// 构造诊断后端：默认 `wg0`，若本机存在实际 wg 接口则用其名（配置常改
-/// `wg-mlt` 等，默认名不符实；按链路类型自动检测，读不到回落默认）。
+/// Build the diagnostics backend: defaults to `wg0` but uses the real wg interface name when one
+/// exists locally (configs often rename it to `wg-mlt` etc.; auto-detected, falls back to default).
 pub(crate) fn diag_backend() -> SystemBackend {
     let backend = SystemBackend::new();
     match detect_wg_interface() {
@@ -11,14 +11,14 @@ pub(crate) fn diag_backend() -> SystemBackend {
     }
 }
 
-/// 检测本机 wireguard 类型接口名（复用 [meshlet_network::detect_wireguard_interface]，
-/// 与 MCP `doctor` 同一事实源，避免两处探测逻辑漂移）。
+/// Detect the local wireguard-style interface name (reuses [meshlet_network::detect_wireguard_interface],
+/// the same source of truth as the MCP `doctor`, so the two probe logics cannot drift).
 pub(crate) fn detect_wg_interface() -> Option<String> {
     meshlet_network::detect_wireguard_interface()
 }
 
-/// `meshlet agent diag [--peers]`（R-DIAG / R-DIAG-2）：本机网络诊断快照。
-/// 采集失败如实报错（诊断面绝不臆测默认值）；`--peers` 在快照后追加直连表。
+/// `meshlet agent diag [--peers]` (R-DIAG / R-DIAG-2): a local network diagnostics snapshot.
+/// Collection failure is reported as-is (the diagnostics surface never invents defaults); `--peers` appends the direct peer table.
 pub(crate) fn cmd_agent_diag(show_peers: bool) {
     let backend = diag_backend();
     let interface = detect_wg_interface().unwrap_or_else(|| "wg0".into());
@@ -74,22 +74,22 @@ pub(crate) fn cmd_agent_diag(show_peers: bool) {
     }
 }
 
-/// `meshlet agent doctor`（AGENT-DOC-1）：外来 overlay 共存体检。
+/// `meshlet agent doctor` (AGENT-DOC-1): coexistence health check for foreign overlays.
 ///
-/// 只读体检，不改任何内核状态。**存在 FAIL 时退出码 1**（供监控 / 脚本判据）；
-/// 数据不足的项标 `SKIP` 而非 PASS——缺数据不等于没问题（§7.5）。
+/// Read-only check, touches no kernel state. **Exit code 1 when any FAIL exists** (a gate for
+/// monitoring/scripts); data-starved items are marked `SKIP`, not PASS — missing data is not a pass (§7.5).
 pub(crate) fn cmd_agent_doctor() {
     use meshlet_network::doctor::CheckStatus;
 
-    // `wg` / `iptables` / `zerotier-cli` 都要特权才能读。agent 本身以 root 跑，
-    // CLI 却常由普通用户敲——不提权则 5 项里 3 项只能 SKIP，体检等于没做。
-    // `/proc/self` 的属主 uid 即本进程 euid（Linux 语义，无需 libc）；非 root
-    // 时走 `sudo -n`，免密不可用则命令失败 → 判定层如实报 not_assessed。
+    // `wg` / `iptables` / `zerotier-cli` all need privileges to read. The agent runs as root,
+    // but the CLI is usually typed by a plain user — without elevation, 3 of the 5 checks can
+    // only SKIP, making the health check useless. `/proc/self`'s owner uid equals this process's
+    // euid (Linux semantics, no libc); non-root goes via `sudo -n`; if passwordless fails, the command errors -> the verdict honestly reports not_assessed.
     let backend = diag_backend();
-    // sudo 提权仅 Unix 语义：root 直跑、非 root 走 `sudo -n`（免密不可用
-    // 则命令失败 → 判定层如实报 not_assessed）。Windows 命令自身按权限
-    // 降级，不额外提权——with_sudo 只在 unix 后端存在，必须 cfg 门控，
-    // 否则 windows 目标因另一分支类型检查报 E0599（run 45321046165 实证）。
+    // sudo elevation is Unix-only: root runs directly, non-root uses `sudo -n` (if passwordless
+    // access is unavailable the command fails -> the verdict honestly reports not_assessed).
+    // Windows commands degrade on their own, no extra elevation — `with_sudo` only exists on
+    // the unix backend and must be cfg-gated, else windows targets hit E0599 (run 45321046165).
     #[cfg(unix)]
     let backend = {
         use std::os::unix::fs::MetadataExt;
@@ -190,9 +190,9 @@ fn service_running(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// WireGuard Windows 隧道服务名候选（`WireGuardTunnel$<iface>`）：实际隧道名
-/// 按 install.ps1/README 为 wg-meshlet，后端默认 meshlet。纯函数（可测）。
-/// 非 Windows 构建下仅测试引用，允许 dead_code 以免 `clippy -D warnings` 挂。
+/// Candidate service names for the WireGuard Windows tunnel (`WireGuardTunnel$<iface>`): the real
+/// tunnel name is wg-meshlet per install.ps1/README, backend default meshlet. Pure (testable).
+/// On non-Windows builds only tests reference it; allow dead_code so `clippy -D warnings` stays green.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn tunnel_service_names() -> Vec<String> {
     ["wg-meshlet", "meshlet"]
@@ -220,8 +220,8 @@ pub(crate) fn process_exists(_: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    /// 审核发现 3b：隧道服务名按实际隧道 wg-meshlet/后端默认 meshlet，
-    /// 不再有 `WireGuardTunnel$WireGuard` 硬编码。
+    /// Audit finding 3b: tunnel service names follow the real tunnel wg-meshlet / backend
+    /// default meshlet; no more `WireGuardTunnel$WireGuard` hardcoding.
     #[test]
     fn tunnel_service_names_match_install_conventions() {
         let names = super::tunnel_service_names();
