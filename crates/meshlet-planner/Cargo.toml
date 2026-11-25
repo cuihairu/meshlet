@@ -5,5 +5,5 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# 依赖边界门（scripts/check-planner-deps.sh）：本 crate 必须零第三方依赖
+# Dependency boundary gate (scripts/check-planner-deps.sh): this crate must have zero third-party dependencies
 [dependencies]

@@ -1,5 +1,5 @@
-//! R-01 纯逻辑规划器（target-architecture 第四章）：不落库、不执行系统命令、不持密钥。
-//! 输入不可变快照，输出确定性计划；修订状态机见 docs/design/r01-domain-model.md。
+//! R-01 pure-logic planner (chapter 4 of target-architecture): touches no database, runs no system commands, holds no keys.
+//! Takes an immutable snapshot as input and emits a deterministic plan; see docs/design/r01-domain-model.md for the revision state machine.
 
 pub mod outbox;
 
@@ -19,7 +19,7 @@ pub enum RevisionStatus {
 }
 
 impl RevisionStatus {
-    /// 合法迁移表：弃单一 Applied（评审 3.2）；失败后只能回滚，不许直通成功（决策 6）。
+    /// Legal transition table: the single Applied state is dropped (review 3.2); after a failure only rollback is allowed, no jump straight to success (decision 6).
     pub fn can_transition_to(self, next: RevisionStatus) -> bool {
         use RevisionStatus::*;
         matches!(
@@ -42,7 +42,7 @@ pub struct OverlayAddress(pub [u8; 4]);
 #[derive(Debug, Clone)]
 pub struct NetworkSnapshot {
     pub network_id: String,
-    /// 已入网设备 -> overlay 地址（期望态纯输入）
+    /// Joined device -> overlay address (desired-state, input only)
     pub attachments: BTreeMap<String, OverlayAddress>,
     pub lan_prefixes: Vec<String>,
 }
@@ -59,7 +59,7 @@ pub enum PlanOp {
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub network_id: String,
-    /// 排序后即确定性（同输入必同输出，评审 4.3）
+    /// Deterministic once sorted (same input always yields the same output, review 4.3)
     pub ops: Vec<PlanOp>,
 }
 
@@ -96,7 +96,7 @@ fn overlaps(a: (u32, u32), b: (u32, u32)) -> bool {
     a.0 & b.1 == b.0 & a.1
 }
 
-/// 全局且与创建顺序无关的冲突检查（评审 4.2）：任意两前缀两两比对。
+/// Conflict check that is global and independent of creation order (review 4.2): every pair of prefixes is compared.
 pub fn check_prefix_conflicts(prefixes: &[String]) -> Result<(), PlanError> {
     let parsed = prefixes
         .iter()
@@ -115,7 +115,7 @@ pub fn check_prefix_conflicts(prefixes: &[String]) -> Result<(), PlanError> {
     Ok(())
 }
 
-/// 确定性 LAN 路由计划：先冲突检查，再按 (prefix, owner) 字典序发布。
+/// Deterministic LAN route plan: conflict check first, then publish in lexicographic (prefix, owner) order.
 pub fn plan_lan_routes(snapshot: &NetworkSnapshot) -> Result<Plan, PlanError> {
     check_prefix_conflicts(&snapshot.lan_prefixes)?;
     let mut owners: Vec<&String> = snapshot.attachments.keys().collect();

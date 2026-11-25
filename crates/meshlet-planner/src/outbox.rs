@@ -1,5 +1,5 @@
-//! R-01 执行器切片：Outbox 投递状态机与 Revision 回执（纯逻辑，零依赖）。
-//! 语义：至少一次投递 + 幂等键；回执乱序到达安全；状态迁移复用 planner 迁移表。
+//! R-01 executor slice: the Outbox delivery state machine and Revision receipts (pure logic, zero dependencies).
+//! Semantics: at-least-once delivery + idempotency keys; receipts are safe to arrive out of order; transitions reuse the planner transition table.
 
 use crate::RevisionStatus;
 use std::collections::BTreeMap;
@@ -14,12 +14,12 @@ pub enum OutboxStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxEntry {
-    /// 幂等键：revision_id + 操作序号，重复入队不会产生第二条
+    /// Idempotency key: revision_id + op index; re-enqueueing never creates a second entry
     pub idempotency_key: String,
     pub revision_id: String,
     pub op_index: u32,
     pub status: OutboxStatus,
-    /// 至少一次投递：acked 之前可被 redeliver 任意次
+    /// At-least-once delivery: may be redelivered any number of times before ack
     pub attempts: u32,
 }
 
@@ -52,7 +52,7 @@ impl Outbox {
         key
     }
 
-    /// 取下一条待投递（字典序确定性）；投递计数 +1。acked 之后不会再出现。
+    /// Claim the next entry to deliver (deterministic lexicographic order); attempts += 1. Never resurfaces after ack.
     pub fn claim_next(&mut self) -> Option<&OutboxEntry> {
         let key = self
             .entries
@@ -65,7 +65,7 @@ impl Outbox {
         self.entries.get(&key)
     }
 
-    /// 至少一次语义：acked 前允许重复投递。
+    /// At-least-once semantics: repeated delivery is allowed before ack.
     pub fn redeliver(&mut self, key: &str) -> Result<&OutboxEntry, OutboxError> {
         let e = self
             .entries
@@ -106,7 +106,7 @@ impl Outbox {
     }
 }
 
-/// Revision 回执：记录终态与投递统计，迁移必须过 planner 迁移表。
+/// Revision receipt: records the terminal state and delivery stats; transitions must pass the planner transition table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevisionReceipt {
     pub revision_id: String,
@@ -134,7 +134,7 @@ impl RevisionReceipt {
         }
     }
 
-    /// 逐 op 回执（乱序安全：计数即可，谁先谁后不重要）。
+    /// Per-op receipt (out-of-order safe: it is just a count, arrival order does not matter).
     pub fn record_op_ack(&mut self) -> Result<(), ReceiptError> {
         if self.ops_acked + 1 > self.ops_total {
             return Err(ReceiptError::OpsExceedTotal);
@@ -154,7 +154,7 @@ impl RevisionReceipt {
         Ok(())
     }
 
-    /// 全部 op acked 且处于 Applying 时，可进入 Succeeded。
+    /// Once every op is acked while in Applying, the revision may move to Succeeded.
     pub fn try_complete(&mut self) -> Result<bool, ReceiptError> {
         if self.ops_acked == self.ops_total && self.status == RevisionStatus::Applying {
             self.transition(RevisionStatus::Succeeded)?;
@@ -212,7 +212,7 @@ mod tests {
         r.record_op_ack().unwrap();
         assert!(r.try_complete().unwrap());
         assert_eq!(r.status, RevisionStatus::Succeeded);
-        // Failed 不能直通 Succeeded（迁移表）
+        // Failed must not jump straight to Succeeded (transition table)
         let mut bad = RevisionReceipt::new("rev2", 1);
         bad.transition(RevisionStatus::Preparing).unwrap();
         bad.transition(RevisionStatus::Failed).unwrap();
