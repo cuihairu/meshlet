@@ -196,7 +196,7 @@ async fn http_router_enforces_bearer_token_before_connecting_backend() {
     router.abort();
 }
 
-/// 真实 ClientHello 帧：record(5) + handshake(4) + hello body（含 server_name 扩展）。
+/// A realistic ClientHello frame: record(5) + handshake(4) + hello body (including the server_name extension).
 fn client_hello(hostname: &str) -> Vec<u8> {
     let mut names = vec![0_u8]; // host_name
     names.extend_from_slice(&(hostname.len() as u16).to_be_bytes());
@@ -250,7 +250,7 @@ async fn router_task(listener: TcpListener, routes: HttpRouteSet, mode: RouteMod
     while let Ok((stream, remote)) = listener.accept().await {
         let routes = routes.clone();
         tokio::spawn(async move {
-            // 被拒绝的握手会返回 Err，这是预期行为。
+            // A rejected handshake returns Err, which is expected here.
             let _ = run_http_router(stream, &routes, mode, remote, |address| async move {
                 TcpStream::connect(address).await
             })
@@ -288,7 +288,7 @@ async fn tls_pass_through_hands_the_client_hello_to_the_backend_untouched() {
         .await
         .unwrap()
         .unwrap();
-    // 直通模式：后端拿到客户端原始字节，代理既不解密也不注入头。
+    // Pass-through mode: the backend receives the client's raw bytes; the proxy neither decrypts nor injects headers.
     assert!(forwarded.starts_with(&[0x16, 0x03, 0x01]));
     assert_eq!(forwarded, hello);
     backend_stream
@@ -324,7 +324,7 @@ async fn tls_pass_through_rejects_plain_http_and_leaves_the_backend_alone() {
         .unwrap();
     client.flush().await.unwrap();
     let mut response = Vec::new();
-    // 握手被拒：连接立即断开（EOF 或 RST），不返回任何 HTTP 响应。
+    // Handshake rejected: the connection drops immediately (EOF or RST), with no HTTP response at all.
     let _ = timeout(TEST_TIMEOUT, client.read_to_end(&mut response))
         .await
         .unwrap();
@@ -373,12 +373,13 @@ async fn tls_pass_through_rejects_an_unknown_sni_and_leaves_the_backend_alone() 
     router.abort();
 }
 
-/// 真机验收暴露的可用性形态：一个畸形握手在连接任务里 panic 后，整台发布平面
-/// 静默（accept 停止接收、探针停止上报）。解析越界已在嗅探器内修掉，这里断言
-/// 第二道防线——某个连接任务 panic 时，accept 循环仍必须继续接收新连接。
+/// Availability shape exposed by real-device acceptance: after a malformed handshake panics a
+/// connection task, the whole publishing plane went silent (accept stopped receiving, probes stopped
+/// reporting). The out-of-bounds parse was fixed inside the sniffer; this asserts the second line of
+/// defense — when a connection task panics, the accept loop must keep taking new connections.
 #[test]
 fn a_panicking_connection_does_not_wedge_the_router() {
-    // 与 agent 完全相同的运行时形状：单 worker 线程，外部同步线程 block_on 驱动。
+    // The exact runtime shape the agent uses: a single worker thread, driven by an external sync thread via block_on.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_name("meshlet-publish")
@@ -387,7 +388,7 @@ fn a_panicking_connection_does_not_wedge_the_router() {
         .unwrap();
     let worker =
         std::thread::spawn(move || runtime.block_on(router_survives_a_panicking_connection()));
-    // 断言失败会 panic 出 block_on，join() 把它带回断言现场。
+    // A failed assertion panics out of block_on; join() carries it back to the assertion site.
     worker
         .join()
         .expect("the router must keep serving after a connection panic");
@@ -419,7 +420,7 @@ async fn router_survives_a_panicking_connection() {
         }
     });
 
-    // 第一条连接命中路由并在 connect 处 panic：任务被 tokio 兜住，流被关闭。
+    // The first connection matches a route and panics at connect: tokio catches the task and the stream is closed.
     {
         let mut first = TcpStream::connect(local).await.unwrap();
         first
@@ -443,7 +444,7 @@ async fn router_survives_a_panicking_connection() {
         );
     }
 
-    // 第二条连接走 404 路径（不触后端），必须仍然收到响应。
+    // The second connection takes the 404 path (no backend) and must still get a response.
     let mut second = TcpStream::connect(local).await.unwrap();
     second
         .write_all(b"GET / HTTP/1.1\r\nhost: nobody.mesh.internal\r\n\r\n")

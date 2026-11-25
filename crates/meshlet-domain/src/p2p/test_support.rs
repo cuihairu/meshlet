@@ -1,5 +1,5 @@
-//! 跨子模块共享的测试夹具（仅在 cfg(test) 下编译）：常用网段常量与
-//! endpoint/cidr 构造器。
+//! Test fixtures shared across sub-modules (compiled only under cfg(test)): common
+//! network segment constants and endpoint/cidr constructors.
 
 use crate::cidr::Ipv4Cidr;
 use crate::p2p::endpoint::EndpointCandidate;

@@ -1,9 +1,9 @@
-//! IPv4 CIDR 类型：解析、校验、包含与重叠判断。
+//! IPv4 CIDR type: parsing, validation, containment and overlap checks.
 //!
-//! 约束（[ADR-004](../../docs/decisions/adr-004-overlay-ipam.md)）：
-//! - 构造时要求主机位为零（规范化形式），拒绝 `10.240.0.1/16` 这类非网络地址；
-//! - 前缀长度 0..=32；
-//! - `/30` 及更宽：可用主机排除网络地址与广播地址；`/31`、`/32`：全部地址可用。
+//! Constraints ([ADR-004](../../docs/decisions/adr-004-overlay-ipam.md)):
+//! - construction requires zero host bits (canonical form), rejecting non-network addresses such as `10.240.0.1/16`;
+//! - prefix length 0..=32;
+//! - `/30` and wider: usable hosts exclude the network and broadcast addresses; `/31`, `/32`: all addresses are usable.
 
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -28,7 +28,7 @@ fn mask_of(prefix: u8) -> u32 {
     }
 }
 
-/// 规范化的 IPv4 CIDR（主机位恒为零）。
+/// Normalized IPv4 CIDR (host bits always zero).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ipv4Cidr {
     network: u32,
@@ -51,10 +51,10 @@ impl Ipv4Cidr {
         })
     }
 
-    /// 由「接口地址 + 前缀」构造所属网段：主机位被掩掉。接口地址如
-    /// `10.98.0.20/24` 不是网络地址（[Self::new] 会拒绝），但它**所在**的
-    /// 局域网段就是 `10.98.0.0/24`——`ip -o addr show` 读到的正是这类地址，
-    /// LAN 枚举必须用它构造网段。
+    /// Build the containing network from an "interface address + prefix": host bits are masked off. An
+    /// interface address such as `10.98.0.20/24` is not a network address ([Self::new] rejects it), but the
+    /// **LAN** it sits in is `10.98.0.0/24` — `ip -o addr show` reports exactly this kind of address, so LAN
+    /// enumeration must use it to build the network.
     pub fn from_host_address(addr: Ipv4Addr, prefix: u8) -> Result<Self, CidrError> {
         if prefix > 32 {
             return Err(CidrError::PrefixOutOfRange(prefix));
@@ -93,19 +93,19 @@ impl Ipv4Cidr {
             && self.contains(other.broadcast())
     }
 
-    /// 网段是否重叠（互为子网也算重叠）。
+    /// Whether the ranges overlap (one being a subnet of the other also counts as overlap).
     pub fn overlaps(&self, other: &Self) -> bool {
         let min_prefix = self.prefix.min(other.prefix);
         let mask = mask_of(min_prefix);
         self.network & mask == other.network & mask
     }
 
-    /// 数学意义上的地址总数（含网络/广播地址）。
+    /// Total address count in the mathematical sense (including network/broadcast addresses).
     pub fn total_addresses(&self) -> u64 {
         1u64 << (32 - self.prefix as u32)
     }
 
-    /// 可分配地址数。
+    /// Number of allocatable addresses.
     pub fn usable_addresses(&self) -> u64 {
         match self.prefix {
             31 | 32 => self.total_addresses(),
@@ -113,7 +113,7 @@ impl Ipv4Cidr {
         }
     }
 
-    /// 第一个可用地址（`/30` 及更宽 = 网络地址 +1；`/31`、`/32` = 网络地址本身）。
+    /// First usable address (`/30` and wider = network address +1; `/31`, `/32` = the network address itself).
     pub fn first_usable(&self) -> Ipv4Addr {
         match self.prefix {
             31 | 32 => self.network(),
@@ -121,7 +121,7 @@ impl Ipv4Cidr {
         }
     }
 
-    /// 最后一个可用地址（`/30` 及更宽 = 广播地址 -1；`/31`、`/32` = 广播地址本身）。
+    /// Last usable address (`/30` and wider = broadcast address -1; `/31`, `/32` = the broadcast address itself).
     pub fn last_usable(&self) -> Ipv4Addr {
         match self.prefix {
             31 | 32 => self.broadcast(),
@@ -129,7 +129,7 @@ impl Ipv4Cidr {
         }
     }
 
-    /// 迭代全部可用地址（排除规则见模块注释）。
+    /// Iterate all usable addresses (exclusion rules in the module docs).
     pub fn iter_usable(&self) -> impl Iterator<Item = Ipv4Addr> {
         let start = u32::from(self.first_usable());
         let count = self.usable_addresses();
@@ -160,9 +160,9 @@ impl fmt::Display for Ipv4Cidr {
     }
 }
 
-/// 序列化形态为 `a.b.c.d/p` 字符串（与 [FromStr](std::str::FromStr) 同一语法，
-/// 校验同样拒绝主机位非零）：设备数据面计划（§16.4 结构化配置对象）跨
-/// server/agent 边界传递时用这个形态。
+/// The serialized form is an `a.b.c.d/p` string (same syntax as [FromStr](std::str::FromStr),
+/// which likewise rejects nonzero host bits): the device data-plane plan (§16.4
+/// structured configuration object) travels across the server/agent boundary in this form.
 impl serde::Serialize for Ipv4Cidr {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_string())
@@ -250,9 +250,9 @@ mod tests {
     #[test]
     fn overlap_detection() {
         let a = cidr("10.240.0.0/16");
-        assert!(a.overlaps(&cidr("10.240.1.0/24"))); // 子网
-        assert!(a.overlaps(&cidr("10.0.0.0/8"))); // 父网
-        assert!(a.overlaps(&cidr("10.240.0.0/16"))); // 自身
+        assert!(a.overlaps(&cidr("10.240.1.0/24"))); // subnet
+        assert!(a.overlaps(&cidr("10.0.0.0/8"))); // parent
+        assert!(a.overlaps(&cidr("10.240.0.0/16"))); // self
         assert!(!a.overlaps(&cidr("10.241.0.0/16")));
         assert!(!a.overlaps(&cidr("192.168.0.0/16")));
     }
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn default_overlay_first_usable_is_hub_candidate() {
-        // ADR-004：hub 取第一个可用地址（10.240.0.1），客户端从 10.240.0.2 起。
+        // ADR-004: hub takes the first usable address (10.240.0.1), clients start at 10.240.0.2.
         let c = cidr("10.240.0.0/16");
         let parse = |s: &str| s.parse::<Ipv4Addr>().unwrap();
         assert_eq!(c.first_usable(), parse("10.240.0.1"));

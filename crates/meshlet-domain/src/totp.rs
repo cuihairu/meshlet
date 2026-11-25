@@ -1,30 +1,30 @@
-//! TOTP 二次认证核心（RFC 4226 HOTP / RFC 6238 TOTP，SHA-1，6 位，30 秒步长）。
+//! TOTP second-factor core (RFC 4226 HOTP / RFC 6238 TOTP, SHA-1, 6 digits, 30-second steps).
 //!
-//! 不变量（守规矩）：
-//! - 密钥只以 **base32 字符串**存在服务端用户表；任何响应不携带密钥外的
-//!   可还原材料，`otpauth://` URI 只含 base32 密钥本身（不含明文密码）；
-//! - 校验窗口 ±1 步（`TOTP_WINDOW`），超窗一律拒绝；
-//! - 非法 base32 密钥 / 非数字码 / 空码一律失败（不 panic、不区分原因）。
+//! Invariants (non-negotiable):
+//! - the secret is stored in the server's user table only as a **base32 string**; no response carries
+//!   anything else that could reconstruct it, and the `otpauth://` URI contains only the base32 secret itself (no plaintext passwords);
+//! - the verification window is ±1 step (`TOTP_WINDOW`); anything beyond it is rejected;
+//! - invalid base32 secrets / non-numeric codes / empty codes always fail (no panic, no reason distinction).
 //!
-//! 测试用 RFC 4226 附录 D 向量（ASCII 密钥 `12345678901234567890`）与
-//! RFC 6238 SHA-1 向量（8 位版），不依赖任何外部库。
+//! Tests use the RFC 4226 Appendix D vectors (ASCII key `12345678901234567890`) and
+//! the RFC 6238 SHA-1 vectors (8-digit variant), with no external libraries.
 
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 
-/// TOTP 时间步长（秒）。
+/// TOTP time step (seconds).
 pub const TOTP_STEP_SECS: u64 = 30;
-/// 码位数（主流认证器默认 6）。
+/// Number of code digits (mainstream authenticators default to 6).
 pub const TOTP_DIGITS: u32 = 6;
-/// 校验窗口：允许前后各 1 步（±1 步）。
+/// Verification window: one step before or after is allowed (±1 step).
 pub const TOTP_WINDOW: u64 = 1;
-/// 生成密钥的熵（20 字节 = 160 位，base32 编码后 32 字符）。
+/// Entropy of generated secrets (20 bytes = 160 bits, 32 chars after base32 encoding).
 pub const SECRET_BYTES: usize = 20;
-/// 认证器显示名（otpauth 的 issuer 字段）。
+/// Authenticator display name (the otpauth issuer field).
 pub const OTPAUTH_ISSUER: &str = "meshlet";
 
-/// 生成本次绑定的新 base32 密钥（RFC 4648 无填充大写字母）。随机源为
-/// 进程内 CSPRNG（rand `OsRng`）。
+/// Generate a fresh base32 secret for a new enrollment (RFC 4648, unpadded, uppercase). The
+/// randomness comes from the in-process CSPRNG (rand `OsRng`).
 pub fn generate_secret() -> String {
     use rand_core::RngCore;
     let mut bytes = [0u8; SECRET_BYTES];
@@ -32,7 +32,7 @@ pub fn generate_secret() -> String {
     data_encoding::BASE32_NOPAD.encode(&bytes)
 }
 
-/// RFC 4226 HOTP：HMAC-SHA1 + 动态截断，返回 `digits` 位码（前导零补齐）。
+/// RFC 4226 HOTP: HMAC-SHA1 + dynamic truncation, returning a `digits`-digit code (zero-padded).
 pub fn hotp_sha1(key: &[u8], counter: u64, digits: u32) -> String {
     let mut mac = Hmac::<Sha1>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(&counter.to_be_bytes());
@@ -46,14 +46,14 @@ pub fn hotp_sha1(key: &[u8], counter: u64, digits: u32) -> String {
     format!("{:0width$}", bin % modulus, width = digits as usize)
 }
 
-/// 某时刻（unix 秒）的期望码。密钥非法返回 `None`。
+/// Expected code at a moment (unix seconds). Returns `None` for an invalid secret.
 pub fn code_at(secret_b32: &str, unix_secs: u64) -> Option<String> {
     let key = base32_decode(secret_b32)?;
     let counter = unix_secs / TOTP_STEP_SECS;
     Some(hotp_sha1(&key, counter, TOTP_DIGITS))
 }
 
-/// 校验 TOTP 码（±1 步窗口）。密钥非法 / 码非数字 / 长度不符一律 `false`。
+/// Verify a TOTP code (±1 step window). Invalid secret / non-numeric code / wrong length all return `false`.
 pub fn verify_code(secret_b32: &str, code: &str, unix_secs: u64) -> bool {
     let Some(code) = normalized_code(code) else {
         return false;
@@ -73,7 +73,7 @@ pub fn verify_code(secret_b32: &str, code: &str, unix_secs: u64) -> bool {
     false
 }
 
-/// 规范码：仅数字、恰好 `TOTP_DIGITS` 位。
+/// Canonical code: digits only, exactly `TOTP_DIGITS` long.
 fn normalized_code(code: &str) -> Option<String> {
     let code = code.trim();
     if code.len() != TOTP_DIGITS as usize || !code.bytes().all(|b| b.is_ascii_digit()) {
@@ -82,7 +82,7 @@ fn normalized_code(code: &str) -> Option<String> {
     Some(code.to_string())
 }
 
-/// RFC 4648 base32 解码（无填充 / 带填充均可；大写或小写）。非法返回 `None`。
+/// RFC 4648 base32 decode (padded or unpadded; uppercase or lowercase). Returns `None` on invalid input.
 fn base32_decode(s: &str) -> Option<Vec<u8>> {
     use data_encoding::{BASE32, BASE32_NOPAD};
     let s = s.trim().to_ascii_uppercase();
@@ -94,8 +94,8 @@ fn base32_decode(s: &str) -> Option<Vec<u8>> {
 
 /// `otpauth://totp/{issuer}:{account}?secret=…&issuer=…&algorithm=SHA1&digits=6&period=30`
 ///
-/// 标签做 URI 组件编码（保留 `@` 便于邮箱可读），secret 为 base32 原文。
-/// 该 URI 是认证器扫码导入的唯一材料；服务端不向响应写入密钥以外的材料。
+/// The label is URI-component encoded (`@` kept so emails stay readable), and the secret is the raw base32.
+/// This URI is the only material for authenticator QR import; the server writes nothing beyond the secret into responses.
 pub fn otpauth_uri(issuer: &str, account: &str, secret_b32: &str) -> String {
     let label = format!("{}:{}", encode_label(issuer), encode_label(account));
     format!(
@@ -106,7 +106,7 @@ pub fn otpauth_uri(issuer: &str, account: &str, secret_b32: &str) -> String {
     )
 }
 
-/// URI 组件编码：保留字母数字与 `-._~@`，其余百分号编码。
+/// URI component encoding: alphanumeric plus `-._~@` are kept, everything else is percent-encoded.
 fn encode_label(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -124,7 +124,7 @@ fn encode_label(s: &str) -> String {
 mod tests {
     use super::*;
 
-    /// RFC 4226 附录 D（HMAC-SHA1，ASCII 密钥，6 位）：count 0..=9。
+    /// RFC 4226 Appendix D (HMAC-SHA1, ASCII key, 6 digits): counts 0..=9.
     const RFC4226_VECTORS: [(u64, &str); 10] = [
         (0, "755224"),
         (1, "287082"),
@@ -148,8 +148,8 @@ mod tests {
 
     #[test]
     fn hotp_pads_leading_zero_and_agrees_with_rfc6238_8digit() {
-        // 同一密钥 counter 1 的 8 位值恰为 RFC 6238 SHA-1 向量 T=59 的 94287082
-        // （T=59 → counter=1），且 6 位截断与其低 6 位一致，互相印证。
+        // The 8-digit value for counter 1 with the same key is exactly the RFC 6238 SHA-1 vector at T=59, 94287082
+        // (T=59 → counter=1), and the 6-digit truncation matches its low 6 digits, corroborating each other.
         let key = b"12345678901234567890";
         assert_eq!(hotp_sha1(key, 1, 8), "94287082");
         assert_eq!(hotp_sha1(key, 1, 6), "287082");
@@ -158,13 +158,13 @@ mod tests {
 
     #[test]
     fn verify_code_accepts_rfc4226_counter_and_window() {
-        // TOTP counter = unix/30。取 unix=30*5=150 → counter 5 → 254676。
+        // TOTP counter = unix/30. Taking unix=30*5=150 → counter 5 → 254676.
         assert!(verify_code(
             &data_encoding::BASE32_NOPAD.encode(b"12345678901234567890"),
             "254676",
             150
         ));
-        // ±1 步（counter 4 与 6）也在窗口内。
+        // ±1 step (counters 4 and 6) also falls inside the window.
         assert!(verify_code(
             &data_encoding::BASE32_NOPAD.encode(b"12345678901234567890"),
             "338314",
@@ -180,14 +180,14 @@ mod tests {
     #[test]
     fn verify_code_rejects_beyond_window_and_bad_input() {
         let sec = &data_encoding::BASE32_NOPAD.encode(b"12345678901234567890");
-        // 步长 30：counter 差 2 步 → 拒绝。
+        // Step is 30: a 2-step counter gap → rejected.
         assert!(!verify_code(sec, "338314", 150 + 2 * 30));
-        // 错码 / 非数字 / 长度不符 / 空。
+        // Wrong code / non-numeric / wrong length / empty.
         assert!(!verify_code(sec, "000000", 150));
         assert!(!verify_code(sec, "abcabc", 150));
         assert!(!verify_code(sec, "12345", 150));
         assert!(!verify_code(sec, "", 150));
-        // 非法 base32 密钥。
+        // Invalid base32 secret.
         assert!(!verify_code("not base32 !!", "254676", 150));
     }
 
@@ -196,12 +196,12 @@ mod tests {
         let a = generate_secret();
         let b = generate_secret();
         assert_eq!(a.len(), 32);
-        // base32 大写字母 + 数字 2-7；不含小写（`is_ascii_uppercase` 对数字为 false）。
+        // base32 uppercase letters + digits 2-7; no lowercase (`is_ascii_uppercase` is false for digits).
         assert!(a
             .bytes()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
         assert_ne!(a, b);
-        // 可被 base32 解码（即密钥自洽）。
+        // Decodable as base32 (i.e. the secret is self-consistent).
         assert_eq!(base32_decode(&a).map(|v| v.len()), Some(SECRET_BYTES));
     }
 
@@ -214,7 +214,7 @@ mod tests {
         assert!(uri.contains("algorithm=SHA1"));
         assert!(uri.contains("digits=6"));
         assert!(uri.contains("period=30"));
-        // 明文密码绝不进 URI。
+        // Plaintext passwords never enter the URI.
         assert!(!uri.contains("password="));
         assert!(!uri.contains("P@ssw0rd"));
     }

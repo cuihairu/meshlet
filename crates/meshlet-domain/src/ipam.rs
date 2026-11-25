@@ -1,5 +1,5 @@
-//! Overlay IPAM（[ADR-004](../../docs/decisions/adr-004-overlay-ipam.md)）：
-//! hub 保留第一个可用地址；客户端顺序分配、全局唯一、耗尽报错不复用。
+//! Overlay IPAM ([ADR-004](../../docs/decisions/adr-004-overlay-ipam.md)):
+//! the hub keeps the first usable address; clients are assigned in order, globally unique, with no reuse on exhaustion.
 
 use crate::cidr::Ipv4Cidr;
 use std::collections::HashSet;
@@ -21,13 +21,13 @@ pub enum IpamError {
 pub struct Ipam {
     pool: Ipv4Cidr,
     used: HashSet<u32>,
-    /// 下一个候选地址（含）；顺序前进不复用已释放地址，保证可预测。
+    /// Next candidate address (inclusive); advances in order without reusing released addresses, keeping it predictable.
     cursor: u32,
     hub: Ipv4Addr,
 }
 
 impl Ipam {
-    /// 以 `hub` 作为中继地址建立分配器（保留，不分配给客户端）。
+    /// Create an allocator with `hub` as the relay address (reserved, never allocated to clients).
     pub fn new(pool: Ipv4Cidr, hub: Ipv4Addr) -> Result<Self, IpamError> {
         if !pool.contains(hub) || !pool.iter_usable().any(|a| a == hub) {
             return Err(IpamError::HubNotUsable(hub, pool));
@@ -48,7 +48,7 @@ impl Ipam {
         self.hub
     }
 
-    /// 顺序分配下一个可用地址。
+    /// Sequentially allocate the next usable address.
     pub fn allocate(&mut self) -> Result<Ipv4Addr, IpamError> {
         let last = u32::from(self.pool.last_usable());
         while self.cursor <= last {
@@ -64,7 +64,7 @@ impl Ipam {
         ))
     }
 
-    /// 分配指定地址（固定 IP 场景）。
+    /// Allocate the specified address (fixed-IP scenario).
     pub fn allocate_specific(&mut self, ip: Ipv4Addr) -> Result<(), IpamError> {
         if !self.pool.contains(ip) || !self.pool.iter_usable().any(|a| a == ip) {
             return Err(IpamError::OutsidePool(ip, self.pool));
@@ -91,7 +91,7 @@ impl Ipam {
         self.used.len()
     }
 
-    /// 按请求者身份排序后分配，避免 API、扫描或恢复顺序改变身份到地址的绑定。
+    /// Sort by requester identity before allocating, so API, scan or recovery ordering cannot change the identity-to-address binding.
     pub fn allocate_by_identity<K>(
         &mut self,
         identities: &[K],
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn first_client_gets_second_usable_address() {
-        // ADR-004：hub=10.240.0.1，第一个客户端=10.240.0.2。
+        // ADR-004: hub=10.240.0.1, the first client=10.240.0.2.
         let mut ipam = Ipam::new(
             "10.240.0.0/16".parse().unwrap(),
             "10.240.0.1".parse().unwrap(),
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn exhaustion_reports_pool() {
-        // /30：2 个可用，hub 占 1，仅剩 1 个可分配。
+        // /30: 2 usable, the hub takes 1, leaving only 1 allocatable.
         let mut ipam =
             Ipam::new("10.0.0.0/30".parse().unwrap(), "10.0.0.1".parse().unwrap()).unwrap();
         assert_eq!(
@@ -210,12 +210,12 @@ mod tests {
 
     #[test]
     fn hub_must_be_usable_member_of_pool() {
-        // 网络地址不可作 hub。
+        // The network address cannot be a hub.
         assert!(matches!(
             Ipam::new("10.0.0.0/24".parse().unwrap(), "10.0.0.0".parse().unwrap()),
             Err(IpamError::HubNotUsable(_, _))
         ));
-        // 池外地址不可作 hub。
+        // An address outside the pool cannot be a hub.
         assert!(matches!(
             Ipam::new("10.0.0.0/24".parse().unwrap(), "10.1.0.1".parse().unwrap()),
             Err(IpamError::HubNotUsable(_, _))
@@ -237,11 +237,11 @@ mod tests {
             Err(IpamError::OutsidePool(_, _))
         ));
         assert!(matches!(
-            ipam.allocate_specific("10.0.0.0".parse().unwrap()), // 网络地址
+            ipam.allocate_specific("10.0.0.0".parse().unwrap()), // network address
             Err(IpamError::OutsidePool(_, _))
         ));
         assert!(matches!(
-            ipam.allocate_specific("10.0.0.255".parse().unwrap()), // 广播地址
+            ipam.allocate_specific("10.0.0.255".parse().unwrap()), // broadcast address
             Err(IpamError::OutsidePool(_, _))
         ));
     }
@@ -256,6 +256,6 @@ mod tests {
         let a = ipam.allocate().unwrap(); // .2
         ipam.release(a);
         assert!(!ipam.is_taken(a));
-        ipam.allocate_specific(a).unwrap(); // 显式重用允许
+        ipam.allocate_specific(a).unwrap(); // explicit reuse allowed
     }
 }

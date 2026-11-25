@@ -1,4 +1,5 @@
-//! `AgentConfig` 解析与默认值测试（server 侧测试内联在 server.rs）。
+//! Parsing and default-value tests for `AgentConfig` (the server-side ones are
+//! inlined in server.rs).
 
 use super::*;
 
@@ -10,7 +11,7 @@ fn agent_config_validates_url_scheme() {
     let err = AgentConfig::from_toml("server_url = \"ftp://vps.example.com\"").unwrap_err();
     assert!(matches!(err, ConfigError::InvalidServerUrl(_)));
 
-    // 默认值可用。
+    // Defaults are usable.
     let d = AgentConfig::from_toml("").unwrap();
     assert_eq!(d, AgentConfig::default());
 }
@@ -35,7 +36,8 @@ fn agent_tray_integrations_default_off_and_parse_independently() {
 
 #[test]
 fn agent_dataplane_defaults_off_and_parses_explicit_section() {
-    // 默认全关：agent 不碰内核（§10.3 接线前确定性失败可见）。
+    // All off by default: the agent does not touch the kernel (§10.3 wiring is
+    // a deterministically visible failure before it exists).
     let d = AgentConfig::default();
     assert!(!d.dataplane.enabled);
     assert_eq!(d.dataplane.interface, "wg0");
@@ -78,7 +80,7 @@ poll_interval_secs = 10
     assert!(!d.upgrade.enabled);
     assert_eq!(d.upgrade.check_interval_secs, 86_400);
 
-    // 只开 enabled：其余默认。
+    // Only `enabled` set: the rest keep their defaults.
     let c = AgentConfig::from_toml("[dataplane]\nenabled = true").unwrap();
     assert!(c.dataplane.enabled);
     assert_eq!(c.dataplane.interface, "wg0");
@@ -87,7 +89,7 @@ poll_interval_secs = 10
 
 #[test]
 fn dataplane_hub_endpoints_splits_comma_and_dedups() {
-    // 缺失 / 空 → 空表（沿用「不兜底」语义）。
+    // Absent / empty -> empty table (the "no fallback" semantics are kept).
     assert_eq!(
         AgentConfig::default().dataplane.hub_endpoints(),
         Vec::<String>::new()
@@ -95,7 +97,8 @@ fn dataplane_hub_endpoints_splits_comma_and_dedups() {
     let d = AgentConfig::from_toml("[dataplane]\nenabled = true").unwrap();
     assert_eq!(d.dataplane.hub_endpoints(), Vec::<String>::new());
 
-    // 单端点（旧写法）：单元素表，failover 决策退化为恒选该项。
+    // Single endpoint (the legacy spelling): one-element table, so the
+    // failover decision degenerates to always picking that entry.
     let d = AgentConfig::from_toml(
         "[dataplane]\nenabled = true\nhub_endpoint = \"vps.example.com:51820\"",
     )
@@ -105,7 +108,8 @@ fn dataplane_hub_endpoints_splits_comma_and_dedups() {
         vec!["vps.example.com:51820".to_string()]
     );
 
-    // 多端点（failover 批）：逗号分隔、逐项 trim、去空段、去重、保序。
+    // Multiple endpoints (failover batch): comma separated, each item trimmed,
+    // empty segments dropped, deduplicated, order preserved.
     let d = AgentConfig::from_toml(
         "[dataplane]\nenabled = true\nhub_endpoint = \" a:51820 , b:51821 , a:51820 , , c:51822 \"",
     )
@@ -119,7 +123,8 @@ fn dataplane_hub_endpoints_splits_comma_and_dedups() {
         ]
     );
 
-    // 原字段仍是原样单串（契约兼容，读方不因多端点而变）。
+    // The raw field stays a verbatim single string (contract compatibility;
+    // readers do not change because of multiple endpoints).
     let d =
         AgentConfig::from_toml("[dataplane]\nenabled = true\nhub_endpoint = \"a:51820,b:51821\"")
             .unwrap();
@@ -128,7 +133,8 @@ fn dataplane_hub_endpoints_splits_comma_and_dedups() {
 
 #[test]
 fn agent_dataplane_tunnel_backend_defaults_service_and_parses() {
-    // 缺省 = service（行为不变）；Windows 数据面后端选择。
+    // The default is `service` (unchanged behaviour); this picks the Windows
+    // dataplane backend.
     assert_eq!(
         AgentConfig::default().dataplane.tunnel_backend,
         TunnelBackend::Service
@@ -144,15 +150,16 @@ fn agent_dataplane_tunnel_backend_defaults_service_and_parses() {
     let c = AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"service\"").unwrap();
     assert_eq!(c.dataplane.tunnel_backend, TunnelBackend::Service);
 
-    // 未知值 fail closed（绝不为拼写错误静默回退 service）。
+    // An unknown value fails closed (never silently fall back to `service` on
+    // a typo).
     let err = AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"wireguard\"").unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 }
 
 #[test]
 fn agent_dataplane_tunnel_backend_mac_boringtun_round_trips() {
-    // ③-C 钉："mac-boringtun" 解析到 MacBoringtun，且 as_str → 解析互为
-    // 逆操作（round-trip）；三个变体逐一走查。
+    // ③-C pin: "mac-boringtun" parses to MacBoringtun, and as_str -> parse are
+    // inverse operations (round-trip); walk all three variants.
     let c = AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"mac-boringtun\"").unwrap();
     assert_eq!(c.dataplane.tunnel_backend, TunnelBackend::MacBoringtun);
 
@@ -169,7 +176,8 @@ fn agent_dataplane_tunnel_backend_mac_boringtun_round_trips() {
         assert_eq!(parsed, variant, "round-trip {text}");
     }
 
-    // 近似拼写 fail closed（mac_boringtun 下划线不是合法串）。
+    // Near-miss spelling fails closed (`mac_boringtun` with an underscore is
+    // not a legal string).
     let err =
         AgentConfig::from_toml("[dataplane]\ntunnel_backend = \"mac_boringtun\"").unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
@@ -196,13 +204,15 @@ interface = "  "
 
 #[test]
 fn agent_direct_connect_defaults_on_and_parses_section() {
-    // §12 P2P：直连是核心目标，批次④防火墙联动已落地、双真机走查通过后
-    // 默认改开。显式 [dataplane.direct_connect] enabled = false 才关闭。
-    // 监听端口默认 51820。
+    // §12 P2P: a direct connection is the core goal; after batch ④ firewall
+    // integration landed and the walk-through passed on two real machines, the
+    // default flipped on. It is turned off only by an explicit
+    // [dataplane.direct_connect] enabled = false.
+    // The listen port defaults to 51820.
     let d = AgentConfig::default().dataplane.direct_connect;
     assert!(d.enabled);
     assert_eq!(d.listen_port, 51820);
-    // 缺 [dataplane] 段同样默认开启。
+    // Without a [dataplane] section it is likewise on by default.
     assert!(
         AgentConfig::from_toml("")
             .unwrap()
@@ -234,7 +244,8 @@ fn agent_direct_connect_rejects_zero_port_and_unknown_key() {
 
 #[test]
 fn ssh_config_sync_defaults_off_and_requires_explicit_opt_in() {
-    // 安全铁律：写用户 ~/.ssh 属敏感面，默认全关——不显式开启不落盘。
+    // Safety rule: writing the user's ~/.ssh is a sensitive surface, so it is
+    // off everywhere by default -- nothing is written unless explicitly enabled.
     let d = AgentConfig::default().ssh_config_sync;
     assert!(!d.enabled);
     assert!(!d.manage_include);
@@ -254,7 +265,8 @@ manage_include = true
     assert!(on.enabled);
     assert!(on.manage_include);
 
-    // manage_include 可以单独开（此时只多管 Include 行）。
+    // `manage_include` can be enabled on its own (it then only takes care of
+    // the Include lines).
     let partial = AgentConfig::from_toml("[ssh_config_sync]\nenabled = true")
         .unwrap()
         .ssh_config_sync;
@@ -267,7 +279,8 @@ manage_include = true
 
 #[test]
 fn ssh_config_sync_target_homes_parses_and_defaults_to_empty() {
-    // 缺省/空数组 = 单 home 旧语义（只写运行账号自己的 home）。
+    // Default / empty array = the legacy single-home semantics (only the home of
+    // the account running the agent is written).
     let none = AgentConfig::from_toml("").unwrap().ssh_config_sync;
     assert!(none.target_homes.is_empty());
     let empty = AgentConfig::from_toml("[ssh_config_sync]\ntarget_homes = []")
@@ -295,7 +308,8 @@ target_homes = ["/home/cui", "  ", "/root"]
 
 #[test]
 fn mcp_defaults_off_and_requires_explicit_opt_in() {
-    // 安全铁律：监听面默认关——不显式开启不监听（2026-11-08）。
+    // Safety rule: the listening surface is off by default -- nothing listens
+    // unless explicitly enabled (2026-11-08).
     let d = AgentConfig::default().mcp;
     assert!(!d.enabled);
     assert_eq!(d.port, 0);
@@ -309,7 +323,8 @@ fn mcp_defaults_off_and_requires_explicit_opt_in() {
     assert!(on.enabled);
     assert_eq!(on.port, 8765);
 
-    // 只开 enabled：端口默认 0（随机，写 mcp.json 交接）。
+    // Only `enabled` set: the port defaults to 0 (random, handed over via
+    // mcp.json).
     let rand = AgentConfig::from_toml("[mcp]\nenabled = true").unwrap().mcp;
     assert!(rand.enabled);
     assert_eq!(rand.port, 0);
@@ -320,29 +335,33 @@ fn mcp_defaults_off_and_requires_explicit_opt_in() {
 
 #[test]
 fn agent_probe_defaults_on_5s_and_parses_section() {
-    // SEL-001：默认开——direct_connect 默认开（98c75fe），探测是它的安全网
-    // （SEL-003 劣化回中继只吃探测窗口；探测关 = 劣化直连无限钉死黑洞，
-    // 真机 2026-11-13 imac↔work5 事故）。周期 5s（任务书），窗口 20。
+    // SEL-001: on by default -- direct_connect is on by default (98c75fe) and
+    // the probe is its safety net (SEL-003's degrade-and-return-to-hub only
+    // consumes a probe window; probe off = a degraded direct path pinned to a
+    // black hole for good, the 2026-11-13 imac<->work5 incident on real
+    // hardware). Interval 5s (task spec), window 20.
     let d = AgentConfig::default().dataplane.probe;
     assert!(d.enabled);
     assert_eq!(d.interval_secs, 5);
     assert_eq!(d.window, 20);
-    // SEL-002 迟滞默认：连续 3 采样、裕量 30%。
+    // SEL-002 hysteresis defaults: 3 consecutive samples, 30% margin.
     assert_eq!(d.switch_required, 3);
     assert_eq!(d.switch_margin, 0.30);
-    // SEL-003 恢复门默认：连续 3 轮健康才切回。
+    // SEL-003 recovery gate default: switch back only after 3 healthy rounds.
     assert_eq!(d.recovery_required, 3);
-    // SEL-003 时延劣化阈值默认：窗口 RTT 中位数 ≥800ms 判劣化（探测超时
-    // 1000ms 之前盲带，真机 2026-11-13 1715ms probe_ok 钉直连）。
+    // SEL-003 latency-degradation threshold default: a window RTT median of
+    // >=800ms counts as degraded (blind band below the 1000ms probe timeout;
+    // on real hardware 2026-11-13 a 1715ms probe_ok pinned the direct path).
     assert_eq!(d.degrade_rtt_ms, 800);
-    // SEL-003 丢包尖峰阈值默认：20%（2026-11-17 收窄，原 50%——49% 丢包的
-    // 面在旧阈值下放行成「健康面」，实测 ping 三态横跳的劣化面放行）。
+    // SEL-003 packet-loss spike threshold default: 20% (narrowed on 2026-11-17
+    // from 50% -- a 49%-loss path passed as "healthy" under the old threshold;
+    // measured ping showed a degraded path flipping between three states).
     assert_eq!(d.loss_spike, 0.20);
-    // 方案 1 默认：切换宽限 interval×required×2 = 30s（≤60 上限）、年轻窗口
-    // 豁免下限 4。
+    // Scheme 1 defaults: switch cooldown interval×required×2 = 30s (within the
+    // 60s cap), young-window exemption floor 4.
     assert_eq!(d.switch_cooldown_secs, 30);
     assert_eq!(d.degrade_min_samples, 4);
-    // 缺 [dataplane] 段同样取默认。
+    // Without a [dataplane] section the defaults apply too.
     let d = AgentConfig::from_toml("").unwrap().dataplane.probe;
     assert!(d.enabled);
     assert_eq!(d.interval_secs, 5);
@@ -376,11 +395,13 @@ loss_spike_percent = 30
     assert_eq!(c.dataplane.probe.recovery_required, 4);
     assert_eq!(c.dataplane.probe.degrade_rtt_ms, 500);
     assert_eq!(c.dataplane.probe.loss_spike, 0.30);
-    // 宽限缺省 = interval×required×2 = 2×5×2 = 20（≤60 上限内不钳）。
+    // Cooldown default = interval×required×2 = 2×5×2 = 20 (not clamped, still
+    // under the 60 cap).
     assert_eq!(c.dataplane.probe.switch_cooldown_secs, 20);
     assert_eq!(c.dataplane.probe.degrade_min_samples, 4);
 
-    // 显式宽限/年轻窗豁免照常解析；宽限缺省在超上限时被钳到 60。
+    // An explicit cooldown / young-window exemption parses as usual; the
+    // cooldown default is clamped to 60 when it exceeds the cap.
     let c = AgentConfig::from_toml(
         r#"
 [dataplane.probe]
@@ -427,7 +448,8 @@ fn agent_probe_rejects_zero_interval_and_window() {
     let err = AgentConfig::from_toml("[dataplane.probe]\nloss_spike_percent = 101").unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
-    // 方案 1：宽限上限 60s（过长延迟真故障切换）；年轻窗豁免 ≥1 且 ≤ window。
+    // Scheme 1: cooldown cap is 60s (a longer one delays real failover); the
+    // young-window exemption is >=1 and <= window.
     let err = AgentConfig::from_toml("[dataplane.probe]\nswitch_cooldown_secs = 61").unwrap_err();
     assert!(matches!(err, ConfigError::InvalidDataPlane(_)));
 
@@ -444,8 +466,9 @@ fn agent_probe_rejects_zero_interval_and_window() {
 
 #[test]
 fn agent_backoff_defaults_and_parses_explicit_section() {
-    // FLIP-002 默认：30s 基数 / 15min 封顶 / 连续 3 轮健康清零（任务书口径，
-    // confirmations 与 SEL-003 RecoveryGate 同值）。
+    // FLIP-002 defaults: 30s base / 15min cap / cleared after 3 consecutive
+    // healthy rounds (per the task spec; confirmations matches the SEL-003
+    // RecoveryGate value).
     let d = AgentConfig::from_toml("[dataplane]\nenabled = true").unwrap();
     assert_eq!(d.dataplane.backoff.backoff_base_ms, 30_000);
     assert_eq!(d.dataplane.backoff.backoff_cap_ms, 900_000);
@@ -465,7 +488,7 @@ recovery_confirmations = 5
     assert_eq!(c.dataplane.backoff.backoff_cap_ms, 600_000);
     assert_eq!(c.dataplane.backoff.recovery_confirmations, 5);
 
-    // 只给一项：其余保持默认。
+    // Giving just one value: the rest keep their defaults.
     let c = AgentConfig::from_toml("[dataplane]\n[dataplane.backoff]\nbackoff_base_ms = 45_000")
         .unwrap();
     assert_eq!(c.dataplane.backoff.backoff_base_ms, 45_000);

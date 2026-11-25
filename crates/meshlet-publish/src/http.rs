@@ -173,7 +173,7 @@ where
             return Err(invalid("unauthorized"));
         }
         let mut backend = connect_backend(route.backend_address).await?;
-        // 嗅探已经消费掉客户端的 ClientHello；必须原样回灌，否则后端收不到握手。
+        // Sniffing already consumed the client's ClientHello; replay it verbatim or the backend misses the handshake.
         backend.write_all(&hello).await?;
         backend.flush().await?;
         return tokio::io::copy_bidirectional(&mut stream, &mut backend)
@@ -222,8 +222,8 @@ pub enum RouteMode {
     TlsPassThrough,
 }
 
-/// 读取并解析 ClientHello，返回 `(server_name, 消费掉的完整记录字节)`。
-/// 调用方必须把返回的字节回灌给后端——嗅探本身吃掉了客户端的握手。
+/// Reads and parses a ClientHello, returning `(server_name, consumed record bytes)`.
+/// The caller must replay those bytes to the backend — sniffing ate the client's handshake.
 pub async fn sniff_sni(
     stream: &mut (impl AsyncRead + Unpin),
 ) -> Result<(String, Vec<u8>), PublishError> {
@@ -366,8 +366,8 @@ mod tests {
     use super::*;
     use tokio::net::TcpStream;
 
-    /// 一个真实的 ClientHello 帧：record(5) + handshake(4) + hello body。
-    /// extra 是插在 server_name 扩展之前的原始扩展字节，用于覆盖跳过路径。
+    /// A realistic ClientHello frame: record(5) + handshake(4) + hello body.
+    /// `extra` is raw extension bytes inserted before the server_name extension, covering the skip path.
     fn client_hello(sni: Option<&str>, extra: &[u8]) -> Vec<u8> {
         let mut extensions = Vec::new();
         extensions.extend_from_slice(extra);
@@ -405,14 +405,14 @@ mod tests {
         record
     }
 
-    /// 把一帧字节通过真实回环 socket 喂给嗅探器（与运行时相同的到达路径）。
+    /// Feeds a frame of bytes to the sniffer over a real loopback socket (same arrival path as at runtime).
     async fn sni(frame: &[u8]) -> Result<(String, Vec<u8>), PublishError> {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local = listener.local_addr().unwrap();
         let payload = frame.to_vec();
         let sender = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            // 写失败属预期（嗅探器可能提前断开），不让任务 panic。
+            // A failed write is expected (the sniffer may disconnect early); keep the task from panicking.
             let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, &payload).await;
         });
         let mut stream = TcpStream::connect(local).await.unwrap();
@@ -431,13 +431,13 @@ mod tests {
         let frame = client_hello(Some("tls.mesh.internal"), &[]);
         let (sni, replay) = sni(&frame).await.unwrap();
         assert_eq!(sni, "tls.mesh.internal");
-        // 消费掉的记录字节必须原样返回，供调用方回灌给后端。
+        // The consumed record bytes must come back verbatim so the caller can replay them to the backend.
         assert_eq!(replay, frame);
     }
 
     #[tokio::test]
     async fn skips_unknown_extensions_before_the_sni_extension() {
-        // extension_type 10, payload 4 字节，必须被跳过而不是当作 SNI 解析。
+        // extension_type 10, 4-byte payload: it must be skipped, not parsed as SNI.
         let frame = client_hello(
             Some("late.mesh.internal"),
             &[0x00, 0x0a, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef],
@@ -464,8 +464,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_truncated_cipher_block_instead_of_panicking() {
-        // cipher_suites 声明 100 字节但帧在压缩方法前截断：旧行为直接越界 panic。
-        // 记录长度必须过 43 字节下限，否则在读到该字段前就被拒。
+        // cipher_suites claims 100 bytes but the frame is truncated before the compression methods: the old code panicked on an out-of-range read.
+        // The record length must clear the 43-byte floor, otherwise it is rejected before this field is read.
         let mut body = Vec::new();
         body.extend_from_slice(&[0x03, 0x03]);
         body.extend_from_slice(&[0x2a; 32]);
@@ -487,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_extensions_claiming_more_than_the_record_holds() {
-        // 扩展区声明 2000 字节而记录只有几十字节：回归 sniff_sni 7157 越界 panic。
+        // The extension block claims 2000 bytes while the record holds a few dozen: regression for the sniff_sni 7157 out-of-range panic.
         let mut body = Vec::new();
         body.extend_from_slice(&[0x03, 0x03]);
         body.extend_from_slice(&[0x2a; 32]);
@@ -512,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_server_name_list_beyond_the_extension_payload() {
-        // server_name_list 声明 8 字节但扩展负载只剩 2 字节。
+        // server_name_list claims 8 bytes but only 2 bytes remain in the extension payload.
         let frame = client_hello(None, &[0x00, 0x00, 0x00, 0x04, 0x00, 0x08, 0x00, 0x01]);
         let error = sni(&frame).await.unwrap_err();
         assert!(message(error).contains("malformed SNI extension"));
@@ -520,8 +520,8 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_name_entry_beyond_the_server_name_list() {
-        // 前缀扩展 type=22 len=0 会被跳过；随后是真实的 server_name 扩展，
-        // list_len=4 但列表只剩 1 字节（name_len 远超剩余长度）。
+        // The prefixed extension type=22 len=0 gets skipped; then a real server_name extension follows,
+        // with list_len=4 but only 1 byte left in the list (name_len far exceeds the remainder).
         let frame = client_hello(
             None,
             &[
@@ -536,7 +536,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_a_server_name_list_without_a_host_name_entry() {
-        // 唯一合法条目的类型是 1（user_fqdn），列表里没有 host_name。
+        // The only entry present is of type 1 (user_fqdn); the list has no host_name.
         let frame = client_hello(
             None,
             &[
@@ -559,7 +559,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_truncated_record_body() {
         let mut frame = client_hello(Some("tls.mesh.internal"), &[]);
-        frame.truncate(30); // 记录头声明远多于 30 字节
+        frame.truncate(30); // the record header declares far more than 30 bytes
         let error = sni(&frame).await.unwrap_err();
         assert!(matches!(error, PublishError::Io(_)));
     }

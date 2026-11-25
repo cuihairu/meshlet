@@ -1,24 +1,24 @@
-//! 候选 endpoint 与直连路径决策：公网 / 局域网候选分类，以及
-//! 「同 LAN 直连 / 公网打洞 / 保持 hub 中继」的确定性决策。纯逻辑，无 IO。
+//! Candidate endpoints and direct-path decisions: public / LAN candidate
+//! classification, plus the deterministic choice between same-LAN direct, public hole-punch, or keeping hub relay.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::cidr::Ipv4Cidr;
 
-/// 候选 endpoint 分类（任务书：公网 ip:port 与局域网 ip:port 两类）。
+/// Candidate endpoint classification (spec: two kinds, public ip:port and LAN ip:port).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointKind {
-    /// RFC1918 内网地址（同网段直连用）。
+    /// RFC1918 private address (used for same-subnet direct connect).
     Lan,
-    /// 公网地址（hub 观测到的 agent 源地址 + UDP 端口，打洞用）。
+    /// Public address (agent source address + UDP port as observed by the hub; used for hole punching).
     Public,
 }
 
 impl EndpointKind {
-    /// API 展示用小写蛇形标识（契约字段 `kind`）。
+    /// Lowercase snake_case identifier for API display (contract field `kind`).
     pub fn as_str(self) -> &'static str {
         match self {
             EndpointKind::Lan => "lan",
@@ -27,7 +27,7 @@ impl EndpointKind {
     }
 }
 
-/// 一个候选直连 endpoint（ip:port + 分类）。
+/// One candidate direct-connect endpoint (ip:port + classification).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -54,14 +54,14 @@ impl EndpointCandidate {
         }
     }
 
-    /// 打洞 / `wg set peer endpoint` 用的 socket 地址。
+    /// Socket address used for hole punching / `wg set peer endpoint`.
     pub fn socket(&self) -> SocketAddrV4 {
         SocketAddrV4::new(self.ip, self.port)
     }
 }
 
-/// IP 是否为 RFC1918 私网地址（LAN 候选判定基准；链路本地 169.254/16
-/// 不算——跨主机不可路由）。
+/// Whether the IP is an RFC1918 private address (the basis for LAN candidate
+/// classification; link-local 169.254/16 does not count, as it is not routable across hosts).
 pub fn is_private_ip(ip: Ipv4Addr) -> bool {
     match ip.octets() {
         [10, ..] => true,
@@ -71,27 +71,27 @@ pub fn is_private_ip(ip: Ipv4Addr) -> bool {
     }
 }
 
-/// 对端候选是否落在本机任一局域网子网内（同网段判定）。
+/// Whether the peer candidate falls inside any of this host's LAN subnets (same-subnet check).
 pub fn is_lan_reachable(my_lan_subnets: &[Ipv4Cidr], candidate: &EndpointCandidate) -> bool {
     candidate.kind == EndpointKind::Lan && my_lan_subnets.iter().any(|c| c.contains(candidate.ip))
 }
 
-/// 直连路径决策结果。
+/// Outcome of the direct-path decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirectDecision {
-    /// 不可直连——保持 hub 中继（现状行为，不报错）。
+    /// No direct path - keep hub relay (current behaviour, not an error).
     Relay,
-    /// 同 LAN：直接用对端内网 endpoint（无 NAT，立即可握手）。
+    /// Same LAN: use the peer's private endpoint directly (no NAT, handshake at once).
     SameLan(EndpointCandidate),
-    /// 公网打洞：用对端公网 endpoint，双方各自发包开启 NAT 映射后握手。
+    /// Public hole punch: use the peer's public endpoint; both sides send packets to open their NAT mappings, then handshake.
     HolePunch(EndpointCandidate),
 }
 
-/// 决策直连路径（无 IO 纯函数）：
-/// 1. 对端 LAN 候选落在本机子网内 → [DirectDecision::SameLan]（多个候选取
-///    地址最小者，确定性）；
-/// 2. 否则对端有公网候选 → [DirectDecision::HolePunch]（同样取最小者）；
-/// 3. 都没有 → [DirectDecision::Relay]。
+/// Decide the direct path (pure function, no IO):
+/// 1. a peer LAN candidate falls inside my subnets -> [DirectDecision::SameLan]
+///    (with several candidates, the smallest address wins, deterministically);
+/// 2. otherwise the peer has a public candidate -> [DirectDecision::HolePunch] (smallest again);
+/// 3. neither -> [DirectDecision::Relay].
 pub fn decide_direct_path(
     my_lan_subnets: &[Ipv4Cidr],
     peer_candidates: &[EndpointCandidate],
@@ -123,7 +123,7 @@ mod tests {
     use crate::p2p::test_support::{cidr, lan, public, HOME};
     use std::net::Ipv4Addr;
 
-    // ------------------------------------------------------- 路径决策 ----
+    // ------------------------------------------------------- path decision ----
 
     #[test]
     fn same_lan_wins_over_public() {
@@ -139,7 +139,7 @@ mod tests {
     fn public_candidate_punches_when_lan_is_outside_my_subnets() {
         let my = [cidr(HOME)];
         let cands = vec![
-            lan("10.0.0.9", 51820), // 对端内网但与我不同段
+            lan("10.0.0.9", 51820), // peer is private but on a different subnet than me
             public("203.0.113.5", 51820),
         ];
         assert_eq!(
@@ -179,7 +179,7 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------- 私网判定 ----
+    // ------------------------------------------------------- private check ----
 
     #[test]
     fn rfc1918_classification() {

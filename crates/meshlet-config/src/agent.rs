@@ -1,6 +1,6 @@
-//! agent 侧配置（[`AgentConfig`]）：原始 TOML schema（`Raw*`，crate 私有）、
-//! 公开结构与默认值、[`AgentConfig::from_toml`] 校验；tray / upgrade /
-//! dataplane / direct_connect / probe / mcp / ssh_config_sync 子配置。
+//! Agent-side config ([`AgentConfig`]): the raw TOML schema (`Raw*`, crate-private),
+//! the public structs and defaults, [`AgentConfig::from_toml`] validation; tray / upgrade /
+//! dataplane / direct_connect / probe / mcp / ssh_config_sync sub-configs.
 
 use crate::ConfigError;
 use serde::Deserialize;
@@ -13,8 +13,8 @@ struct RawDataplaneConfig {
     private_key_file: Option<String>,
     hub_endpoint: Option<String>,
     poll_interval_secs: Option<u64>,
-    /// Windows 数据面后端选择（WG-NT-SWITCH 接线批）：`"service"`（默认）|
-    /// `"nt"`。其他平台忽略。
+    /// Windows dataplane backend selection (WG-NT-SWITCH wiring batch): `"service"` (default) |
+    /// `"nt"`. Ignored on other platforms.
     tunnel_backend: Option<String>,
     direct_connect: Option<RawDirectConnectConfig>,
     probe: Option<RawProbeConfig>,
@@ -24,11 +24,11 @@ struct RawDataplaneConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawBackoffConfig {
-    /// FLIP-002 demote backoff：首次冷却（毫秒，默认 30_000 = 30s）。
+    /// FLIP-002 demote backoff: initial cooldown (milliseconds, default 30_000 = 30s).
     backoff_base_ms: Option<u64>,
-    /// 冷却封顶（毫秒，默认 900_000 = 15min）。
+    /// Cooldown cap (milliseconds, default 900_000 = 15min).
     backoff_cap_ms: Option<u64>,
-    /// 连续 M 轮健康面证据清零退避（默认 3）。
+    /// Consecutive healthy-face evidence rounds that reset the backoff (default 3).
     recovery_confirmations: Option<u32>,
 }
 
@@ -45,21 +45,21 @@ struct RawProbeConfig {
     enabled: Option<bool>,
     interval_secs: Option<u64>,
     window: Option<usize>,
-    /// SEL-002 迟滞切换：新路径须连续 N 采样且优于现路径 ≥ margin。
-    /// `margin` 以百分比给出（30 = 30%）。默认 3 / 30%。
+    /// SEL-002 hysteresis switching: the new path must win N consecutive samples and beat the current path by ≥ margin.
+    /// `margin` is given in percent (30 = 30%). Defaults 3 / 30%.
     switch_required: Option<usize>,
     switch_margin_percent: Option<f64>,
-    /// SEL-003 恢复门：直连劣化回中继后须连续 N 轮健康才切回（默认 3）。
+    /// SEL-003 recovery gate: after direct degrades back to relay, N consecutive healthy rounds are required before switching back (default 3).
     recovery_required: Option<usize>,
-    /// SEL-003 时延劣化阈值（毫秒）：窗口 RTT 中位数 ≥ 此值判劣化回中继
-    /// （默认 800，依据见 ProbeConfig::degrade_rtt_ms）。
+    /// SEL-003 latency degradation threshold (milliseconds): window RTT median ≥ this value means degrade back to relay
+    /// (default 800, rationale at ProbeConfig::degrade_rtt_ms).
     degrade_rtt_ms: Option<u64>,
-    /// SEL-003 丢包尖峰阈值（百分比，20 = 20%）：窗口丢包率 ≥ 此值判劣化
-    /// （默认 20，依据见 ProbeConfig::loss_spike）。
+    /// SEL-003 loss-spike threshold (percent, 20 = 20%): window loss rate ≥ this value means degrade
+    /// (default 20, rationale at ProbeConfig::loss_spike).
     loss_spike_percent: Option<f64>,
-    /// SEL-002 切换宽限（秒，方案 1）：缺省 = interval×required×2（钳 ≤60）。
+    /// SEL-002 switch cooldown (seconds, scheme 1): default = interval×required×2 (clamped ≤60).
     switch_cooldown_secs: Option<u64>,
-    /// SEL-003 年轻窗口豁免下限（方案 1，默认 4）。
+    /// SEL-003 young-window exemption floor (scheme 1, default 4).
     degrade_min_samples: Option<usize>,
 }
 
@@ -69,10 +69,10 @@ struct RawAgentConfig {
     server_url: Option<String>,
     state_dir: Option<String>,
     device_token: Option<String>,
-    /// 自举码（ZeroTier 式自举注册的入口凭据）：`device_token` 缺省时用它向
-    /// `POST /api/v1/device-registrations` 自举注册，批准后即转为正式设备。
+    /// Bootstrap code (the entry credential for ZeroTier-style bootstrap registration): when `device_token` is absent, use it against
+    /// `POST /api/v1/device-registrations` to self-register; once approved it becomes a regular device.
     bootstrap_token: Option<String>,
-    /// 自举注册时上报的设备名（同网络内唯一，跨设备/待审批申请）。
+    /// Device name reported during bootstrap registration (unique within a network, across devices/pending applications).
     device_name: Option<String>,
     tray: Option<RawTrayConfig>,
     upgrade: Option<RawUpgradeConfig>,
@@ -110,65 +110,65 @@ struct RawTrayConfig {
     status_notifier_item: Option<bool>,
 }
 
-/// Agent 配置。
+/// Agent configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentConfig {
     pub server_url: String,
     pub state_dir: String,
-    /// 设备凭证（enrollment 返回的 agent token，仅此一次下发）：拉取期望配置
-    /// 用；`[dataplane] enabled` 且未配置时启动即报失败。
+    /// Device credential (the agent token returned by enrollment, handed out exactly once): used to
+    /// pull the desired config; startup fails immediately when `[dataplane] enabled` and this is unset.
     pub device_token: Option<String>,
-    /// 自举码（ZeroTier 式）：缺 `device_token` 时用它注册自身，落 Pending 等
-    /// 控制中心审批。**原始凭据只写 0600 配置文件**，服务端只存摘要（§11.3）。
+    /// Bootstrap code (ZeroTier-style): when `device_token` is missing, register the device with it, landing in
+    /// Pending awaiting control-center approval. **The raw credential only ever goes in the 0600 config file**; the server stores just a digest (§11.3).
     pub bootstrap_token: Option<String>,
-    /// 自举注册时的设备名（必须显式配置——注册名要可读，不能取默认值）。
+    /// Device name for bootstrap registration (must be set explicitly — the registered name must be human-readable, no default is taken).
     pub device_name: Option<String>,
-    /// 桌面集成（P1/P2）：两个能力独立开关，默认均关闭。
+    /// Desktop integration (P1/P2): the two capabilities are independently switched, both off by default.
     pub tray: TrayConfig,
     pub upgrade: UpgradeConfig,
     pub dataplane: DataplaneConfig,
-    /// SSH alias 同步（`[ssh_config_sync]`）：写用户 `~/.ssh` 属敏感面，
-    /// **默认全关**——`enabled` 开才写 `~/.ssh/meshlet.conf`（仅 meshlet
-    /// 专用文件，不碰用户 config）；`manage_include` 开才往 `~/.ssh/config`
-    /// 追加 `Include meshlet.conf`（改前备份原文件一次）；`target_homes`
-    /// 显式列出目标 home 目录（空 = 仅当前运行账号自己的 home）。
+    /// SSH alias sync (`[ssh_config_sync]`): writing into the user's `~/.ssh` is a sensitive surface,
+    /// **off by default** — only when `enabled` is on does it write `~/.ssh/meshlet.conf` (a meshlet-only
+    /// file, the user's config is never touched); only when `manage_include` is on does it append
+    /// `Include meshlet.conf` to `~/.ssh/config` (backing up the original once beforehand); `target_homes`
+    /// explicitly lists the target home directories (empty = only the running account's own home).
     pub ssh_config_sync: SshConfigSyncConfig,
-    /// MCP 本地服务（`[mcp]`）：AI 客户端经 loopback HTTP 查询本机 mesh 事实。
-    /// **默认全关**——监听面默认不开，`enabled = true` 显式开启（2026-11-08）。
+    /// Local MCP service (`[mcp]`): AI clients query this machine's mesh facts over loopback HTTP.
+    /// **Off by default** — the listener does not open unless `enabled = true` is set explicitly (2026-11-08).
     pub mcp: McpConfig,
 }
 
-/// Agent 侧 MCP 服务开关（默认全关：监听面显式开启）。
+/// Agent-side MCP service switches (off by default: the listener must be opened explicitly).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct McpConfig {
-    /// 总开关：关 = 不监听任何端口（默认）。
+    /// Master switch: off = no port is listened on (default).
     pub enabled: bool,
-    /// 监听端口；`0` = 随机（实际端口写 `{state_dir}/mcp.json` 交接文件）。
+    /// Listen port; `0` = random (the real port is written to the `{state_dir}/mcp.json` handoff file).
     pub port: u16,
 }
 
 impl McpConfig {
-    /// 关闭态（测试/默认构造用，语义与 [`Default::default`] 相同）。
+    /// The off state (for tests/default construction, semantically identical to [`Default::default`]).
     pub const OFF: Self = Self {
         enabled: false,
         port: 0,
     };
 }
 
-/// agent 侧 SSH alias 同步开关（默认全关）。
+/// Agent-side SSH alias sync switches (all off by default).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SshConfigSyncConfig {
-    /// 总开关：关 = 不写任何 `~/.ssh` 文件（默认）。
+    /// Master switch: off = no `~/.ssh` file is written (default).
     pub enabled: bool,
-    /// Include 行管理：开 = 检测并追加 `Include meshlet.conf` 到
-    /// `~/.ssh/config`（缺失时追加、原文件先备份）。关 = 只写 fragment，
-    /// 面板提示需手动加 Include。
+    /// Include-line management: on = detect and append `Include meshlet.conf` to
+    /// `~/.ssh/config` (append when missing, back up the original first). Off = write the fragment only,
+    /// with the panel prompting for a manual Include.
     pub manage_include: bool,
-    /// 目标 home 目录（绝对路径数组）：agent 以 root 服务运行时默认只写
-    /// root 自己的 home——多账号机器配置本项后，对每个目标 home 写
-    /// `<home>/.ssh/meshlet.conf`（属主钉成该 home 的属主用户、0600）、
-    /// Include 追加/备份同样按目标 home 处理。空数组 = 维持「当前
-    /// `$HOME` 单 home」旧语义（默认）。
+    /// Target home directories (array of absolute paths): with the agent running as a root service the default writes
+    /// only root's own home — once this is set on a multi-account machine, for each target home it writes
+    /// `<home>/.ssh/meshlet.conf` (ownership pinned to that home's owning user, 0600), and
+    /// Include append/backup likewise follows the target home. Empty array = keeps the old "current
+    /// `$HOME` single home" semantics (default).
     pub target_homes: Vec<std::path::PathBuf>,
 }
 
@@ -210,33 +210,33 @@ impl TrayConfig {
     };
 }
 
-/// 数据面后端选择（WG-NT-SWITCH 接线批 + WG-MAC-BT 接线批）。
+/// Dataplane backend selection (WG-NT-SWITCH wiring batch + WG-MAC-BT wiring batch).
 ///
-/// - [`Service`](TunnelBackend::Service)（默认）：Windows `wireguard.exe`
-///   隧道服务模型（`installtunnelservice` 受管服务 + netsh 路由）——现网三台
-///   的现行路径。
-/// - [`Nt`](TunnelBackend::Nt)：Windows wireguard-nt 0.5.0 嵌入式 adapter
-///   绑定（一网络一 adapter、单 agent 进程承载，根治服务模型 §1.2 同名互踩 /
-///   §2.5 端口撞绑）。
-/// - [`MacBoringtun`](TunnelBackend::MacBoringtun)：macOS boringtun 用户态
-///   后端（spawn boringtun-cli + wg.sock UAPI，见 meshlet-network 的
-///   `macos_wireguard_bt` 模块；接线批 ③-C）。
+/// - [`Service`](TunnelBackend::Service) (default): the Windows `wireguard.exe`
+///   tunnel-service model (managed `installtunnelservice` service + netsh routes) — the current
+///   path on the three machines in production.
+/// - [`Nt`](TunnelBackend::Nt): the Windows wireguard-nt 0.5.0 embedded-adapter
+///   binding (one adapter per network, carried by a single agent process; cures the service model's §1.2 same-name stomping /
+///   §2.5 port-binding collisions).
+/// - [`MacBoringtun`](TunnelBackend::MacBoringtun): the macOS boringtun userspace
+///   backend (spawns boringtun-cli + wg.sock UAPI; see the `macos_wireguard_bt`
+///   module in meshlet-network; wiring batch ③-C).
 ///
-/// 按平台生效：`service`/`nt` 仅 Windows、`mac-boringtun` 仅 macOS。平台与
-/// 变体不匹配时 fail-closed（agent 接线显式报错，绝不静默回退默认后端）。
+/// Effective per platform: `service`/`nt` are Windows-only, `mac-boringtun` is macOS-only. A platform/variant
+/// mismatch fails closed (the agent wiring errors out explicitly, never silently falling back to the default backend).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TunnelBackend {
-    /// `wireguard.exe` 隧道服务模型（现行路径）。
+    /// The `wireguard.exe` tunnel-service model (current path).
     #[default]
     Service,
-    /// wireguard-nt 嵌入式 adapter 绑定。
+    /// The wireguard-nt embedded-adapter binding.
     Nt,
-    /// macOS boringtun 用户态后端（接线批 ③-C）。
+    /// The macOS boringtun userspace backend (wiring batch ③-C).
     MacBoringtun,
 }
 
 impl TunnelBackend {
-    /// 配置串（与 [AgentConfig::from_toml] 解析面互为逆操作，round-trip 钉）。
+    /// The config string (the inverse of the [AgentConfig::from_toml] parse side, pinned by round-trip).
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Service => "service",
@@ -246,50 +246,63 @@ impl TunnelBackend {
     }
 }
 
-/// Agent 数据面配置（[ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)）：
-/// **默认全关**——关闭时 agent 只打印状态、不碰内核。
+/// Agent dataplane config ([ADR-007](../../docs/decisions/adr-007-linux-network-backend.md)):
+/// **off in every respect by default** -- when disabled the agent only prints
+/// its state and never touches the kernel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataplaneConfig {
     pub enabled: bool,
-    /// 数据面后端选择（见 [`TunnelBackend`]）。默认
-    /// [`Service`](TunnelBackend::Service)（行为不变）；`nt` 仅在 Windows、
-    /// `mac-boringtun` 仅在 macOS，且各自接线批完成并验收后有意义。
+    /// Dataplane backend selection (see [`TunnelBackend`]). The default is
+    /// [`Service`](TunnelBackend::Service) (unchanged behaviour); `nt` only
+    /// exists on Windows, `mac-boringtun` only on macOS, and each is only
+    /// meaningful once its wiring batch is complete and accepted.
     pub tunnel_backend: TunnelBackend,
-    /// 受管 WireGuard 接口名。
+    /// The managed WireGuard interface name.
     pub interface: String,
-    /// 本设备 WireGuard 私钥文件（本地注入，服务端永不携带——ADR-010）。
+    /// This device's WireGuard private-key file (injected locally; the server
+    /// never carries it -- ADR-010).
     pub private_key_file: Option<String>,
-    /// hub 的可达 endpoint 兜底（`host:port`）：server 未通过 `[dataplane]
-    /// advertise_ip` + `listen_port` 通告时使用。
+    /// Fallback reachable hub endpoint (`host:port`): used when the server has
+    /// not advertised one through `[dataplane] advertise_ip` + `listen_port`.
     ///
-    /// 支持逗号分隔多端点（failover 批）：`hub_endpoint = "a:51820,b:51820"`
-    /// ——agent 按序使用、现役端点握手超时则轮换到下一个（见
-    /// [`DataplaneConfig::hub_endpoints`]）。单端点写法语义不变（向后兼容）。
+    /// Comma-separated multiple endpoints are supported (failover batch):
+    /// `hub_endpoint = "a:51820,b:51820"` -- the agent walks them in order and
+    /// rotates to the next when the active one's handshake times out (see
+    /// [`DataplaneConfig::hub_endpoints`]). The single-endpoint spelling is
+    /// unchanged (backwards compatible).
     pub hub_endpoint: Option<String>,
-    /// 轮询间隔（秒）：到期向 server 拉取期望配置，有变更才重放（§10.1）。
+    /// Poll interval (seconds): when due, pull the desired config from the
+    /// server and replay only if it changed (§10.1).
     pub poll_interval_secs: u64,
-    /// P2P 直连（§12 P2P）：agent 每帧心跳上报候选端点，数据面尝试绕过 hub
-    /// 直连对端；不可达时自动回退 hub 中继。**默认开启**（批次④防火墙联动
-    /// 已落地、双真机走查通过后的产品决策——直连是核心目标，hub 中继只是
-    /// 兜底）：开直连会把数据面 wg 接口钉到固定监听端口并放行该 UDP 端口。
-    /// 显式关闭：`[dataplane.direct_connect] enabled = false`。
+    /// P2P direct connection (§12 P2P): the agent reports candidate endpoints in
+    /// every heartbeat frame and the dataplane tries to reach the peer directly,
+    /// bypassing the hub; it falls back to hub relay when unreachable.
+    /// **On by default** (a product decision after the batch ④ firewall
+    /// integration landed and the walk-through passed on two real machines -- a
+    /// direct path is the core goal and hub relay is only the safety net):
+    /// enabling it pins the dataplane wg interface to a fixed listen port and
+    /// that UDP port must be allowed through.
+    /// Explicitly disable with `[dataplane.direct_connect] enabled = false`.
     pub direct_connect: DirectConnectConfig,
-    /// SEL-001 候选端点探测：对每 peer 全部候选端点发 ICMP 轻量探测，采集
-    /// RTT / 丢包 / 抖动滑动窗口。**默认开启**（2026-11-13 spoke 事故后
-    /// 随 direct_connect 主开关伴生开启——探测是直连安全网）；
-    /// `direct_connect.enabled` 且有候选端点时才真正发探测。
+    /// SEL-001 candidate-endpoint probing: send a light ICMP probe to every
+    /// candidate endpoint of every peer, collecting sliding windows of
+    /// RTT / loss / jitter. **On by default** (turned on alongside the
+    /// direct_connect master switch after the 2026-11-13 spoke incident -- the
+    /// probe is the direct path's safety net); probes are actually sent only
+    /// when `direct_connect.enabled` and a candidate endpoint exists.
     pub probe: ProbeConfig,
-    /// FLIP-002 demote backoff：连续 demote 后 promote 侧指数退避冷却
-    /// （只作用 promote，不影响 SEL-003 劣化判定灵敏度）。默认见
-    /// [`BackoffConfig`]。
+    /// FLIP-002 demote backoff: exponential backoff cooling on the promote side
+    /// after repeated demotes (affects promote only, not the sensitivity of the
+    /// SEL-003 degradation decision). See [`BackoffConfig`] for the defaults.
     pub backoff: BackoffConfig,
 }
 
-/// P2P 直连开关与 WireGuard 监听端口。
+/// P2P direct-connection switch and WireGuard listen port.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectConnectConfig {
     pub enabled: bool,
-    /// 数据面 WireGuard 监听端口（直连候选端点用）：防火墙需放行该 UDP 端口。
+    /// Dataplane WireGuard listen port (used by direct-connection candidate
+    /// endpoints): the firewall must allow this UDP port.
     pub listen_port: u16,
 }
 
@@ -302,62 +315,89 @@ impl Default for DirectConnectConfig {
     }
 }
 
-/// SEL-001 候选端点探测配置（任务书：agent 周期，默认 5s，可配）。
+/// SEL-001 candidate-endpoint probe config (task spec: an agent-side period,
+/// 5s by default, configurable).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProbeConfig {
-    /// 是否开启候选端点探测。默认开（2026-11-13 spoke 互断事故后从关改为开）：
-    /// `direct_connect` 自 98c75fe 起默认开，探测是它的安全网——SEL-003 劣化
-    /// 判定（丢包尖峰/超时 → 立即回中继）只吃探测窗口，探测关 = 直连劣化后
-    /// 无限钉死黑洞（真机 2026-11-13：imac↔work5 直连在 ZT 劣化窗内 payload
-    /// 全丢而握手依旧新鲜，数小时不自愈）。开关仍需 `direct_connect.enabled`
-    /// 且对端有候选端点才实际发探测（无候选 = 无目标，no-op）。
+    /// Whether candidate-endpoint probing is on. On by default (flipped from off
+    /// after the 2026-11-13 spoke cross-disconnect incident): `direct_connect`
+    /// has been on by default since 98c75fe and the probe is its safety net --
+    /// the SEL-003 degradation decision (loss spike / timeout -> return to
+    /// relay immediately) only consumes the probe window, so with probing off a
+    /// degraded direct path stays pinned to a black hole forever (on real
+    /// hardware, 2026-11-13: the imac<->work5 direct path lost all payload inside
+    /// a ZT degradation window while the handshake stayed fresh, and never
+    /// healed itself for hours). The switch still needs `direct_connect.enabled`
+    /// and a candidate endpoint to actually send probes (no candidates = no
+    /// target, a no-op).
     pub enabled: bool,
-    /// 探测周期（秒）：默认 5s（任务书）。下限 1。
+    /// Probe period (seconds): 5s by default (task spec). Minimum 1.
     pub interval_secs: u64,
-    /// 每目标滑动窗口容量（最近 N 次探测）：SEL-002 的评分/迟滞判定在窗口上
-    /// 做，过小会随单次抖动频繁翻转。默认 20。
+    /// Per-target sliding window capacity (the last N probes): the SEL-002
+    /// scoring / hysteresis decision runs on this window, and a window that is
+    /// too small flips on every single jitter. Default 20.
     pub window: usize,
-    /// SEL-002 迟滞切换：新路径须**连续** N 次采样（默认 3）且得分优于现路径
-    /// ≥ `switch_margin` 才切换，防抖（抖动场景不切）。
+    /// SEL-002 hysteresis switching: the new path must win **consecutively** N
+    /// samples (default 3) and score at least `switch_margin` better than the
+    /// current path before switching -- anti-chatter (no switching in jittery
+    /// conditions).
     pub switch_required: usize,
-    /// SEL-002 迟滞裕量（0.0..=1.0；默认 0.30 = 30%）。
+    /// SEL-002 hysteresis margin (0.0..=1.0; default 0.30 = 30%).
     pub switch_margin: f64,
-    /// SEL-003 恢复门：直连劣化回中继后须**连续** N 轮健康才允许切回（防抖）。
-    /// 默认 3。
+    /// SEL-003 recovery gate: after the direct path degrades back to relay it
+    /// must stay healthy for **consecutive** N rounds before switching back
+    /// (anti-chatter). Default 3.
     pub recovery_required: usize,
-    /// SEL-003 时延劣化阈值（毫秒）：探测窗口 RTT 中位数 ≥ 此值判直连劣化，
-    /// 立即回中继。默认 800。
+    /// SEL-003 latency degradation threshold (milliseconds): a probe-window RTT
+    /// median at or above this value counts as a degraded direct path and
+    /// returns to relay immediately. Default 800.
     ///
-    /// **默认值依据**（2026-11-13 残余跟进，SEL-002 双机验收实锤）：探测传输
-    /// 超时是 1000ms（Linux `ping -W 1` / Windows `ping -w 1000`）——超时的
-    /// 样本记 Lost，已由丢包/超时规则兜住；800ms 恰好补上「探测成功但 RTT
-    /// 深劣化」的超时前盲带（真机实录 1715ms `probe_ok` 仍钉直连数小时）。
-    /// 800ms ≈ 健康网格基线（实测 8–17ms）的 50 倍，远超同网段 LAN 直连的
-    /// 合理水位；此劣化程度下 hub 中继（hub 侧视野实测同窗 8–14ms）严格更优。
-    /// 中位数语义 = 「连续 N 拍超阈值」（window 容量 20 @5s ≈ 持续 100s 才
-    /// 命中，单点抖动不触发）；恢复仍走 recovery_required 迟滞。
-    /// 注意：>1000 的取值落在探测超时之外，几乎不可达（样本已记 Lost），
-    /// 配大等于关闭时延维度。
+    /// **Rationale for the default** (follow-up on 2026-11-13, settled by the
+    /// SEL-002 two-machine acceptance): the probe transport timeout is 1000ms
+    /// (Linux `ping -W 1` / Windows `ping -w 1000`) -- timed-out samples are
+    /// already recorded as Lost and covered by the loss / timeout rules; 800ms
+    /// exactly fills the pre-timeout blind band where "the probe succeeded but
+    /// the RTT is badly degraded" (on real hardware a 1715ms `probe_ok` kept a
+    /// direct path pinned for hours). 800ms is ~50x the healthy-mesh baseline
+    /// (measured 8-17ms) and far above any sane same-segment LAN direct figure;
+    /// at that level of degradation hub relay (the hub's own view measured 8-14ms
+    /// over the same window) is strictly better. The median semantics mean "N
+    /// consecutive ticks above the threshold" (a window of 20 @5s is ~100s
+    /// sustained before it hits, so a single jitter does not trigger); recovery
+    /// still goes through the recovery_required hysteresis.
+    /// Note: a value above 1000 falls outside the probe timeout and is nearly
+    /// unreachable (those samples are already Lost) -- setting it high is the
+    /// same as switching the latency dimension off.
     pub degrade_rtt_ms: u64,
-    /// SEL-003 丢包尖峰阈值（0.0..=1.0）：窗口丢包率 ≥ 此值判直连劣化，
-    /// 立即回中继；同一判定也是 FLIP-001「探测证实健康」面的反门槛
-    /// （`window_is_healthy`）。默认 0.20（20%）。
+    /// SEL-003 loss-spike threshold (0.0..=1.0): a window loss rate at or above
+    /// this value counts as a degraded direct path and returns to relay
+    /// immediately; the same decision is also the inverse gate for the
+    /// FLIP-001 "probes confirm healthy" face (`window_is_healthy`). Default
+    /// 0.20 (20%).
     ///
-    /// **默认值依据**（2026-11-17 用户拍板收窄，原 0.5）：49% 丢包的面在旧
-    /// 阈值下是「未达尖峰」的健康面——恢复门 bypass 会把直连拉回这样的
-    /// 劣化面，实测 ping 三态横跳（100% 超时 ↔ 1.7-3.3s 巨延迟 ↔ 12ms
-    /// 满速）中的「劣化面放行」体感正来自这里。20% 与 SEL-002 评分的丢包
-    /// 重罚（`LOSS_PENALTY` 10 倍：20% 丢包已把得分拉高 3 倍）同一量级：
-    /// 评分认为「显著变差」的面，劣化判定不再放行。
+    /// **Rationale for the default** (narrowed on 2026-11-17 by user decision,
+    /// formerly 0.5): at the old threshold a face losing 49% was a healthy face
+    /// "below the spike" -- the recovery gate's bypass would pull the direct path
+    /// back onto such a degraded face, which is exactly where the measured ping
+    /// three-state flapping (100% timeout <-> 1.7-3.3s huge latency <-> 12ms
+    /// full speed) felt like a degraded face being waved through. 20% is the same
+    /// order of magnitude as the SEL-002 score's heavy loss penalty
+    /// (`LOSS_PENALTY` is 10x: 20% loss already triples the score) -- a face the
+    /// scoring regards as "clearly worse" is no longer waved through by the
+    /// degradation decision.
     pub loss_spike: f64,
-    /// SEL-002 切换宽限（秒，方案 1）：切换后此时间内禁止再次切换、禁止对
-    /// 现路径判劣化（gate 记 `last_switch_at`）。默认 = interval×required×2
-    /// 且上限 60s（见 [`ProbeConfig::interval_secs`]×[`ProbeConfig::switch_required`]；
-    /// 5×3×2 = 30）。宽限过长延迟真故障切换，显式配置上限同为 60。
+    /// SEL-002 switch cooldown (seconds, scheme 1): within this time after a
+    /// switch, no further switch is allowed and the current path may not be judged
+    /// degraded (the gate records `last_switch_at`). Default = interval×required×2,
+    /// capped at 60s (see [`ProbeConfig::interval_secs`]×[`ProbeConfig::switch_required`];
+    /// 5×3×2 = 30). An overly long cooldown delays real failover, so an explicit
+    /// value is capped at 60 as well.
     pub switch_cooldown_secs: u64,
-    /// SEL-003 年轻窗口豁免（方案 1）：窗口样本 < 此值一律不判劣化（同
-    /// 无基线豁免语义——豁免「读数不足」不豁免「读数差」）。默认 4；须
-    /// ≤ `window`（否则窗口永远年轻，劣化判定整体失效）。
+    /// SEL-003 young-window exemption (scheme 1): a window with fewer samples
+    /// than this is never judged degraded (same "no baseline" exemption semantics
+    /// -- exempt "not enough readings", never "bad readings"). Default 4; must be
+    /// ≤ `window` (otherwise the window is forever young and the degradation
+    /// decision is disabled outright).
     pub degrade_min_samples: usize,
 }
 
@@ -372,30 +412,36 @@ impl Default for ProbeConfig {
             recovery_required: 3,
             degrade_rtt_ms: 800,
             loss_spike: 0.20,
-            // interval×required×2 = 5×3×2，≤ 60 上限。
+            // interval×required×2 = 5×3×2, under the 60 cap.
             switch_cooldown_secs: 30,
             degrade_min_samples: 4,
         }
     }
 }
 
-/// FLIP-002 demote backoff 配置：连续 demote 后 promote 侧指数退避。
+/// FLIP-002 demote backoff config: exponential backoff on the promote side
+/// after consecutive demotes.
 ///
-/// **默认值依据**（2026-11-15 fliploop 24h 窗判定，JMrE 262 个
-/// promote→demote 环 / 中位 1.48min）：`backoff_base_ms = 30_000`（30s，
-/// ≈ 一个直连对账周期——首个冷却不让 promote 立刻重试同面）；指数 2 倍
-/// 递增、`backoff_cap_ms = 900_000`（15min，任务书口径——劣化源持续时
-/// 无效重试从分钟级循环退化为个位数尝试）；`recovery_confirmations = 3`
-/// （连续 3 轮探测健康面证据清零，与 SEL-003 恢复门 `recovery_required`
-/// 默认同值——同源探测证据、同一防抖口径）。backoff 只作用 promote 侧，
-/// demote 判定灵敏度不受影响。
+/// **Rationale for the defaults** (fliploop 24h-window verdict of 2026-11-15,
+/// JMrE: 262 promote→demote loops / median 1.48min): `backoff_base_ms = 30_000`
+/// (30s, about one direct-reconciliation period -- the first cooldown stops
+/// promote from immediately retrying the same face); growth by 2x per step with
+/// `backoff_cap_ms = 900_000` (15min, per the task spec -- while the degradation
+/// source persists, pointless retries collapse from minute-scale loops to a
+/// handful of attempts); `recovery_confirmations = 3` (cleared after 3
+/// consecutive healthy-face probe rounds, matching the SEL-003 recovery gate
+/// `recovery_required` default -- the same probe evidence source, the same
+/// anti-chatter rule). The backoff applies to the promote side only; the
+/// demote decision's sensitivity is unaffected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackoffConfig {
-    /// 首次冷却（毫秒）；第 N 次连续 demote 冷却 = base × 2^(N-1)。默认 30_000。
+    /// First cooldown (milliseconds); the Nth consecutive demote cools down for
+    /// base × 2^(N-1). Default 30_000.
     pub backoff_base_ms: u64,
-    /// 冷却封顶（毫秒）。默认 900_000（15min）。
+    /// Cooldown cap (milliseconds). Default 900_000 (15min).
     pub backoff_cap_ms: u64,
-    /// 连续 M 轮健康面证据清零退避（下次 demote 从 base 重来）。默认 3。
+    /// Consecutive healthy-face rounds that clear the backoff (the next demote
+    /// starts over from base). Default 3.
     pub recovery_confirmations: u32,
 }
 
@@ -426,14 +472,20 @@ impl Default for DataplaneConfig {
 }
 
 impl DataplaneConfig {
-    /// hub 多端点列表（`hub_endpoint` 逗号分隔）：逐项 trim、去空段、去重。
+    /// Hub endpoint list (comma-separated `hub_endpoint`): each item trimmed,
+    /// empty segments dropped, deduplicated.
     ///
-    /// - 缺失 / 空串 → 空表（沿用原「不兜底」语义，plan 原样返回）；
-    /// - 单端点 → 单元素表（failover 决策退化为恒选该项，与旧行为一致）；
-    /// - 多端点 → 按序候选（failover 批：现役握手超时轮换下一个）。
+    /// - absent / empty string -> empty table (the original "no fallback"
+    ///   semantics are kept, the plan is returned as-is);
+    /// - single endpoint -> one-element table (the failover decision degenerates
+    ///   to always picking it, matching the old behavior);
+    /// - multiple endpoints -> ordered candidates (failover batch: rotate to the
+    ///   next one when the active endpoint's handshake times out).
     ///
-    /// 只做语法切分，不校验端点形状——旧配置允许任意 `host:port`（含
-    /// 域名），failover 仅在 `len() > 1` 时激活，单/空端点行为零变化。
+    /// This only splits syntactically and does not validate endpoint shape --
+    /// old configs allow any `host:port` (including hostnames); failover
+    /// activates only when `len() > 1`, and single/empty endpoint behavior is
+    /// unchanged to the byte.
     pub fn hub_endpoints(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         if let Some(value) = &self.hub_endpoint {
@@ -541,7 +593,8 @@ impl AgentConfig {
             ));
         }
         let raw_probe = dataplane.probe.unwrap_or_default();
-        // 切换宽限缺省 = interval×required×2（提案口径），须先解出两者。
+        // The switch-cooldown default = interval×required×2 (per the proposal),
+        // so both must be resolved first.
         let probe_interval = raw_probe
             .interval_secs
             .unwrap_or(default.dataplane.probe.interval_secs);
@@ -690,7 +743,8 @@ impl AgentConfig {
                         .unwrap_or(default.ssh_config_sync.manage_include),
                     target_homes: raw_sync
                         .target_homes
-                        // 模板缺省恒为空 = 单 home 旧语义（见结构体文档）。
+                        // The template default is always empty = the legacy
+                        // single-home semantics (see the struct docs).
                         .unwrap_or_default()
                         .into_iter()
                         .map(|s| std::path::PathBuf::from(s.trim()))

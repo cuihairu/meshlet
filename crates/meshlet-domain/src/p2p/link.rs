@@ -1,54 +1,54 @@
-//! 对端链路状态机（30s 探测升降级）与探测分类：Relay / DirectPending / Direct
-//! 每探测周期跃迁一次，幂等可重放；晋升只认 WireGuard 握手证据，健康窗口与
-//! 晋升门槛构成迟滞策略（防 promote/demote 抖动）。另含 §12.3 链路状态上报
-//! 契约（DirectLinkStatus / DirectCandidateStatus）。
+//! Peer link state machine (30s probe promote/demote) and probe classification: Relay / DirectPending / Direct
+//! transitions once per probe cycle, idempotent and replayable; promotion accepts only WireGuard handshake
+//! evidence, with the health window and promotion threshold forming a hysteresis policy (against promote/demote flapping).
+//! Also holds the §12.3 link status report contract (DirectLinkStatus / DirectCandidateStatus).
 
 use std::net::Ipv4Addr;
 
 use crate::p2p::endpoint::DirectDecision;
 
-/// 探测周期（秒）：任务书「每 30s 探测直连路径」。
+/// Probe interval (seconds): spec says "probe the direct path every 30s".
 pub const DIRECT_PROBE_INTERVAL_SECS: u64 = 30;
-/// 直连建立容忍的最大 pending 探测周期数（任务书「3 次握手周期」）。
+/// Max pending probe cycles tolerated while establishing a direct link (spec: "3 handshake cycles").
 pub const MAX_PROMOTE_ATTEMPTS: u8 = 3;
-/// 直连健康窗口（秒）：直接 peer 最近握手年龄超过此值视为不健康。
+/// Direct-link health window (seconds): a direct peer whose last handshake age exceeds this is unhealthy.
 ///
-/// **不能按 keepalive 周期取小值**：`latest-handshake` 只在**完成的重新
-/// 握手**时刷新，keepalive/数据包不刷新它。WireGuard 对活跃会话按
-/// REKEY_AFTER_TIME（发起方 ~120s，响应方 ~180s）节拍重新握手，健康但
-/// 空闲的直连链路握手年龄会周期性涨到 ~180s——窗口若小于该节拍（曾取
-/// 35s），健康链路被误判 Unhealthy → demote → promote 每 ~90s 抖动一次
-/// （真机 2026-11-06 coding-vm↔cuihaitao 取证）。窗口须大于重新握手
-/// 节拍上限；失效链路（对端死、重握手不再成功）的握手年龄会持续增长
-/// 超过此窗口，仍能被兜住。
+/// **It must not be shrunk to the keepalive cadence**: `latest-handshake` refreshes only on a
+/// **completed re-handshake**; keepalives and data packets do not refresh it. WireGuard re-handshakes
+/// an active session on the REKEY_AFTER_TIME cadence (initiator ~120s, responder ~180s), so a healthy
+/// but idle direct link's handshake age periodically climbs to ~180s - if the window were below that
+/// cadence (it was once 35s), a healthy link was judged Unhealthy -> demote -> promote, flapping every
+/// ~90s (evidence from real machines, 2026-11-06, coding-vm<->cuihaitao). The window must exceed the
+/// re-handshake cadence upper bound; a dead link (peer gone, re-handshake no longer succeeds) keeps
+/// growing its handshake age past this window and is still caught.
 pub const DIRECT_HEALTH_WINDOW_SECS: u64 = 240;
-/// 直连 peer 的 persistent-keepalive（秒）：让 wg 主动发包——既是 NAT
-/// 打洞的「洞」，也是健康探测的心跳来源。
+/// persistent-keepalive for a direct peer (seconds): makes wg send packets on its own - both the
+/// "hole" of NAT punching and the heartbeat source of the health probe.
 pub const DIRECT_PERSISTENT_KEEPALIVE_SECS: u32 = 15;
-/// 直连晋升门槛（秒）：DirectPending → Direct 只认 **WireGuard 握手证据**——
-/// 内核 latest-handshake 年龄 ≤ 此值即判定直连已建立。
+/// Direct promotion threshold (seconds): DirectPending -> Direct accepts only **WireGuard handshake evidence** -
+/// the kernel's latest-handshake age at or below this value means the direct link is up.
 ///
-/// 为什么不是 ICMP 探测：真机取证（Windows 网格，imac 2026-11-07）防火墙对
-/// wg 接口 / overlay VIP 的 ICMP echo 100% 丢包——握手新鲜但 ping 全死，链路
-/// 完全活着。探测只用于 RTT 标注与 SEL-003 劣化判定，**不再拦晋升**；否则
-/// 直连永远卡在 `direct_pending`（拨号中），每 ~90s promote/demote 抖动。
-/// 阈值对齐 hub keepalive 与 CLI `peer_mode` 的 p2p_direct 口径（<180s）。
+/// Why not an ICMP probe: field evidence (Windows mesh, imac 2026-11-07) shows the firewall drops 100% of
+/// ICMP echo to the wg interface / overlay VIP - the handshake is fresh but every ping is dead while the
+/// link is fully alive. Probing is used only for RTT annotation and SEL-003 degradation judgement, and
+/// **no longer blocks promotion**; otherwise direct connect stays stuck in `direct_pending` (dialing),
+/// flapping promote/demote every ~90s. The threshold matches the hub keepalive / CLI `peer_mode` p2p_direct rule (<180s).
 pub const DIRECT_PROMOTE_FRESH_SECS: u64 = 180;
 
-/// 单对端直连链路状态（每探测周期跃迁一次）。
+/// Direct-link state of a single peer (transitions once per probe cycle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerLinkState {
-    /// 走 hub 中继（现状行为；直连未建立或已回退）。
+    /// Going through the hub relay (current behaviour; direct not established or already fallen back).
     Relay,
-    /// 直连 endpoint 已下发，等待握手验证（`attempts` 为已用周期数）。
+    /// Direct endpoint handed out, waiting for handshake verification (`attempts` = cycles used so far).
     DirectPending { attempts: u8 },
-    /// 直连已验证（最近握手在健康窗口内）。
+    /// Direct link verified (last handshake inside the health window).
     Direct,
 }
 
 impl PeerLinkState {
-    /// 状态上报契约字段（`relay` / `direct_pending` / `direct`），供控制台
-    /// 展示 P2P/中继。pending 的尝试次数是内部计数，不对外暴露。
+    /// Status report contract field (`relay` / `direct_pending` / `direct`), used by the console to
+    /// display P2P / relay. The pending attempt count is an internal counter and is not exposed.
     pub fn as_str(self) -> &'static str {
         match self {
             PeerLinkState::Relay => "relay",
@@ -58,33 +58,33 @@ impl PeerLinkState {
     }
 }
 
-/// 一次直连健康探测的结果（由执行层从 per-peer 握手年龄翻译，见
-/// [classify_probe]）。
+/// Outcome of one direct-link health probe (translated by the execution layer from the per-peer
+/// handshake age; see [classify_probe]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeResult {
-    /// 直连路径健康（最近握手在窗口内）。
+    /// The direct path is healthy (last handshake inside the window).
     Healthy,
-    /// 直连路径失效（握手过期 / 再无握手）。
+    /// The direct path is dead (handshake expired / no handshake anymore).
     Unhealthy,
-    /// 尚无可判读的读数（pending 中尚未握上手 / 读数失败）。
+    /// No readable reading yet (not yet handshaken while pending / reading failed).
     Unknown,
 }
 
-/// 状态跃迁产生的对端配置动作。
+/// Peer configuration action produced by a state transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerLinkAction {
-    /// 无需变更（保持现状）。
+    /// No change needed (keep as is).
     Keep,
-    /// 建立直连：按决策路径下发直连 peer（endpoint + `/32` + keepalive）。
+    /// Establish direct connect: hand out the direct peer per the decided path (endpoint + `/32` + keepalive).
     Promote(DirectDecision),
-    /// 回退 hub：移除该对端的直连 peer（hub peer 的整段路由自动接管）。
+    /// Fall back to the hub: remove this peer's direct peer (the hub peer's whole-segment route takes over automatically).
     Demote,
 }
 
-/// 把「直接 peer 最近握手年龄（秒）」翻译成探测结果：
-/// - `None`（从未握手 / 无法读取）：pending 视为 [ProbeResult::Unknown]
-///   （还在等），其余状态视为 [ProbeResult::Unhealthy]（已建立却没了读数）；
-/// - `Some(age)`：`age <= health_window_secs` → Healthy，否则 Unhealthy。
+/// Translate "a direct peer's last handshake age (seconds)" into a probe result:
+/// - `None` (never handshaken / unreadable): pending counts as [ProbeResult::Unknown]
+///   (still waiting), any other state as [ProbeResult::Unhealthy] (established but the reading is gone);
+/// - `Some(age)`: `age <= health_window_secs` -> Healthy, otherwise Unhealthy.
 pub fn classify_probe(
     state: PeerLinkState,
     handshake_age_secs: Option<u64>,
@@ -98,11 +98,11 @@ pub fn classify_probe(
     }
 }
 
-/// DirectPending 的晋升探测（**握手证据优先**，见 [DIRECT_PROMOTE_FRESH_SECS]）：
-/// - 最近握手年龄 ≤ `promote_fresh_secs` → Healthy（直连已验证，晋升 Direct）；
-/// - 超过 `health_window_secs` → Unhealthy（有过握手但已死透，走超时回退）；
-/// - 其余（尚未握手 / 读数缺失 / 年龄在两窗之间的 rekey 间隙）→ Unknown
-///   （继续等，attempts 计满再回退）。
+/// Promotion probe for DirectPending (**handshake evidence first**, see [DIRECT_PROMOTE_FRESH_SECS]):
+/// - last handshake age at or below `promote_fresh_secs` -> Healthy (direct verified, promote to Direct);
+/// - beyond `health_window_secs` -> Unhealthy (there was a handshake but it is long dead, so time out and fall back);
+/// - anything else (not yet handshaken / missing reading / age in the rekey gap between the two windows) ->
+///   Unknown (keep waiting; fall back once attempts are used up).
 pub fn classify_promote_probe(
     handshake_age_secs: Option<u64>,
     promote_fresh_secs: u64,
@@ -115,13 +115,13 @@ pub fn classify_promote_probe(
     }
 }
 
-/// 状态机跃迁（每探测周期一次，纯函数）：
-/// - Relay：只看决策。有可行直连路径 → `DirectPending{1}` + Promote；
-///   无 → 保持 Relay。此状态的 probe 无意义（尚无直连 endpoint 可探测）。
-/// - DirectPending：Healthy → Direct；非健康且已用满 `max_attempts` 个周期
-///   → Relay + Demote（打洞失败回落中继，不报错）；否则周期数 +1 继续等。
-/// - Direct：Unhealthy → Relay + Demote（直连断开自动回落）；Healthy /
-///   Unknown（读数瞬时失败不误杀）→ 保持。
+/// State machine transition (once per probe cycle, pure function):
+/// - Relay: only the decision matters. A viable direct path exists -> `DirectPending{1}` + Promote;
+///   none -> stay on Relay. A probe is meaningless in this state (no direct endpoint to probe yet).
+/// - DirectPending: Healthy -> Direct; unhealthy with `max_attempts` cycles already used up
+///   -> Relay + Demote (hole punching failed, fall back to relay, no error); otherwise bump the cycle count by 1 and keep waiting.
+/// - Direct: Unhealthy -> Relay + Demote (an automatic fall back when direct connect breaks);
+///   Healthy / Unknown (a transient read failure must not kill it) -> keep.
 pub fn on_probe(
     state: PeerLinkState,
     decision: DirectDecision,
@@ -157,77 +157,77 @@ pub fn on_probe(
     }
 }
 
-/// 单对端直连链路状态上报（§12.3：agent 心跳携带，hub 仅存内存，供控制台
-/// 展示「P2P / 中继」）。以对端公钥为主键——服务端/控制台据此映射到设备。
+/// Direct-link status report for a single peer (§12.3: carried in the agent heartbeat,
+/// kept in memory only by the hub, used by the console to display "P2P / relay"). The peer public key is the primary key - the server / console map from it to the device.
 fn default_connection_mode() -> String {
     "hub_relay".to_string()
 }
 
-/// SEL-004 单个直连候选端点的详情（console peer 详情展示）。
+/// SEL-004 details of a single direct candidate endpoint (shown in the console peer details).
 ///
-/// agent 从探测窗口（SEL-001）汇总，随 [DirectLinkStatus::candidates] 上报：
-/// 端点 / RTT / 丢包 / 是否当前选中 / 选中理由。纯数据载体，无 IO。
+/// The agent aggregates these from the probe window (SEL-001) and reports them via [DirectLinkStatus::candidates]:
+/// endpoint / RTT / loss / whether it is currently selected / the selection reason. A pure data carrier, no IO.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DirectCandidateStatus {
-    /// 候选端点（`ip:port`）。
+    /// Candidate endpoint (`ip:port`).
     pub endpoint: String,
-    /// 候选分类（`lan` / `public`，[crate::p2p::EndpointKind::as_str]）。
+    /// Candidate classification (`lan` / `public`, [crate::p2p::EndpointKind::as_str]).
     pub kind: String,
-    /// 窗口内 RTT 中位数（毫秒）；`None` = 无 RTT 样本（全丢/未测）。
+    /// Median RTT inside the window (milliseconds); `None` = no RTT samples (all lost / not measured).
     pub rtt_ms: Option<u64>,
-    /// 窗口内丢包率（0.0..=1.0）。
+    /// Loss rate inside the window (0.0..=1.0).
     pub loss_rate: f64,
-    /// 是否当前选中的直连 endpoint。
+    /// Whether this is the currently selected direct endpoint.
     pub selected: bool,
-    /// 选中理由（`current` = 现路径；`backup` = 未选中；劣化/切换理由另记）。
+    /// Selection reason (`current` = the live path; `backup` = not selected; degradation / switching reasons are recorded separately).
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DirectLinkStatus {
-    /// 对端 wg 公钥（设备唯一标识）。
+    /// Peer wg public key (the device's unique identity).
     pub public_key: String,
-    /// 对端 overlay 地址。
+    /// Peer overlay address.
     pub virtual_ipv4: Ipv4Addr,
-    /// `relay` / `direct_pending` / `direct`（[PeerLinkState::as_str]）。
+    /// `relay` / `direct_pending` / `direct` ([PeerLinkState::as_str]).
     pub link_state: String,
-    /// 最近一次探测读到的直连握手年龄（秒）；`None` = 尚无读数（pending 中 /
-    /// 读数失败）。链路新鲜度信号，非精确 RTT——WireGuard 不暴露每 peer RTT，
-    /// 握手年龄是设计采用的活度代理（[classify_probe] 同一口径）。
+    /// Direct handshake age (seconds) read by the latest probe; `None` = no reading yet (pending /
+    /// read failure). A link freshness signal, not an exact RTT - WireGuard does not expose a per-peer
+    /// RTT, so handshake age is the activity proxy adopted by design (same rule as [classify_probe]).
     pub last_handshake_age_secs: Option<u64>,
-    /// 对端名称（agent 从计划候选中读到；旧 agent / 未取到为空）。UI/CLI
-    /// 直接展示，服务端按设备身份索引时仍以公钥为准。
+    /// Peer name (read by the agent from the planned candidates; empty on older agents or when
+    /// unavailable). Shown directly by the UI/CLI; the server still indexes by device identity, with the public key as the key.
     #[serde(default)]
     pub peer_name: String,
-    /// 连接模式（`p2p_direct` / `direct_pending` / `hub_relay`；与
-    /// [link_state] 语义一致，但「中继」不再以缺省隐式表示）。
+    /// Connection mode (`p2p_direct` / `direct_pending` / `hub_relay`; semantically the same as
+    /// [link_state], but "relay" is no longer implied by the default).
     #[serde(default = "default_connection_mode")]
     pub connection_mode: String,
-    /// 直连 endpoint（`ip:port`；中继 / 未取到为空）。
+    /// Direct endpoint (`ip:port`; empty when relaying / when it could not be obtained).
     #[serde(default)]
     pub endpoint: String,
-    /// 最近一次直连路径实测 RTT（毫秒）；`None` = 未测 / 探测失败。
+    /// Measured RTT of the direct path on the latest probe (milliseconds); `None` = not measured / probe failed.
     #[serde(default)]
     pub rtt_ms: Option<u64>,
-    /// RTT 读数来源，如实标注（四态）：`probe_ok` = 直连路径实测成功（overlay
-    /// 或回退 endpoint）；`handshake_fresh` = 不可测但最近握手新鲜（活性证据是
-    /// 握手不是 ping——Windows 网格防火墙常不答 ICMP）；`probe_failed` = 两路
-    /// 均无响应且握手也无新鲜证据；`unprobed` = 没轮到（探测在途 / 无候选）；
-    /// `None` = 未测 / 旧 agent 无来源标注。展示层据此给 RTT 列标注来源，
-    /// 「最近握手」仍是链路活性的主证据。
+    /// RTT reading source, labelled honestly (four states): `probe_ok` = the direct path was measured
+    /// successfully (overlay or the fallback endpoint); `handshake_fresh` = unmeasurable but the last
+    /// handshake is fresh (the activity evidence is the handshake, not ping - Windows mesh firewalls
+    /// often do not answer ICMP); `probe_failed` = neither path responded and the handshake shows no
+    /// fresh evidence either; `unprobed` = not its turn (probe in flight / no candidate);
+    /// `None` = not measured / an older agent with no source label. The display layer uses this to label the RTT column's source; "last handshake" remains the primary evidence of link liveness.
     #[serde(default)]
     pub rtt_source: Option<String>,
-    /// 最近一次握手 Unix 时间戳（秒）；0 / `None` = 尚无握手。
+    /// Unix timestamp (seconds) of the last handshake; 0 / `None` = no handshake yet.
     #[serde(default)]
     pub last_handshake_at: Option<u64>,
-    /// 累计接收字节（直连 wg peer 读数；中继为 0）。
+    /// Total received bytes (reading of the direct wg peer; 0 when relaying).
     #[serde(default)]
     pub rx_bytes: u64,
-    /// 累计发送字节（直连 wg peer 读数；中继为 0）。
+    /// Total sent bytes (reading of the direct wg peer; 0 when relaying).
     #[serde(default)]
     pub tx_bytes: u64,
-    /// SEL-004 全部候选端点详情（端点/RTT/丢包/当前选中与原因）。空 = 未上报
-    /// 或探测未启用；console peer 详情据此渲染。
+    /// SEL-004 details for every candidate endpoint (endpoint / RTT / loss / current selection and reason).
+    /// Empty = not reported or probing disabled; the console peer details render from this.
     #[serde(default)]
     pub candidates: Vec<DirectCandidateStatus>,
 }
@@ -242,14 +242,14 @@ mod tests {
     use crate::p2p::endpoint::DirectDecision;
     use crate::p2p::test_support::{lan, public};
 
-    // ----------------------------------------------------- 状态机 --------
+    // ----------------------------------------------------- state machine --------
 
     #[test]
     fn relay_promotes_when_a_path_exists() {
         let (next, action) = on_probe(
             PeerLinkState::Relay,
             DirectDecision::SameLan(lan("192.168.1.50", 51820)),
-            ProbeResult::Unknown, // Relay 无直连可探测，probe 无意义
+            ProbeResult::Unknown, // Relay has no direct path to probe; the probe is meaningless
             MAX_PROMOTE_ATTEMPTS,
         );
         assert_eq!(next, PeerLinkState::DirectPending { attempts: 1 });
@@ -275,7 +275,7 @@ mod tests {
     fn pending_converges_on_first_handshake() {
         let (next, action) = on_probe(
             PeerLinkState::DirectPending { attempts: 2 },
-            DirectDecision::Relay, // pending 期不再依赖决策
+            DirectDecision::Relay, // the decision no longer matters while pending
             ProbeResult::Healthy,
             MAX_PROMOTE_ATTEMPTS,
         );
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(next, PeerLinkState::Relay);
         assert_eq!(action, PeerLinkAction::Demote);
 
-        // 未用满周期：继续等，不 demote。
+        // Cycles not used up: keep waiting, do not demote.
         let (next, action) = on_probe(
             PeerLinkState::DirectPending { attempts: 1 },
             DirectDecision::Relay,
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn demoted_peer_repromotes_on_recovery() {
-        // Demote 后回到 Relay：下一周期决策仍可行 → 再次 Promote（自动升回）。
+        // After Demote we are back on Relay: the decision is still viable next cycle -> Promote again (auto re-promotion).
         let (next, action) = on_probe(
             PeerLinkState::Relay,
             DirectDecision::SameLan(lan("192.168.1.50", 51820)),
@@ -350,35 +350,35 @@ mod tests {
         let path = DirectDecision::SameLan(lan("192.168.1.50", 51820));
         let mut state = PeerLinkState::Relay;
 
-        // ① 建立。
+        // ① Establish.
         let (s, a) = on_probe(state, path, ProbeResult::Unknown, MAX_PROMOTE_ATTEMPTS);
         assert!(matches!(a, PeerLinkAction::Promote(_)));
         state = s;
 
-        // ② 握手成功 → Direct。
+        // ② Handshake succeeds -> Direct.
         let (s, a) = on_probe(state, path, ProbeResult::Healthy, MAX_PROMOTE_ATTEMPTS);
         assert_eq!(a, PeerLinkAction::Keep);
         state = s;
         assert_eq!(state, PeerLinkState::Direct);
 
-        // ③ 断开 → 回落 hub。
+        // ③ Breaks -> fall back to the hub.
         let (s, a) = on_probe(state, path, ProbeResult::Unhealthy, MAX_PROMOTE_ATTEMPTS);
         assert_eq!(a, PeerLinkAction::Demote);
         state = s;
         assert_eq!(state, PeerLinkState::Relay);
 
-        // ④ 恢复 → 自动升回直连。
+        // ④ Recovers -> automatically promoted back to direct.
         let (_, a) = on_probe(state, path, ProbeResult::Unknown, MAX_PROMOTE_ATTEMPTS);
         assert!(matches!(a, PeerLinkAction::Promote(_)));
     }
 
-    /// 晋升门槛（握手证据优先）：pending 期最近握手年龄 ≤ 晋升阈值即
-    /// Healthy——**探测失败/不可用不拦晋升**（Windows 网格防火墙对 wg 接口
-    /// ICMP 100% 丢包，imac 2026-11-07 取证）；rekey 间隙（180, 240] 继续等；
-    /// 超过健康窗口才判失效。
+    /// Promotion threshold (handshake evidence first): while pending, a last handshake age at or below the
+    /// promotion threshold counts as Healthy - **probe failure / unavailability does not block promotion**
+    /// (the Windows mesh firewall drops 100% of ICMP to the wg interface, imac 2026-11-07 evidence); the
+    /// rekey gap (180, 240] keeps waiting; only beyond the health window counts as dead.
     #[test]
     fn classify_promote_probe_uses_handshake_evidence_not_icmp() {
-        // 握手新鲜 → 晋升，无论探测是否成功。
+        // Handshake fresh -> promote, whether or not the probe succeeds.
         assert_eq!(
             classify_promote_probe(
                 Some(0),
@@ -395,7 +395,7 @@ mod tests {
             ),
             ProbeResult::Healthy
         );
-        // 刚过晋升阈值但在健康窗口内（rekey 间隙）：继续等，不晋升也不判死。
+        // Just past the promotion threshold but inside the health window (rekey gap): keep waiting, neither promote nor declare dead.
         assert_eq!(
             classify_promote_probe(
                 Some(DIRECT_PROMOTE_FRESH_SECS + 1),
@@ -404,12 +404,12 @@ mod tests {
             ),
             ProbeResult::Unknown
         );
-        // 尚未握手 / 读数缺失：继续等（attempts 计满走超时回退）。
+        // Not yet handshaken / missing reading: keep waiting (time out and fall back once attempts are used up).
         assert_eq!(
             classify_promote_probe(None, DIRECT_PROMOTE_FRESH_SECS, DIRECT_HEALTH_WINDOW_SECS),
             ProbeResult::Unknown
         );
-        // 超过健康窗口：有过握手但已死透 → 失效（回退路径）。
+        // Beyond the health window: there was a handshake but it is long dead -> Unhealthy (the fallback path).
         assert_eq!(
             classify_promote_probe(
                 Some(DIRECT_HEALTH_WINDOW_SECS + 1),
@@ -420,10 +420,10 @@ mod tests {
         );
     }
 
-    /// 修复回归（用户实测：直连每次都是「拨号中」）：pending 已握上手
-    /// （握手新鲜）但 ICMP 探测永不成功 → 必须**当轮晋升 Direct**，
-    /// 不再等满 attempts 超时回退。plan_updates 全路径的同口径回归在
-    /// agent direct.rs 测试（`pending_with_fresh_handshake_promotes_via_plan_updates`）。
+    /// Regression for a fix (user-reported: direct connect was always "dialing"): pending has handshaken
+    /// (fresh handshake) but the ICMP probe never succeeds -> must **promote to Direct in that very
+    /// cycle**, not wait out the attempts timeout. The same-rule regression over the full plan_updates
+    /// path lives in the agent direct.rs test (`pending_with_fresh_handshake_promotes_via_plan_updates`).
     #[test]
     fn pending_with_fresh_handshake_promotes_even_when_probe_never_succeeds() {
         for age in [0u64, 30, DIRECT_PROMOTE_FRESH_SECS] {
@@ -444,8 +444,8 @@ mod tests {
         }
     }
 
-    /// 握手过期（超过健康窗口）→ pending 判失效回退（降级口径不放松）：
-    /// Unhealthy 即回退，不等额外宽限。
+    /// Handshake expired (beyond the health window) -> pending is judged dead and falls back (the demotion
+    /// rule is not loosened): Unhealthy falls back at once, no extra grace period.
     #[test]
     fn pending_with_stale_handshake_falls_back_to_relay() {
         let (next, action) = on_probe(
@@ -467,19 +467,19 @@ mod tests {
     #[test]
     fn classify_probe_by_state_and_window() {
         let pending = PeerLinkState::DirectPending { attempts: 1 };
-        // pending 中无读数 = 还在等。
+        // No reading while pending = still waiting.
         assert_eq!(
             classify_probe(pending, None, DIRECT_HEALTH_WINDOW_SECS),
             ProbeResult::Unknown
         );
-        // Direct 无读数 = 已失效。
+        // No reading while Direct = dead.
         assert_eq!(
             classify_probe(PeerLinkState::Direct, None, DIRECT_HEALTH_WINDOW_SECS),
             ProbeResult::Unhealthy
         );
-        // 窗口内 = 健康；窗口外 = 失效。窗口必须大于 WireGuard 重新握手
-        // 节拍（活跃会话 ~120–180s 重新握手一次，keepalive 不刷新
-        // latest-handshake）——健康空闲链路的握手年龄会合法涨到 ~180s。
+        // Inside the window = healthy; outside = dead. The window must be larger than WireGuard's
+        // re-handshake cadence (an active session re-handshakes every ~120-180s; keepalives do not
+        // refresh latest-handshake) - a healthy idle link's handshake age legitimately climbs to ~180s.
         assert_eq!(
             classify_probe(PeerLinkState::Direct, Some(20), DIRECT_HEALTH_WINDOW_SECS),
             ProbeResult::Healthy

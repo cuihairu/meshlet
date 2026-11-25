@@ -1,4 +1,4 @@
-//! 直连 Peer 的 AllowedIPs `/32` 拆分与冲突检查。
+//! Splitting AllowedIPs into `/32`s and conflict checks for a direct Peer.
 
 use std::net::Ipv4Addr;
 
@@ -12,8 +12,8 @@ pub enum DirectPeerError {
     IsSelf(Ipv4Addr),
 }
 
-/// 直连 Peer 的 AllowedIPs：**只**写对端 overlay `/32`（任务书）。返回前
-/// 复核两条冲突边界：对端虚拟 IP 必须在路由范围内、不得是自己。
+/// AllowedIPs for a direct Peer: write **only** the peer's overlay `/32` (task spec);
+/// two conflict bounds are rechecked first: the peer virtual IP must be in scope and not self.
 pub fn direct_peer_allowed_ips(
     scope_cidr: Ipv4Cidr,
     self_virtual_ip: Ipv4Addr,

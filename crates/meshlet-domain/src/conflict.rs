@@ -1,15 +1,15 @@
-//! CIDR 冲突检测（[存档 §6.2–§6.3](../../docs/review/chatgpt-2026-10-13.md)、ADR-004）。
+//! CIDR conflict detection ([archive §6.2–§6.3](../../docs/review/chatgpt-2026-10-13.md), ADR-004).
 //!
-//! 六项检查 + 三类分级：
-//! - `ServerKnown`：服务端已知冲突 → 阻断；
-//! - `ClientLocal`：Agent 上报的客户端本地冲突 → 阻断或告警（由调用方决定）；
-//! - `Unverifiable`：无法确认（客户端报告缺失）→ **仅警告，不宣称网络可用**。
+//! Six checks + three severity classes:
+//! - `ServerKnown`: conflict already known to the server → blocking;
+//! - `ClientLocal`: client-local conflict reported by the agent → blocking or warning (caller decides);
+//! - `Unverifiable`: cannot be confirmed (client report missing) → **warning only, do not claim the network is usable**.
 
 use crate::cidr::Ipv4Cidr;
 use crate::entities::{AliasMapping, LanRoute, RouteMode};
 use crate::segments::Segment;
 
-/// 冲突认知来源（§6.3）。
+/// Where the conflict knowledge comes from (§6.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConflictKind {
     ServerKnown,
@@ -18,7 +18,7 @@ pub enum ConflictKind {
 }
 
 impl ConflictKind {
-    /// 阻断性冲突（Unverifiable 仅警告）。
+    /// Blocking conflicts (Unverifiable is warning-only).
     pub fn is_blocking(&self) -> bool {
         !matches!(self, ConflictKind::Unverifiable)
     }
@@ -53,20 +53,20 @@ pub struct Conflict {
 }
 
 impl Conflict {
-    /// 阻断性冲突（`Unverifiable` 仅警告，§6.3）。
+    /// Blocking conflicts (`Unverifiable` is warning-only, §6.3).
     pub fn is_blocking(&self) -> bool {
         self.kind.is_blocking()
     }
 }
 
-/// 已有路由的观察位置（服务端 vs 客户端本地）。
+/// Where an existing route was observed (server-side vs client-local).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteSource {
     Server,
     Client,
 }
 
-/// 检查 1：Overlay CIDR 与任一 Alias CIDR 重叠。
+/// Check 1: the overlay CIDR overlaps an alias CIDR.
 pub fn segment_segment_overlap(segments: &[Segment]) -> Vec<Conflict> {
     let mut out = Vec::new();
     for i in 0..segments.len() {
@@ -123,7 +123,7 @@ pub fn segment_overlay_containment(overlay: Ipv4Cidr, segments: &[Segment]) -> V
         .collect()
 }
 
-/// 检查 1：Overlay CIDR 与任一 Alias CIDR 重叠。
+/// Check 1: the overlay CIDR overlaps an alias CIDR.
 pub fn overlay_alias_overlap(overlay: Ipv4Cidr, aliases: &[AliasMapping]) -> Vec<Conflict> {
     aliases
         .iter()
@@ -136,10 +136,10 @@ pub fn overlay_alias_overlap(overlay: Ipv4Cidr, aliases: &[AliasMapping]) -> Vec
         .collect()
 }
 
-/// 检查 2 + 6：候选网段与已有路由冲突。
-/// - 服务端已有路由 → `ServerKnown`；
-/// - 客户端本地路由 → `ClientLocal`；
-/// - `client_routes = None`（客户端未上报）→ 生成一条 `Unverifiable` 警告。
+/// Checks 2 + 6: the candidate subnet conflicts with existing routes.
+/// - existing server route → `ServerKnown`;
+/// - client-local route → `ClientLocal`;
+/// - `client_routes = None` (client did not report) → emit one `Unverifiable` warning.
 pub fn against_existing_routes(
     candidate: Ipv4Cidr,
     server_routes: &[Ipv4Cidr],
@@ -179,7 +179,7 @@ pub fn against_existing_routes(
     out
 }
 
-/// 检查 3：Alias 之间的重叠。
+/// Check 3: overlaps between aliases.
 pub fn alias_alias_overlap(aliases: &[AliasMapping]) -> Vec<Conflict> {
     let mut out = Vec::new();
     for i in 0..aliases.len() {
@@ -199,13 +199,13 @@ pub fn alias_alias_overlap(aliases: &[AliasMapping]) -> Vec<Conflict> {
     out
 }
 
-/// 检查 4：同一网络内 LAN Route 冲突（目标重叠即冲突——同一目的地不能有两个并行转发者）。
+/// Check 4: LAN route conflicts within one network (overlapping destinations conflict — one destination cannot have two parallel forwarders).
 ///
-/// 例外（ADR-006 旗舰场景）：两条 **Alias 模式**路由的真实 LAN 前缀允许重叠——
-/// 两个站点各有一个 `192.168.1.0/24`，经各自不同的 Alias 前缀同时可达。对外
-/// 可见的转发前缀是 Alias（唯一性由 `alias_alias_overlap` 保证），真实前缀
-/// 不进任何隧道 AllowedIPs 的确定路径，内核里不存在并行转发者。Direct 路由
-/// 与任何重叠目的仍然冲突（真实前缀直连只有一个转发者）。
+/// Exception (ADR-006 flagship scenario): two **Alias-mode** routes may have overlapping real LAN prefixes —
+/// two sites each have a `192.168.1.0/24`, reachable simultaneously via their own distinct alias prefixes. The
+/// forwarding prefix visible externally is the alias (uniqueness enforced by `alias_alias_overlap`); the real prefix
+/// never enters any tunnel's AllowedIPs, so the kernel has no parallel forwarders. Direct routes
+/// still conflict with any overlapping destination (a directly connected real prefix has only one forwarder).
 pub fn lan_route_conflicts(routes: &[LanRoute]) -> Vec<Conflict> {
     let mut out = Vec::new();
     for i in 0..routes.len() {
@@ -233,7 +233,7 @@ pub fn lan_route_conflicts(routes: &[LanRoute]) -> Vec<Conflict> {
     out
 }
 
-/// 检查 5：Alias 的 Target 与所绑定 LAN Route 不一致（第一版要求完全一致）。
+/// Check 5: the alias target does not match its bound LAN route (v1 requires an exact match).
 pub fn alias_target_mismatch(alias: &AliasMapping, bound_route: &LanRoute) -> Vec<Conflict> {
     if alias.target_cidr == bound_route.destination_cidr {
         Vec::new()
@@ -249,7 +249,7 @@ pub fn alias_target_mismatch(alias: &AliasMapping, bound_route: &LanRoute) -> Ve
     }
 }
 
-/// §6.2 六项的聚合入口（客户端路由由调用方单独传入）。
+/// Aggregate entry point for the six §6.2 checks (client routes are passed in separately by the caller).
 pub fn check_network(
     overlay: Ipv4Cidr,
     aliases: &[AliasMapping],
@@ -406,7 +406,7 @@ mod tests {
         assert!(out.iter().any(|c| c.kind == ConflictKind::ServerKnown));
         assert!(out.iter().any(|c| c.kind == ConflictKind::ClientLocal));
 
-        // 客户端未上报：一条 Unverifiable 警告，非阻断。
+        // Client did not report: one Unverifiable warning, non-blocking.
         let out = against_existing_routes(candidate, &server, None);
         assert_eq!(out.len(), 2);
         let unver = out
@@ -416,14 +416,14 @@ mod tests {
         assert!(!unver.is_blocking());
         assert!(unver.detail.contains("cannot confirm"));
 
-        // 双侧都干净 + 客户端已上报 → 空。
+        // Both sides clean + client reported → empty.
         assert!(against_existing_routes(candidate, &[], Some(&[])).is_empty());
     }
 
     #[test]
     fn alias_alias_overlap_pairwise() {
         let a1 = alias("a-1", "10.241.1.0/24", "192.168.1.0/24");
-        let a2 = alias("a-2", "10.241.1.128/25", "192.168.2.128/25"); // 与 a-1 重叠
+        let a2 = alias("a-2", "10.241.1.128/25", "192.168.2.128/25"); // overlaps a-1
         let a3 = alias("a-3", "10.242.1.0/24", "192.168.3.0/24");
         let out = alias_alias_overlap(&[a1.clone(), a2, a3.clone()]);
         assert_eq!(out.len(), 1);
@@ -434,19 +434,19 @@ mod tests {
     #[test]
     fn lan_route_conflict_on_overlapping_destinations() {
         let r1 = route("r-1", "192.168.10.0/24", "gw-home");
-        let r2 = route("r-2", "192.168.10.128/25", "gw-office"); // 重叠目的地
+        let r2 = route("r-2", "192.168.10.128/25", "gw-office"); // overlapping destination
         let r3 = route("r-3", "192.168.20.0/24", "gw-home");
         let out = lan_route_conflicts(&[r1.clone(), r2, r3.clone()]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].code, ConflictCode::LanRouteConflict);
-        // 同一网关发布不同网段不冲突。
+        // Different subnets advertised by the same gateway do not conflict.
         assert!(lan_route_conflicts(&[r1, r3]).is_empty());
     }
 
     #[test]
     fn dual_alias_routes_with_the_same_lan_do_not_conflict() {
-        // ADR-006 旗舰场景：两个站点各有一个 192.168.1.0/24，经不同 Alias 同时
-        // 可达——真实前缀重叠不是冲突，对外可见的转发前缀是各自的 Alias。
+        // ADR-006 flagship scenario: two sites each have a 192.168.1.0/24, both reachable
+        // via different aliases — real prefix overlap is not a conflict; the visible forwarding prefixes are the aliases.
         let s1 = alias_route("r-1", "192.168.1.0/24", "gw-site1");
         let s2 = alias_route("r-2", "192.168.1.0/24", "gw-site2");
         assert!(
@@ -454,7 +454,7 @@ mod tests {
             "dual alias sites with the same real lan must coexist"
         );
 
-        // 但 Direct 与 Alias 的真实前缀重叠仍是冲突：真实前缀直连只有一个转发者。
+        // But a Direct prefix overlapping an alias's real prefix is still a conflict: a directly connected real prefix has one forwarder.
         let direct = route("r-3", "192.168.1.0/24", "gw-office");
         let alias_one = alias_route("r-4", "192.168.1.0/24", "gw-home");
         let out = lan_route_conflicts(&[direct, alias_one]);
@@ -477,10 +477,10 @@ mod tests {
     #[test]
     fn aggregate_check_network_reports_all_categories() {
         let overlay: Ipv4Cidr = "10.240.0.0/16".parse().unwrap();
-        let a_bad = alias("a-1", "10.240.9.0/24", "192.168.1.0/24"); // 与 overlay 重叠
+        let a_bad = alias("a-1", "10.240.9.0/24", "192.168.1.0/24"); // overlaps the overlay
         let a_ok = alias("a-2", "10.241.1.0/24", "192.168.9.0/24");
         let r1 = route("r-1", "192.168.1.0/24", "gw-home");
-        let r2 = route("r-2", "192.168.1.64/26", "gw-office"); // 与 r-1 重叠
+        let r2 = route("r-2", "192.168.1.64/26", "gw-office"); // overlaps r-1
         let parent = segment("seg-parent", "users", "10.240.0.0/14");
         let parent_child = segment("seg-parent-child", "guests", "10.240.1.0/24");
         let clean_child = segment("seg-clean-child", "servers", "10.240.2.0/24");
@@ -490,22 +490,22 @@ mod tests {
             &[a_bad.clone(), a_ok.clone()],
             &[r1.clone(), r2],
             &[parent, parent_child, clean_child],
-            &["10.240.16.0/20".parse().unwrap()], // 服务端已有路由与 overlay 重叠
-            None,                                 // 客户端未上报
+            &["10.240.16.0/20".parse().unwrap()], // an existing server route overlaps the overlay
+            None,                                 // client did not report
         );
         let codes: Vec<_> = out.iter().map(|c| c.code).collect();
         assert!(codes.contains(&ConflictCode::OverlayAliasOverlap));
         assert!(codes.contains(&ConflictCode::OverlayExistingRouteOverlap));
         assert!(codes.contains(&ConflictCode::LanRouteConflict));
-        assert!(codes.contains(&ConflictCode::ClientRouteOverlap)); // Unverifiable 警告
-                                                                    // 无一 ClientLocal（客户端未上报数据），且存在非阻断项。
+        assert!(codes.contains(&ConflictCode::ClientRouteOverlap)); // Unverifiable warning
+                                                                    // no ClientLocal (client reported no data), and a non-blocking item is present.
         assert!(out.iter().all(|c| c.kind != ConflictKind::ClientLocal));
         assert!(out.iter().any(|c| !c.is_blocking()));
         assert!(codes.contains(&ConflictCode::SegmentOutsideOverlay));
         assert!(codes.contains(&ConflictCode::SegmentAliasOverlap));
         assert!(codes.contains(&ConflictCode::SegmentSegmentOverlap));
         assert!(codes.contains(&ConflictCode::AliasTargetMismatch));
-        // 清洁场景：服务端无冲突、客户端已上报且干净 → 无任何冲突。
+        // Clean scenario: no server conflicts, client reported and clean → no conflicts at all.
         let clean = check_network(
             "10.240.0.0/16".parse().unwrap(),
             &[{

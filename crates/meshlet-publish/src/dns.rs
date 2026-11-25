@@ -111,8 +111,8 @@ impl DnsCatalog {
                 "DNS record service/name/ttl must be non-empty and non-zero",
             ));
         }
-        // 归一化为内部后缀下的 FQDN（与 `resolve`/`fqdn` 同口径：短名与
-        // FQDN 都可录入，避免 insert 与 resolve 对同一名字给出不同答案）。
+        // Normalize to an FQDN under the internal suffix (same convention as `resolve`/`fqdn`: both
+        // short names and FQDNs are accepted, so insert and resolve never disagree on the same name).
         record.name = fqdn(record.name.trim(), &self.internal_suffix);
         let mut records = self.records.lock().expect("DNS catalog mutex");
         if records.iter().any(|existing| {

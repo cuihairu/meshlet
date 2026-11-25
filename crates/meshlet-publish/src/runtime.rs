@@ -1,13 +1,17 @@
-//! 设备端发布运行层（R-06）：`PublishPlan` 的本机半边。
+//! Device-side publish runtime (R-06): the local half of a `PublishPlan`.
 //!
-//! [`Publisher`] 持有计划要求的全部监听：L4 转发、HTTP(S) 路由、
-//! 分域 DNS 套接字，以及探针排程；结果以 [`ProbeReport`] 供 agent 回收上报。
-//! 对账是**增量幂等**的：配置未变的对象保留原套接字（不打断在途连接），
-//! 被删的对象停掉，配置变更的对象重启。运行层只接受类型化对象，不执行任何
-//! 控制面下发的命令（§16.4）。
+//! [`Publisher`] holds every listener the plan calls for: L4 forwarding,
+//! HTTP(S) routing, split-horizon DNS sockets, and the probe scheduler; results
+//! come back as [`ProbeReport`] for the agent to collect and report.
+//! Reconciliation is **incrementally idempotent**: objects whose config is
+//! unchanged keep their sockets (in-flight connections are not interrupted),
+//! removed objects are stopped, and objects whose config changed are restarted.
+//! The runtime only accepts typed objects and never executes any command handed
+//! down by the control plane (§16.4).
 //!
-//! DNS 绑定的是控制面配置里的地址；`0.0.0.0:53` 需要 root，计划本身不代管
-//! 权限（见文档 R-06 验收缺口）。
+//! DNS binds the address given in the control-plane config; `0.0.0.0:53` needs
+//! root, and the plan itself does not manage privileges (see the R-06
+//! acceptance gap in the docs).
 
 use crate::dns::{serve_udp, DnsCatalog};
 use crate::forwarding::{
@@ -24,11 +28,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-/// 探针结果通道容量：一次 tick 的积压上限（超出即丢弃，下一周期重排）。
+/// Probe report channel capacity: the backlog limit for one tick (anything
+/// beyond it is dropped and rescheduled next cycle).
 pub const REPORT_CHANNEL_CAPACITY: usize = 256;
 
-/// 一次对账的结果（日志与测试断言用）。`failed` 记录未能起的对象：下一轮
-/// 对账会重试，不静默假装生效。
+/// The result of one reconciliation (for logs and test assertions). `failed`
+/// records objects that could not start: the next reconciliation round retries
+/// them instead of silently pretending they are live.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PublishEvents {
     pub started: usize,
@@ -42,15 +48,17 @@ impl PublishEvents {
     }
 }
 
-/// 转发监听的任务句柄（TCP 与 UDP 的返回类型不同，收拢为同一枚举便于停止）。
+/// Task handle for a forwarding listener (TCP and UDP return different types,
+/// unified into one enum so stopping is easy).
 enum ForwardHandle {
     Tcp(JoinHandle<()>),
     Udp(JoinHandle<Result<(), PublishError>>),
 }
 
 impl ForwardHandle {
-    /// 停止该监听并**等待任务真正退出**：`abort` 只是请求取消，await 保证
-    /// `reconcile` 返回时套接字已 drop、端口立即可复用。
+    /// Stop the listener and **wait for the task to actually exit**: `abort`
+    /// only requests cancellation, the await guarantees the socket is dropped by
+    /// the time `reconcile` returns and the port is immediately reusable.
     async fn stop(self) {
         match self {
             ForwardHandle::Tcp(task) => {
@@ -83,7 +91,8 @@ struct RunningDns {
     task: JoinHandle<Result<(), PublishError>>,
 }
 
-/// 一台设备的发布运行时。必须在 tokio runtime 内驱动（agent 的发布线程）。
+/// One device's publish runtime. Must be driven inside a tokio runtime (the
+/// agent's publish thread).
 pub struct Publisher {
     forwards: HashMap<String, RunningForward>,
     http_router: Option<RunningHttp>,
@@ -112,8 +121,9 @@ impl Publisher {
         }
     }
 
-    /// 是否没有任何监听（用于启动补漏：agent 重启后账本记「已应用」但
-    /// 本机没有监听，必须按空态重放）。
+    /// Whether there is no listener at all (used for the startup catch-up: after
+    /// an agent restart the ledger may say "applied" while this machine holds no
+    /// listener, so the plan must be replayed as the empty state).
     pub fn is_idle(&self) -> bool {
         self.forwards.is_empty()
             && self.http_router.is_none()
@@ -121,10 +131,12 @@ impl Publisher {
             && self.probe_task.is_none()
     }
 
-    /// 把本机发布态对齐到 `plan`：`None` = 全部停用。
+    /// Align the local publish state to `plan`: `None` = stop everything.
     ///
-    /// 返回 `Err` 仅当计划自身自相矛盾（[`PublishPlan::validate`]）——那种情况
-    /// 不应部分生效；单个对象绑定失败记入 [`PublishEvents::failed`]，下一轮重试。
+    /// Returns `Err` only when the plan contradicts itself
+    /// ([`PublishPlan::validate`]) -- in that case nothing should take partial
+    /// effect; a single object failing to bind is recorded in
+    /// [`PublishEvents::failed`] and retried next round.
     pub async fn reconcile(
         &mut self,
         plan: Option<&PublishPlan>,
@@ -142,7 +154,8 @@ impl Publisher {
         Ok(events)
     }
 
-    /// 回收积压的探针结果（非阻塞）：agent 每轮 tick 调用一次并上报。
+    /// Drain the backlog of probe results (non-blocking): the agent calls this
+    /// once per tick and reports them.
     pub fn drain_reports(&mut self) -> Vec<ProbeReport> {
         let mut reports = Vec::new();
         while let Ok(report) = self.reports_rx.try_recv() {
@@ -226,7 +239,8 @@ impl Publisher {
     async fn reconcile_http(&mut self, plan: &PublishPlan, events: &mut PublishEvents) {
         let wanted = plan.http_listener;
         let wanted_routes = plan.http_routes.clone();
-        // TLS 透传与否影响每个连接的处理路径，一并纳入变更检测。
+        // Whether TLS passes through changes each connection's handling path, so
+        // it is part of the change detection too.
         let wanted_tls_passthrough = wanted_routes
             .routes()
             .iter()
@@ -271,7 +285,8 @@ impl Publisher {
         } else {
             RouteMode::PlainHttp
         };
-        // 每个连接一个任务；路由集在进入时克隆一次（轻量值类型）。
+        // One task per connection; the route set is cloned once on entry (a
+        // cheap value type).
         let shared = routes.clone();
         let task = tokio::spawn(async move {
             while let Ok((stream, remote)) = tcp.accept().await {
@@ -353,7 +368,8 @@ impl Publisher {
             let _ = task.await;
             events.stopped += self.probe_schedules.len();
         }
-        // 新通道：旧结果与新排程无关，替换而不是拼接。
+        // New channel: the old results are unrelated to the new schedule, so
+        // replace rather than concatenate.
         let (sender, receiver) = mpsc::channel(REPORT_CHANNEL_CAPACITY);
         self.reports_rx = receiver;
         if !wanted.is_empty() {
@@ -388,7 +404,8 @@ impl Publisher {
     }
 }
 
-/// 探针排程循环：1 秒一拍检查到期项，逐个并发探测，结果进通道。
+/// Probe scheduling loop: every second check the due items and probe them
+/// concurrently, one at a time, feeding the results into the channel.
 fn spawn_probe_loop(
     schedules: Vec<ProbeSchedule>,
     sender: mpsc::Sender<ProbeReport>,
@@ -405,8 +422,10 @@ fn spawn_probe_loop(
                 })
                 .cloned()
                 .collect();
-            // 只记录真正排了探针的 schedule：整表每轮刷新会把到期判断推远，
-            // 让 interval 超过 tick 步长的探针只在启动时跑一次（真机验收发现）。
+            // Only record schedules that actually got a probe: refreshing the
+            // whole table every round pushes the due check further out, which made
+            // probes whose interval exceeds the tick step run once at startup
+            // only (found during on-device acceptance).
             for schedule in &due {
                 let sender = sender.clone();
                 tokio::spawn(probe_once(schedule.clone(), sender));
@@ -428,11 +447,13 @@ async fn probe_once(schedule: ProbeSchedule, sender: mpsc::Sender<ProbeReport>) 
         checked_at: now_rfc3339(),
         detail: None,
     };
-    // 通道满（agent 长时间不回收）时丢弃本条：下一周期会重排，证据不是配置。
+    // Drop this one when the channel is full (the agent has not drained for a
+    // long time): it is rescheduled next cycle, and evidence is not config.
     let _ = sender.send(report).await;
 }
 
-/// RFC-3339 UTC 时间戳（与心跳/修订簿记同口径）。
+/// RFC-3339 UTC timestamp (the same convention as heartbeat / revision
+/// bookkeeping).
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -451,11 +472,13 @@ mod tests {
         assert!(!events.is_empty());
     }
 
-    /// 完整链路单测（不依赖 root，绑定本机回环高位端口）：转发真的把流量
-    /// 送到后端，探针按周期回报，对账停用后监听即释放。
+    /// Full-path unit test (no root needed, binds high local loopback ports):
+    /// forwarding really delivers traffic to the backend, probes report on
+    /// schedule, and reconciling away a plan releases the listener.
     #[tokio::test]
     async fn publisher_moves_traffic_and_reports_probes() {
-        // 后端：回显收到的字节，验证流量确实穿过转发监听。
+        // Backend: echo back the bytes it receives, proving traffic really goes
+        // through the forwarding listener.
         let backend = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let backend_addr = backend.local_addr().unwrap();
         let backend_task = tokio::spawn(async move {
@@ -466,7 +489,8 @@ mod tests {
                 .unwrap();
             buffer[..n].to_vec()
         });
-        // 转发监听先用 0 端口探测一个空闲高位端口，再据此构造计划。
+        // Probe a free high port with the 0-port trick for the forwarding
+        // listener, then build the plan around it.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listener_addr = listener.local_addr().unwrap();
         drop(listener);
@@ -479,7 +503,8 @@ mod tests {
                 protocol: ForwardProtocol::Tcp,
                 listener_address: listener_addr,
                 backend_address: backend_addr,
-                // 空白名单 = 全拒：测试流量来自回环，需显式放行。
+                // An empty allowlist rejects everything: the test traffic comes
+                // from the loopback, so it must be allowed explicitly.
                 policy: AuthorizationPolicy {
                     allowed_source_cidrs: vec!["127.0.0.0/8".parse().unwrap()],
                     allowed_bearer_tokens: vec![],
@@ -502,13 +527,15 @@ mod tests {
         assert_eq!(events.started, 2, "one forward + one probe");
         assert!(events.failed.is_empty(), "{events:?}");
 
-        // 打一个包：转发监听应把它转给后端。
+        // Send one packet: the forwarding listener should hand it to the
+        // backend.
         let mut client = tokio::net::TcpStream::connect(listener_addr).await.unwrap();
         client.write_all(b"meshlet").await.unwrap();
         let echo = backend_task.await.unwrap();
         assert_eq!(echo, b"meshlet");
 
-        // 探针到点回报：健康（监听活着），时间戳是 RFC-3339（Z 结尾的 UTC）。
+        // The probe reports on schedule: healthy (the listener is alive), and the
+        // timestamp is RFC-3339 (Z-suffixed UTC).
         let reports = wait_reports(&mut publisher, 1, Duration::from_secs(3)).await;
         let probe_report = reports
             .iter()
@@ -521,7 +548,8 @@ mod tests {
             probe_report.checked_at
         );
 
-        // 空计划 = 全部停用：监听立即释放，端口可复用。
+        // An empty plan stops everything: the listener is released at once and
+        // the port becomes reusable.
         let events = publisher.reconcile(None).await.unwrap();
         assert_eq!(events.stopped, 2, "{events:?}");
         let reused = tokio::net::TcpListener::bind(listener_addr).await;
@@ -529,7 +557,8 @@ mod tests {
         assert!(publisher.is_idle());
     }
 
-    /// 同一个对象配置未变时不重启（不打断在途连接）。
+    /// An object whose config is unchanged is not restarted (in-flight
+    /// connections are not interrupted).
     #[tokio::test]
     async fn unchanged_forward_keeps_its_socket() {
         let backend = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -544,7 +573,8 @@ mod tests {
                 protocol: ForwardProtocol::Tcp,
                 listener_address: listener_addr,
                 backend_address: backend_addr,
-                // 空白名单 = 全拒：测试流量来自回环，需显式放行。
+                // An empty allowlist rejects everything: the test traffic comes
+                // from the loopback, so it must be allowed explicitly.
                 policy: AuthorizationPolicy {
                     allowed_source_cidrs: vec!["127.0.0.0/8".parse().unwrap()],
                     allowed_bearer_tokens: vec![],
@@ -563,8 +593,9 @@ mod tests {
         publisher.reconcile(None).await.unwrap();
     }
 
-    /// DNS 计划按配置地址起解析套接字并只应答内部后缀内的名字（高位端口，
-    /// 不要求 root；`0.0.0.0:53` 需 root 的部分见文档 R-06 验收缺口）。
+    /// A DNS plan opens resolver sockets at the configured addresses and answers
+    /// only names inside the internal suffix (a high port, no root required; the
+    /// part needing root for `0.0.0.0:53` is the R-06 acceptance gap in the docs).
     #[tokio::test]
     async fn dns_listener_serves_only_the_internal_suffix() {
         let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -576,7 +607,8 @@ mod tests {
                 internal_suffix: "mesh".into(),
                 bind_address,
                 records: vec![crate::dns::DnsRecord {
-                    // 记录名须为内部后缀内的 FQDN（`DnsCatalog::insert` 校验）
+                    // The recorded name must be an FQDN inside the internal
+                    // suffix (validated by `DnsCatalog::insert`).
                     service_id: "svc-1".into(),
                     name: "app.mesh".into(),
                     address: "10.240.0.10".parse().unwrap(),
@@ -592,8 +624,9 @@ mod tests {
         assert_eq!(events.started, 1, "{events:?}");
         assert!(!publisher.is_idle());
 
-        // UDP 端口可重复绑定，改看行为：内部名字有应答、外部名字无应答
-        // （分域边界：不重写公网解析）。
+        // UDP ports can be bound repeatedly, so assert on behaviour instead:
+        // internal names get answers, external names do not (split-horizon
+        // boundary: public resolution is not rewritten).
         let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let mut buffer = [0_u8; 512];
         client
@@ -607,7 +640,8 @@ mod tests {
             .send_to(&dns_query("example.com"), bind_address)
             .await
             .unwrap();
-        // 异步 recv_from 空套接字会挂起等待，用超时断言「无应答」。
+        // An async recv_from on an empty socket hangs, so use a timeout to
+        // assert "no answer".
         let denied =
             tokio::time::timeout(Duration::from_millis(300), client.recv_from(&mut buffer)).await;
         assert!(
@@ -619,7 +653,8 @@ mod tests {
         assert!(publisher.is_idle());
     }
 
-    /// 最小 DNS A 记录查询包：id、RD 标志、QDCOUNT 1、标签化名字、A/IN。
+    /// A minimal DNS A-record query packet: id, the RD flag, QDCOUNT 1, a
+    /// label-encoded name, and A/IN.
     fn dns_query(name: &str) -> Vec<u8> {
         let mut packet = vec![0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
         for label in name.split('.') {

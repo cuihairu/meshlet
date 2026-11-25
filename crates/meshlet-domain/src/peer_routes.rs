@@ -1,17 +1,17 @@
-//! Peer AllowedIPs 推导（[存档 §7.2](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Peer AllowedIPs derivation ([archive §7.2](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 原则：AllowedIPs 与目标路由一致，**不得全量指隧道**。
-//! 第一版默认只路由：
-//! - Meshlet Overlay 网段；
-//! - 明确发布（`Applied`）的远端 LAN 网段；
-//! - 对应的 Alias 网段。
+//! Principle: AllowedIPs match the target routes; **never route everything
+//! into the tunnel**. The first release routes by default only:
+//! - the Meshlet Overlay range;
+//! - explicitly published (`Applied`) remote LAN ranges;
+//! - the corresponding Alias ranges.
 //!
-//! 两个方向：
-//! - [hub_peer_allowed_ips]：VPS 上某设备 Peer 的 AllowedIPs
-//!   （本机 Overlay /32 + 该设备发布的 LAN + Alias）；
-//! - [client_hub_peer_allowed_ips]：客户端到 VPS Peer 的 AllowedIPs
-//!   （整个 Overlay + **其他**设备发布的 LAN + Alias；自己发布的本地网段
-//!   不回灌隧道，避免环路）。
+//! Two directions:
+//! - [hub_peer_allowed_ips]: AllowedIPs for a device Peer on the VPS
+//!   (this machine's Overlay /32 + that device's published LAN + Alias);
+//! - [client_hub_peer_allowed_ips]: AllowedIPs for the client-to-VPS Peer
+//!   (the entire Overlay + **other** devices' published LAN + Alias; a
+//!   device's own published LAN is not fed back into the tunnel to avoid loops).
 
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -36,7 +36,7 @@ fn is_published_alias(alias: &AliasMapping) -> bool {
     alias.status == DesiredStateStatus::Applied
 }
 
-/// 汇总某设备「已发布」的 LAN 目标网段与 Alias 网段。
+/// Collect a device's "published" LAN destination ranges and Alias ranges.
 fn published_destinations<'a>(
     gateway_device_id: &DeviceId,
     lan_routes: &'a [LanRoute],
@@ -54,7 +54,7 @@ fn published_destinations<'a>(
     for alias in alias_mappings {
         if is_published_alias(alias) {
             if let Some(route) = lan_routes.iter().find(|r| r.id == alias.lan_route_id) {
-                // Alias 只有在对应 LAN 路由已发布时才进 AllowedIPs。
+                // An Alias only enters AllowedIPs once its LAN route is published.
                 if &route.gateway_device_id == gateway_device_id && is_published(route) {
                     out.push(alias.alias_cidr);
                 }
@@ -64,18 +64,18 @@ fn published_destinations<'a>(
     out
 }
 
-/// 去重 + 确定性排序（先网络地址，后前缀长度）。
+/// Deduplicate and sort deterministically (network address first, then prefix length).
 fn normalize(mut cidrs: Vec<Ipv4Cidr>) -> Vec<Ipv4Cidr> {
     cidrs.sort_by_key(|c| (u32::from(c.network()), c.prefix_len()));
     cidrs.dedup();
     cidrs
 }
 
-/// VPS 侧：某设备 Peer 的 AllowedIPs。
+/// Hub side: AllowedIPs for a device Peer.
 ///
-/// = 本机 Overlay /32 + 该设备已发布的 LAN 目标网段 + 对应 Alias 网段。
+/// = this machine's Overlay /32 + that device's published LAN + Alias.
 ///
-/// 设备的虚拟 IP 必须在 Overlay 内（IPAM 保证，这里再核一次边界）。
+/// The device's virtual IP must sit inside the Overlay (IPAM guarantees this; the boundary is re-checked here).
 pub fn hub_peer_allowed_ips(
     overlay_cidr: Ipv4Cidr,
     device_id: &DeviceId,
@@ -98,9 +98,9 @@ pub fn hub_peer_allowed_ips(
     Ok(normalize(cidrs))
 }
 
-/// 客户端侧：到 VPS Peer 的 AllowedIPs。
+/// Client side: AllowedIPs for the Peer to the VPS.
 ///
-/// = 整个 Overlay + 其他设备已发布的 LAN 目标网段 + 对应 Alias 网段。
+/// = the entire Overlay + other devices' published LAN + the corresponding Alias ranges.
 pub fn client_hub_peer_allowed_ips(
     overlay_cidr: Ipv4Cidr,
     self_device_id: &DeviceId,
@@ -128,7 +128,7 @@ pub fn client_hub_peer_allowed_ips(
     normalize(cidrs)
 }
 
-/// VPS 隧道中的设备 Peer 条目：每设备独立 Peer（§7.2）。
+/// Device Peer entry in the VPS tunnel: one independent Peer per device (§7.2).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DevicePeer {
     pub device_id: DeviceId,
@@ -136,9 +136,9 @@ pub struct DevicePeer {
     pub allowed_ips: Vec<Ipv4Cidr>,
 }
 
-/// VPS 隧道的设备 Peer 列表：每设备独立 Peer，AllowedIPs 互不相同。
+/// The VPS tunnel's device Peer list: one independent Peer per device, with distinct AllowedIPs.
 ///
-/// 服务端据此「根据目标 Overlay IP 找到对应 Peer」。
+/// The server uses this to "find the corresponding Peer for a target Overlay IP".
 pub fn hub_device_peers(
     overlay_cidr: Ipv4Cidr,
     devices: &[crate::entities::Device],
@@ -164,7 +164,7 @@ pub fn hub_device_peers(
         .collect()
 }
 
-/// 汇总全网已发布路由（供配置生成/测试断言用）。
+/// Aggregate all published routes (for config generation / test assertions).
 pub fn all_published_routes(
     lan_routes: &[LanRoute],
     alias_mappings: &[AliasMapping],
@@ -313,7 +313,7 @@ mod tests {
         )
         .unwrap();
 
-        // 只有本机 /32：未发布/失败的路由与 Alias 都不进 AllowedIPs。
+        // Only the local /32: unpublished/failed routes and Aliases never enter AllowedIPs.
         assert_eq!(ips, vec!["10.240.0.2/32".parse().unwrap()]);
     }
 
@@ -350,7 +350,7 @@ mod tests {
             ),
         ];
 
-        // dev-a 的视角：Overlay + dev-b 的 LAN + dev-b 的 Alias；不含自己的 192.168.1.0/24。
+        // dev-a's view: Overlay + dev-b's LAN + dev-b's Alias; excludes its own 192.168.1.0/24.
         let ips = client_hub_peer_allowed_ips(
             OVERLAY.parse().unwrap(),
             &DeviceId("dev-a".into()),

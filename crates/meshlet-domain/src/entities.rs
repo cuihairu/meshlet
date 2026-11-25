@@ -1,12 +1,12 @@
-//! 核心领域实体（[领域模型文档](../../docs/architecture/domain-model.md)、
-//! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)）。
+//! Core domain entities ([domain model doc](../../docs/architecture/domain-model.md),
+//! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)).
 //!
-//! 时间戳以 ISO-8601 字符串承载（由应用层写入），保持领域层零时间库依赖。
+//! Timestamps are carried as ISO-8601 strings (written by the application layer), keeping the domain layer free of any time-library dependency.
 
 use crate::cidr::Ipv4Cidr;
 use std::collections::{BTreeMap, HashSet};
 
-/// ISO-8601 时间戳（由应用层提供，如 `2026-10-14T08:00:00Z`）。
+/// ISO-8601 timestamp (provided by the application layer, e.g. `2026-10-14T08:00:00Z`).
 pub type Timestamp = String;
 
 macro_rules! string_id {
@@ -43,8 +43,8 @@ pub enum NetworkStatus {
     Deleting,
 }
 
-/// 私人虚拟网络。**Overlay CIDR 创建后不可变**（ADR-004）：
-/// 该类型不提供任何修改 `overlay_cidr` 的方法，修改须重建网络或走迁移流程。
+/// Private virtual network. **The overlay CIDR is immutable once created** (ADR-004):
+/// no method on this type modifies `overlay_cidr`; changing it requires rebuilding the network or going through the migration flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Network {
     pub id: NetworkId,
@@ -99,33 +99,33 @@ pub struct Device {
     pub public_key: String,
     pub platform: Platform,
     pub status: DeviceStatus,
-    /// 最新一次证据时间（加入/心跳/上报到达时刻）——控制台「最后在线时间」。
+    /// Time of the latest evidence (join/heartbeat/report arrival) — the console "last seen time".
     pub last_seen_at: Option<Timestamp>,
-    /// 最近一次 WireGuard 握手（agent 经心跳上报 `wg show` 本地读数，§12.4）。
+    /// Most recent WireGuard handshake (agent reports the local `wg show` reading via heartbeat, §12.4).
     pub last_handshake_at: Option<Timestamp>,
-    /// 最近一次 agent 心跳/状态上报时刻（§14.1）。
+    /// Time of the most recent agent heartbeat/status report (§14.1).
     pub last_report_at: Option<Timestamp>,
-    /// 最近一次心跳回传的数据面实测证据（§7.5：内核读数 + 大包探测）；
-    /// `None` = 尚无 agent 上报过（旧 agent / 未运行）。
+    /// Dataplane evidence echoed back by the most recent heartbeat (§7.5: kernel readings + large-packet probe);
+    /// `None` = no agent has reported yet (old agent / not running).
     pub dataplane_evidence: Option<DataplaneEvidence>,
     pub created_at: Timestamp,
-    /// 批准时刻（自举注册路径，见 [DeviceRegistration]）；邀请入会路径为 `None`
-    /// （`created_at` 即入会时刻）。
+    /// Approval time (bootstrap registration path, see [DeviceRegistration]); `None` on the invite-join path
+    /// (`created_at` is the join time).
     pub approved_at: Option<Timestamp>,
-    /// 设备唯一所属段（ADR-012）。恢复旧库时由 migrations 010/011 回填。
+    /// The segment the device uniquely belongs to (ADR-012). Backfilled by migrations 010/011 when restoring an old DB.
     pub segment_id: SegmentId,
     pub revoked_at: Option<Timestamp>,
-    /// 节点标签（role/capability 等，操作员分配；MT-005 标签路由的匹配
-    /// 依据）。空 = 未打标，匹配任意「无标签要求」的任务。
+    /// Node labels (role/capability etc., assigned by an operator; the match basis for MT-005 label routing).
+    /// Empty = untagged, matches any task with no label requirement.
     pub labels: BTreeMap<String, String>,
 }
 
-/// 待审批的设备注册申请（ZeroTier 式自举注册：设备持自举码自举 → 落此表 →
-/// 控制中心审批/拒绝）。
+/// Pending device registration application (ZeroTier-style bootstrap registration: a device bootstraps with a bootstrap token →
+/// lands in this table → the control center approves/rejects it).
 ///
-/// 设计要点：**Pending 申请不进 `DeviceRegistry`**，因此不占 overlay 地址、不进
-/// 期望配置、不进 Peer AllowedIPs——批准时刻才分配虚拟 IP 并转入
-/// [Device]（ID 在注册时已分配，批准不改 ID，故 `agent_tokens` 等引用无需迁移）。
+/// Design points: **Pending applications never enter `DeviceRegistry`**, so they take no overlay address, do not
+/// enter the desired config, and do not enter Peer AllowedIPs — the virtual IP is only allocated and it moves
+/// into [Device] at approval time (the ID was assigned at registration, approval does not change it, so `agent_tokens` refs need no migration).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceRegistration {
     pub id: DeviceId,
@@ -133,44 +133,44 @@ pub struct DeviceRegistration {
     pub name: String,
     pub public_key: String,
     pub platform: Platform,
-    /// 申请时刻（控制台「等待审批」的起点，也即该设备 id 的创建时刻）。
+    /// Request time (the start of the console "awaiting approval", and also the creation time of this device id).
     pub requested_at: Timestamp,
-    /// agent 最近一次心跳到达时刻——Pending 设备尚无 `devices` 行，证据只落这里。
+    /// Time the agent's most recent heartbeat arrived — a Pending device has no `devices` row yet, so evidence lands only here.
     pub last_report_at: Option<Timestamp>,
-    /// agent 心跳回传的数据面证据（§7.5）；`None` = 尚未上报。
+    /// Dataplane evidence echoed back by the agent heartbeat (§7.5); `None` = not yet reported.
     pub dataplane_evidence: Option<DataplaneEvidence>,
 }
 
-/// 自举码（bootstrap token）：**只存 SHA-256 摘要**，与邀请 Token 同一纪律
-/// （§11.3）。语义差异：它是**长期、可复用**的注册入口（管理员可撤销/限额），
-/// 不是单次入会凭证。
+/// Bootstrap token: **stores only a SHA-256 digest**, under the same discipline as invite tokens (§11.3).
+/// Semantic difference: it is a **long-term, reusable** registration entry point (admins can revoke/limit it),
+/// not a single-use join credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapToken {
     pub id: BootstrapTokenId,
     pub network_id: NetworkId,
     pub token_hash: String,
-    /// 使用次数上限；`None` = 无上限。
+    /// Maximum number of uses; `None` = unlimited.
     pub max_uses: Option<u32>,
     pub used_count: u32,
     pub created_at: Timestamp,
     pub revoked_at: Option<Timestamp>,
 }
 
-/// 设备侧数据面实测证据（agent 心跳回传，§7.5/§12.4）：内核读数 + 大包
-/// 探测。每个字段 `None` 表示「本机未取到」（工具缺失 / 探测不可达），
-/// 服务端按「证据缺失」处理，绝不臆测默认值。
+/// Dataplane evidence measured on the device side (echoed back by the agent heartbeat, §7.5/§12.4):
+/// kernel readings + large-packet probe. Each field being `None` means "not obtainable locally"
+/// (missing tool / probe unreachable); the server treats it as "evidence missing" and never invents defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct DataplaneEvidence {
-    /// 隧道接口实际 MTU（`ip link show` 本机读数）。
+    /// Actual MTU of the tunnel interface (local reading from `ip link show`).
     pub tunnel_mtu: Option<u32>,
-    /// 本机内核存在 Meshlet NAT 规则（按所有权注释扫描；网关设备相关）。
+    /// Meshlet NAT rules exist in the local kernel (scanned by ownership comment; gateway-device related).
     pub nat_rules_present: Option<bool>,
-    /// 本机内核存在 Meshlet 受控 SNAT 规则（POSTROUTING 链；与
-    /// `nat_rules_present` 组合区分 `dnat_snat` 与 `dnat_only`——后者保留
-    /// 原始源地址，ADR-005；内核实测读数，`None` = 未上报或不可观测）。
+    /// Meshlet-managed SNAT rules exist in the local kernel (POSTROUTING chain); combined with
+    /// `nat_rules_present` to distinguish `dnat_snat` from `dnat_only` — the latter keeps the
+    /// original source address, ADR-005 (kernel-measured reading; `None` = not reported or unobservable).
     pub nat_snat_rules_present: Option<bool>,
-    /// 大包探测：`ping -M do` 以该载荷尺寸到达一个 overlay 对端成功
-    /// （`None` = 未探测或探测失败——计划 MTU 在路径上不可用或对端不可达）。
+    /// Large-packet probe: `ping -M do` reached an overlay peer successfully with this payload size
+    /// (`None` = not probed or the probe failed — the planned MTU is unavailable on the path or the peer is unreachable).
     pub mtu_probe_payload: Option<u32>,
 }
 
@@ -185,15 +185,15 @@ impl Device {
         self.status == DeviceStatus::Active
     }
 
-    /// 标签路由匹配（MT-005，纯函数）：任务的 `required_labels` 逐对
-    /// `(key, value)` 命中设备标签才放行。空要求 = 无约束（任何设备可接）；
-    /// 值不同视为不匹配（role=worker 不满足 role=builder）。
+    /// Label-route matching (MT-005, pure function): a task is admitted only if every
+    /// `(key, value)` pair of its `required_labels` hits a device label. An empty requirement is
+    /// unconstrained (any device may take it); a differing value counts as no match (role=worker does not satisfy role=builder).
     pub fn matches_labels(&self, required: &BTreeMap<String, String>) -> bool {
         required.iter().all(|(k, v)| self.labels.get(k) == Some(v))
     }
 
-    /// 撤销设备（§11.5 第 1-2 步；Peer/路由清理属于配置应用层）。
-    /// 重复撤销报错而不是静默成功。
+    /// Revoke the device (§11.5 steps 1-2; Peer/route cleanup belongs to the config-apply layer).
+    /// Revoking twice is an error rather than a silent success.
     pub fn revoke(&mut self, at: Timestamp) -> Result<(), DeviceError> {
         if let Some(prev) = self.revoked_at.clone() {
             return Err(DeviceError::AlreadyRevoked(prev));
@@ -204,9 +204,9 @@ impl Device {
     }
 }
 
-/// 标签路由选点（MT-005，纯函数）：在候选设备里选第一个（id 确定性序）
-/// 满足标签要求的 Active 设备。空要求 = 无约束，选第一个 Active 设备；
-/// 无命中返回 `None`（调用方按无可派发处理）。
+/// Label-route selection (MT-005, pure function): among candidate devices, pick the first Active
+/// one (in deterministic id order) that satisfies the label requirement. An empty requirement is
+/// unconstrained, picking the first Active device; no hit returns `None` (the caller treats it as nothing dispatchable).
 pub fn select_by_labels<'a>(
     devices: &'a [Device],
     required: &BTreeMap<String, String>,
@@ -220,8 +220,8 @@ pub fn select_by_labels<'a>(
     sorted.into_iter().next()
 }
 
-/// 设备密钥记录（与 Device 分离，便于轮换与撤销，§5.5）。
-/// 服务端**只**保存公钥侧信息；不存在长期私钥字段（ADR-010）。
+/// Device key record (kept separate from Device to ease rotation and revocation, §5.5).
+/// The server stores **only** public-key-side information; there is no long-lived private-key field (ADR-010).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceKey {
     pub device_id: DeviceId,
@@ -247,7 +247,7 @@ pub enum RouteMode {
     Alias,
 }
 
-/// 返回路径模式（ADR-005）：真实双向路由 / 受控 SNAT。
+/// Return-path mode (ADR-005): real bidirectional routing / controlled SNAT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReturnPathMode {
     DualRoute,
@@ -280,7 +280,7 @@ pub enum TranslationMode {
 }
 
 impl TranslationMode {
-    /// API/控制台展示用小写蛇形标识（契约字段 `translation_mode`）。
+    /// Lowercase snake_case identifier for API/console display (contract field `translation_mode`).
     pub fn as_str(self) -> &'static str {
         match self {
             TranslationMode::DnatOnly => "dnat_only",
@@ -305,7 +305,7 @@ pub enum AliasError {
     SamePrefix,
 }
 
-/// 重叠网段的虚拟前缀映射（ADR-006）：Alias 与 Target 前缀等长、一对一替换。
+/// Virtual prefix mapping for overlapping subnets (ADR-006): Alias and Target prefixes have equal length and are swapped one-to-one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AliasMapping {
     pub id: AliasMappingId,
@@ -346,7 +346,7 @@ impl AliasMapping {
         })
     }
 
-    /// 一对一前缀替换映射：`10.241.1.10 → 192.168.1.10`（§9.2）。
+    /// One-to-one prefix replacement mapping: `10.241.1.10 → 192.168.1.10` (§9.2).
     pub fn translate(&self, ip: std::net::Ipv4Addr) -> Option<std::net::Ipv4Addr> {
         if !self.alias_cidr.contains(ip) {
             return None;
@@ -359,7 +359,7 @@ impl AliasMapping {
 }
 
 // ---------------------------------------------------------------------------
-// Config Revision（ADR-009 状态机）
+// Config Revision (ADR-009 state machine)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,9 +373,9 @@ pub enum ApplyStatus {
 }
 
 impl ApplyStatus {
-    /// 合法跃迁（§10.2 流程图）：
-    /// pending → applying；applying → applied | failed；
-    /// failed → rollback_pending；rollback_pending → rolled_back。
+    /// Legal transitions (§10.2 flowchart):
+    /// pending → applying; applying → applied | failed;
+    /// failed → rollback_pending; rollback_pending → rolled_back.
     pub fn can_transition_to(self, to: Self) -> bool {
         use ApplyStatus::*;
         matches!(
@@ -388,7 +388,7 @@ impl ApplyStatus {
         )
     }
 
-    /// API/控制台展示用小写蛇形标识（契约字段 `apply_status`）。
+    /// Lowercase snake_case identifier for API/console display (contract field `apply_status`).
     pub fn as_str(self) -> &'static str {
         match self {
             ApplyStatus::Pending => "pending",
@@ -402,7 +402,7 @@ impl ApplyStatus {
 }
 
 impl RouteMode {
-    /// API/控制台展示用小写蛇形标识（契约字段 `route_mode`）。
+    /// Lowercase snake_case identifier for API/console display (contract field `route_mode`).
     pub fn as_str(self) -> &'static str {
         match self {
             RouteMode::Direct => "direct",
@@ -420,7 +420,7 @@ impl RouteMode {
 }
 
 impl ReturnPathMode {
-    /// API/控制台展示用小写蛇形标识（契约字段 `return_path_mode`）。
+    /// Lowercase snake_case identifier for API/console display (contract field `return_path_mode`).
     pub fn as_str(self) -> &'static str {
         match self {
             ReturnPathMode::DualRoute => "dual_route",
@@ -438,7 +438,7 @@ impl ReturnPathMode {
 }
 
 impl DesiredStateStatus {
-    /// API/控制台展示用小写蛇形标识（契约字段 `status`）。
+    /// Lowercase snake_case identifier for API/console display (contract field `status`).
     pub fn as_str(self) -> &'static str {
         match self {
             DesiredStateStatus::Pending => "pending",
@@ -493,12 +493,12 @@ impl ConfigRevision {
     }
 }
 
-/// 网络内设备注册表：集中保障「同一网络内虚拟 IP 唯一」（§5.4）。
+/// Per-network device registry: centrally enforces "virtual IP uniqueness within a network" (§5.4).
 #[derive(Debug, Clone, Default)]
 pub struct DeviceRegistry {
     devices: Vec<Device>,
-    /// 待审批的设备注册申请（[DeviceRegistration]）。与 `devices` 分离存放：
-    /// Pending 设备不参与期望配置/Peer 推导/IPAM，批准才转入 `devices`。
+    /// Pending device registration applications ([DeviceRegistration]). Stored separately from `devices`:
+    /// Pending devices do not participate in desired-config / Peer derivation / IPAM, and only move into `devices` on approval.
     registrations: Vec<DeviceRegistration>,
 }
 
@@ -551,7 +551,7 @@ impl DeviceRegistry {
     }
 
     // ------------------------------------------------------------------
-    // 待审批注册申请（ZeroTier 式自举注册）
+    // Pending registration applications (ZeroTier-style bootstrap registration)
     // ------------------------------------------------------------------
 
     pub fn registrations(&self) -> &[DeviceRegistration] {
@@ -566,8 +566,8 @@ impl DeviceRegistry {
         self.registrations.iter_mut().find(|r| r.id == *id)
     }
 
-    /// 登记一条注册申请。**名字唯一性跨 `devices` 与 `registrations` 两侧检查**
-    /// （同一网络内不允许重名，无论设备处于哪个阶段）。
+    /// Register a registration application. **Name uniqueness is checked across both `devices` and `registrations`**
+    /// (duplicate names are not allowed inside one network, whatever stage the device is in).
     pub fn add_registration(
         &mut self,
         registration: DeviceRegistration,
@@ -582,13 +582,13 @@ impl DeviceRegistry {
         Ok(())
     }
 
-    /// 移除一条注册申请（批准/拒绝时调用），返回被移除的申请。
+    /// Remove a registration application (called on approve/reject); returns the removed application.
     pub fn remove_registration(&mut self, id: &DeviceId) -> Option<DeviceRegistration> {
         let pos = self.registrations.iter().position(|r| r.id == *id)?;
         Some(self.registrations.remove(pos))
     }
 
-    /// 名字是否已被占用（`devices` 或 `registrations` 任一侧）。
+    /// Whether a name is already taken (on either the `devices` or `registrations` side).
     pub fn name_taken(&self, name: &str) -> bool {
         self.devices.iter().any(|d| d.name == name)
             || self.registrations.iter().any(|r| r.name == name)
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn network_cidr_is_immutable_by_construction() {
-        // 领域层不提供 CIDR 修改途径；断言构造保留原值。
+        // The domain layer offers no CIDR-modification path; assert that construction kept the original value.
         let n = net();
         assert_eq!(n.overlay_cidr.to_string(), "10.240.0.0/16");
     }
@@ -714,7 +714,7 @@ mod tests {
         assert_eq!(t("10.241.1.10"), Some("192.168.1.10".parse().unwrap()));
         assert_eq!(t("10.241.1.20"), Some("192.168.1.20".parse().unwrap()));
         assert_eq!(t("10.241.1.255"), Some("192.168.1.255".parse().unwrap()));
-        assert_eq!(t("10.241.2.10"), None); // 前缀外
+        assert_eq!(t("10.241.2.10"), None); // outside the prefix
         assert_eq!(t("10.240.0.2"), None);
     }
 
@@ -757,7 +757,7 @@ mod tests {
         let mut r = ConfigRevision::new(NetworkId("net-1".into()), 1, "hash".into(), T0.into());
         assert_eq!(r.apply_status, ApplyStatus::Pending);
 
-        // 跳过 applying 直接 applied 必须失败
+        // Skipping applying and going straight to applied must fail
         assert!(r.transition(ApplyStatus::Applied).is_err());
 
         r.transition(ApplyStatus::Applying).unwrap();
@@ -766,7 +766,7 @@ mod tests {
         r.transition(ApplyStatus::RollbackPending).unwrap();
         r.transition(ApplyStatus::RolledBack).unwrap();
         assert_eq!(r.apply_status, ApplyStatus::RolledBack);
-        // 终态后再跃迁失败
+        // Transitioning after a terminal state fails
         assert!(r.transition(ApplyStatus::Applying).is_err());
     }
 
@@ -839,7 +839,7 @@ mod tests {
         );
     }
 
-    // ---- MT-005 标签路由（纯函数） ----
+    // ---- MT-005 label routing (pure functions) ----
 
     fn device_with_labels(id: &str, labels: &[(&str, &str)], active: bool) -> Device {
         Device {
@@ -900,15 +900,15 @@ mod tests {
         let devices = vec![
             device_with_labels("dev-b", &[("role", "worker")], true),
             device_with_labels("dev-a", &[("role", "worker")], true),
-            // 标签不符：不选。
+            // Labels do not match: not selected.
             device_with_labels("dev-c", &[("role", "builder")], true),
-            // 已撤销：不选。
+            // Revoked: not selected.
             device_with_labels("dev-d", &[("role", "worker")], false),
         ];
         let mut need = BTreeMap::new();
         need.insert("role".to_string(), "worker".to_string());
         let picked = select_by_labels(&devices, &need).expect("must select a device");
-        // id 确定性序：dev-a 先于 dev-b。
+        // Deterministic id order: dev-a before dev-b.
         assert_eq!(picked.id, DeviceId("dev-a".into()));
     }
 
@@ -918,7 +918,7 @@ mod tests {
         let mut need = BTreeMap::new();
         need.insert("role".to_string(), "builder".to_string());
         assert!(select_by_labels(&devices, &need).is_none());
-        // 空要求但全部已撤销：无 Active 可派。
+        // Empty requirement but everything revoked: no Active device to dispatch to.
         let revoked = vec![device_with_labels("dev-a", &[("role", "worker")], false)];
         assert!(select_by_labels(&revoked, &BTreeMap::new()).is_none());
     }

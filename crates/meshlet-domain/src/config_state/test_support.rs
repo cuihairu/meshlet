@@ -1,5 +1,5 @@
-//! 跨子模块共享的测试夹具：时钟常量、网络构造器与 [`ConfigApplyBackend`]
-//! 测试实现。仅在 `cfg(test)` 下编译。
+//! Test fixtures shared across submodules: clock constants, network builders and
+//! [`ConfigApplyBackend`] test implementations. Compiled only under `cfg(test)`.
 
 use crate::config_state::backend::ConfigApplyBackend;
 use crate::entities::{ConfigRevision, NetworkId};
@@ -12,7 +12,7 @@ pub fn net(id: &str) -> NetworkId {
     NetworkId(id.into())
 }
 
-/// apply/rollback 均成功的后端。
+/// Backend where both apply and rollback succeed.
 pub struct OkBackend;
 
 impl ConfigApplyBackend for OkBackend {
@@ -24,7 +24,7 @@ impl ConfigApplyBackend for OkBackend {
     }
 }
 
-/// apply/rollback 均按预设文案失败的后端。
+/// Backend where apply/rollback fail with preset messages.
 pub struct BrokenBackend {
     apply_error: String,
     rollback_error: String,
@@ -48,7 +48,7 @@ impl ConfigApplyBackend for BrokenBackend {
     }
 }
 
-/// 计数后端：统计 backend 被调用次数，用于断言幂等路径不触碰 backend。
+/// Counting backend: tallies backend invocations to assert the idempotent path never touches the backend.
 pub struct CountingBackend {
     pub calls: u32,
 }

@@ -1,5 +1,5 @@
-//! 每网络配置修订簿记（ADR-009）：修订的记录、查询、启动重建与中断收敛。
-//! apply/rollback 语义（状态机跃迁与 backend 交互）在 `apply` 子模块。
+//! Per-network configuration revision ledger (ADR-009): recording, querying, boot rebuild and interruption convergence.
+//! apply/rollback semantics (state-machine transitions and backend interaction) live in the `apply` submodule.
 
 use crate::entities::{ApplyStatus, ConfigRevision, NetworkId, RevisionError, Timestamp};
 use std::collections::HashMap;
@@ -8,9 +8,9 @@ use std::collections::HashMap;
 pub enum LedgerError {
     #[error("revision {revision} not found in network {network_id}")]
     RevisionNotFound { network_id: String, revision: u64 },
-    /// 回滚目标已被更新修订取代（§10.4）：被取代的失败修订从未生效，按其
-    /// 意图回滚会交叉触碰更新修订所拥有的对象——重试路径是对当前修订操作
-    /// 或前滚记录新修订。
+    /// Rollback target already superseded by a newer revision (§10.4): the superseded failed
+    /// revision never took effect, so rolling it back by its intent would cross-touch objects
+    /// owned by the newer revision — retry on the current revision or record a new one.
     #[error(
         "revision {revision} superseded by {latest} in network {network_id}; \
             roll back the current revision or record a new one"
@@ -24,8 +24,8 @@ pub enum LedgerError {
     IllegalTransition(#[from] RevisionError),
 }
 
-/// 每网络配置修订簿记（ADR-009）：版本号网络内严格单调递增（§10.4 的版本
-/// 顺序——同一网络的配置修改串行化即由「先记录修订、再应用修订」保证）。
+/// Per-network configuration revision ledger (ADR-009): version numbers strictly monotonic
+/// within a network (§10.4 ordering — config edits serialized by recording before applying).
 #[derive(Debug, Clone, Default)]
 pub struct ConfigLedger {
     revisions: HashMap<NetworkId, Vec<ConfigRevision>>,
@@ -36,8 +36,8 @@ impl ConfigLedger {
         Self::default()
     }
 
-    /// 记录一次期望配置变更：版本号 = 该网络上一版本 + 1，初始状态
-    /// `Pending`（此时只完成了 DB 写入，**尚未生效**）。
+    /// Record one desired-config change: version number = previous version in this network + 1,
+    /// initial status `Pending` (only the DB write has happened at this point, **not yet in effect**).
     pub fn record(
         &mut self,
         network_id: &NetworkId,
@@ -55,7 +55,7 @@ impl ConfigLedger {
         revision
     }
 
-    /// 某网络的全部修订（按版本号升序；未知网络返回空切片）。
+    /// All revisions of a network (ascending by version number; unknown network returns an empty slice).
     pub fn revisions(&self, network_id: &NetworkId) -> &[ConfigRevision] {
         self.revisions
             .get(network_id)
@@ -63,14 +63,14 @@ impl ConfigLedger {
             .unwrap_or(&[])
     }
 
-    /// 单个修订。
+    /// A single revision.
     pub fn get(&self, network_id: &NetworkId, revision: u64) -> Option<&ConfigRevision> {
         self.revisions(network_id)
             .iter()
             .find(|r| r.revision == revision)
     }
 
-    /// 当前期望修订 = 最新一个未回滚的修订（控制台以此为准，§10.1）。
+    /// Current desired revision = the latest one not rolled back (the console treats this as authoritative, §10.1).
     pub fn current(&self, network_id: &NetworkId) -> Option<&ConfigRevision> {
         self.revisions(network_id)
             .iter()
@@ -78,9 +78,9 @@ impl ConfigLedger {
             .find(|r| r.apply_status != ApplyStatus::RolledBack)
     }
 
-    /// 装载持久化的修订（§17.3 启动重建）：按网络分组、版本号升序灌入，
-    /// 版本序列与 DB 逐字一致——后续 [`Self::record`] 从最后一条继续递增，
-    /// 不重号。调用方（boot）应保证同一网络内版本号无重复。
+    /// Load persisted revisions (§17.3 boot rebuild): grouped by network, filled in ascending
+    /// by version, identical to the DB — subsequent [`Self::record`] calls keep incrementing
+    /// from the last entry without reusing numbers. Callers (boot) must ensure uniqueness.
     pub fn restore(&mut self, revisions: Vec<ConfigRevision>) {
         let mut grouped: HashMap<NetworkId, Vec<ConfigRevision>> = HashMap::new();
         for r in revisions {
@@ -126,10 +126,10 @@ impl ConfigLedger {
             })
     }
 
-    /// §10.3 中断收敛（§17.3 重启恢复）：进程重启后，停在 `Applying` 的修订
-    /// 结果不可知——一律落 `Failed` 并记录中断诊断，**不得假装成功**。
-    /// `RollbackPending` 保留（回滚未确认、可重试）；`Applied`/`RolledBack`
-    /// 是终态，不动。返回被收敛修订的身份，供调用方回写持久层。
+    /// §10.3 interruption convergence (§17.3 restart recovery): after a restart, a revision left
+    /// in `Applying` has an unknown outcome — always land `Failed` with an interruption diagnostic,
+    /// **never pretend success**. `RollbackPending` is preserved (unconfirmed, retryable);
+    /// `Applied`/`RolledBack` are terminal and untouched. Returns the converged revisions' identity.
     pub fn interrupt_applying(&mut self, error_summary: &str) -> Vec<(NetworkId, u64)> {
         let mut converged = Vec::new();
         for (network_id, revisions) in self.revisions.iter_mut() {
@@ -168,7 +168,7 @@ mod tests {
         let (a, b) = (net("net-a"), net("net-b"));
         assert_eq!(l.record(&a, "h1".into(), T0.into()), 1);
         assert_eq!(l.record(&a, "h2".into(), T0.into()), 2);
-        // 另一网络独立计数（§10.4 版本顺序按网络隔离）。
+        // Another network counts independently (§10.4 version ordering is per-network isolated).
         assert_eq!(l.record(&b, "h1".into(), T0.into()), 1);
         assert_eq!(l.current(&a).unwrap().revision, 2);
         assert_eq!(l.get(&a, 1).unwrap().desired_config_hash, "h1");
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn recorded_revision_is_pending_without_applied_at_or_error() {
-        // 验收基线：DB 写入 ≠ 显示生效——新修订不得宣称 Applied。
+        // Acceptance baseline: DB write != shown-in-effect — a new revision must not claim Applied.
         let mut l = ConfigLedger::new();
         let id = net("net-1");
         l.record(&id, "h".into(), T0.into());
@@ -189,23 +189,23 @@ mod tests {
 
     #[test]
     fn restore_replays_revisions_and_continues_numbering() {
-        // §17.3 启动重建：持久化的修订逐字灌回，后续 record 接续递增不重号。
+        // §17.3 boot rebuild: persisted revisions are restored verbatim, subsequent records continue incrementing without reusing numbers.
         let mut l = ConfigLedger::new();
         let id = net("net-1");
         let r1 = ConfigRevision::new(id.clone(), 1, "h1".into(), T0.into());
         let mut r2 = ConfigRevision::new(id.clone(), 2, "h2".into(), T1.into());
         r2.apply_status = ApplyStatus::Applied;
         r2.applied_at = Some(T2.into());
-        l.restore(vec![r2.clone(), r1.clone()]); // 乱序输入也按版本号归位
+        l.restore(vec![r2.clone(), r1.clone()]); // out-of-order input is still sorted by revision number
         assert_eq!(l.revisions(&id), &[r1, r2]);
         assert_eq!(l.current(&id).unwrap().desired_config_hash, "h2");
-        // 重启后新变更：版本号从 3 续起。
+        // New change after restart: numbering continues from 3.
         assert_eq!(l.record(&id, "h3".into(), T2.into()), 3);
     }
 
     #[test]
     fn interrupted_applying_lands_failed_with_summary() {
-        // §10.3：停在 applying 的修订结果不可知 → 落 failed + 中断诊断。
+        // §10.3: a revision stuck in applying has an unknown outcome → lands failed with an interruption diagnostic.
         let mut l = ConfigLedger::new();
         let id = net("net-1");
         let mk = |rev: u64, status: ApplyStatus| {
@@ -229,20 +229,20 @@ mod tests {
             l.get(&id, 2).unwrap().error_summary.as_deref(),
             Some("interrupted: process restarted while applying")
         );
-        // 终态与回滚未确认态不受影响。
+        // Terminal states and the unconfirmed-rollback state are unaffected.
         assert_eq!(l.get(&id, 1).unwrap().apply_status, ApplyStatus::Applied);
         assert_eq!(
             l.get(&id, 3).unwrap().apply_status,
             ApplyStatus::RollbackPending
         );
-        // 幂等：再次收敛不再命中任何修订。
+        // Idempotent: converging again no longer matches any revision.
         assert!(l.interrupt_applying("again").is_empty());
     }
 
     #[test]
     fn concurrent_record_assigns_unique_contiguous_revisions() {
-        // §10.4 版本顺序：并发记录（调用方持网络级互斥）下版本号唯一、
-        // 连续、严格递增——不交叉、不丢号、不重号。
+        // §10.4 version ordering: with concurrent records (caller holds the network mutex) version
+        // numbers are unique, contiguous and strictly increasing — no interleaving, gaps or duplicates.
         use std::sync::{Arc, Mutex};
         const THREADS: u64 = 8;
         const PER_THREAD: u64 = 25;

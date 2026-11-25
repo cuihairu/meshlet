@@ -1,21 +1,21 @@
-//! 应用后端契约：把期望配置落到实际网络环境（WireGuard/路由/NAT 的 OS 侧执行者）。
+//! Apply-backend contract: pushes the desired configuration onto the real network environment (the OS-side executor for WireGuard/routes/NAT).
 
 use crate::entities::ConfigRevision;
 
-/// 把期望配置应用到实际网络环境的后端（WireGuard/路由/NAT 的 OS 侧执行者）。
+/// Backend that applies the desired configuration to the real network environment (the OS-side executor for WireGuard/routes/NAT).
 ///
-/// 实现纪律（§10.3、ADR-007）：
-/// - 幂等：重复应用同一版本不得破坏网络；
-/// - 结果不确定（如 applying 中途失联、无法确认接口状态）也必须返回 `Err`，
-///   **不得返回 `Ok` 假装成功**；
-/// - 只操作 Meshlet 自有对象，不得清空系统路由。
+/// Implementation discipline (§10.3, ADR-007):
+/// - Idempotent: re-applying the same revision must not break the network;
+/// - An uncertain outcome (e.g. lost contact mid-apply, interface state unverifiable) must also return `Err`,
+///   **never `Ok` as if it had succeeded**;
+/// - Touch only Meshlet's own objects; never flush the system routes.
 pub trait ConfigApplyBackend {
     /// Inspect and repair the last confirmed plan without publishing pending edits.
     fn reconcile(&mut self) -> Result<(), String> {
         Err("backend recovery is not configured".into())
     }
     fn apply(&mut self, revision: &ConfigRevision) -> Result<(), String>;
-    /// 回滚一个 `Failed` 修订：只删除/恢复 Meshlet 自有对象。
+    /// Roll back a `Failed` revision: only deletes/restores Meshlet's own objects.
     fn rollback(&mut self, revision: &ConfigRevision) -> Result<(), String>;
 }
 

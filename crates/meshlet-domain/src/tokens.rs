@@ -1,15 +1,15 @@
-//! 共享 Token 工具（[存档 §11.3](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Shared Token utilities ([archive §11.3](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 邀请 Token 与控制台会话 Token 共用同一纪律：
-//! - 安全随机（32 字节 → 64 个 hex 字符，256 bit 熵）；
-//! - 服务端只存 SHA-256 摘要，原始 Token 只在创建/使用响应中瞬时出现。
+//! Invite Tokens and console session Tokens share one discipline:
+//! - cryptographically random (32 bytes → 64 hex chars, 256 bit entropy);
+//! - the server stores only the SHA-256 digest; the raw Token appears transiently only in creation/usage responses.
 
 use sha2::{Digest, Sha256};
 
-/// Token 熵长度（字节）：32 字节 = 256 bit，hex 编码后 64 字符。
+/// Token entropy length (bytes): 32 bytes = 256 bit, i.e. 64 hex chars after encoding.
 pub const TOKEN_BYTES: usize = 32;
 
-/// 生成安全随机 Token（64 个 hex 字符）。
+/// Generate a cryptographically random Token (64 hex chars).
 pub fn generate_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; TOKEN_BYTES];
@@ -17,7 +17,7 @@ pub fn generate_token() -> String {
     to_hex(&bytes)
 }
 
-/// Token 的安全摘要（SHA-256 hex）。服务端只保存此值。
+/// Secure digest of a Token (SHA-256 hex). The server stores only this value.
 pub fn token_hash(raw_token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(raw_token.as_bytes());
@@ -38,7 +38,7 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// SHA-256 空串测试向量（FIPS 180-2）。
+    /// SHA-256 empty-string test vector (FIPS 180-2).
     #[test]
     fn token_hash_matches_sha256_test_vector() {
         assert_eq!(

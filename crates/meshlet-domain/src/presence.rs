@@ -1,31 +1,31 @@
-//! 设备在线状态判定（[存档 §12.2/§12.4](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Device online-status determination ([archive §12.2/§12.4](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 判定输入是三类「证据」的时间戳：
-//! - **Agent 心跳/状态上报**（agent 经 HTTPS 控制通道定期上报，§14.1）——最强信号，
-//!   证明 agent 进程与设备网络功能在正常工作；
-//! - **隧道握手**（WireGuard latest-handshake，agent 可从 `wg show` 本地读取后上报）——
-//!   仅证明隧道连通，**不能**直接等同于设备全部功能正常（§12.4）；
-//! - **加入记录**（enrollment）——设备至少出现过，但无后续信号时不可宣称在线。
+//! The decision inputs are timestamps of three kinds of "evidence":
+//! - **agent heartbeat / status report** (the agent reports periodically over the HTTPS control channel, §14.1)
+//!   — the strongest signal, proving the agent process and the device's network functions work;
+//! - **tunnel handshake** (WireGuard latest-handshake, read locally via `wg show` and reported)
+//!   — proves only tunnel connectivity, **not** that all device functions are healthy (§12.4);
+//! - **enrollment record** — the device appeared at least once, but without later signals it cannot be claimed online.
 //!
-//! 判定结果必须标注**数据来源与更新时间**（§12.2）：控制台不允许只给一个
-//! 绿色「在线」图标而不说明该结论由哪类证据、在什么时刻支撑。
+//! The verdict must state **the data source and its update time** (§12.2): the console must not show a
+//! green "online" icon without saying which evidence, at what moment, supports the conclusion.
 //!
-//! 纯函数、无 I/O：时间戳为 ISO-8601 字符串（与 [crate::entities] 一致），
-//! 判定时刻 `now` 与阈值均可注入，便于确定性单测。
+//! Pure function, no I/O: timestamps are ISO-8601 strings (as in [crate::entities]);
+//! the decision instant `now` and the thresholds are injectable, keeping unit tests deterministic.
 
 use crate::entities::Timestamp;
 use std::time::Duration;
 
-/// 证据来源（即「在线状态的数据来源」，按强度排序）。
+/// Evidence source (i.e. "where the online status comes from"), ordered by strength.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PresenceSource {
-    /// Agent 心跳/状态上报（最强：agent 进程与控制通道正常）。
+    /// Agent heartbeat / status report (strongest: agent process and control channel healthy).
     AgentReport,
-    /// 隧道握手（仅证明隧道连通）。
+    /// Tunnel handshake (proves only tunnel connectivity).
     Handshake,
-    /// 仅加入记录（无握手/心跳）。
+    /// Enrollment record only (no handshake/heartbeat).
     Enrollment,
-    /// 无任何证据。
+    /// No evidence at all.
     None,
 }
 
@@ -40,16 +40,16 @@ impl PresenceSource {
     }
 }
 
-/// 在线状态。**握手新鲜 ≠ 在线**（§12.4）：
-/// 只有 agent 上报能证明设备功能正常；仅有握手证据时标注 `TunnelOnly`，
-/// 由控制台以区别于「在线」的样式展示。
+/// Online status. **A fresh handshake is not "online"** (§12.4):
+/// only an agent report proves the device's functions are healthy; on handshake evidence alone
+/// the state is labelled `TunnelOnly`, shown by the console in a style distinct from "online".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresenceState {
-    /// Agent 上报在窗口内：在线。
+    /// An agent report is inside the window: online.
     Online,
-    /// 仅握手在窗口内：隧道连通，但缺 agent 证据，不能视为设备全部功能正常。
+    /// Only the handshake is inside the window: tunnel connected, but with no agent evidence the device cannot be called fully healthy.
     TunnelOnly,
-    /// 无任何新鲜证据。
+    /// No fresh evidence at all.
     Offline,
 }
 
@@ -63,12 +63,12 @@ impl PresenceState {
     }
 }
 
-/// 判定窗口阈值（可注入；生产默认见 [PresenceThresholds::default]）。
+/// Decision window thresholds (injectable; production defaults in [PresenceThresholds::default]).
 #[derive(Debug, Clone, Copy)]
 pub struct PresenceThresholds {
-    /// agent 上报新鲜窗口：默认 5 分钟（agent 约每分钟上报，容忍数次丢失）。
+    /// Agent report freshness window: default 5 minutes (the agent reports roughly every minute, so a few losses are tolerated).
     pub agent_window: Duration,
-    /// 握手新鲜窗口：默认 2 分钟（保活 25s 下隧道活跃时握手会持续刷新）。
+    /// Handshake freshness window: default 2 minutes (with a 25 s keepalive the handshake keeps refreshing while the tunnel is active).
     pub handshake_window: Duration,
 }
 
@@ -81,7 +81,7 @@ impl Default for PresenceThresholds {
     }
 }
 
-/// 判定输入：三类证据的时间戳（`None` 表示从未观测到）。
+/// Decision inputs: the timestamps of the three evidence kinds (`None` = never observed).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PresenceInput<'a> {
     pub last_handshake_at: Option<&'a str>,
@@ -89,18 +89,18 @@ pub struct PresenceInput<'a> {
     pub enrolled_at: Option<&'a str>,
 }
 
-/// 判定结果：状态 + 数据来源（证据强度标注）+ 判定时刻。
+/// Decision result: status + data source (evidence strength label) + decision instant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Presence {
     pub state: PresenceState,
-    /// 支撑当前状态的证据来源；Offline 时为**最新一条**证据的来源。
+    /// Source of the evidence supporting the current status; for Offline, the source of the **most recent** evidence.
     pub source: PresenceSource,
-    /// 判定时刻（即「状态于何时计算」）。
+    /// The decision instant (i.e. "when the status was computed").
     pub evaluated_at: Timestamp,
 }
 
-/// 判定新鲜度：`now - ts <= window` 为新鲜（含边界；未来时间戳视为新鲜，
-/// 容忍轻微的时钟偏移）。无法解析的时间戳按「不存在」保守处理。
+/// Freshness check: `now - ts <= window` is fresh (boundary inclusive; future
+/// timestamps count as fresh, tolerating slight clock skew). Unparseable timestamps are treated as "absent".
 pub fn fresh(ts: &str, now: &str, window: Duration) -> bool {
     match (parse(ts), parse(now)) {
         (Some(ts), Some(now)) => now
@@ -111,7 +111,7 @@ pub fn fresh(ts: &str, now: &str, window: Duration) -> bool {
     }
 }
 
-/// 最新一条证据的来源与时间戳（按解析后的时刻取最大；无法解析的证据忽略）。
+/// Source and timestamp of the most recent evidence (maximum by parsed instant; unparseable evidence is ignored).
 fn latest_evidence(
     handshake: Option<&str>,
     report: Option<&str>,
@@ -129,7 +129,7 @@ fn latest_evidence(
     .map(|(source, _, t)| (source, t))
 }
 
-/// 判定设备在线状态（注入判定时刻与阈值）。
+/// Determines device online status (the decision instant and thresholds are injected).
 pub fn evaluate(input: PresenceInput<'_>, now: &str, thresholds: &PresenceThresholds) -> Presence {
     let report_fresh = input
         .last_report_at
@@ -139,7 +139,7 @@ pub fn evaluate(input: PresenceInput<'_>, now: &str, thresholds: &PresenceThresh
         .is_some_and(|t| fresh(t, now, thresholds.handshake_window));
 
     if report_fresh {
-        // agent 上报最强：直接在线。
+        // An agent report is the strongest evidence: straight to online.
         return Presence {
             state: PresenceState::Online,
             source: PresenceSource::AgentReport,
@@ -147,14 +147,14 @@ pub fn evaluate(input: PresenceInput<'_>, now: &str, thresholds: &PresenceThresh
         };
     }
     if handshake_fresh {
-        // 握手新鲜仅证明隧道连通，缺 agent 证据不能宣称设备功能全部正常。
+        // A fresh handshake only proves tunnel connectivity; without agent evidence device health cannot be claimed.
         return Presence {
             state: PresenceState::TunnelOnly,
             source: PresenceSource::Handshake,
             evaluated_at: now.to_string(),
         };
     }
-    // 离线：标注最新一条证据的来源（数据来源可追溯）。
+    // Offline: label the source of the most recent evidence (traceable data source).
     let source = latest_evidence(
         input.last_handshake_at,
         input.last_report_at,
@@ -169,7 +169,7 @@ pub fn evaluate(input: PresenceInput<'_>, now: &str, thresholds: &PresenceThresh
     }
 }
 
-/// 按默认阈值判定。
+/// Decides with the default thresholds.
 pub fn evaluate_with_defaults(input: PresenceInput<'_>, now: &str) -> Presence {
     evaluate(input, now, &PresenceThresholds::default())
 }
@@ -195,7 +195,7 @@ mod tests {
     fn fresh_agent_report_is_online() {
         let p = evaluate_with_defaults(
             PresenceInput {
-                last_report_at: Some("2026-10-14T11:58:00Z"), // 2 分钟前
+                last_report_at: Some("2026-10-14T11:58:00Z"), // 2 minutes ago
                 ..PresenceInput::default()
             },
             NOW,
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn stale_report_with_fresh_handshake_is_tunnel_only() {
-        // 上报 10 分钟前（超出 5 分钟窗口），握手 1 分钟前（窗口内）→ 仅隧道连通。
+        // Report 10 minutes ago (outside the 5-minute window), handshake 1 minute ago (inside) → tunnel connected only.
         let p = evaluate_with_defaults(
             PresenceInput {
                 last_report_at: Some("2026-10-14T11:50:00Z"),
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn handshake_fresh_alone_is_not_online() {
-        // §12.4：最近有 WireGuard 握手 ≠ 设备上所有网络功能都正常。
+        // §12.4: a recent WireGuard handshake ≠ all networking on the device working.
         let p = evaluate_with_defaults(
             PresenceInput {
                 last_handshake_at: Some("2026-10-14T11:59:30Z"),
@@ -259,7 +259,7 @@ mod tests {
             NOW,
         );
         assert_eq!(p.state, PresenceState::Offline);
-        assert_eq!(p.source, PresenceSource::Handshake); // 最新证据是 11:30 的握手
+        assert_eq!(p.source, PresenceSource::Handshake); // latest evidence is the 11:30 handshake
     }
 
     #[test]
@@ -306,12 +306,12 @@ mod tests {
             NOW,
         );
         assert_eq!(p.state, PresenceState::Offline);
-        assert_eq!(p.source, PresenceSource::Enrollment); // 唯一可解析的证据
+        assert_eq!(p.source, PresenceSource::Enrollment); // the only parseable evidence
     }
 
     #[test]
     fn future_timestamp_counts_as_fresh() {
-        // 容忍轻微时钟偏移：证据时刻在未来视为新鲜。
+        // Tolerate slight clock skew: evidence stamped in the future counts as fresh.
         let p = evaluate_with_defaults(
             PresenceInput {
                 last_handshake_at: Some("2026-10-14T12:00:05Z"),
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn window_boundary_is_fresh_one_second_past_is_stale() {
         let t = thresh(10, 10);
-        // 恰好 10 秒前 = 边界，新鲜。
+        // Exactly 10 seconds ago = boundary, fresh.
         let p = evaluate(
             PresenceInput {
                 last_report_at: Some("2026-10-14T11:59:50Z"),
@@ -335,7 +335,7 @@ mod tests {
             &t,
         );
         assert_eq!(p.state, PresenceState::Online);
-        // 11 秒前 → 过期。
+        // 11 seconds ago → stale.
         let p = evaluate(
             PresenceInput {
                 last_report_at: Some("2026-10-14T11:59:49Z"),
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn custom_thresholds_change_verdict() {
-        // 默认 5 分钟窗口：90 秒前的上报新鲜 → 在线。
+        // Default 5-minute window: a report 90 seconds ago is fresh → online.
         let p = evaluate_with_defaults(
             PresenceInput {
                 last_report_at: Some("2026-10-14T11:58:30Z"),
@@ -358,7 +358,7 @@ mod tests {
             NOW,
         );
         assert_eq!(p.state, PresenceState::Online);
-        // 阈值收紧到 1 分钟：同一证据过期 → 离线。
+        // Threshold tightened to 1 minute: the same evidence is now stale → offline.
         let p = evaluate(
             PresenceInput {
                 last_report_at: Some("2026-10-14T11:58:30Z"),

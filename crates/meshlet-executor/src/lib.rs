@@ -1,4 +1,4 @@
-//! R-01 特权执行器契约：控制面只依赖本接口，不直接执行系统命令。
+//! R-01 privileged executor contract: the control plane depends only on this interface and never runs system commands itself.
 
 use std::future::Future;
 

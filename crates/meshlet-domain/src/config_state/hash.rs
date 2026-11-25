@@ -1,5 +1,5 @@
-//! 期望配置哈希（ADR-009 `desired_config_hash`）：对期望配置的确定性序列化
-//! 取 SHA-256，作为「期望配置是否变化」的唯一判据。
+//! Desired-config hash (ADR-009 `desired_config_hash`): SHA-256 over a deterministic
+//! serialization of the desired config, the sole criterion for whether it changed.
 
 use crate::cidr::Ipv4Cidr;
 use crate::entities::{AliasMapping, Device, DeviceStatus, LanRoute};
@@ -7,12 +7,12 @@ use crate::segments::SegmentGrant;
 use sha2::{Digest, Sha256};
 use std::net::Ipv4Addr;
 
-/// 期望配置哈希（ADR-009 `desired_config_hash`）：对 overlay 网段、hub 地址、
-/// 全部 **Active** 设备、全部 LAN 路由与全部 Alias 映射的确定性序列化取
-/// SHA-256。顺序不敏感（设备按虚拟 IP、路由按目的网段、Alias 按前缀排序）；
-/// `Pending`/`Revoked` 设备不入配置故不参与哈希；路由/Alias 删除即出哈希。
-/// 标签随输入集演进（v2 = 加入路由行，v3 = 加入 Alias 行，v4 = 加入 Applied
-/// Segment Grant 行），避免跨版本哈希误判相等。
+/// Desired-config hash (ADR-009 `desired_config_hash`): SHA-256 over a deterministic
+/// serialization of the overlay CIDR, hub address, all **Active** devices, all LAN routes
+/// and all Alias mappings, order-insensitive (devices by virtual IP, routes by destination
+/// CIDR, Aliases by prefix); `Pending`/`Revoked` devices are excluded, and deleting a route
+/// or Alias removes it from the hash. The label evolves with the input set (v2 = routes,
+/// v3 = Aliases, v4 = Applied Segment Grants), so cross-version hashes never compare equal.
 pub fn desired_config_hash(
     overlay_cidr: &Ipv4Cidr,
     hub: Ipv4Addr,
@@ -194,14 +194,14 @@ mod tests {
         let alpha = device("alpha", "10.240.0.2", DeviceStatus::Active);
         let base = desired_config_hash(&overlay, hub, std::slice::from_ref(&alpha), &[], &[], &[]);
 
-        // 新设备加入 → 哈希变化。
+        // New device added → hash changes.
         let beta = device("beta", "10.240.0.3", DeviceStatus::Active);
         assert_ne!(
             desired_config_hash(&overlay, hub, &[alpha.clone(), beta], &[], &[], &[],),
             base
         );
 
-        // 改名 → 哈希变化（期望配置含设备名）。
+        // Rename → hash changes (the desired config includes device names).
         let mut renamed = alpha.clone();
         renamed.name = "alpha-2".into();
         assert_ne!(
@@ -209,7 +209,7 @@ mod tests {
             base
         );
 
-        // 撤销（Revoked）→ 与无任何设备时一致（不入配置）。
+        // Revoked → same as having no devices (not part of the config).
         let mut revoked = alpha.clone();
         revoked.status = DeviceStatus::Revoked;
         assert_eq!(
@@ -217,7 +217,7 @@ mod tests {
             desired_config_hash(&overlay, hub, &[], &[], &[], &[])
         );
 
-        // overlay 或 hub 变化 → 哈希变化。
+        // overlay or hub changes → hash changes.
         let other_overlay: Ipv4Cidr = "172.30.0.0/16".parse().unwrap();
         assert_ne!(
             desired_config_hash(
@@ -269,24 +269,24 @@ mod tests {
         let a = route("192.168.1.0/24", "dev-1", RouteMode::Direct);
         let b = route("192.168.2.0/24", "dev-2", RouteMode::Alias);
 
-        // 路由纳入期望配置。
+        // Routes are part of the desired config.
         assert_ne!(
             desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&a), &[], &[]),
             desired_config_hash(&overlay, hub, &[], &[], &[], &[])
         );
-        // 顺序不敏感。
+        // Order-insensitive.
         assert_eq!(
             desired_config_hash(&overlay, hub, &[], &[a.clone(), b.clone()], &[], &[],),
             desired_config_hash(&overlay, hub, &[], &[b.clone(), a.clone()], &[], &[]),
         );
-        // 返回路径模式 / 路由模式参与哈希。
+        // Return-path mode / route mode participates in the hash.
         let mut snat = route("192.168.1.0/24", "dev-1", RouteMode::Direct);
         snat.return_path_mode = ReturnPathMode::ControlledSnat;
         assert_ne!(
             desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&snat), &[], &[],),
             desired_config_hash(&overlay, hub, &[], std::slice::from_ref(&a), &[], &[],)
         );
-        // 删除路由（不出现在输入里）→ 哈希不同于含路由时。
+        // Route deleted (absent from the inputs) → hash differs from having the route.
         let with_route = desired_config_hash(&overlay, hub, &[], &[a], &[], &[]);
         assert_ne!(
             with_route,
@@ -301,24 +301,24 @@ mod tests {
         let a1 = alias("al-1", "10.241.1.0/24", "192.168.1.0/24", "rt-1");
         let a2 = alias("al-2", "10.241.2.0/24", "192.168.2.0/24", "rt-2");
 
-        // Alias 纳入期望配置。
+        // Aliases are part of the desired config.
         let base = desired_config_hash(&overlay, hub, &[], &[], &[], &[]);
         assert_ne!(
             desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&a1), &[]),
             base
         );
-        // 顺序不敏感。
+        // Order-insensitive.
         assert_eq!(
             desired_config_hash(&overlay, hub, &[], &[], &[a1.clone(), a2.clone()], &[],),
             desired_config_hash(&overlay, hub, &[], &[], &[a2.clone(), a1.clone()], &[])
         );
-        // 前缀或绑定路由变化 → 哈希变化。
+        // Prefix or bound route changes → hash changes.
         let other = alias("al-1", "10.241.9.0/24", "192.168.9.0/24", "rt-1");
         assert_ne!(
             desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&other), &[],),
             desired_config_hash(&overlay, hub, &[], &[], std::slice::from_ref(&a1), &[],)
         );
-        // 删除 Alias → 哈希回到 base。
+        // Alias deleted → hash returns to base.
         assert_eq!(desired_config_hash(&overlay, hub, &[], &[], &[], &[]), base);
     }
 }

@@ -1,16 +1,16 @@
-//! 邀请 Token 安全（[存档 §11.3](../../docs/review/chatgpt-2026-10-13.md)、
+//! Invite token security ([archive §11.3](../../docs/review/chatgpt-2026-10-13.md),
 //! [ADR-010](../../docs/decisions/adr-010-console-auth-enrollment.md)）。
 //!
-//! 不变量：
-//! - Token 由安全随机数生成（32 字节 → 64 个 hex 字符）；
-//! - **服务端只存 SHA-256 摘要**：原始 Token 仅存在于创建响应与兑换请求的瞬时值，
-//!   任何持久化结构（`Invite`）与错误消息都不含原始 Token；
-//! - 支持过期、撤销、次数上限；兑换按 摘要 → 撤销 → 过期 → 次数 顺序校验，
-//!   全部通过后递增 `used_count`；
-//! - 并发竞态由调用方在互斥锁内调用 `redeem` 闭合（§11.3「避免重复消费和并发竞态」），
-//!   本层保证单次 `redeem` 的原子语义。
+//! Invariants:
+//! - tokens come from a secure random source (32 bytes → 64 hex characters);
+//! - **the server stores only the SHA-256 digest**: the raw token exists only transiently, in the create response and the redeem request;
+//!   no persisted structure (`Invite`) or error message ever contains the raw token;
+//! - expiry, revocation, and a use cap are supported; redemption validates digest → revocation → expiry → use count,
+//!   and increments `used_count` only after all pass;
+//! - concurrent races are closed by the caller invoking `redeem` under a mutex (§11.3 "avoid double consumption and concurrent races");
+//!   this layer guarantees the atomic semantics of a single `redeem`.
 //!
-//! 时间戳为 ISO-8601 UTC（`Z`）字符串，同格式下字典序即时间序。
+//! Timestamps are ISO-8601 UTC (`Z`) strings; in this format, lexicographic order equals chronological order.
 
 use crate::entities::{InviteId, NetworkId, Timestamp};
 
@@ -30,7 +30,7 @@ pub enum InviteError {
     AlreadyRevoked(Timestamp),
 }
 
-/// 邀请记录。**只存 Token 摘要**，原始 Token 不进入本结构（§11.3）。
+/// Invite record. **Stores only the token digest**; the raw token never enters this struct (§11.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invite {
     pub id: InviteId,
@@ -44,7 +44,7 @@ pub struct Invite {
 }
 
 impl Invite {
-    /// 创建邀请：立即计算摘要，原始 Token 不进入本结构。
+    /// Creates an invite: the digest is computed immediately and the raw token never enters this struct.
     pub fn new(
         id: InviteId,
         network_id: NetworkId,
@@ -77,7 +77,7 @@ impl Invite {
         self.used_count < self.max_uses
     }
 
-    /// 撤销；重复撤销报错而不是静默成功。
+    /// Revokes; revoking twice errors instead of silently succeeding.
     pub fn revoke(&mut self, at: Timestamp) -> Result<(), InviteError> {
         if let Some(prev) = self.revoked_at.clone() {
             return Err(InviteError::AlreadyRevoked(prev));
@@ -86,8 +86,8 @@ impl Invite {
         Ok(())
     }
 
-    /// 兑换：校验摘要 → 撤销 → 过期 → 次数，全部通过后递增 `used_count`。
-    /// **调用方须在互斥锁内调用**以闭合并发竞态（§11.3）。
+    /// Redeems: validates digest → revocation → expiry → use count, then increments `used_count` only if all pass.
+    /// **The caller must invoke this under a mutex** to close concurrent races (§11.3).
     pub fn redeem(&mut self, raw_token: &str, at: Timestamp) -> Result<(), InviteError> {
         if token_hash(raw_token) != self.token_hash {
             return Err(InviteError::InvalidToken);
@@ -112,7 +112,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
-    // 仅为格式接近真实 Token 的测试串（64 字符）。
+    // Test-only string shaped like a real token (64 characters).
     const RAW: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn invite(max_uses: u32) -> Invite {
@@ -131,7 +131,7 @@ mod tests {
         let inv = invite(1);
         assert_eq!(inv.token_hash, token_hash(RAW));
         assert_ne!(inv.token_hash, RAW);
-        // 原始 Token 不出现在任何持久化形态：Debug 结构里只有摘要。
+        // The raw token never appears in any persisted form: the Debug output holds only the digest.
         let dbg = format!("{inv:?}");
         assert!(!dbg.contains(RAW));
         assert!(dbg.contains("token_hash"));
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn token_hash_matches_sha256_test_vector() {
-        // SHA-256("") 的标准测试向量。
+        // Standard test vector for SHA-256("").
         assert_eq!(
             token_hash(""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn redeem_invalid_token_rejected_without_leaking_state() {
-        // 错误 Token 不泄露撤销/过期状态，也不消耗次数。
+        // A wrong token must not leak revocation/expiry state, nor consume a use.
         let mut inv = invite(1);
         inv.revoke("2026-10-14T08:00:00Z".into()).unwrap();
         assert!(matches!(
@@ -201,7 +201,7 @@ mod tests {
             inv.redeem(RAW, "2026-10-14T08:00:01Z".into()),
             Err(InviteError::Expired(_))
         ));
-        // 边界：等于过期时刻尚未过期。
+        // Boundary: exactly at the expiry instant is not yet expired.
         inv.expires_at = Some("2026-10-14T08:00:01Z".into());
         inv.redeem(RAW, "2026-10-14T08:00:01Z".into()).unwrap();
     }
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn concurrent_redeem_has_single_winner() {
-        // §11.3：并发竞态闭合后，同一 Token 只能成功兑换一次。
+        // §11.3: once the concurrent race is closed, the same token can be redeemed successfully only once.
         let inv = Arc::new(Mutex::new(invite(1)));
         let mut handles = Vec::new();
         for _ in 0..8 {

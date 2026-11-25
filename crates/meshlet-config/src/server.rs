@@ -1,6 +1,6 @@
-//! hub 侧配置（[`ServerConfig`]）：原始 TOML schema（`Raw*`，crate 私有）、
-//! 公开结构与默认值、[`ServerConfig::from_toml`] 校验；备份 / 数据面 /
-//! SSH 别名分发。
+//! Hub-side config ([`ServerConfig`]): the raw TOML schema (`Raw*`, crate-private),
+//! the public structs and defaults, [`ServerConfig::from_toml`] validation; backup /
+//! dataplane / SSH alias distribution.
 
 use crate::trusted_proxy::TrustedProxyConfig;
 use crate::{ConfigError, DEFAULT_OVERLAY_CIDR, MAX_TUNNEL_MTU, MIN_TUNNEL_MTU};
@@ -26,7 +26,7 @@ struct RawServerConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawSshDistributeConfig {
-    /// 按设备名（peer name）覆写 alias/user/port；未覆写的节点用默认推导。
+    /// Overrides alias/user/port per device name (peer name); nodes without an override use the default derivation.
     overrides: Option<std::collections::BTreeMap<String, RawSshHostOverride>>,
 }
 
@@ -53,15 +53,15 @@ struct RawDataPlaneConfig {
     private_key_file: Option<String>,
 }
 
-/// 备份配置（存档 §17.4）：只写本地路径，默认**不**自动备份。
+/// Backup config (archive §17.4): local paths only, **no** automatic backups by default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupConfig {
-    /// 备份目录。`None` = 备份未配置（`POST /system/backup` 返回 503）。
+    /// Backup directory. `None` = backup not configured (`POST /system/backup` returns 503).
     pub dir: Option<String>,
-    /// 定时自动备份开关——必须显式置 true 才开启（默认 false，§17.4
-    /// 「备份 ≠ 同步」：无任何外发/云上传/遥测）。
+    /// Scheduled auto-backup switch — must be explicitly set to true to turn on (defaults to false; §17.4
+    /// "backup ≠ sync": no outbound traffic/cloud upload/telemetry of any kind).
     pub auto: bool,
-    /// 自动备份间隔（秒，默认 86400）。
+    /// Auto-backup interval (seconds, default 86400).
     pub interval_secs: u64,
 }
 
@@ -75,19 +75,19 @@ impl Default for BackupConfig {
     }
 }
 
-/// 数据面配置（ADR-007）：server 进程在本机执行的 WireGuard/路由接线。
-/// `enabled = false`（默认）时修订 apply 保持「确定性失败可见」（§10.3）；
-/// `enabled = true` 时 apply 走 Linux 网络后端真实执行（需 NET_ADMIN）。
+/// Dataplane config (ADR-007): the WireGuard/route wiring the server process applies on its own host.
+/// With `enabled = false` (default) revision apply keeps "deterministic failure visibility" (§10.3);
+/// with `enabled = true` apply runs for real through the Linux network backend (needs NET_ADMIN).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataPlaneConfig {
-    /// 显式开启才接管内核（默认关闭——升级不悄悄改网络栈）。
+    /// Takes over the kernel only when explicitly enabled (off by default — an upgrade never silently rewrites the network stack).
     pub enabled: bool,
-    /// 受管 WireGuard 接口名（默认 `wg0`）。后端拒绝触碰其他接口。
+    /// Managed WireGuard interface name (default `wg0`). The backend refuses to touch any other interface.
     pub interface: String,
-    /// 隧道监听端口；`None` = 不改接口现有端口（幂等重应用）。
+    /// Tunnel listen port; `None` = leave the interface's existing port alone (idempotent re-apply).
     pub listen_port: Option<u16>,
-    /// hub 私钥文件路径（单行 base64）。服务端**不落库**私钥（ADR-010），
-    /// apply 时读取；`None` = 保留接口现有私钥。首装必须提供，否则无法握手。
+    /// Path to the hub private key file (single-line base64). The server **never persists** the private key (ADR-010);
+    /// it is read at apply time; `None` = keep the interface's existing key. Required on first install, otherwise handshakes cannot succeed.
     pub private_key_file: Option<String>,
 }
 
@@ -102,52 +102,52 @@ impl Default for DataPlaneConfig {
     }
 }
 
-/// Server 配置。
+/// Server configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
     pub bind: String,
     pub database_path: String,
     pub overlay_cidr: Ipv4Cidr,
-    /// 会话 Cookie 的 `Secure` 属性。生产环境（HTTPS 反代终止 TLS）必须为 true。
+    /// The `Secure` attribute of the session cookie. Must be true in production (an HTTPS proxy terminates TLS).
     pub cookie_secure: bool,
-    /// Web 控制台静态文件目录（`console/dist`）。缺省不托管控制台。
+    /// Static file directory of the web console (`console/dist`). When absent the console is not served.
     pub console_dir: Option<String>,
-    /// 在线判定：agent 上报新鲜窗口（秒，默认 300）。
+    /// Presence liveness: freshness window for agent reports (seconds, default 300).
     pub presence_agent_window_secs: u64,
-    /// 在线判定：握手新鲜窗口（秒，默认 120）。
+    /// Presence liveness: freshness window for handshakes (seconds, default 120).
     pub presence_handshake_window_secs: u64,
-    /// 备份（存档 §17.4）：默认全关。
+    /// Backup (archive §17.4): everything off by default.
     pub backup: BackupConfig,
-    /// 计划隧道 MTU（存档 §7.5「MTU 可配置」）：`None` = 未显式配置，agent
-    /// 按 WireGuard 默认 1420 组接口。诊断（§12.7）据此解释大包/分片问题。
+    /// Planned tunnel MTU (archive §7.5, "MTU is configurable"): `None` = not explicitly set, so the agent
+    /// builds the interface at the WireGuard default of 1420. Diagnostics (§12.7) use it to explain large-packet/fragmentation issues.
     pub tunnel_mtu: Option<u32>,
-    /// 数据面（ADR-007）：本机 WireGuard/路由接线，默认关闭。
+    /// Dataplane (ADR-007): local WireGuard/route wiring, off by default.
     pub dataplane: DataPlaneConfig,
-    /// 可信反代来源（TODO-116）：仅当请求**直接来自**这些地址/网段时才采信
-    /// `X-Forwarded-For`/`X-Real-IP`（默认仅回环 127.0.0.1/::1，可配 CIDR/地址）。
+    /// Trusted reverse-proxy sources (TODO-116): only when a request comes **directly from** these addresses/networks are
+    /// `X-Forwarded-For`/`X-Real-IP` honored (loopback 127.0.0.1/::1 only by default; CIDRs/addresses configurable).
     pub trusted_proxies: TrustedProxyConfig,
-    /// SSH 别名分发（`[ssh_config]`）：`None` = hub 未开启分发（计划不带
-    /// `ssh_config` 段，agent 回落本机默认）。**存在该段 = 显式开启**——往
-    /// 节点 `~/.ssh/meshlet.conf` 分发属敏感面，与 agent 侧写盘开关（默认关）
-    /// 双重把关。
+    /// SSH alias distribution (`[ssh_config]`): `None` = the hub has distribution disabled (the plan omits the
+    /// `ssh_config` section and agents fall back to their local defaults). **The section being present means explicitly enabled** —
+    /// distributing into node `~/.ssh/meshlet.conf` is a sensitive surface, guarded together with the agent-side
+    /// write-to-disk switch (off by default).
     pub ssh_config: Option<SshDistributeConfig>,
 }
 
-/// hub 侧 SSH 别名分发配置（`[ssh_config]`）。`overrides` 按设备名覆写
-/// alias/user/port；未覆写的节点用「主机名 > peer name」默认推导。
+/// Hub-side SSH alias distribution config (`[ssh_config]`). `overrides` rewrites alias/user/port
+/// per device name; nodes without an override use the default "hostname > peer name" derivation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SshDistributeConfig {
     pub overrides: std::collections::BTreeMap<String, SshHostOverride>,
 }
 
-/// 单节点覆写（`[ssh_config.overrides.<设备名>]`）。
+/// Per-node override (`[ssh_config.overrides.<device-name>]`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SshHostOverride {
-    /// 显式 Host 别名（优先级最高，覆盖主机名/peer name 推导）。
+    /// Explicit Host alias (highest priority, overriding hostname/peer name derivation).
     pub alias: Option<String>,
-    /// SSH 登录用户。
+    /// SSH login user.
     pub user: Option<String>,
-    /// SSH 端口。
+    /// SSH port.
     pub port: Option<u16>,
 }
 
@@ -306,12 +306,12 @@ overlay_cidr = "172.30.0.0/16"
         .unwrap();
         assert_eq!(c.bind, "0.0.0.0:9443");
         assert_eq!(c.database_path, "/var/lib/meshlet/control.db");
-        assert_eq!(c.overlay_cidr.to_string(), "172.30.0.0/16"); // 可配置，非协议常量
+        assert_eq!(c.overlay_cidr.to_string(), "172.30.0.0/16"); // configurable, not a protocol constant
     }
 
     #[test]
     fn cookie_secure_defaults_false_and_parses() {
-        // 本地开发默认 http（127.0.0.1）；生产部署在 HTTPS 反代后置 true（§11.4）。
+        // Local development defaults to http (127.0.0.1); production behind an HTTPS proxy sets it to true (§11.4).
         assert!(!ServerConfig::default().cookie_secure);
         let c = ServerConfig::from_toml("cookie_secure = true").unwrap();
         assert!(c.cookie_secure);
@@ -347,11 +347,11 @@ overlay_cidr = "172.30.0.0/16"
 
     #[test]
     fn tunnel_mtu_defaults_none_and_parses_with_bounds() {
-        // §7.5「MTU 可配置」：默认未配置（诊断按 WireGuard 默认 1420 解释）。
+        // §7.5 "MTU is configurable": unset by default (diagnostics explain it as the WireGuard default of 1420).
         assert_eq!(ServerConfig::default().tunnel_mtu, None);
         let c = ServerConfig::from_toml("tunnel_mtu = 1380").unwrap();
         assert_eq!(c.tunnel_mtu, Some(1380));
-        // 边界：1280（IPv6 最小 MTU）与 65535 合法；之下/之上明显不合理，拒绝。
+        // Bounds: 1280 (IPv6 minimum MTU) and 65535 are legal; below/above that is obviously unreasonable and rejected.
         assert_eq!(
             ServerConfig::from_toml("tunnel_mtu = 1280")
                 .unwrap()
@@ -372,7 +372,7 @@ overlay_cidr = "172.30.0.0/16"
 
     #[test]
     fn dataplane_defaults_off_and_parses_explicit_section() {
-        // 默认不接管内核：升级不悄悄改网络栈（§10.3 接线前确定性失败可见）。
+        // No kernel takeover by default: an upgrade never silently rewrites the network stack (§10.3, wiring failures stay deterministic and visible before they happen).
         assert!(!ServerConfig::default().dataplane.enabled);
         assert_eq!(ServerConfig::default().dataplane.interface, "wg0");
 
@@ -394,7 +394,7 @@ private_key_file = "/etc/meshlet/hub.key"
             Some("/etc/meshlet/hub.key")
         );
 
-        // 只开 enabled：其余默认（接口 wg0，不动现有私钥/端口）。
+        // Only `enabled` turned on: everything else defaults (interface wg0, existing key/port untouched).
         let c = ServerConfig::from_toml("[dataplane]\nenabled = true").unwrap();
         assert!(c.dataplane.enabled);
         assert_eq!(c.dataplane.interface, "wg0");
@@ -419,7 +419,7 @@ interface = "  "
 
     #[test]
     fn trusted_proxies_default_loopback_and_parse() {
-        // TODO-116：默认仅回环（nginx 同主机反代）；不可信来源不采信头部。
+        // TODO-116: loopback only by default (nginx same-host proxy); headers from untrusted sources are not honored.
         let d = ServerConfig::default().trusted_proxies;
         assert!(d.is_trusted("127.0.0.1".parse().unwrap()));
         assert!(d.is_trusted("::1".parse().unwrap()));
@@ -433,7 +433,7 @@ interface = "  "
             .is_trusted("203.0.113.10".parse().unwrap()));
         assert!(!c.trusted_proxies.is_trusted("192.168.1.1".parse().unwrap()));
 
-        // 空列表 = 不信任任何代理（不采信任何头部）。
+        // An empty list = trust no proxy (no header is ever honored).
         let c = ServerConfig::from_toml("trusted_proxies = []").unwrap();
         assert!(!c.trusted_proxies.is_trusted("127.0.0.1".parse().unwrap()));
     }
@@ -454,13 +454,13 @@ interface = "  "
 
     #[test]
     fn backup_defaults_completely_off() {
-        // §17.4「备份 ≠ 同步」：默认无目录、不自动、无任何外发。
+        // §17.4 "backup ≠ sync": no directory, no auto run, no outbound traffic by default.
         let d = ServerConfig::default().backup;
         assert_eq!(d, BackupConfig::default());
         assert!(d.dir.is_none());
         assert!(!d.auto);
         assert_eq!(d.interval_secs, 86400);
-        // 无 [backup] 段的配置文件同样是全关。
+        // A config file without a [backup] section is also fully off.
         assert_eq!(
             ServerConfig::from_toml("bind = \"0.0.0.0:8080\"")
                 .unwrap()
@@ -484,7 +484,7 @@ interval_secs = 3600
         assert!(c.backup.auto);
         assert_eq!(c.backup.interval_secs, 3600);
 
-        // 只给目录不开 auto：手动备份可用，定时仍关（显式配置位）。
+        // A directory without auto: manual backup still works, the schedule stays off (explicit config switch).
         let c = ServerConfig::from_toml("[backup]\ndir = \"/tmp/b\"\n").unwrap();
         assert_eq!(c.backup.dir.as_deref(), Some("/tmp/b"));
         assert!(!c.backup.auto);
@@ -513,7 +513,7 @@ port = 2222
         assert_eq!(o.user.as_deref(), Some("root"));
         assert_eq!(o.port, Some(2222));
 
-        // 空段同样 = 开启（全部节点走默认推导）。
+        // An empty section also = enabled (every node uses the default derivation).
         let empty = ServerConfig::from_toml("[ssh_config]").unwrap().ssh_config;
         assert!(empty.is_some());
         assert!(empty.unwrap().overrides.is_empty());

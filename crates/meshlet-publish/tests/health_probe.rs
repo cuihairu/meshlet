@@ -117,9 +117,9 @@ async fn probes_report_connection_refusal_and_http_transport_failure() {
     assert_eq!(http, ProbeOutcome::Unreachable);
 }
 
-/// 真机验收发现的排程缺陷：到期表整表每秒刷新，interval 大于 tick 步长的探针
-/// 只在启动时跑一次就再也不跑（`checked_at` 永久冻结）。断言同一探针按 cadence
-/// 重复上报。
+/// Scheduling defect found in real-device acceptance: the due table is refreshed
+/// every second, so a probe whose interval exceeds the tick step ran only once at
+/// startup and never again (`checked_at` froze permanently). Asserts it re-reports on cadence.
 #[tokio::test]
 async fn the_probe_loop_re_runs_a_due_schedule() {
     use meshlet_publish::health::HealthState;
@@ -138,7 +138,7 @@ async fn the_probe_loop_re_runs_a_due_schedule() {
         ..Default::default()
     };
     publisher.reconcile(Some(&plan)).await.unwrap();
-    // 第二轮 reconcile 幂等：排程不变时不重启探针任务。
+    // Second reconcile is idempotent: with the schedule unchanged it does not restart the probe task.
     publisher.reconcile(Some(&plan)).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(2200)).await;

@@ -1,11 +1,11 @@
-//! meshlet-api-types：管理 API 的共享 DTO 与错误契约。
+//! meshlet-api-types: shared DTOs and the error contract of the management API.
 //!
-//! 契约来源：[api-contract](../../docs/architecture/api-contract.md)、
-//! [openapi.yaml](../../docs/public/api/openapi.yaml)。错误结构与 OpenAPI `Error` schema 保持一致。
+//! Contract sources: [api-contract](../../docs/architecture/api-contract.md),
+//! [openapi.yaml](../../docs/public/api/openapi.yaml). The error structure stays in lockstep with the OpenAPI `Error` schema.
 
 use serde::{Deserialize, Serialize};
 
-/// 统一错误码（§13.7，openapi.yaml `Error.error.code`）。
+/// Unified error codes (§13.7, openapi.yaml `Error.error.code`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -21,7 +21,7 @@ pub enum ErrorCode {
     Internal,
 }
 
-/// 统一错误响应：`{"error": {"code": "...", "message": "...", "details": {}}}`。
+/// Unified error response: `{"error": {"code": "...", "message": "...", "details": {}}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: ErrorBody,
@@ -52,14 +52,14 @@ impl ErrorResponse {
     }
 }
 
-/// 分页信封（§13.7：列表接口分页）。
+/// Pagination envelope (§13.7: pagination for list endpoints).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub total: u64,
 }
 
-/// 配置修改类响应必须携带 revision 与应用状态（§13.7、ADR-009）。
+/// Config-mutating responses must carry the revision and its apply status (§13.7, ADR-009).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevisionRef {
     pub revision_id: String,

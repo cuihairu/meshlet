@@ -1,8 +1,8 @@
-//! meshlet-domain：核心领域层。
+//! meshlet-domain: the core domain layer.
 //!
-//! 覆盖 [存档 §5–§6](../../docs/review/chatgpt-2026-10-13.md) 的实体约束、
-//! Overlay IPAM 与 CIDR 冲突检测，以及 [§11.3](../../docs/review/chatgpt-2026-10-13.md)
-//! 的邀请 Token 安全。设计决策见
+//! Covers the entity constraints of [archive §5–§6](../../docs/review/chatgpt-2026-10-13.md),
+//! overlay IPAM and CIDR conflict detection, and the invite token security of
+//! [§11.3](../../docs/review/chatgpt-2026-10-13.md). For design decisions, see
 //! [ADR-004](../../docs/decisions/adr-004-overlay-ipam.md) /
 //! [ADR-006](../../docs/decisions/adr-006-alias-prefix-nat.md) /
 //! [ADR-009](../../docs/decisions/adr-009-config-revision-rollback.md)。
@@ -69,8 +69,8 @@ mod tests {
 
     #[test]
     fn default_overlay_is_the_documented_default_not_a_constant() {
-        // ADR-004：10.240.0.0/16 是默认值建议，不是协议常量——
-        // 任意合法网段都必须能构造 Network。
+        // ADR-004: 10.240.0.0/16 is the suggested default, not a protocol constant —
+        // any valid subnet must be able to construct a Network.
         let custom: Ipv4Cidr = "172.30.0.0/16".parse().unwrap();
         let n = Network::new(
             NetworkId("n".into()),

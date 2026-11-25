@@ -1,9 +1,9 @@
-//! 可信反代来源（TODO-116）：`X-Forwarded-For`/`X-Real-IP` 只在请求**直接来自**
-//! 可信代理时才被采信；不可信来源完全忽略头部（防伪造）。
+//! Trusted reverse-proxy sources (TODO-116): `X-Forwarded-For`/`X-Real-IP` are honored only when the request comes **directly from**
+//! a trusted proxy; untrusted sources ignore the headers entirely (forgery resistance).
 //!
-//! 默认仅回环（`127.0.0.1` 与 `::1`）——nginx/Caddy 反代同主机部署的典型形态；
-//! 可配 CIDR 或单个地址（IPv4/IPv6），如 `10.0.0.0/8`、`192.168.1.0/24`、
-//! `203.0.113.10`。网段写法接受主机位（如 `192.168.1.5/24`），按「所在网段」归并。
+//! Loopback only by default (`127.0.0.1` and `::1`) — the typical shape of a same-host nginx/Caddy reverse proxy;
+//! CIDRs or single addresses (IPv4/IPv6) are configurable, e.g. `10.0.0.0/8`, `192.168.1.0/24`,
+//! `203.0.113.10`. Notation with host bits is accepted (e.g. `192.168.1.5/24`) and folded to its enclosing network.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -17,7 +17,7 @@ pub enum TrustedProxyParseError {
     Invalid(String),
 }
 
-/// 单个可信代理来源：地址或网段。
+/// A single trusted proxy source: an address or a network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustedProxySource {
     Addr(IpAddr),
@@ -68,9 +68,9 @@ impl fmt::Display for TrustedProxySource {
     }
 }
 
-/// IPv6 CIDR（`meshlet-domain` 只有 IPv4 CIDR；反代来源需要 `::1` 等 v6 形态，
-/// 这里做最小实现——主机位按「所在网段」归并，与 [Ipv4Cidr::from_host_address]
-/// 同口径）。
+/// IPv6 CIDR (`meshlet-domain` only has IPv4 CIDRs; proxy sources need v6 shapes such as `::1`,
+/// so this is a minimal implementation — host bits are folded to the enclosing network, same
+/// convention as [Ipv4Cidr::from_host_address]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv6Cidr {
     network: u128,
@@ -78,7 +78,7 @@ pub struct Ipv6Cidr {
 }
 
 impl Ipv6Cidr {
-    /// 由「地址 + 前缀」构造所在网段（主机位被掩掉）。
+    /// Builds the enclosing network from "address + prefix" (host bits are masked off).
     pub fn from_host_address(addr: Ipv6Addr, prefix: u8) -> Result<Self, TrustedProxyParseError> {
         if prefix > 128 {
             return Err(TrustedProxyParseError::Invalid(format!("{addr}/{prefix}")));
@@ -126,8 +126,8 @@ impl fmt::Display for Ipv6Cidr {
     }
 }
 
-/// 可信反代来源集合（server 配置项 `trusted_proxies`）。默认仅回环
-/// `127.0.0.1` 与 `::1`（nginx 同主机反代形态）。
+/// Set of trusted reverse-proxy sources (server config key `trusted_proxies`). Defaults to loopback only,
+/// `127.0.0.1` and `::1` (the nginx same-host proxy shape).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedProxyConfig {
     pub sources: Vec<TrustedProxySource>,
@@ -149,7 +149,7 @@ impl TrustedProxyConfig {
         self.sources.iter().any(|s| s.contains(ip))
     }
 
-    /// 从字符串列表构造（每个条目必须是地址或 CIDR）。
+    /// Builds from a list of strings (each entry must be an address or a CIDR).
     pub fn from_strings<I, S>(entries: I) -> Result<Self, TrustedProxyParseError>
     where
         I: IntoIterator<Item = S>,
@@ -199,11 +199,11 @@ mod tests {
 
     #[test]
     fn cidr_host_bits_are_masked() {
-        // 主机位写法按「所在网段」归并（同 Ipv4Cidr::from_host_address）。
+        // Host-bit notation is folded to the enclosing network (same as Ipv4Cidr::from_host_address).
         let c = TrustedProxyConfig::from_strings(["192.168.1.5/24"]).unwrap();
         assert!(c.is_trusted("192.168.1.99".parse().unwrap()));
         assert!(!c.is_trusted("192.168.2.1".parse().unwrap()));
-        // IPv6 同口径。
+        // IPv6 follows the same convention.
         let c = TrustedProxyConfig::from_strings(["2001:db8::1/64"]).unwrap();
         assert!(c.is_trusted("2001:db8::ffff".parse().unwrap()));
     }

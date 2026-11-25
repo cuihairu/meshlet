@@ -1,10 +1,10 @@
-//! 控制台认证（[存档 §11.4](../../docs/review/chatgpt-2026-10-13.md)）。
+//! Console authentication ([archive §11.4](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! 不变量：
-//! - 密码只以 Argon2id 哈希落库，**明文不进任何结构/日志/错误消息**；
-//! - 会话 Token 与邀请 Token 共用 [crate::tokens] 的纪律（只存摘要）；
-//! - 登录限流是进程内固定窗口（单 VPS 部署，ADR-002），按 key（如 IP+email）计数；
-//! - **没有默认管理员密码**：首个管理员只能通过「空库 bootstrap」创建（§11.4）。
+//! Invariants:
+//! - passwords are stored only as Argon2id hashes, **plaintext never enters any struct/log/error message**;
+//! - session tokens and invite tokens follow the [crate::tokens] discipline (store digests only);
+//! - login rate limiting is an in-process fixed window (single-VPS deployment, ADR-002), counted per key (e.g. IP+email);
+//! - **no default admin password**: the first admin can only be created via the "empty-DB bootstrap" (§11.4).
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -12,14 +12,14 @@ use std::time::Duration;
 use crate::entities::{Timestamp, UserId};
 use crate::tokens::{generate_token, token_hash};
 
-/// 会话 Cookie 名。
+/// Session cookie name.
 pub const SESSION_COOKIE_NAME: &str = "meshlet_session";
 
-/// 会话有效期（ISO-8601 字符串时间戳的增量秒数）。
+/// Session TTL (increment in seconds over the ISO-8601 string timestamp).
 pub const SESSION_TTL_SECS: u64 = 12 * 60 * 60;
 
-/// Argon2id 参数：32 MiB / 2 轮 / 4 并行
-/// （高于 OWASP 最低建议 19 MiB / 2 轮 / 4 并行；Console 登录频率低，可承受）。
+/// Argon2id parameters: 32 MiB / 2 passes / 4 lanes
+/// (above the OWASP minimum of 19 MiB / 2 passes / 4 lanes; console logins are infrequent, so affordable).
 const ARGON2_M_KIB: u32 = 32 * 1024;
 const ARGON2_T: u32 = 2;
 const ARGON2_P: u32 = 4;
@@ -31,7 +31,7 @@ fn argon2() -> argon2::Argon2<'static> {
     argon2::Argon2::new(Argon2id, Version::V0x13, params)
 }
 
-/// Argon2id 哈希（PHC 字符串格式，含随机盐）。
+/// Argon2id hash (PHC string format, includes a random salt).
 pub fn hash_password(password: &str) -> Result<String, AuthError> {
     use argon2::PasswordHasher;
     let salt =
@@ -42,7 +42,7 @@ pub fn hash_password(password: &str) -> Result<String, AuthError> {
         .map_err(|_| AuthError::HashFailure)
 }
 
-/// 校验密码。哈希格式非法视为校验失败（不区分「坏哈希」与「错密码」）。
+/// Verify a password. A malformed hash counts as verification failure (no distinction between "bad hash" and "wrong password").
 pub fn verify_password(password: &str, phc_hash: &str) -> bool {
     use argon2::PasswordVerifier;
     let Ok(parsed) = argon2::password_hash::PasswordHash::new(phc_hash) else {
@@ -63,10 +63,10 @@ pub enum AuthError {
     HashFailure,
 }
 
-/// 最短密码长度（Console 管理员）。
+/// Minimum password length (console admins).
 pub const MIN_PASSWORD_LEN: usize = 12;
 
-/// 校验 email 的最小形状：`local@domain.tld`（非完整 RFC 校验，控制台足够）。
+/// Validate the minimal shape of an email: `local@domain.tld` (not full RFC validation; enough for the console).
 pub fn validate_email(email: &str) -> Result<(), AuthError> {
     let (local, rest) = email.split_once('@').ok_or(AuthError::InvalidEmail)?;
     if local.is_empty() || !rest.contains('.') || rest.starts_with('.') || rest.ends_with('.') {
@@ -78,7 +78,7 @@ pub fn validate_email(email: &str) -> Result<(), AuthError> {
     Ok(())
 }
 
-/// 校验密码策略：最短 12 字符。
+/// Validate the password policy: minimum 12 characters.
 pub fn validate_password(password: &str) -> Result<(), AuthError> {
     if password.len() < MIN_PASSWORD_LEN {
         return Err(AuthError::PasswordTooShort(MIN_PASSWORD_LEN));
@@ -86,7 +86,7 @@ pub fn validate_password(password: &str) -> Result<(), AuthError> {
     Ok(())
 }
 
-/// 控制台用户。**password_hash 是 Argon2id PHC 字符串，明文密码不落库**（§11.4）。
+/// Console user. **password_hash is an Argon2id PHC string; plaintext passwords are never stored** (§11.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
     pub id: UserId,
@@ -96,8 +96,8 @@ pub struct User {
 }
 
 impl User {
-    /// 创建用户：校验 email/密码策略后立即哈希。
-    /// 传入的明文密码只在此调用栈内出现。
+    /// Create a user: validate the email/password policy, then hash immediately.
+    /// The plaintext password passed in only exists within this call stack.
     pub fn new(
         id: UserId,
         email: impl Into<String>,
@@ -115,13 +115,13 @@ impl User {
         })
     }
 
-    /// 校验登录密码。
+    /// Verify a login password.
     pub fn verify(&self, password: &str) -> bool {
         verify_password(password, &self.password_hash)
     }
 }
 
-/// 会话记录（服务端侧）。**只存 Token 摘要**。
+/// Session record (server side). **Stores only the token digest**.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub token_hash: String,
@@ -132,7 +132,7 @@ pub struct Session {
 }
 
 impl Session {
-    /// 生成新会话：返回 (`raw_token`, `Session`)。原始 Token 只在这里出现一次。
+    /// Generate a new session: returns (`raw_token`, `Session`). The raw token appears here and only here.
     pub fn generate(user_id: UserId, now: Timestamp) -> (String, Self) {
         let raw = generate_token();
         let expires_at = expiry_after(&now, SESSION_TTL_SECS).expect("valid timestamp");
@@ -151,7 +151,7 @@ impl Session {
     }
 }
 
-/// ISO-8601（`Z`，秒精度）时间戳加秒。解析失败返回 `None`（调用方决定兜底）。
+/// Add seconds to an ISO-8601 (`Z`, second-precision) timestamp. Returns `None` on parse failure (caller decides the fallback).
 fn expiry_after(ts: &Timestamp, secs: u64) -> Option<Timestamp> {
     let dt = chrono::DateTime::parse_from_rfc3339(ts.as_str()).ok()?;
     Some(
@@ -160,9 +160,9 @@ fn expiry_after(ts: &Timestamp, secs: u64) -> Option<Timestamp> {
     )
 }
 
-/// 登录限流：进程内固定窗口计数器（ADR-002 单 VPS；无需分布式存储）。
+/// Login rate limiting: an in-process fixed-window counter (ADR-002 single VPS; no distributed store needed).
 ///
-/// `check` 接受注入的时钟（`Instant`），便于确定性单测。
+/// `check` takes an injected clock (`Instant`) for deterministic unit tests.
 #[derive(Debug)]
 pub struct RateLimiter {
     max_per_window: u32,
@@ -179,7 +179,7 @@ impl RateLimiter {
         }
     }
 
-    /// 记录一次尝试并判定是否放行。`true` = 放行。
+    /// Record one attempt and decide whether to allow it. `true` = allowed.
     pub fn check(&self, key: &str, now: std::time::Instant) -> bool {
         let mut buckets = self.buckets.lock().expect("rate limiter lock");
         let entry = buckets.entry(key.to_string()).or_insert((now, 0));
@@ -193,7 +193,7 @@ impl RateLimiter {
         true
     }
 
-    /// 成功登录后清除计数（失败计数才留在窗口里）。
+    /// Clear the count after a successful login (only failure counts stay in the window).
     pub fn reset(&self, key: &str) {
         self.buckets.lock().expect("rate limiter lock").remove(key);
     }
@@ -285,11 +285,11 @@ mod tests {
         assert!(limiter.check("ip-1", t0));
         assert!(limiter.check("ip-1", t0 + Duration::from_secs(10)));
         assert!(limiter.check("ip-1", t0 + Duration::from_secs(20)));
-        // 第 4 次在窗口内被拒。
+        // The 4th attempt is rejected within the window.
         assert!(!limiter.check("ip-1", t0 + Duration::from_secs(30)));
-        // 其他 key 不受影响。
+        // Other keys are unaffected.
         assert!(limiter.check("ip-2", t0 + Duration::from_secs(30)));
-        // 窗口过去后重置。
+        // Reset once the window has elapsed.
         assert!(limiter.check("ip-1", t0 + Duration::from_secs(61)));
     }
 

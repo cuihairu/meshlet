@@ -1,12 +1,12 @@
-//! meshlet-config：TOML 配置加载与校验（[存档 §4.1](../../docs/review/chatgpt-2026-10-13.md)）。
+//! meshlet-config: TOML config loading and validation ([archive §4.1](../../docs/review/chatgpt-2026-10-13.md)).
 //!
-//! Overlay CIDR 默认 `10.240.0.0/16` 仅为默认值，**可配置**（ADR-004）。
+//! The default overlay CIDR `10.240.0.0/16` is only a default and **is configurable** (ADR-004).
 //!
-//! 模块划分：`server`（hub 侧：Raw schema + `ServerConfig`/`BackupConfig`/
-//! `DataPlaneConfig`/SSH 别名分发）、`agent`（agent 侧：Raw schema +
-//! `AgentConfig` 与 tray/upgrade/dataplane/direct_connect/probe/mcp/
-//! ssh_config_sync 子配置）。公开 API 经模块根 re-export，调用方
-//! `meshlet_config::Xxx` 路径不变。
+//! Module layout: `server` (hub side: Raw schema + `ServerConfig`/`BackupConfig`/
+//! `DataPlaneConfig`/SSH alias distribution), `agent` (agent side: Raw schema +
+//! `AgentConfig` and the tray/upgrade/dataplane/direct_connect/probe/mcp/
+//! ssh_config_sync sub-configs). The public API is re-exported at the crate root, so the
+//! caller-facing `meshlet_config::Xxx` paths are unchanged.
 
 pub mod trusted_proxy;
 
@@ -42,8 +42,8 @@ pub enum ConfigError {
     MissingField(String),
 }
 
-/// 隧道 MTU 的合理下界：1280 是 IPv6 最小 MTU——低于它的隧道承载不了
-/// IPv6-in-tunnel 与绝大多数大包路径（存档 §7.5「避免明显不合理的 MTU」）。
+/// Sane lower bound for the tunnel MTU: 1280 is the IPv6 minimum MTU — below it the tunnel
+/// cannot carry IPv6-in-tunnel or most large-packet paths (archive §7.5, "avoid obviously unreasonable MTUs").
 pub const MIN_TUNNEL_MTU: u32 = 1280;
-/// 内核接口 MTU 上限。
+/// Kernel interface MTU ceiling.
 pub const MAX_TUNNEL_MTU: u32 = 65535;

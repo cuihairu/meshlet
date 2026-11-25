@@ -1,4 +1,4 @@
-//! R-01 SQLite 持久化边界：Revision 与 Outbox 原子写入，可从崩溃后重放。
+//! R-01 SQLite persistence boundary: atomic writes for Revision and Outbox, replayable after a crash.
 
 mod codec;
 mod error;
