@@ -8,7 +8,7 @@ use crate::panel::{
     config_value, read_url_file, remove_url_file, render, start, url, write_url_file, URL_FILE,
 };
 
-/// `<base>/state` 结构（与 `install.ps1` 的 `%LOCALAPPDATA%\meshlet\{…,state}` 同形）。
+/// A `<base>/state` structure (isomorphic to `install.ps1`'s `%LOCALAPPDATA%\meshlet\{…,state}`).
 fn temp_state_dir(tag: &str) -> PathBuf {
     let base = std::env::temp_dir().join(format!(
         "meshlet-panel-{tag}-{}-{}",
@@ -23,7 +23,7 @@ fn temp_state_dir(tag: &str) -> PathBuf {
     state
 }
 
-/// 三块数据齐全的 mock 数据源（不依赖 agent / server）。
+/// A mock data source with all three blocks populated (no agent / server needed).
 fn write_mock_data(state: &Path) {
     std::fs::write(
         state.parent().unwrap().join("agent.toml"),
@@ -58,14 +58,14 @@ fn render_shows_all_three_sections_with_mock_data() {
     write_mock_data(&state);
     let html = render(&state);
 
-    // 三块齐全（截图/断言口径：node / direct / routes）。
+    // All three blocks present (screenshot/assertion vocabulary: node / direct / routes).
     for id in ["id=\"node\"", "id=\"direct\"", "id=\"routes\""] {
         assert!(html.contains(id), "missing section {id}");
     }
     for title in ["当前节点", "直连节点", "本地路由"] {
         assert!(html.contains(title), "missing section title {title}");
     }
-    // ① 当前节点：名称 / 状态 / 版本 / EnvProbe。
+    // ① Current node: name / state / version / EnvProbe.
     assert!(html.contains("office-nas"));
     assert!(html.contains("Meshlet online"));
     assert!(html.contains("已连接（控制通道正常）"));
@@ -73,24 +73,25 @@ fn render_shows_all_three_sections_with_mock_data() {
     assert!(html.contains("agent 0.4.0"));
     assert!(html.contains("XDG_SESSION_TYPE"));
     assert!(html.contains("Console"));
-    // ② 直连节点：全量两条（直连 + 中继候选），含 endpoint / 模式 / RTT。
+    // ② Direct nodes: both entries in full (direct + relay candidate), including endpoint / mode / RTT.
     assert!(html.contains("peer-b"));
     assert!(html.contains("203.0.113.7:51820"));
-    // 公钥整串（direct-peers.json 全量口径，缺省字段显示 —）。
+    // The full public-key string (direct-peers.json full vocabulary; absent fields show —).
     assert!(html.contains("abc=="));
     assert!(html.contains("def=="));
     assert!(html.contains("直连"));
     assert!(html.contains("中继"));
     assert!(html.contains("12 ms"));
-    // ③ 本地路由：目标网段 / 下一跳 / 接口 / 来源。
+    // ③ Local routes: destination prefix / next hop / interface / source.
     assert!(html.contains("192.168.8.0/24"));
     assert!(html.contains("10.240.0.3"));
     assert!(html.contains("wg-meshlet"));
     assert!(html.contains("服务端计划 · applied.json"));
-    // 控制台入口（另列，不是本地面板的替代）。
+    // Console entry (listed separately, not a replacement for the local panel).
     assert!(html.contains("https://meshlet.example.com"));
-    // Overlay IP 复制按钮：当前节点的虚拟 IP + 直连节点两条 IP 都有按钮，
-    // 且 data-copy 携带正确值（点击写剪贴板的数据源）。
+    // Overlay IP copy buttons: the current node's virtual IP plus both direct-node IPs
+    // each carry a button, and data-copy holds the correct value (the data written to
+    // the clipboard on click).
     assert_eq!(
         html.matches("class=\"copy\"").count(),
         3,
@@ -111,8 +112,10 @@ fn render_shows_all_three_sections_with_mock_data() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 复制按钮的安全纪律：`data-copy` 值来自本机状态文件，必须转义——
-/// 恶意值不得逃出属性变成标记（面板其余动态文本的既有转义口径）。
+/// Copy-button security discipline: `data-copy` values come from local state
+/// files and must be escaped — a hostile value must not break out of the
+/// attribute into markup (the same escaping discipline as the panel's other
+/// dynamic text).
 #[test]
 fn copy_button_escapes_hostile_ip_values() {
     let state = temp_state_dir("copy-escape");
@@ -122,25 +125,25 @@ fn copy_button_escapes_hostile_ip_values() {
     )
     .unwrap();
     let html = render(&state);
-    // 属性值整体被转义：引号变 &quot;、尖括号变实体。
+    // The attribute value is escaped as a whole: quotes become &quot;, angle brackets become entities.
     assert!(html.contains("data-copy=\"&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;\""));
-    // 原始的引号/尖括号组合不得出现在任何 data-copy 属性边界外。
+    // The raw quote/angle-bracket combination must not appear outside any data-copy attribute boundary.
     assert!(!html.contains("\"><script>alert(1)"));
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 没有虚拟 IP（账本缺失）时不出复制按钮——没有可复制的东西。
+/// No copy button without a virtual IP (ledger missing) — there is nothing to copy.
 #[test]
 fn no_copy_button_without_a_real_overlay_ip() {
     let state = temp_state_dir("copy-absent");
     let html = render(&state);
     assert!(!html.contains("data-copy="), "no copy button without data");
-    // 直连节点也缺失时一条按钮都没有。
+    // With direct nodes missing too, not a single button appears.
     assert!(!html.contains("class=\"copy\""));
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 直连节点 IP 缺失（形状不符 → 「—」占位）时该行不出复制按钮。
+/// A direct-node row with a missing IP (shape mismatch → "—" placeholder) gets no copy button.
 #[test]
 fn placeholder_peer_ip_gets_no_copy_button() {
     let state = temp_state_dir("copy-placeholder");
@@ -161,14 +164,14 @@ fn render_degrades_gracefully_without_any_data_files() {
     for id in ["id=\"node\"", "id=\"direct\"", "id=\"routes\""] {
         assert!(html.contains(id), "sections must render even with no data");
     }
-    // 数据不可用 ≠ 数据为空：三处都按「不可用」陈述，不推断 agent 行为。
+    // Data unavailable ≠ data empty: all three places state "unavailable" and never infer agent behavior.
     assert!(html.contains("直连节点数据不可用"));
     assert!(html.contains("本地账本不可用"));
     assert!(html.contains("未知（状态不可用）"));
     assert!(html.contains("状态说明不可用"));
     assert!(!html.contains("没有路由记录"));
     assert!(!html.contains("agent 尚未"));
-    // 没有公钥指纹 ≠ 没有应用计划：措辞不得误导。
+    // No public-key fingerprint ≠ no applied plan: the wording must not mislead.
     assert!(html.contains("—（agent 未记录公钥指纹）"));
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
@@ -188,8 +191,9 @@ fn render_falls_back_to_ledger_route_prefixes() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 真机 imac 形态：计划**已应用**但 `routes` 为空（纯叶子节点）。面板必须
-/// 说「计划没下发路由」，不能把已应用的计划说成「尚未应用」。
+/// Real-machine imac shape: the plan **is applied** but `routes` is empty (a
+/// pure leaf node). The panel must say "the plan delivered no routes" and must
+/// not call an applied plan "not yet applied".
 #[test]
 fn applied_plan_without_routes_says_so_instead_of_claiming_no_plan() {
     let state = temp_state_dir("empty-plan-routes");
@@ -205,8 +209,9 @@ fn applied_plan_without_routes_says_so_instead_of_claiming_no_plan() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// `last_good_plan: null` 是 `AgentState::Option` 序列化的合法形状：必须走
-/// 账本分支，不能当成「计划已应用但没路由」，更不能把账本里的路由藏掉。
+/// `last_good_plan: null` is a legal shape of `AgentState::Option`
+/// serialization: it must take the ledger branch, must not be treated as "the
+/// plan was applied but has no routes", and must not hide the ledger's routes.
 #[test]
 fn null_last_good_plan_falls_back_to_ledger_routes() {
     let state = temp_state_dir("null-plan");
@@ -222,8 +227,9 @@ fn null_last_good_plan_falls_back_to_ledger_routes() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 计划段是对象但没有 `routes`（形状不完整）：不能说「计划没下发路由」——
-/// 那会把账本里的路由藏掉；回落账本分支。
+/// The plan member is an object without `routes` (incomplete shape): it must
+/// not say "the plan delivered no routes" — that would hide the ledger's
+/// routes; fall back to the ledger branch.
 #[test]
 fn plan_without_routes_array_falls_back_to_ledger() {
     let state = temp_state_dir("plan-no-routes");
@@ -238,7 +244,7 @@ fn plan_without_routes_array_falls_back_to_ledger() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 空数组（文件在、就是没记录）与数据不可用必须分开说。
+/// An empty array (the file exists, there just are no records) and unavailable data must be stated separately.
 #[test]
 fn empty_peer_array_says_no_records_while_missing_file_says_unavailable() {
     let state = temp_state_dir("peer-empty");
@@ -249,7 +255,7 @@ fn empty_peer_array_says_no_records_while_missing_file_says_unavailable() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 账本可读但 `routes` 字段形状不对：不能说「没有路由记录」。
+/// The ledger is readable but the `routes` field has the wrong shape: it must not say "no route records".
 #[test]
 fn malformed_ledger_routes_are_reported_as_unavailable() {
     let state = temp_state_dir("ledger-routes-invalid");
@@ -264,7 +270,7 @@ fn malformed_ledger_routes_are_reported_as_unavailable() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 「直连」只留给显式 `null` gateway；字段缺失显示 `—`，不猜成直连路由。
+/// "Direct" is reserved for an explicit `null` gateway; a missing field shows `—` and is not guessed as a direct route.
 #[test]
 fn next_hop_reserves_direct_label_for_explicit_null_gateway() {
     let state = temp_state_dir("gateway-shapes");
@@ -275,7 +281,7 @@ fn next_hop_reserves_direct_label_for_explicit_null_gateway() {
         .unwrap();
     let html = render(&state);
     assert!(html.contains("直连（wg0）"), "explicit null = direct route");
-    // 缺失 gateway 的那条：目标网段后必须是 `—`，不能也被标成直连。
+    // The entry with the missing gateway: the destination prefix must be followed by `—`, and it must not be labeled direct too.
     let missing = html
         .split("10.1.0.0/16")
         .nth(1)
@@ -288,7 +294,7 @@ fn next_hop_reserves_direct_label_for_explicit_null_gateway() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 账本缺失时不得出现「应用于 —」这类没有证据的应用事件。
+/// With the ledger missing, an unevidenced application event such as "applied at —" must not appear.
 #[test]
 fn missing_ledger_never_claims_an_application_time() {
     let state = temp_state_dir("no-ledger");
@@ -298,7 +304,7 @@ fn missing_ledger_never_claims_an_application_time() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 旧账本：计划段为 null 且账本无路由 —— 只陈述账本事实，不反推有没有应用计划。
+/// Legacy ledger: the plan member is null and the ledger has no routes — state only what the ledger says, without inferring whether a plan was applied.
 #[test]
 fn empty_legacy_ledger_states_the_ledger_fact_only() {
     let state = temp_state_dir("empty-ledger");
@@ -344,10 +350,10 @@ fn config_value_reads_top_level_keys_only() {
         Some("https://hub.example")
     );
     assert_eq!(config_value(&state, "device_name").as_deref(), Some("nas"));
-    // section 内的键不算顶层 → None（不把 interface 当配置读出来）。
+    // Keys inside a section do not count as top level → None (interface must not be read out as config).
     assert_eq!(config_value(&state, "interface"), None);
     assert_eq!(config_value(&state, "nope"), None);
-    // 旧部署 config.toml 兜底。
+    // Older deployments fall back to config.toml.
     std::fs::remove_file(state.parent().unwrap().join("agent.toml")).unwrap();
     std::fs::write(
         state.parent().unwrap().join("config.toml"),
@@ -371,7 +377,7 @@ fn state_and_hub_status_map_the_four_tray_states() {
         hub_status(Some("Meshlet tunnel only")),
         "仅隧道（控制通道失效，agent 上报过期）"
     );
-    // 漂移态推不出控制通道（derive 先判 drift）→ 如实标未知，不谎称断开。
+    // The drift state says nothing about the control channel (derive checks drift first) → honestly mark it unknown, without falsely claiming disconnected.
     assert_eq!(
         hub_status(Some("Meshlet tunnel drift")),
         "未知（隧道异常优先判定，控制通道状态未单独上报）"
@@ -391,8 +397,9 @@ fn mode_label_maps_known_modes_and_keeps_unknowns() {
     assert_eq!(mode_label("something_new"), "something_new");
 }
 
-/// 端到端：真起一个 loopback 服务，用裸 TCP 客户端验证 200 + 三块内容 +
-/// 只读语义（POST 405、未知路径 404、HEAD 无 body）。
+/// End to end: actually start a loopback service and use a raw TCP client to
+/// verify 200 + the three blocks + read-only semantics (POST 405, unknown path
+/// 404, HEAD without a body).
 #[test]
 fn server_answers_200_with_three_sections_and_rejects_writes() {
     let state = temp_state_dir("serve");
@@ -427,23 +434,24 @@ fn server_answers_200_with_three_sections_and_rejects_writes() {
     assert!(body.contains("office-nas"));
     assert!(body.contains("192.168.8.0/24"));
 
-    // HEAD：头齐全、无 body。
+    // HEAD: headers present, no body.
     let head = get("/", "HEAD");
     assert!(head.starts_with("HTTP/1.1 200 OK"));
     assert!(head.ends_with("\r\n\r\n"), "HEAD must not carry a body");
 
-    // 只读面板：非 GET/HEAD 一律拒绝。
+    // Read-only panel: anything but GET/HEAD is refused.
     let post = get("/", "POST");
     assert!(post.starts_with("HTTP/1.1 405"));
-    // 只有根路径与 state.json 是端点。
+    // Only the root path and state.json are endpoints.
     let missing = get("/etc/passwd", "GET");
     assert!(missing.starts_with("HTTP/1.1 404"));
 
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 局部更新数据源：`GET /state.json` 200 + 三块 JSON（与页面同一数据源）；
-/// 写方法 405、未知路径 404、HEAD 无 body（只读纪律不变）。
+/// The partial-update data source: `GET /state.json` 200 + the three JSON
+/// blocks (the same data source as the page); write methods 405, unknown paths
+/// 404, HEAD without a body (the read-only discipline is unchanged).
 #[test]
 fn state_json_route_serves_three_sections_and_stays_read_only() {
     let state = temp_state_dir("state-json");
@@ -478,7 +486,7 @@ fn state_json_route_serves_three_sections_and_stays_read_only() {
     );
     assert!(headers.contains("Cache-Control: no-store"));
 
-    // 三块齐全：node / peers / routes（与 render 同一快照函数）。
+    // All three blocks present: node / peers / routes (the same snapshot function as render).
     let json: serde_json::Value = serde_json::from_str(body).expect("valid JSON body");
     let node = json.get("node").expect("node block");
     assert_eq!(node.get("dot").and_then(|v| v.as_str()), Some("#c97b2e"));
@@ -517,7 +525,7 @@ fn state_json_route_serves_three_sections_and_stays_read_only() {
         .expect("routes rows");
     assert_eq!(routes.len(), 2, "both plan routes present");
 
-    // 只读纪律：/state.json 同样只放行 GET/HEAD。
+    // Read-only discipline: /state.json likewise admits only GET/HEAD.
     let post = get("/state.json", "POST");
     assert!(post.starts_with("HTTP/1.1 405"));
     let head = get("/state.json", "HEAD");
@@ -529,8 +537,9 @@ fn state_json_route_serves_three_sections_and_stays_read_only() {
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 门禁：页面不再整页刷新（无 meta refresh、无 reload 调用），改用
-/// fetch /state.json + 单元格 diff（滚动/焦点/复制钮状态不丢）。
+/// Gate: the page no longer does a full-page reload (no meta refresh, no
+/// reload call) but instead uses fetch /state.json + cell-level diff (scroll
+/// / focus / copy-button state are not lost).
 #[test]
 fn page_polls_state_json_and_never_full_page_reloads() {
     let state = temp_state_dir("no-refresh");
@@ -550,21 +559,22 @@ fn page_polls_state_json_and_never_full_page_reloads() {
         "page must poll /state.json for partial updates"
     );
     assert!(html.contains("setInterval(poll"), "poll loop present");
-    // 初始快照内联（无 JS 也见三块——服务端预渲染仍在）。
+    // The initial snapshot is inlined (the three blocks show even without JS — server-side pre-rendering is still there).
     assert!(html.contains("id=\"panel-state\""));
     assert!(html.contains("id=\"peers-body\""));
-    // 单元格 diff 键：节点字段、直连节点行、路由行都有 data-f。
+    // Cell diff keys: node fields, direct-node rows, and route rows all have data-f.
     assert!(html.contains("data-f=\"node."), "node field diff keys");
     assert!(html.contains("data-f=\"peer.0.rtt\""), "peer rtt diff key");
     assert!(html.contains("data-f=\"routes-caption\""));
-    // 页面自身说明不再宣称「自动刷新」整页语义。
+    // The page's own caption no longer claims the "auto refresh" full-page semantics.
     assert!(html.contains("局部更新（不整页刷新）"));
 
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// RTT 来源标注：如实四态（新 agent）+ 旧 agent 落盘的历史值（无来源字段）
-/// 各得对应的 tooltip；「最近握手」列保留（活性主证据）。
+/// RTT source labels: the four truthful states (new agent) plus the historical
+/// values persisted by old agents (no source field) each get their matching
+/// tooltip; the "last handshake" column stays (the primary liveness evidence).
 #[test]
 fn rtt_column_labels_its_source() {
     let state = temp_state_dir("rtt-source");
@@ -583,17 +593,18 @@ fn rtt_column_labels_its_source() {
     assert!(html.contains("来源：握手新鲜（对端不答 ICMP，最近握手即链路活性证据）"));
     assert!(html.contains("来源：不可测（overlay 与 endpoint 均无响应，以「最近握手」为活性证据）"));
     assert!(html.contains("来源：未测（对端无直连路径或探测尚未完成）"));
-    // 旧 agent 历史值仍可读（滚动升级兼容）。
+    // Historical values from old agents stay readable (rolling-upgrade compatibility).
     assert!(html.contains("来源：overlay 实测（对端 overlay VIP 直测）"));
-    // 数值照常显示；不可测显示占位符。
+    // Values render as usual; unmeasurable ones show the placeholder.
     assert!(html.contains("12 ms"));
     assert!(html.contains(">—</span>"));
-    // 最近握手表头仍在（活性主证据）。
+    // The last-handshake header stays (the primary liveness evidence).
     assert!(html.contains("最近握手"));
     let _ = std::fs::remove_dir_all(state.parent().unwrap());
 }
 
-/// 交接文件：写→读→删（CI 门禁与运维都靠它拿端口；写入是原子的）。
+/// The handoff file: write → read → remove (both the CI gate and ops rely on it
+/// to pick up the port; the write is atomic).
 #[test]
 fn url_file_round_trips_and_is_removed() {
     let state = temp_state_dir("url-file");
@@ -603,13 +614,13 @@ fn url_file_round_trips_and_is_removed() {
         read_url_file(&state).as_deref(),
         Some("http://127.0.0.1:58132/")
     );
-    // 覆盖写（第二次写必须替换旧文件，不是失败/追加）。
+    // Overwrite (the second write must replace the old file, not fail or append).
     write_url_file(&state, "http://127.0.0.1:44444/").expect("overwrite url file");
     assert_eq!(
         read_url_file(&state).as_deref(),
         Some("http://127.0.0.1:44444/")
     );
-    // 原子发布：不留 .tmp 残骸。
+    // Atomic publish: no .tmp residue left behind.
     assert!(!state.join(format!("{URL_FILE}.tmp")).exists());
     remove_url_file(&state);
     assert!(read_url_file(&state).is_none());
@@ -621,9 +632,9 @@ fn short_key_and_age_helpers_are_human_readable() {
     assert_eq!(short_key("abc"), "abc");
     let long = "012345678901234567890123";
     assert_eq!(short_key(long), "01234567890123456789…");
-    // 未来时间戳不显示负数。
+    // A future timestamp never shows a negative age.
     assert_eq!(age_text(now_secs() + 10_000), "—");
-    // 刚刚 / 分钟 / 小时三档。
+    // Three tiers: just-now / minutes / hours.
     assert_eq!(age_text(now_secs() - 5), "5 秒前");
     assert_eq!(age_text(now_secs() - 300), "5 分钟前");
     assert_eq!(age_text(now_secs() - 7_200), "2 小时前");

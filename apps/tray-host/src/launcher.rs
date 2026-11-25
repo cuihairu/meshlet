@@ -2,17 +2,18 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-/// 启动本地面板服务（只绑 `127.0.0.1` 随机端口）并记下 URL。失败只记日志：
-/// 托盘其余功能不受影响，菜单项届时按「未启动」提示，绝不假装打开成功。
-/// 成功返回面板 URL（已写 URL 交接文件）；失败返回 `None`。
+/// Starts the local panel service (bound to a random port on `127.0.0.1` only) and records the URL.
+/// Failure is only logged: the rest of the tray keeps working, and the menu item then reports
+/// "not started" — it never pretends to have opened successfully.
+/// On success returns the panel URL (the URL handoff file has been written); on failure `None`.
 #[cfg(windows)]
 pub(crate) fn start_local_panel(state_dir: &std::path::Path) -> Option<String> {
     match meshlet_tray_host::panel::start(state_dir.to_path_buf()) {
         Ok(port) => {
             let url = meshlet_tray_host::panel::url(port);
             tracing::info!(%url, "local panel listening (loopback only)");
-            // URL 交接文件：进程存活期间日志被重定向句柄锁住读不到（Windows），
-            // CI / 运维改读这个写完即关的文件拿端口。
+            // URL handoff file: while the process is alive the log is locked by the redirection
+            // handle and unreadable (Windows), so CI / ops read this write-then-close file for the port.
             if let Err(error) = meshlet_tray_host::panel::write_url_file(state_dir, &url) {
                 tracing::warn!(%error, "local panel url file not written");
             }
@@ -39,12 +40,13 @@ pub(crate) fn panel_url_global() -> Option<&'static String> {
     PANEL_URL.get()
 }
 
-/// 「本地面板」：浏览器打开 tray-host 自托管的 loopback 只读页——当前节点 /
-/// 直连节点 / 本地路由三块，数据只读本机状态文件（不依赖 server 可达）。
+/// "Local panel": opens in a browser the tray-host's self-hosted loopback read-only page —
+/// the three blocks current node / direct nodes / local routes, with data read only from the
+/// local state files (it does not depend on the server being reachable).
 pub(crate) fn open_local_panel(hwnd: HWND, panel_url: Option<&str>) {
     match panel_url {
         Some(url) => {
-            // 日志留痕：真机验收据此证明「菜单项 → 本地面板 URL」这条链路。
+            // Leave a log trace: real-machine acceptance uses it to prove the "menu item -> local panel URL" chain.
             tracing::info!(%url, "opening local panel from tray menu");
             shell_open(hwnd, url);
         }
@@ -52,7 +54,7 @@ pub(crate) fn open_local_panel(hwnd: HWND, panel_url: Option<&str>) {
     }
 }
 
-/// 「控制台(网页)」：默认浏览器打开 `server_url`（server 根路径托管的控制台）。
+/// "Console (web)": opens `server_url` in the default browser (the console hosted at the server root path).
 pub(crate) fn open_console(hwnd: HWND, state_dir: Option<&std::path::Path>) {
     let Some(state_dir) = state_dir else {
         tracing::warn!("state dir unknown, cannot open console");
@@ -65,7 +67,7 @@ pub(crate) fn open_console(hwnd: HWND, state_dir: Option<&std::path::Path>) {
     shell_open(hwnd, &url);
 }
 
-/// 用系统默认浏览器打开 `url`（`ShellExecuteW` verb=open）。
+/// Opens `url` in the system default browser (`ShellExecuteW`, verb=open).
 pub(crate) fn shell_open(hwnd: HWND, url: &str) {
     let op: Vec<u16> = "open\0".encode_utf16().collect();
     let wide: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
@@ -81,21 +83,22 @@ pub(crate) fn shell_open(hwnd: HWND, url: &str) {
     }
 }
 
-/// 控制台 URL：agent 配置文件（`{state_dir}/..`）的 `server_url`。控制台由
-/// server 根路径托管（`router_with_console` 的 `ServeDir` 兜底），故 `server_url`
-/// 即控制台入口。**本地面板不走这条链路**（见 `meshlet_tray_host::panel`）：
-/// 它由 tray-host 自托管，只读本机状态文件。兼容旧部署的 `config.toml` 文件名。
+/// Console URL: the `server_url` from the agent config file (`{state_dir}/..`). The console is
+/// hosted at the server root path (the `ServeDir` fallback in `router_with_console`), so `server_url`
+/// is the console entry. **The local panel does not use this chain** (see `meshlet_tray_host::panel`):
+/// it is self-hosted by the tray-host and only reads the local state files. The legacy `config.toml`
+/// file name from older deployments is also accepted.
 pub(crate) fn panel_url(state_dir: &std::path::Path) -> Option<String> {
     meshlet_tray_host::panel::config_value(state_dir, "server_url")
 }
 
-/// 托盘宿主日志初始化。
+/// Tray-host logging initialization.
 ///
-/// - debug 构建：控制台子系统仍在，直接写 stderr —— ci.yml 的
-///   `-RedirectStandardError` 门禁（`NIM_ADD`/`tooltip` 断言）依赖它。
-/// - release 构建：`windows_subsystem="windows"` 无控制台，写每日滚动的日志
-///   文件（`%LOCALAPPDATA%/meshlet/logs/meshlet-tray-host.log`）。目录不存在
-///   或不可写时降级为 `io::sink`——托盘功能优先，绝不因日志 panic。
+/// - debug builds: the console subsystem is still present, so write straight to stderr — the
+///   `-RedirectStandardError` gate in ci.yml (the `NIM_ADD`/`tooltip` assertions) depends on it.
+/// - release builds: `windows_subsystem="windows"` has no console, so write a daily-rolling log
+///   file (`%LOCALAPPDATA%/meshlet/logs/meshlet-tray-host.log`). If the directory does not exist
+///   or is unwritable, degrade to `io::sink` — tray functionality comes first, never panic over logging.
 pub(crate) fn init_tray_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
     if cfg!(debug_assertions) {
         tracing_subscriber::fmt()
@@ -113,7 +116,7 @@ pub(crate) fn init_tray_logging() -> Option<tracing_appender::non_blocking::Work
             dir,
             "meshlet-tray-host.log",
         )),
-        // 日志目录不可用：静默丢弃日志，不 panic。
+        // Log directory unavailable: drop logs silently, without panicking.
         None => tracing_appender::non_blocking(std::io::sink()),
     };
     tracing_subscriber::fmt()
@@ -127,8 +130,8 @@ pub(crate) fn init_tray_logging() -> Option<tracing_appender::non_blocking::Work
 mod tests {
     use super::*;
 
-    /// 建一个 `<base>/state` 结构（与 `install.ps1` 的
-    /// `%LOCALAPPDATA%\meshlet\{agent.toml,state}` 同形），返回 state 目录。
+    /// Builds a `<base>/state` structure (isomorphic to `install.ps1`'s
+    /// `%LOCALAPPDATA%\meshlet\{agent.toml,state}`) and returns the state directory.
     fn temp_state_dir(tag: &str) -> std::path::PathBuf {
         let base = std::env::temp_dir().join(format!(
             "meshlet-tray-{tag}-{}-{}",
@@ -161,7 +164,7 @@ mod tests {
 
     #[test]
     fn panel_url_falls_back_to_config_toml() {
-        // 旧部署（2026-10-31 真机）把配置写成 config.toml；面板入口仍要工作。
+        // Older deployments (real machines, 2026-10-31) write the config as config.toml; the panel entry must still work.
         let state = temp_state_dir("panel-config");
         let base = state.parent().unwrap();
         std::fs::write(
@@ -180,9 +183,9 @@ mod tests {
     fn panel_url_missing_config_is_none() {
         let state = temp_state_dir("panel-none");
         let base = state.parent().unwrap();
-        // 无 agent.toml / config.toml。
+        // No agent.toml / config.toml.
         assert!(panel_url(&state).is_none());
-        // server_url 为空 → None（不返回空字符串打开默认页）。
+        // server_url empty -> None (do not return an empty string that would open a default page).
         std::fs::write(base.join("agent.toml"), "server_url = \"\"\n").unwrap();
         assert!(panel_url(&state).is_none());
         let _ = std::fs::remove_dir_all(base);

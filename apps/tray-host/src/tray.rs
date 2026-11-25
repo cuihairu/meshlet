@@ -35,10 +35,12 @@ pub(crate) unsafe extern "system" fn tray_wnd_proc(
         let event = lparam as u32;
         tracing::debug!("tray event={event:#x}");
         if event == WM_RBUTTONUP || event == WM_LBUTTONUP {
-            // ①②④：每次右键按当前状态快照重建菜单——首行（设备名+虚拟 IP+
-            // 状态）、「直连节点」（IP/模式/RTT）、「连接节点…」（可拨候选）。
-            // 文件变化（status.json / direct-peers.json）由各自线程维护，无需
-            // 常驻菜单；`TrackPopupMenuEx` 同步返回所选命令，快照即点即用。
+            // ①②④: rebuild the menu from a fresh snapshot of the current state on every
+            // right-click — first row (device name + virtual IP + status), "direct
+            // nodes" (IP / mode / RTT), "connect to node…" (dialable candidates).
+            // File changes (status.json / direct-peers.json) are maintained by their own threads,
+            // so no persistent menu is needed; `TrackPopupMenuEx` returns the selected command
+            // synchronously, and the snapshot is ready to use the moment it is clicked.
             let state_dir = state_dir();
             let status_line = status_line_text(state_dir);
             let peers = load_local_direct_peers(state_dir);
@@ -61,11 +63,12 @@ pub(crate) unsafe extern "system" fn tray_wnd_proc(
                 std::ptr::null(),
             ) as usize;
             tracing::debug!("menu cmd={cmd}");
-            // 菜单已用毕，立即销毁（`TPM_RETURNCMD` 不投递 WM_COMMAND）。
+            // The menu is done with — destroy it immediately (`TPM_RETURNCMD` does not post WM_COMMAND).
             destroy_current_menu();
             match cmd {
-                // 退出：停止当前用户会话 agent（best-effort，D4：不删持久隧道），
-                // 再清托盘；若 agent 已死则仅清托盘（④ 的 watchdog 也会触发）。
+                // Quit: stop the current user session's agent (best-effort, D4: persistent tunnels are not deleted),
+                // then clean up the tray; if the agent is already dead, only clean up the tray
+                // (④'s watchdog will also fire).
                 CMD_QUIT => {
                     terminate_agent();
                     do_exit();
@@ -77,8 +80,8 @@ pub(crate) unsafe extern "system" fn tray_wnd_proc(
                     );
                 }
                 CMD_OPEN_CONSOLE => open_console(hwnd, state_dir),
-                // ④ 连接节点…：点击候选 → spawn `meshlet-cli peer dial <node>`
-                //（`<node>` 用可解析的名称/IP，非菜单展示串）。
+                // ④ Connect to node…: a candidate click -> spawn `meshlet-cli peer dial <node>`
+                // (`<node>` uses a resolvable name/IP, not the menu display string).
                 id if id >= CMD_DIAL_BASE => {
                     if let Some(node) = relay.get(id - CMD_DIAL_BASE) {
                         let nid_ptr = G_NID.load(Ordering::SeqCst);

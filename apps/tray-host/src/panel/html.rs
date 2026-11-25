@@ -3,14 +3,14 @@ use std::path::Path;
 use super::runtime::config_value;
 use super::snapshot::{snapshot, PeerRow, RouteRow};
 
-/// 页面局部更新轮询间隔（秒）。页面每间隔 `fetch /state.json`，值有变才
-/// patch 对应单元格——不再整页重载（无闪屏、滚动/焦点不丢）。
-/// 页面局部更新轮询间隔（秒）。页面每间隔 `fetch /state.json`，值有变才
-/// patch 对应单元格——不再整页重载（无闪屏、滚动/焦点不丢）。
+/// Page partial-update polling interval (seconds). The page fetches `/state.json` on this interval and
+/// patches only the changed cells — no more full-page reloads (no flicker; scroll/focus is preserved).
+/// Page partial-update polling interval (seconds). The page fetches `/state.json` on this interval and
+/// patches only the changed cells — no more full-page reloads (no flicker; scroll/focus is preserved).
 pub const REFRESH_SECS: u32 = 5;
-/// overlay/endpoint 都测不出 RTT 不代表链路死了（WireGuard 常不答 ICMP）。
-/// 如实四态（新 agent）：probe_ok / handshake_fresh / probe_failed / unprobed；
-/// overlay / endpoint / unreachable 是旧 agent 落盘的历史值，保留映射兼容。
+/// Failing to measure RTT from both overlay/endpoint does not mean the link is dead (WireGuard often
+/// does not answer ICMP). Four truthful states (new agent): probe_ok / handshake_fresh / probe_failed / unprobed;
+/// overlay / endpoint / unreachable are historical values persisted by older agents — their mapping is kept for compatibility.
 pub(super) fn rtt_source_label(source: Option<&str>) -> &'static str {
     match source {
         Some("probe_ok") => "来源：直连路径实测（overlay/endpoint ping 成功）",
@@ -24,7 +24,7 @@ pub(super) fn rtt_source_label(source: Option<&str>) -> &'static str {
     }
 }
 
-/// 直连节点单行 HTML（与 `PeersSnapshot::html` 同源；`data-f` 键供 JS diff）。
+/// HTML for one direct-peer row (the same source as `PeersSnapshot::html`; `data-f` keys let JS diff it).
 pub(super) fn peer_row_html(index: usize, row: &PeerRow) -> String {
     let button = if row.ip_copyable {
         copy_button_html(&row.ip)
@@ -52,7 +52,7 @@ pub(super) fn peer_row_html(index: usize, row: &PeerRow) -> String {
     )
 }
 
-/// 本地路由单行 HTML（`rows[i]` = [目标网段, 下一跳, 接口, 来源]）。
+/// HTML for one local-route row (`rows[i]` = [destination prefix, next hop, interface, source]).
 fn route_row_html(index: usize, cells: &[String; 4]) -> String {
     format!(
         "<tr><td class=\"mono\"><span data-f=\"routes.{i}.dest\">{dest}</span></td>\
@@ -67,7 +67,7 @@ fn route_row_html(index: usize, cells: &[String; 4]) -> String {
     )
 }
 
-/// 路由表整段 HTML（占位行与数据行都由此生成）。
+/// HTML for the whole route table (placeholder rows and data rows are both produced here).
 pub(super) fn routes_html(rows: &[RouteRow]) -> String {
     rows.iter()
         .enumerate()
@@ -78,8 +78,8 @@ pub(super) fn routes_html(rows: &[RouteRow]) -> String {
         .collect()
 }
 
-/// 渲染整页 HTML（每次请求现读现渲染，无缓存；初始预渲染 + 内联快照供
-/// JS 做局部更新基线，无 JS 时三块照常可见）。
+/// Renders the full page HTML (read and rendered fresh on every request, no cache; the initial
+/// pre-render plus the inline snapshot give JS the partial-update baseline, and the three blocks stay visible without JS).
 pub fn render(state_dir: &Path) -> String {
     let snap = snapshot(state_dir);
 
@@ -91,15 +91,15 @@ pub fn render(state_dir: &Path) -> String {
     });
     let console_link = console_link.unwrap_or_default();
 
-    // 当前节点字段表（服务端预渲染，与 state.json 同一数据）。
+    // Current-node field table (pre-rendered server-side, the same data as state.json).
     let node_rows: String = snap
         .node
         .fields
         .iter()
         .enumerate()
         .map(|(i, (label, value))| {
-            // 复制按钮只挂在携带真值的行（当前仅虚拟 IP）；按钮是仅有的
-            // 非转义片段，其 data-copy 属性值在 copy_button_html 内转义。
+            // The copy button is attached only to rows carrying a real value (currently the virtual IP only); it is the only
+            // non-escaped fragment, and its data-copy attribute value is escaped inside copy_button_html.
             let button = snap
                 .node
                 .copy_index
@@ -115,8 +115,8 @@ pub fn render(state_dir: &Path) -> String {
         })
         .collect();
 
-    // 内联初始快照：JS 的 diff 基线（`<` 转义防 `</script>` 提前闭合；
-    // HTML 不解析 script 内容里的实体，JSON.parse 吃 `\u003c`）。
+    // Inline initial snapshot: the JS diff baseline (the `<` is escaped so `</script>` cannot close the tag early;
+    // HTML does not parse entities inside script content, and JSON.parse takes `<`).
     let seed = serde_json::to_string(&snap)
         .unwrap_or_else(|_| "{}".into())
         .replace('<', "\\u003c");
@@ -190,9 +190,10 @@ footer {{ color: #6f7a83; font-size: 12px; margin-top: 8px; }}
 <footer>数据源：tray/status.json · direct-peers.json · applied.json · agent.toml（{state_dir}）</footer>
 <script type="application/json" id="panel-state">{seed}</script>
 <script>
-// 局部更新：每 {refresh}s fetch /state.json，与内联快照做 JSON diff——
-// 值有变才 patch 对应单元格（保留滚动 / 焦点 / 复制钮状态）；行数变化
-// （节点增删 / 占位切换）才整体替换 tbody。绝不 location.reload。
+// Partial updates: every {refresh}s fetch /state.json and JSON-diff against the
+// inline snapshot — only changed values patch the matching cell (preserving
+// scroll / focus / copy-button state); the tbody is replaced wholesale only when
+// the row count changes (node add/remove / placeholder switch). Never location.reload.
 (function () {{
   var INTERVAL = {refresh} * 1000;
   var last = null;
@@ -234,7 +235,7 @@ footer {{ color: #6f7a83; font-size: 12px; margin-top: 8px; }}
     if (!body) {{ return; }}
     if (body.children.length !== rs.rows.length) {{ body.innerHTML = rs.html; return; }}
     for (var i = 0; i < rs.rows.length; i++) {{
-      if (typeof rs.rows[i] === 'string') {{ continue; }} // 占位行，不 diff
+      if (typeof rs.rows[i] === 'string') {{ continue; }} // placeholder row, no diff
       setText('routes.' + i + '.dest', rs.rows[i][0]);
       setText('routes.' + i + '.next', rs.rows[i][1]);
       setText('routes.' + i + '.iface', rs.rows[i][2]);
@@ -253,16 +254,19 @@ footer {{ color: #6f7a83; font-size: 12px; margin-top: 8px; }}
       }}
       last = state;
     }}).catch(function () {{
-      // 拉取失败下个周期重试（面板数据链路只读本机，失败不致命）。
+      // A failed fetch retries next cycle (the panel's data path is read-only on
+      // this machine, so a failure is not fatal).
     }});
   }}
   var seed = document.getElementById('panel-state');
   if (seed) {{ try {{ last = JSON.parse(seed.textContent); }} catch (e) {{ last = null; }} }}
   setInterval(poll, INTERVAL);
 
-  // 复制按钮：纯客户端行为，不新增任何网络请求（面板仍是 GET/HEAD 只读页）。
-  // 事件委托——行被 JS 重建后按钮依旧可用；navigator.clipboard 不可用降级
-  // execCommand，再不行给出「复制失败」反馈。
+  // Copy button: pure client-side behavior, no new network requests (the panel
+  // stays a read-only GET/HEAD page). Event delegation — the buttons keep
+  // working after JS rebuilds the rows; when navigator.clipboard is unavailable
+  // it falls back to execCommand, and if that fails too it gives a "copy failed"
+  // feedback.
   function flash(button, ok) {{
     button.classList.add('copied');
     button.textContent = ok ? '已复制' : '复制失败';
@@ -315,7 +319,7 @@ footer {{ color: #6f7a83; font-size: 12px; margin-top: 8px; }}
     )
 }
 
-/// 404 / 405 的极简页（同样不缓存）。
+/// Minimal page for 404 / 405 (also uncached).
 pub(super) fn error_page(message: &str) -> String {
     format!(
         "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">\
@@ -325,7 +329,7 @@ pub(super) fn error_page(message: &str) -> String {
     )
 }
 
-/// 状态串 →（展示名, 状态灯色）。色是第二通道，文本始终在（不靠颜色）。
+/// Status string -> (display name, status light color). Color is a second channel; the text is always present (never color alone).
 pub(crate) fn state_and_dot(state: Option<&str>) -> (String, &'static str) {
     match state {
         Some("Meshlet online") => ("在线".into(), "#c97b2e"),
@@ -337,11 +341,11 @@ pub(crate) fn state_and_dot(state: Option<&str>) -> (String, &'static str) {
     }
 }
 
-/// 状态 → hub / 控制通道口径（托盘四态的既有语义，见 `agent::tray::TrayState`）。
+/// Status -> hub / control-channel wording (the existing semantics of the four tray states, see `agent::tray::TrayState`).
 ///
-/// `TunnelDrift` 在 `TrayState::derive` 里**先于** `control_ok` 判定（隧道异常
-/// 优先），故该态推不出控制通道是否连着——如实标「未知」，不把内核漂移说成
-/// hub 断开。
+/// `TunnelDrift` is judged in `TrayState::derive` **before** `control_ok` (tunnel drift takes
+/// precedence), so for that state one cannot tell whether the control channel is up — mark it truthfully
+/// as "unknown"; never present a kernel drift as a hub disconnect.
 pub(crate) fn hub_status(state: Option<&str>) -> &'static str {
     match state {
         Some("Meshlet online") => "已连接（控制通道正常）",
@@ -353,8 +357,8 @@ pub(crate) fn hub_status(state: Option<&str>) -> &'static str {
     }
 }
 
-/// 复制按钮 HTML（`data-copy` 值必须先 `esc`——值来自本机状态文件，
-/// 不得把文件内容注入成属性外的标记）。
+/// HTML for the copy button (the `data-copy` value must be `esc`-ed first — it comes from local
+/// state files and must never inject markup beyond an attribute).
 pub(crate) fn copy_button_html(value: &str) -> String {
     format!(
         "<button type=\"button\" class=\"copy\" data-copy=\"{value}\">复制</button>",
@@ -362,17 +366,17 @@ pub(crate) fn copy_button_html(value: &str) -> String {
     )
 }
 
-/// ① 当前节点字段（label, value），及携带复制按钮的行下标。
+/// ① Current-node fields (label, value), plus the index of the row carrying the copy button.
 pub(super) fn node_fields(
     state_dir: &Path,
     status: &serde_json::Value,
     applied: &serde_json::Value,
 ) -> (Vec<(String, String)>, Option<usize>) {
     let mut rows: Vec<(String, String)> = Vec::new();
-    // 虚拟 IP 的复制值：有真值才出复制按钮（占位符「—」没有可复制的东西）。
+    // The copy value for the virtual IP: the copy button is emitted only when there is a real value (a "—" placeholder has nothing to copy).
     let mut copy_index: Option<usize> = None;
 
-    // 设备名：agent.toml 优先，缺省从 tooltip「…」里取，再兜底 unknown。
+    // Device name: agent.toml first, then the tooltip's "…" span, and unknown as the last resort.
     let device_name = config_value(state_dir, "device_name").unwrap_or_else(|| {
         tooltip_name(
             status
@@ -442,8 +446,8 @@ pub(super) fn node_fields(
         config_value(state_dir, "server_url").unwrap_or_else(|| "—".into()),
     ));
 
-    // EnvProbe 关键项：status.json 的 `env`（agent 上报）优先，缺省回落本进程
-    // 环境——托盘宿主与 agent 同处登录用户会话，读数同源。
+    // Key EnvProbe items: the `env` from status.json (reported by the agent) first, falling back to this
+    // process's environment — the tray host and the agent share the logged-in user session, so the readings come from the same source.
     for (label, value) in env_rows(status.get("env")) {
         rows.push((label, value));
     }
@@ -451,7 +455,7 @@ pub(super) fn node_fields(
     (rows, copy_index)
 }
 
-/// tooltip「Meshlet「name」 ip：…」里的设备名。
+/// The device name inside the tooltip "Meshlet「name」 ip：…".
 fn tooltip_name(tooltip: &str) -> Option<String> {
     let start = tooltip.find('「')? + '「'.len_utf8();
     let rest = &tooltip[start..];
@@ -464,7 +468,7 @@ fn tooltip_name(tooltip: &str) -> Option<String> {
     }
 }
 
-/// 公钥指纹缩写：前 20 字符 + `…`（整串对人无用，且不该占满表格）。
+/// Abbreviates a public key fingerprint: the first 20 characters + `…` (the full string is useless to humans and should not fill the table).
 pub(crate) fn short_key(key: &str) -> String {
     if key.chars().count() <= 20 {
         key.to_string()
@@ -474,7 +478,7 @@ pub(crate) fn short_key(key: &str) -> String {
     }
 }
 
-/// EnvProbe 关键项（`env` 为 agent 上报的对象；缺省回落本进程环境）。
+/// Key EnvProbe items (`env` is the object reported by the agent; falling back to this process's environment when absent).
 fn env_rows(env: Option<&serde_json::Value>) -> Vec<(String, String)> {
     let text = |value: Option<&serde_json::Value>| -> String {
         value
@@ -518,7 +522,7 @@ fn env_rows(env: Option<&serde_json::Value>) -> Vec<(String, String)> {
     ]
 }
 
-/// 直连模式 → 中文短名（未知模式原样展示，不吞数据）。
+/// A direct mode -> a short Chinese label (unknown modes are shown as-is; no data swallowed).
 pub fn mode_label(mode: &str) -> &str {
     match mode {
         "p2p_direct" => "直连",
@@ -528,7 +532,7 @@ pub fn mode_label(mode: &str) -> &str {
     }
 }
 
-/// 空表占位行。
+/// The empty-table placeholder row.
 pub(super) fn empty_row(cols: usize, message: &str) -> String {
     format!(
         "<tr><td colspan=\"{cols}\" class=\"empty\">{message}</td></tr>",
@@ -537,7 +541,7 @@ pub(super) fn empty_row(cols: usize, message: &str) -> String {
     )
 }
 
-/// HTML 转义（设备名 / tooltip 均来自服务端或配置，必须转义后再进页面）。
+/// HTML escaping (device names / tooltips all come from the server or config and must be escaped before going into the page).
 pub(super) fn esc(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {

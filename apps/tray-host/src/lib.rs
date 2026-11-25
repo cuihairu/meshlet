@@ -1,6 +1,6 @@
-//! `meshlet-tray-host` 的库目标：把**跨平台**的部分（本地面板）单独暴露。
+//! Library target of `meshlet-tray-host`: exposes the **cross-platform** part (the local panel) on its own.
 //!
-//! 二进制（Win32 托盘宿主）与 `examples/local_panel`（本机 curl 实测入口）
-//! 共用这一份代码，面板逻辑只写一次、两侧同源。
+//! The binary (Win32 tray host) and `examples/local_panel` (the local curl smoke-test entry point)
+//! share this single code base, so panel logic is written once and both sides stay in sync.
 
 pub mod panel;

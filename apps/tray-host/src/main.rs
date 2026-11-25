@@ -1,14 +1,16 @@
-// Release 构建（nightly msi/zip）以 GUI 子系统链接：无控制台，stdout/stderr
-// 不可用，日志改走文件 appender（见 `init_tray_logging`）；debug 构建保留控制台
-// 子系统，供 CI 的 stderr 重定向门禁（ci.yml tray 注册证据）照常工作。
+// Release builds (nightly msi/zip) link the GUI subsystem: no console, so stdout/stderr
+// are unavailable and logging goes through a file appender (see `init_tray_logging`); debug
+// builds keep the console subsystem so CI's stderr-redirection gate (the tray registration
+// evidence in ci.yml) keeps working as before.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Windows 系统托盘宿主：消费 [TraySink] 的 PNG 状态图。
+//! Windows system tray host: consumes the PNG status icon from [TraySink].
 //!
-//! 监听 agent 写出的 `status.json` + `icon-*.png`，通过 `Shell_NotifyIcon`
-//! 在系统托盘显示当前状态。状态变化即换图，无需轮询。
+//! Watches the `status.json` + `icon-*.png` written by the agent and shows the current status
+//! in the system tray via `Shell_NotifyIcon`. The icon is swapped as soon as the status changes —
+//! no polling needed.
 //!
-//! 用法：`meshlet-tray-host <state_dir>`
+//! Usage: `meshlet-tray-host <state_dir>`
 
 #[cfg(windows)]
 mod cli;
@@ -55,12 +57,13 @@ fn main() {
     let tray_dir = state_dir.join("tray");
     let status_path = tray_dir.join("status.json");
 
-    // `_log_guard` 必须绑定到 main 生命周期：non-blocking 写线程随 guard 存活。
+    // `_log_guard` must be bound for the lifetime of main: the non-blocking writer thread lives as long as the guard.
     let _log_guard = init_tray_logging();
 
-    // 本地面板：**先于托盘图标**绑定 loopback（定案 2026-11-06：托盘打开的是
-    // 本地面板，数据只读本机状态文件——server 挂了、agent 还没写出状态图，面板
-    // 照样开，缺数据只显示空态文案）。
+    // Local panel: bind the loopback **before the tray icon** (decided 2026-11-06: what the
+    // tray opens is the local panel, and the data only reads local state files — even if the
+    // server is down and the agent has not written a status icon yet, the panel still opens,
+    // showing only empty-state wording for the missing data).
     start_local_panel(&state_dir);
 
     tracing::info!("watching {}", tray_dir.display());
@@ -69,8 +72,8 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    // 「控制台(网页)」需要 agent 配置文件（`{state_dir}/..` 下）里的
-    // server_url；菜单数据（状态首行 / 直连节点）读 state_dir 下的状态文件。
+    // "Console (web)" needs the server_url from the agent config file (under `{state_dir}/..`);
+    // the menu data (status first row / direct nodes) reads the state files under state_dir.
     let state_dir: &'static std::path::Path = Box::leak(state_dir.into_boxed_path());
     set_state_dir(state_dir);
 
@@ -126,17 +129,18 @@ fn main() {
         let ok = Shell_NotifyIconW(NIM_ADD, &nid);
         tracing::info!("NIM_ADD = {ok}");
 
-        // 菜单不再在此一次性构建：每次右键按当前状态快照重建（见
-        // tray_wnd_proc / build_menu），首行 + 直连/连接子菜单均为新鲜数据。
+        // The menu is no longer built once here: each right-click rebuilds it from the current
+        // status snapshot (see tray_wnd_proc / build_menu), so the first row and the direct /
+        // connect submenus all carry fresh data.
         G_NID.store(&mut nid as *mut _, Ordering::SeqCst);
 
-        // 启动时立即读取当前状态并应用图标
+        // Read the current status and apply the icon immediately at startup
         update_tray(&status_path, &mut nid);
 
-        // ④ agent 进程联动：agent 退出 → 托盘消失（watchdog 轮询进程名）。
+        // ④ Agent process linkage: the agent exits -> the tray disappears (the watchdog polls for the process name).
         spawn_agent_watchdog(hwnd);
 
-        // 文件监听放独立线程，主循环专心处理消息
+        // File watching runs on its own thread, leaving the main loop to handle messages
         let watch_path = status_path.clone();
         std::thread::spawn(move || {
             let mut last_mtime: Option<std::time::SystemTime> = None;
@@ -159,7 +163,7 @@ fn main() {
             }
         });
 
-        // 阻塞消息循环
+        // Blocking message loop
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);

@@ -1,7 +1,7 @@
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, DestroyIcon, ICONINFO};
 
-/// RGBA（PNG 解码产物）→ BGRA（32bpp BI_RGB DIB 字节序，byte0=Blue）。
-/// 纯函数，跨平台测试；输入恒为 4 倍数长度（w*h*4）。
+/// RGBA (PNG decode output) -> BGRA (32bpp BI_RGB DIB byte order, byte0=Blue).
+/// Pure function, tested cross-platform; the input is always a multiple of 4 in length (w*h*4).
 #[cfg(any(windows, test))]
 fn rgba_to_bgra(rgba: &[u8]) -> Vec<u8> {
     let mut out = rgba.to_vec();
@@ -12,18 +12,21 @@ fn rgba_to_bgra(rgba: &[u8]) -> Vec<u8> {
     out
 }
 
-/// BGRA 像素缓冲 → HICON。
+/// BGRA pixel buffer -> HICON.
 ///
-/// 真机两个根因（imac 2026-11-12：NIM_ADD=1、注册表槽位存在，托盘却 0 像素）：
-/// ① hbmColor 必须是 **32bpp DIB section**（[CreateDIBSection]）——位图内存
-///    即写入字节、逐像素 Alpha 按值生效；此前 `CreateCompatibleBitmap` 产出
-///    DDB，无稳定 Alpha 语义，配 1bpp 全 0 mask 渲染不出像素（hbmMask 改单色
-///    位图的 406b597 复验仍不可见，即证 mask 非唯一根因）。
-/// ② 32bpp BI_RGB 字节序为 BGRA（byte0=Blue），解码器产出 RGBA，直传会把
-///    R/B 互换——即便画出，状态色 (50,96,114) 的像素扫描也全 miss，
-///    表现与「不可见」一致。
-/// hbmMask 用 1bpp 全 0（位语义 0=不透明；hbmColor 带 Alpha 时 mask 不参与
-/// 混合，但仍是 ICONINFO 必填项）。
+/// Two root causes found on real machines (imac 2026-11-12: NIM_ADD=1, the registry slot
+/// existed, yet the tray showed 0 pixels):
+/// ① hbmColor must be a **32bpp DIB section** ([CreateDIBSection]) — the bitmap memory
+///    is exactly the bytes written, and per-pixel Alpha takes effect by value; the earlier
+///    `CreateCompatibleBitmap` produced a DDB with no stable Alpha semantics, and paired with
+///    a 1bpp all-zero mask it rendered no pixels at all (even after changing hbmMask to a
+///    monochrome bitmap in the 406b597 re-check it was still invisible, proving the mask was
+///    not the only root cause).
+/// ② 32bpp BI_RGB byte order is BGRA (byte0=Blue), while decoders produce RGBA; passing it
+///    through directly swaps R/B — even if something were drawn, the pixel scan for the status
+///    color (50,96,114) would miss everything, which looks the same as "invisible".
+/// hbmMask uses a 1bpp all-zero bitmap (bit semantics: 0 = opaque; when hbmColor carries Alpha
+/// the mask takes no part in blending, but it is still a required ICONINFO field).
 #[cfg(windows)]
 fn bgra_to_icon(
     bgra: &[u8],
@@ -78,7 +81,7 @@ fn bgra_to_icon(
     }
 }
 
-/// 将 RGBA 像素缓冲转为 HICON（含透明通道）。
+/// Converts an RGBA pixel buffer to an HICON (including the alpha channel).
 #[cfg(windows)]
 pub(crate) fn rgba_to_icon(
     rgba: &[u8],
@@ -108,8 +111,9 @@ pub(crate) fn update_tray(status_path: &std::path::Path, nid: &mut NOTIFYICONDAT
         }
         nid.uFlags |= NIF_TIP | NIF_ICON;
         unsafe {
-            // 换图标：解码 TraySink 写出的状态 PNG；解码失败/缺失时以 GDI
-            // 绿色方块兜底（绝不静默保留旧图，避免状态卡死）。
+            // Swap the icon: decode the status PNG written by TraySink; on decode failure or
+            // missing file fall back to a GDI green square (never silently keep the old icon,
+            // which would leave the status stuck).
             let new_icon = match load_status_icon(status_path) {
                 Some((w, h, rgba)) => rgba_to_icon(&rgba, w, h),
                 None => create_green_icon(),
@@ -129,8 +133,9 @@ pub(crate) fn load_status_icon(status_path: &std::path::Path) -> Option<(u32, u3
     let status: serde_json::Value = serde_json::from_str(&text).ok()?;
     let parent = status_path.parent()?;
     for key in ["icon_24", "icon_16"] {
-        // 缺失/非字符串 → 继续尝试下一档（回退 icon_16），而非 `?` 早退——
-        // 否则 icon_24 缺席时 icon_16 永远不被尝试（审核发现）。
+        // Missing / not a string -> go on to try the next tier (fall back to icon_16) instead
+        // of bailing out early with `?` — otherwise, when icon_24 is absent, icon_16 would never
+        // be attempted (found in review).
         let Some(name) = status.get(key).and_then(|v| v.as_str()) else {
             continue;
         };
@@ -144,7 +149,7 @@ pub(crate) fn load_status_icon(status_path: &std::path::Path) -> Option<(u32, u3
     None
 }
 
-/// 最小 PNG 解码器（TraySink 产出的 8-bit RGBA、filter 0、无隔行）。
+/// Minimal PNG decoder (the 8-bit RGBA, filter 0, non-interlaced output that TraySink produces).
 #[cfg(any(windows, test))]
 pub(crate) fn png_decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     const SIG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
@@ -180,7 +185,7 @@ pub(crate) fn png_decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
                     data[body + 6],
                     data[body + 7],
                 ]);
-                // 只支持本模块产出的固定格式：bit depth 8、RGBA、interlace 0。
+                // Only the fixed format this module produces is supported: bit depth 8, RGBA, interlace 0.
                 if data[body + 8] != 8 || data[body + 9] != 6 || data[body + 12] != 0 {
                     return None;
                 }
@@ -189,14 +194,14 @@ pub(crate) fn png_decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
             b"IEND" => break,
             _ => {}
         }
-        i = end + 4; // 跳过 CRC
+        i = end + 4; // skip the CRC
     }
     if width == 0 || height == 0 {
         return None;
     }
     let raw = zlib_inflate_stored(&idat)?;
     let row_len = width as usize * 4;
-    let stride = row_len + 1; // 每行前置 1 字节 filter
+    let stride = row_len + 1; // 1 filter byte prefixing each row
     if raw.len() < stride * height as usize {
         return None;
     }
@@ -204,15 +209,15 @@ pub(crate) fn png_decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     for y in 0..height as usize {
         let row = &raw[y * stride..(y + 1) * stride];
         if row[0] != 0 {
-            return None; // 只支持 filter None（本模块唯一写出的形式）
+            return None; // only filter None is supported (the only form this module writes)
         }
         rgba.extend_from_slice(&row[1..]);
     }
     Some((width, height, rgba))
 }
 
-/// zlib 容器解压（仅 stored 块）。`0x78` 头 + 逐块 `BFINAL|BTYPE=00` +
-/// `LEN/NLEN` + 原始字节 + adler32 尾。
+/// zlib container decompression (stored blocks only). `0x78` header + per-block
+/// `BFINAL|BTYPE=00` + `LEN/NLEN` + raw bytes + adler32 trailer.
 #[cfg(any(windows, test))]
 fn zlib_inflate_stored(stream: &[u8]) -> Option<Vec<u8>> {
     if stream.len() < 6 || stream[0] != 0x78 {
@@ -223,7 +228,7 @@ fn zlib_inflate_stored(stream: &[u8]) -> Option<Vec<u8>> {
     while i < stream.len().saturating_sub(4) {
         let last = stream[i] & 0x01 != 0;
         if stream[i] >> 1 != 0 {
-            return None; // 只支持 stored 块
+            return None; // stored blocks only are supported
         }
         i += 1;
         if i + 4 > stream.len() {
@@ -243,9 +248,9 @@ fn zlib_inflate_stored(stream: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// 纯绿方块兜底图标。不再走 GDI FillRect（DDB 上的 Alpha 语义同样不稳，
-/// COLORREF 无 Alpha 字节、DDB 落盘第 4 字节未定义），与状态图统一走
-/// DIB-section 像素写入——B=0/G=255/R=0/A=255 即 #00FF00。
+/// Fallback icon: a plain green square. No longer goes through GDI FillRect (Alpha semantics on a
+/// DDB are equally unstable, COLORREF has no Alpha byte, and the 4th byte written to a DDB is
+/// undefined); it writes DIB-section pixels just like the status icon — B=0/G=255/R=0/A=255, i.e. #00FF00.
 #[cfg(windows)]
 pub(crate) fn create_green_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
     let size = 16u32;
@@ -261,20 +266,21 @@ pub(crate) fn create_green_icon() -> windows_sys::Win32::UI::WindowsAndMessaging
 mod tests {
     use super::*;
 
-    /// 与 tray.rs `png_encode` 对称的最小编码器（stored-deflate、filter 0、
-    /// RGBA）：只为构造测试 fixture，验证解码器还原像素。
+    /// Minimal encoder symmetric with `png_encode` in tray.rs (stored-deflate,
+    /// filter 0, RGBA): exists only to build test fixtures and verify the decoder
+    /// restores the pixels.
     fn png_encode(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
         fn chunk(out: &mut Vec<u8>, type_: &[u8; 4], data: &[u8]) {
             out.extend_from_slice(&(data.len() as u32).to_be_bytes());
             out.extend_from_slice(type_);
             out.extend_from_slice(data);
-            out.extend_from_slice(&[0; 4]); // CRC 不校验（解码器不依赖）
+            out.extend_from_slice(&[0; 4]); // CRC not verified (the decoder does not rely on it)
         }
         let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
         let mut ihdr = Vec::new();
         ihdr.extend_from_slice(&width.to_be_bytes());
         ihdr.extend_from_slice(&height.to_be_bytes());
-        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA 非隔行
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA, non-interlaced
         chunk(&mut out, b"IHDR", &ihdr);
 
         let row_len = 1 + width as usize * 4;
@@ -283,7 +289,7 @@ mod tests {
             raw.push(0);
             raw.extend_from_slice(&rgba[y * width as usize * 4..(y + 1) * width as usize * 4]);
         }
-        // zlib: 0x78 0x01 头 + stored 块 + adler32（占位）
+        // zlib: 0x78 0x01 header + stored block + adler32 (placeholder)
         let mut idat = vec![0x78u8, 0x01u8];
         idat.push(0x01); // BFINAL=1, BTYPE=00
         idat.extend_from_slice(&(raw.len() as u16).to_le_bytes());
@@ -309,19 +315,20 @@ mod tests {
         assert_eq!(decoded.2, rgba);
     }
 
-    /// RGBA→BGRA 字节序：R/B 互换、G/A 原位。真机像素扫描的状态色
-    /// (50,96,114) 转换后 R/B 对调——不转换则托盘画出的是 swapped 色，
-    /// 扫描全 miss（表现同「不可见」）。
+    /// RGBA -> BGRA byte order: R/B swapped, G/A kept in place. After conversion the status
+    /// color (50,96,114) scanned on the real machine has R/B swapped — without the conversion
+    /// the tray would paint the swapped color, the pixel scan would miss everything
+    /// (looks the same as "invisible").
     #[test]
     fn rgba_to_bgra_swaps_red_blue_and_keeps_green_alpha() {
         assert_eq!(rgba_to_bgra(&[10, 20, 30, 40]), [30, 20, 10, 40]);
         assert_eq!(rgba_to_bgra(&[50, 96, 114, 255]), [114, 96, 50, 255]);
-        // 多像素逐个互换。
+        // Multiple pixels, swapped one by one.
         assert_eq!(
             rgba_to_bgra(&[1, 2, 3, 4, 5, 6, 7, 8]),
             [3, 2, 1, 4, 7, 6, 5, 8]
         );
-        // 空输入 → 空。
+        // Empty input -> empty output.
         assert!(rgba_to_bgra(&[]).is_empty());
     }
 
@@ -329,8 +336,8 @@ mod tests {
     fn png_rejects_non_signature_or_unsupported_format() {
         assert!(png_decode(&[0, 1, 2, 3, 4, 5, 6, 7]).is_none());
         assert!(png_decode(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]).is_none());
-        // 8-bit 灰度（color type 0）不受支持：IHDR 数据从偏移 16 起，
-        // 结构为 width(4)+height(4)+bitdepth(1)+colortype(1) → colortype 在 25。
+        // 8-bit grayscale (color type 0) is not supported: IHDR data starts at offset 16,
+        // with layout width(4)+height(4)+bitdepth(1)+colortype(1) -> colortype sits at 25.
         let mut p = png_encode(2, 2, &[0; 16]);
         p[25] = 0;
         assert!(png_decode(&p).is_none());
@@ -363,15 +370,16 @@ mod tests {
         assert_eq!(got.0, w);
         assert_eq!(got.1, h);
         assert_eq!(&got.2[..4], &[0x22, 0xc5, 0x5e, 0xff]);
-        // icon_16 缺席时回退（status.json 声明但文件缺失 → None）。
+        // Fall back when icon_16 is absent (declared in status.json but the file is missing -> None).
         std::fs::remove_file(dir.join("icon-24.png")).unwrap();
         assert!(load_status_icon(&dir.join("status.json")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 回退回归（审核发现）：status.json 只声明 icon_16（icon_24 键缺席）
-    /// 时必须回退加载 icon_16——此前循环内 `?` 在 icon_24 缺席时早退 None，
-    /// icon_16 永远不被尝试，与注释声明的回退语义不符。
+    /// Fallback regression (found in review): when status.json declares only icon_16
+    /// (the icon_24 key absent), loading must fall back to icon_16 — previously the in-loop `?`
+    /// bailed out with None when icon_24 was absent, so icon_16 was never attempted,
+    /// contradicting the fallback semantics stated in the comment.
     #[test]
     fn load_status_icon_falls_back_to_icon16_when_icon24_key_absent() {
         let dir = std::env::temp_dir().join(format!(
@@ -390,7 +398,7 @@ mod tests {
         rgba[2] = 0x5e;
         rgba[3] = 0xff;
         std::fs::write(dir.join("icon-16.png"), png_encode(w, h, &rgba)).unwrap();
-        // 仅声明 icon_16——icon_24 键缺席，正是此前 `?` 早退的场景。
+        // Declare only icon_16 — the icon_24 key is absent, exactly the case where the old `?` bailed out early.
         std::fs::write(
             dir.join("status.json"),
             r#"{"state":"Meshlet online","tooltip":"Meshlet：在线","icon_16":"icon-16.png"}"#,

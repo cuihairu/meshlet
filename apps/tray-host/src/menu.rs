@@ -2,24 +2,25 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use meshlet_tray_host::panel::mode_label;
 
-/// 右键菜单命令 ID（`TPM_RETURNCMD` 下 `TrackPopupMenuEx` 的返回值）。
+/// Right-click menu command IDs (the return value of `TrackPopupMenuEx` under `TPM_RETURNCMD`).
 pub(crate) const CMD_QUIT: usize = 1;
-/// 「控制台(网页)」：浏览器打开 server 根路径托管的控制台（原「打开面板」
-/// 行为）。本地面板另立一项，见 [`CMD_OPEN_LOCAL_PANEL`]——定案 2026-11-06：
-/// 托盘「打开面板」必须开本地面板，控制台是另一个入口。
+/// "Console (web)": opens in a browser the console hosted at the server root path (the former
+/// "open panel" behaviour). The local panel gets its own item, see [`CMD_OPEN_LOCAL_PANEL`] —
+/// decided 2026-11-06: the tray's "open panel" must open the local panel; the console is a separate entry.
 pub(crate) const CMD_OPEN_CONSOLE: usize = 2;
-/// 菜单首行「设备名 + 虚拟 IP + 状态」展示项（禁用态；随 `status.json`
-/// tooltip 重建——① 用户要求首行 = 设备名 + 虚拟 IPv4 + 状态）。
+/// First menu row "device name + virtual IP + status" display item (disabled; rebuilt from the
+/// `status.json` tooltip — ① the user required row one = device name + virtual IPv4 + status).
 pub(crate) const CMD_STATUS: usize = 3;
-/// 「本地面板」：打开 tray-host 自托管的 loopback 只读页（当前节点 / 直连
-/// 节点 / 本地路由，见 `meshlet_tray_host::panel`）。
+/// "Local panel": opens the tray-host's own self-hosted loopback read-only page (current node /
+/// direct nodes / local routes, see `meshlet_tray_host::panel`).
 pub(crate) const CMD_OPEN_LOCAL_PANEL: usize = 4;
-/// 「连接节点…」子菜单项命令基址：第 i 个候选 = `CMD_DIAL_BASE + i`。
+/// Command base for the "connect to node…" submenu items: candidate i = `CMD_DIAL_BASE + i`.
 pub(crate) const CMD_DIAL_BASE: usize = 100;
 
-/// `direct-peers.json` 单条（agent 直连探测周期发布；字段与
-/// `meshlet-network::dial::DirectPeerView` 一致——此处仅反序列化，不引
-/// meshlet-network 依赖，托盘宿主保持 windows-sys + serde 的零数据面依赖）。
+/// One entry of `direct-peers.json` (published periodically by the agent's direct probe; fields
+/// match `meshlet-network::dial::DirectPeerView` — here it is only deserialized, no
+/// meshlet-network dependency, keeping the tray host at a zero data-plane dependency of
+/// windows-sys + serde).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct DirectPeerView {
     #[serde(default)]
@@ -34,8 +35,8 @@ pub(crate) struct DirectPeerView {
 }
 
 impl DirectPeerView {
-    /// 菜单展示名：设备名缺失（旧服务端）时退回虚拟 IP——`peer dial` 亦按
-    /// IP 解析，两种展示都可点击。
+    /// Menu display name: when the device name is missing (older server) fall back to the virtual
+    /// IP — `peer dial` also resolves by IP, so both displays are clickable.
     pub(crate) fn display_name(&self) -> String {
         if self.name.trim().is_empty() {
             self.virtual_ipv4.to_string()
@@ -44,9 +45,10 @@ impl DirectPeerView {
         }
     }
 
-    /// ②「直连节点」子菜单行：名字/IP/模式/RTT（数据展示，禁用态）。
-    /// 名字在前（用户令 2026-11-07：直连节点行须带节点名/nickname，纯 IP 行
-    /// 认不出是哪台机器）；名字缺失（旧服务端）时退回 IP，不出现空段。
+    /// ② A "direct nodes" submenu row: name/IP/mode/RTT (data display, disabled).
+    /// The name comes first (user directive 2026-11-07: a direct-node row must carry the node
+    /// name/nickname — a bare IP row cannot tell which machine it is); when the name is missing
+    /// (older server) fall back to the IP, never an empty segment.
     fn menu_label(&self) -> String {
         format!(
             "{} · {} · {} · {}",
@@ -59,13 +61,13 @@ impl DirectPeerView {
         )
     }
 
-    /// ④「连接节点…」子菜单行：可拨候选（点击触发 `peer dial`）。
+    /// ④ A "connect to node…" submenu row: a dialable candidate (clicking triggers `peer dial`).
     fn dial_menu_label(&self) -> String {
         format!("{}  {}", self.virtual_ipv4, self.display_name())
     }
 }
 
-/// 测试构造 fixture（仅测试用；真实数据来自 agent 的 direct-peers.json）。
+/// Fixture construction for tests (test-only; real data comes from the agent's direct-peers.json).
 #[cfg(test)]
 impl DirectPeerView {
     pub(crate) fn sample(name: &str, ip: &str, mode: &str, rtt: Option<u64>) -> Self {
@@ -79,8 +81,8 @@ impl DirectPeerView {
     }
 }
 
-/// 把 agent 发布的直连视图一分为二（②「直连节点」 / ④「连接节点…」）：
-/// 已直连/拨号中 → direct；候选但走中继（`hub_relay`）→ relay（可拨目标）。
+/// Splits the agent-published direct views in two (② "direct nodes" / ④ "connect to node…"):
+/// already-direct / dialing -> direct; candidates still on the relay (`hub_relay`) -> relay (dialable targets).
 pub(crate) fn split_peer_views(
     peers: &[DirectPeerView],
 ) -> (Vec<&DirectPeerView>, Vec<&DirectPeerView>) {
@@ -89,8 +91,9 @@ pub(crate) fn split_peer_views(
         .partition(|p| matches!(p.mode.as_str(), "p2p_direct" | "direct_pending"))
 }
 
-/// 读取 agent 发布的 `{state_dir}/direct-peers.json`（②④ 数据源；与 `peers`
-/// 命令同一链路）。缺失/损坏 → 空表（子菜单显示「（无）」）。
+/// Reads the agent-published `{state_dir}/direct-peers.json` (the ②④ data source; the same chain
+/// as the `peers` command). Missing / corrupted -> an empty list (the submenu
+/// shows the empty placeholder).
 pub(crate) fn load_local_direct_peers(state_dir: Option<&std::path::Path>) -> Vec<DirectPeerView> {
     state_dir
         .and_then(|dir| std::fs::read_to_string(dir.join("direct-peers.json")).ok())
@@ -98,8 +101,8 @@ pub(crate) fn load_local_direct_peers(state_dir: Option<&std::path::Path>) -> Ve
         .unwrap_or_default()
 }
 
-/// ① 菜单首行/tooltip 正文：`status.json` 的 `tooltip` 字段——agent 侧已是
-/// 「Meshlet「设备名」 <虚拟IP>：状态」（与 `info` 同一数据链路）。
+/// ① Menu first row / tooltip body: the `tooltip` field of `status.json` — the agent side already
+/// produces "Meshlet「device」 <virtual IP>: status" (the same data chain as `info`).
 pub(crate) fn status_line_text(state_dir: Option<&std::path::Path>) -> String {
     state_dir
         .and_then(|dir| std::fs::read_to_string(dir.join("tray").join("status.json")).ok())
@@ -108,10 +111,11 @@ pub(crate) fn status_line_text(state_dir: Option<&std::path::Path>) -> String {
         .unwrap_or_else(|| "Meshlet".into())
 }
 
-/// MCP 状态行（定案 2026-11-08）：读 `{state_dir}/mcp.json`（agent 写）。
-/// 无交接文件 → 「MCP：关闭」；有 → 「MCP：开启 [port]」；缺 port（损坏/
-/// 旧形态）→「MCP：开启」，不猜值。tray 只读展示——开启/切换经 agent.toml
-/// `[mcp] enabled` 显式配置。
+/// MCP status line (decided 2026-11-08): reads `{state_dir}/mcp.json` (written by the agent).
+/// No handoff file -> disabled; present -> enabled plus [port]; port missing
+/// (corrupt / older shape) -> enabled without a port, never guessing a value.
+/// The tray only displays read-only —
+/// enabling / switching goes through the explicit `agent.toml` `[mcp] enabled` setting.
 pub(crate) fn mcp_line_text(state_dir: Option<&std::path::Path>) -> String {
     let Some(dir) = state_dir else {
         return "MCP：关闭".into();
@@ -128,7 +132,7 @@ pub(crate) fn mcp_line_text(state_dir: Option<&std::path::Path>) -> String {
     }
 }
 
-/// UTF-16 + NUL（Win32 菜单/气泡文本）。
+/// UTF-16 + NUL (Win32 menu / balloon text).
 pub(crate) fn wide_z(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -138,16 +142,17 @@ unsafe fn append_item(menu: HMENU, flags: u32, id: usize, text: &str) {
     AppendMenuW(menu, flags, id, wide.as_ptr());
 }
 
-/// 追加一个弹出式子菜单（`MF_POPUP`，`id` 槽位放子菜单句柄）。
+/// Appends a popup submenu (`MF_POPUP`, the `id` slot carrying the submenu handle).
 unsafe fn append_popup(menu: HMENU, text: &str, sub: HMENU) {
     let wide = wide_z(text);
     AppendMenuW(menu, MF_POPUP, sub as usize, wide.as_ptr());
 }
 
-/// 按当前快照重建整个右键菜单（首行状态 + 直连节点/连接节点… 子菜单 +
-/// MCP 状态行 + 本地面板 + 控制台(网页) + 退出）。返回新建的 HMENU；调用方
-/// （`tray_wnd_proc`）在用毕后立即销毁。①②④ 的数据都来自本函数被调时的
-/// 文件快照，非缓存。`mcp_line` 为 [mcp_line_text] 的当前值（MCP 状态行）。
+/// Rebuilds the whole right-click menu from the current snapshot (first status row +
+/// direct nodes / connect to node… submenus + MCP status row + local panel + console (web) + quit).
+/// Returns the newly created HMENU; the caller (`tray_wnd_proc`) destroys it immediately after use.
+/// The ①②④ data all come from the file snapshot taken when this function is called, not from a cache.
+/// `mcp_line` is the current value of [mcp_line_text] (the MCP status row).
 pub(crate) fn build_menu(
     status_line: &str,
     direct: &[&DirectPeerView],
@@ -156,11 +161,11 @@ pub(crate) fn build_menu(
 ) -> HMENU {
     unsafe {
         let hmenu = CreatePopupMenu();
-        // ① 首行：设备名 + 虚拟 IP + 状态（tooltip 原文，禁用展示项）。
+        // ① First row: device name + virtual IP + status (the tooltip verbatim, disabled display item).
         append_item(hmenu, MF_STRING | MF_GRAYED, CMD_STATUS, status_line);
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
 
-        // ②「直连节点」：IP/模式/RTT（数据页面，禁用展示项）。
+        // ② "Direct nodes": IP/mode/RTT (data page, disabled display items).
         let sub = CreatePopupMenu();
         if direct.is_empty() {
             append_item(sub, MF_STRING | MF_GRAYED, 0, "（无）");
@@ -172,7 +177,7 @@ pub(crate) fn build_menu(
         append_popup(hmenu, "直连节点", sub);
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
 
-        // ④「连接节点…」：中继候选可点击 → spawn `meshlet-cli peer dial <node>`。
+        // ④ "Connect to node…": relay candidates are clickable -> spawn `meshlet-cli peer dial <node>`.
         let sub = CreatePopupMenu();
         if relay.is_empty() {
             append_item(sub, MF_STRING | MF_GRAYED, 0, "（无）");
@@ -184,13 +189,13 @@ pub(crate) fn build_menu(
         append_popup(hmenu, "连接节点…", sub);
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
 
-        // MCP 状态行（定案 2026-11-08）：tray 显示 MCP 是否开启 + 端口。
-        // 禁用展示项（v1 只读；开启/切换经 agent.toml 显式配置）。
+        // MCP status row (decided 2026-11-08): the tray shows whether MCP is enabled + the port.
+        // Disabled display item (v1 is read-only; enabling / switching goes through the explicit agent.toml setting).
         append_item(hmenu, MF_STRING | MF_GRAYED, 0, mcp_line);
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
 
-        // 入口分流（定案 2026-11-06）：本地面板 = 本机自托管只读页（默认入口，
-        // 数据在本机，不依赖 server）；控制台(网页) = 原 dashboard 行为。
+        // Entry split (decided 2026-11-06): local panel = self-hosted read-only page on this machine
+        // (the default entry; the data lives locally and does not need the server); console (web) = the former dashboard behaviour.
         append_item(hmenu, MF_STRING, CMD_OPEN_LOCAL_PANEL, "本地面板");
         append_item(hmenu, MF_STRING, CMD_OPEN_CONSOLE, "控制台(网页)");
         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
@@ -203,8 +208,8 @@ pub(crate) fn build_menu(
 mod tests {
     use super::*;
 
-    /// 建一个 `<base>/state` 结构（与 `install.ps1` 的
-    /// `%LOCALAPPDATA%\meshlet\{agent.toml,state}` 同形），返回 state 目录。
+    /// Builds a `<base>/state` structure (isomorphic to `install.ps1`'s
+    /// `%LOCALAPPDATA%\meshlet\{agent.toml,state}`) and returns the state directory.
     fn temp_state_dir(tag: &str) -> std::path::PathBuf {
         let base = std::env::temp_dir().join(format!(
             "meshlet-tray-{tag}-{}-{}",
@@ -223,7 +228,7 @@ mod tests {
     fn status_line_reads_tooltip_from_status_json() {
         let state = temp_state_dir("status-line");
         std::fs::create_dir_all(state.join("tray")).unwrap();
-        // 无文件 → 兜底 "Meshlet"。
+        // No file -> fall back to "Meshlet".
         assert_eq!(status_line_text(Some(&state)), "Meshlet");
         assert_eq!(status_line_text(None), "Meshlet");
         std::fs::write(
@@ -246,7 +251,7 @@ mod tests {
             "拨号中"
         );
         assert_eq!(meshlet_tray_host::panel::mode_label("hub_relay"), "中继");
-        // 未知模式原样展示（不吞数据）。
+        // Unknown modes are shown as-is (no data swallowed).
         assert_eq!(
             meshlet_tray_host::panel::mode_label("something_new"),
             "something_new"
@@ -263,27 +268,27 @@ mod tests {
         let (direct, relay) = split_peer_views(&peers);
         assert_eq!(direct.len(), 2);
         assert_eq!(relay.len(), 1);
-        // ②「直连节点」行 = 名字/IP/模式/RTT；RTT 未测 → "--"；无名 → IP 代名。
+        // ② A "direct node" row = name/IP/mode/RTT; unmeasured RTT -> "--"; no name -> the IP stands in.
         assert_eq!(direct[0].menu_label(), "a · 10.240.0.2 · 直连 · 12 ms");
         assert_eq!(direct[1].menu_label(), "b · 10.240.0.3 · 拨号中 · --");
-        // ④「连接节点…」行 = IP + 名称；无名候选以 IP 代名。
+        // ④ A "connect to node…" row = IP + name; an unnamed candidate uses the IP as its name.
         assert_eq!(relay[0].dial_menu_label(), "10.240.0.4  10.240.0.4");
     }
 
     #[test]
     fn mcp_line_reads_endpoint_or_defaults_closed() {
         let state = temp_state_dir("mcp-line");
-        // 无交接文件 → 关闭。
+        // No handoff file -> closed.
         assert_eq!(mcp_line_text(Some(&state)), "MCP：关闭");
         assert_eq!(mcp_line_text(None), "MCP：关闭");
-        // 交接文件有端口 → 开启 + 端口。
+        // Handoff file with a port -> enabled + the port.
         std::fs::write(
             state.join("mcp.json"),
             r#"{"url":"http://127.0.0.1:8765/mcp","port":8765,"pid":1234}"#,
         )
         .unwrap();
         assert_eq!(mcp_line_text(Some(&state)), "MCP：开启 8765");
-        // 交接文件缺端口（损坏/旧形态）→ 开启不加端口，不猜值。
+        // Handoff file missing the port (corrupt / older shape) -> enabled without a port, never guessing a value.
         std::fs::write(
             state.join("mcp.json"),
             r#"{"url":"http://127.0.0.1:0/mcp"}"#,
@@ -296,13 +301,13 @@ mod tests {
     #[test]
     fn direct_peer_views_load_from_state_dir_or_default_empty() {
         let state = temp_state_dir("direct-peers");
-        // 缺失 → 空表（子菜单显示「（无）」）。
+        // Missing -> an empty list (the submenu shows the empty placeholder).
         assert!(load_local_direct_peers(Some(&state)).is_empty());
         assert!(load_local_direct_peers(None).is_empty());
-        // 损坏 → 空表，不 panic。
+        // Corrupt -> an empty list, without panicking.
         std::fs::write(state.join("direct-peers.json"), "not json").unwrap();
         assert!(load_local_direct_peers(Some(&state)).is_empty());
-        // 正常读取：字段与 meshlet-network::dial::DirectPeerView 一致。
+        // Normal read: fields consistent with meshlet-network::dial::DirectPeerView.
         std::fs::write(
             state.join("direct-peers.json"),
             r#"[{"name":"peer-b","virtual_ipv4":"10.240.0.3","public_key":"abc==","mode":"hub_relay","rtt_ms":null,"endpoint":"","last_handshake_at":null}]"#,
@@ -312,7 +317,7 @@ mod tests {
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].name, "peer-b");
         assert_eq!(peers[0].mode, "hub_relay");
-        // 旧服务端缺省字段（name/mode/rtt 缺席）也能读（serde default）。
+        // Older servers omitting fields (name/mode/rtt absent) still parse (serde defaults).
         std::fs::write(
             state.join("direct-peers.json"),
             r#"[{"virtual_ipv4":"10.240.0.3","public_key":"abc=="}]"#,
@@ -324,14 +329,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(state.parent().unwrap());
     }
 
-    // ── ①②④ 菜单结构（AGENT-WIN-3/4 Windows 真机验证：CI windows-latest
-    //    的 workspace test 腿实跑本文件——真实 Win32 菜单创建 + 内容读回）──
+    // ── ①②④ menu structure (AGENT-WIN-3/4 verified on real Windows machines: the CI
+    //    windows-latest workspace-test leg actually runs this file — real Win32 menu creation + content read-back) ──
 
     #[cfg(all(test, target_os = "windows"))]
     mod windows_menu_tests {
         use super::*;
 
-        /// 按位置读菜单项文本（`GetMenuStringW` 两段式：先量长度再取）。
+        /// Reads a menu item's text by position (`GetMenuStringW` in two passes: measure the length first, then fetch).
         fn menu_string(hmenu: HMENU, pos: u32) -> String {
             let len = unsafe { GetMenuStringW(hmenu, pos, std::ptr::null_mut(), 0, MF_BYPOSITION) };
             if len <= 0 {
@@ -364,15 +369,15 @@ mod tests {
                 "MCP：开启 8765",
             );
             unsafe {
-                // 结构：首行 / sep / 直连节点 / sep / 连接节点… / sep /
-                // MCP 状态行 / sep / 本地面板 / 控制台(网页) / sep / 退出。
+                // Structure: first row / sep / direct nodes / sep / connect to node… / sep /
+                // MCP status row / sep / local panel / console (web) / sep / quit.
                 assert_eq!(GetMenuItemCount(hmenu), 12, "menu layout must be intact");
 
-                // ① 首行 = 设备名 + 虚拟 IP + 状态（禁用展示项）。
+                // ① First row = device name + virtual IP + status (disabled display item).
                 assert_eq!(menu_string(hmenu, 0), "Meshlet「dev」 10.240.0.5：在线");
                 assert_ne!(GetMenuState(hmenu, 0, MF_BYPOSITION) & MF_GRAYED, 0);
 
-                // ② 直连节点子菜单：IP/模式/RTT 数据行，禁用态。
+                // ② Direct nodes submenu: IP/mode/RTT data rows, disabled.
                 let direct_sub = GetSubMenu(hmenu, 2);
                 assert!(!direct_sub.is_null(), "直连节点 must be a submenu");
                 assert_eq!(GetMenuItemCount(direct_sub), 1);
@@ -382,7 +387,7 @@ mod tests {
                 );
                 assert_ne!(GetMenuState(direct_sub, 0, MF_BYPOSITION) & MF_GRAYED, 0);
 
-                // ④ 连接节点… 子菜单：中继候选可点击（非禁用）。
+                // ④ Connect to node… submenu: relay candidates are clickable (not disabled).
                 let dial_sub = GetSubMenu(hmenu, 4);
                 assert!(!dial_sub.is_null(), "连接节点… must be a submenu");
                 assert_eq!(GetMenuItemCount(dial_sub), 1);
@@ -393,11 +398,11 @@ mod tests {
                     "dial candidates must be clickable"
                 );
 
-                // MCP 状态行（定案 2026-11-08）：禁用展示项，显示开启+端口。
+                // MCP status row (decided 2026-11-08): a disabled display item showing enabled + port.
                 assert_eq!(menu_string(hmenu, 6), "MCP：开启 8765");
                 assert_ne!(GetMenuState(hmenu, 6, MF_BYPOSITION) & MF_GRAYED, 0);
 
-                // 入口分流（定案 2026-11-06）：本地面板是默认入口，控制台另列。
+                // Entry split (decided 2026-11-06): the local panel is the default entry, the console is listed separately.
                 assert_eq!(menu_string(hmenu, 8), "本地面板");
                 assert_eq!(menu_string(hmenu, 9), "控制台(网页)");
                 assert_eq!(menu_string(hmenu, 11), "退出");

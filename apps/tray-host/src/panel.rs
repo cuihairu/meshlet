@@ -1,8 +1,8 @@
-//! 本地面板：托盘「本地面板」打开的本机自托管只读页（loopback 随机端口）。
+//! Local panel: the self-hosted read-only page (loopback on a random port) opened by the tray's "local panel" item.
 //!
-//! 职责拆分为三块：[`runtime`] 管 loopback 服务与 URL/config 交接；
-//! [`snapshot`] 从本机状态文件构建唯一数据源；[`html`] 只负责渲染与
-//! 注入到页面的 JavaScript，不直接读状态文件或打开网络连接。
+//! Responsibilities split into three parts: [`runtime`] owns the loopback service and the URL/config handoff;
+//! [`snapshot`] builds the single source of truth from the local state files; [`html`] only renders and
+//! injects the JavaScript into the page, never reading state files or opening network connections directly.
 
 mod html;
 mod runtime;

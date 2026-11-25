@@ -4,13 +4,14 @@ use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_INFO, NIIF_ERROR, NIIF_INFO, NIM_MODIFY, NOTIFYICONDATAW,
 };
-/// CLI 可执行名（与 `install.ps1` 同目录安装的 `meshlet-cli.exe`；
-/// 「连接节点…」点击即 spawn 它 `peer dial <node>`，④）。
+/// CLI executable name (installed next to `install.ps1` as `meshlet-cli.exe`;
+/// clicking "connect to node…" spawns it with `peer dial <node>`, item ④).
 pub(crate) const CLI_EXE: &str = "meshlet-cli.exe";
 
-/// ④ 点击「连接节点…」：spawn `meshlet-cli peer dial <node>`（异步；agent
-/// 处理后 CLI 打印结果），结果以系统气泡（NIF_INFO）回显——成功/失败如
-/// CLI 输出（`ok:` / `failed:`）同源呈现。
+/// ④ Clicking "connect to node…": spawn `meshlet-cli peer dial <node>`
+/// (asynchronously; after the agent processes it the CLI prints the result), and echo the
+/// result as a system balloon (NIF_INFO) — success/failure is presented from the same source
+/// as the CLI output (`ok:` / `failed:`).
 pub(crate) fn spawn_peer_dial(
     _hwnd: HWND,
     node: &str,
@@ -22,19 +23,21 @@ pub(crate) fn spawn_peer_dial(
     let nid_raw = nid as isize;
     std::thread::spawn(move || {
         let outcome = run_peer_dial(&node, state_dir.as_deref());
-        // 与文件监听线程共用 nid 指针（既有模型）；气球字段只在
-        // 本线程写，图标/tooltip 更新在另一线程——Shell_NotifyIconW
-        // 各自原子完成，最坏互相覆盖一次，不构成数据竞争 UB。
+        // Shares the nid pointer with the file-watch thread (existing model); only the
+        // balloon fields are written on this thread, icon/tooltip updates happen on the other —
+        // each Shell_NotifyIconW call completes atomically, so at worst one overwrites the other
+        // once; this is not a data-race UB.
         unsafe {
             show_balloon(nid_raw as *mut NOTIFYICONDATAW, &outcome);
         }
     });
 }
 
-/// 跑一次 `meshlet-cli peer dial <node>`（隐藏窗口），返回 (成功?, 汇报文本)。
-/// CLI 与本进程同目录（install.ps1 三件套同装）；把 `LOCALAPPDATA` 指到
-/// tray 实际使用的 state_dir 父父级（= `<local>/meshlet/state` 的 `<local>`，
-/// 与 CLI `state_dir_from_local` 同构），保证 CLI 与 agent 读同一拨号文件。
+/// Runs `meshlet-cli peer dial <node>` once (hidden window) and returns (succeeded?, report text).
+/// The CLI lives next to this process (install.ps1 installs the three-piece set together); point
+/// `LOCALAPPDATA` at the grandparent of the state_dir the tray actually uses (= the `<local>` of
+/// `<local>/meshlet/state`, isomorphic to the CLI's `state_dir_from_local`), so the CLI and the agent
+/// read the same dial files.
 fn run_peer_dial(node: &str, state_dir: Option<&std::path::Path>) -> (bool, String) {
     use std::os::windows::process::CommandExt;
     let Some(exe) = cli_exe_path() else {
@@ -65,7 +68,7 @@ fn run_peer_dial(node: &str, state_dir: Option<&std::path::Path>) -> (bool, Stri
     }
 }
 
-/// 气泡正文上限（`szInfo` 为 256 宽字符，含 NUL 留余量）。
+/// Cap for balloon body text (`szInfo` is 256 wide chars, leaving slack for the NUL).
 pub(crate) fn truncate_for_balloon(text: &str) -> String {
     if text.chars().count() <= 250 {
         text.to_string()
@@ -75,7 +78,7 @@ pub(crate) fn truncate_for_balloon(text: &str) -> String {
     }
 }
 
-/// 结果气泡：成功 → 信息图标；失败 → 错误图标（结果与 CLI 输出同源）。
+/// Result balloon: success -> info icon; failure -> error icon (the result shares the CLI output as its source).
 unsafe fn show_balloon(nid: *mut NOTIFYICONDATAW, outcome: &(bool, String)) {
     let (ok, text) = outcome;
     let info = wide_z(text);
@@ -95,8 +98,8 @@ unsafe fn show_balloon(nid: *mut NOTIFYICONDATAW, outcome: &(bool, String)) {
     Shell_NotifyIconW(NIM_MODIFY, nid);
 }
 
-/// `meshlet-cli.exe` 路径：本进程可执行文件的兄弟（install.ps1 把
-/// `meshlet-{agent,cli,tray-host}.exe` 装到同一目录）。
+/// Path of `meshlet-cli.exe`: a sibling of this process's executable (install.ps1 places
+/// `meshlet-{agent,cli,tray-host}.exe` in the same directory).
 fn cli_exe_path() -> Option<std::path::PathBuf> {
     let mut buf = [0u16; 260];
     let len =
