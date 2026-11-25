@@ -214,4 +214,10 @@
       ②`build_settings_window` 的 eprintln 改写到 `%LOCALAPPDATA%\meshlet\logs\tray.err.log`（自诊断）
       ③用 UIAutomation 真点托盘图标复现，不再靠 schtasks /run 模拟
   - Commands and actual results: pefile TRAY subsys=2(GUI) / AGENT subsys=3(CONSOLE)；imac WT pid 33284 常驻自 11-23；tray_replay 40 帧 changed_px=0
-  - Commit:
+  - Commit: 41afc88（①agent release 改 GUI 子系统+AttachConsole 回挂父控制台）+ 26f665d（②窗口构建失败落 tray.err.log），均已推 main（2026-11-25）
+  - 【2026-11-25 收尾对账】①②已落 main：`git show` 核实与计划一一对应——①=41afc88（`#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]`
+      首行生效+`attach_parent_console()`+Cargo.toml 补 `Win32_System_Console` feature，debug 构建保持 CONSOLE 不影响本地开发）；②=26f665d（`log_diag()` 写
+      `%LOCALAPPDATA%\meshlet\logs\tray.err.log`，popup/settings 两处 build 失败都接上，写失败静默——诊断通道不做新故障源）。静态安装面复核已跑：当前 main（453951c）
+      windows-gnu release 构建 meshlet-agent.exe → pefile 读回 **subsystem=2 (IMAGE_SUBSYSTEM_WINDOWS_GUI)**
+      （sha256 20c9713212ed…fca4，17,599,929B，构建 43.68s），证据 docs/acceptance-evidence/tray-tf01-agent-subsystem-2026-11-25.md；
+      ③UIAutomation 真点复现 **BLOCKED-待真机**（SSH=session 0 托盘 NIM_ADD=0 黑洞、schtasks /run 只证进程起不证窗口面，与 R-05 同款约束），保持 [ ] 待用户真机验证——本条不勾。
